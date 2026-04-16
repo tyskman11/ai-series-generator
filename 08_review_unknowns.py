@@ -292,8 +292,10 @@ def cluster_sort_key(item: tuple[str, dict]) -> tuple[int, int, int, str]:
     cluster_id, payload = item
     ignored_rank = 1 if is_ignored_face_payload(payload) else 0
     named_rank = 1 if not looks_auto_named(str(payload.get("name", ""))) else 0
+    scene_rank = -int(payload.get("scene_count", 0))
+    detection_rank = -int(payload.get("detection_count", 0))
     samples_rank = -int(payload.get("samples", 0))
-    return (ignored_rank, named_rank, samples_rank, cluster_id)
+    return (ignored_rank, named_rank, scene_rank, detection_rank, samples_rank, cluster_id)
 
 
 def hydrate_face_clusters_from_previews(cfg: dict, char_map: dict) -> int:
@@ -412,10 +414,14 @@ def print_cluster(cluster_id: str, payload: dict) -> None:
     name = payload.get("name", cluster_id)
     preview_dir = payload.get("preview_dir", "-")
     samples = payload.get("samples", 0)
+    scene_count = payload.get("scene_count", 0)
+    detection_count = payload.get("detection_count", 0)
     auto_named = payload.get("auto_named", False)
     print(f"{cluster_id}: {name}")
     print(f"  Status: {status}")
     print(f"  Samples: {samples}")
+    print(f"  Szenen: {scene_count}")
+    print(f"  Treffer: {detection_count}")
     print(f"  Auto: {auto_named}")
     print(f"  Preview: {preview_dir}")
 

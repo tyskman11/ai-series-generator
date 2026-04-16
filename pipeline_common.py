@@ -135,6 +135,8 @@ DEFAULT_CONFIG = {
         "max_visible_faces_per_segment": 3,
         "segment_visibility_padding_seconds": 0.35,
         "min_face_size": 32,
+        "face_cluster_min_scenes": 2,
+        "face_cluster_min_detections": 3,
         "voice_face_match_threshold": 0.6,
     },
     "generation": {

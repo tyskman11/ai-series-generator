@@ -2,21 +2,39 @@
 
 ## Zweck
 
-Dieses Projekt verarbeitet vorhandene Serienfolgen als `mp4` und baut daraus eine lokale Pipeline fuer:
+Dieses Projekt baut aus vorhandenen Serienfolgen eine lokale KI-Trainings- und Generierungs-Pipeline.
 
-- Import von Folgen
-- Szenenschnitt
-- Transkription und einfache Sprecher-Cluster
-- Gesichtserkennung und Verknuepfung von Figuren und Stimmen
-- Aufbau eines Trainingsdatensatzes
-- Ableitung eines lokalen Serienmodells
-- Generierung neuer Folgen als Markdown und Shotlist
-- Rendern eines Storyboard-/TTS-Draft-Videos
-- optionales Voice Cloning aus vorhandenen Sprechersegmenten
-- referenzbasiertes Face-Cloning aus erkannten Face-Crops
-- eingebautes Lip-Sync-/Talking-Head-Fallback fuer benannte Figuren
+Von einer echten Folge als `mp4` geht es bis zu:
+
+- importierten und geschnittenen Szenen
+- transkribierten Dialogen und Sprecher-Clustern
+- erkannten Gesichtern und verknuepften Figuren
+- einem lokalen Serien-Datensatz und Modell
+- einer neu generierten Folge als Text und Shotlist
+- einem renderbaren Storyboard-/TTS-Draft-Video
+- optionalen Figur-Referenzen fuer spaetere Clone- und Preview-Schritte
 
 Die Pipeline ist modular. Jeder Schritt kann einzeln gestartet werden, oder alles laeuft ueber `99_process_next_episode.py`.
+
+## Auf Einen Blick
+
+| Bereich | Stand | Kurz gesagt |
+| --- | --- | --- |
+| Import / Split | stabil | Folgen werden importiert, registriert und in Szenen zerlegt |
+| Transkription / Sprecher | nutzbar | Whisper + Sprecher-Cluster laufen lokal, mit GPU-Unterstuetzung wenn vorhanden |
+| Gesichter / Figuren | aktiv in Feintuning | wiederkehrende Figuren werden von Einmal-Gesichtern getrennt |
+| Datensatz / Modell | nutzbar | aus verknuepften Szenen entsteht ein lokales Serienmodell |
+| Generierung / Render | Preview-faehig | neue Folgen, Shotlists und Draft-Videos koennen erzeugt werden |
+| Voice / Clone-Pfad | optional | Standard bleibt lizenzfrei bei lokalem `pyttsx3`, XTTS nur bewusst als Opt-in |
+| GitHub-Sync | aktiv | nur Root-Skripte + `README.md`, nur Upload/Spiegelung, keine Downloads |
+
+## Was Gerade Schon Gut Funktioniert
+
+- vorhandene Serienfolgen koennen als komplette lokale Pipeline verarbeitet werden
+- die Pipeline kann neue Folgen als Markdown und Shotlist aus dem bisherigen Material ableiten
+- `10_render_episode.py` erzeugt ein visuelles Draft-Video statt nur Textartefakte
+- die Standardausgabe bleibt bewusst lokal und lizenzarm, damit der Default-Workflow robust bleibt
+- der GitHub-Sync spiegelt jetzt nur erlaubte lokale Dateien nach GitHub und holt nie Remote-Inhalte herunter
 
 ## Wichtige Dokumentationsregel
 
@@ -43,19 +61,45 @@ Zusatzregel ab jetzt:
 - `README.md` muss immer auch die beiden Bereiche `Gerade in Bearbeitung` und `Geplant` aktuell halten
 - wenn sich Prioritaeten aendern, muessen diese beiden Bereiche im gleichen Arbeitsgang mitgezogen werden
 
+## Fokus Im Moment
+
+- Hauptfiguren schneller von Hintergrundgesichtern trennen
+- die Review-Reihenfolge auf wiederkehrende relevante Figuren verschieben
+- den Standardpfad stabil, lokal und ohne Lizenzpflichten halten
+- den lokalen Code-Stand sauber nach GitHub spiegeln, ohne jemals etwas herunterzuladen
+
 ## Gerade in Bearbeitung
 
-- `04_diarize_and_transcribe.py`: Sprechertrennung wird von einfachen MFCC-Heuristiken auf robustere SpeechBrain-Embeddings plus strengere Cluster-Regeln umgestellt
-- `05_link_faces_and_speakers.py`: profitiert als naechster Schritt von besseren Sprecher-Clustern, damit Namen, Stimmen und Gesichter stabiler zusammenfinden
-- Lizenzfreier Standardpfad: der Default-Workflow soll ohne externe Lizenzannahmen laufen und fuer Voice-Ausgabe standardmaessig bei lokalem `pyttsx3` bleiben
+- `05_link_faces_and_speakers.py`: wiederkehrende Figuren werden nach dem Voll-Lauf von Einmal-Gesichtern getrennt, damit `character_map` und Review nicht mit Hintergrundgesichtern ueberlaufen
+- `08_review_unknowns.py`: die interaktive Benennung priorisiert zuerst die haeufigsten wiederkehrenden Face-Cluster, damit Hauptfiguren schneller sauber benannt werden koennen
+- das Zusammenspiel aus `04`-Sprecher-Clustern und `05`-Figurenfilter wird auf kompletten Folgen validiert
+- der lizenzfreie Standardpfad wird weiter abgesichert: Default bleibt lokales `pyttsx3`, optionale XTTS-/Coqui-Wege nur als ausdrueckliches Opt-in
+- der GitHub-Sync wurde auf reine Upload-/Spiegel-Logik per API festgezogen und wird jetzt im Alltag mit dem Projektstand mitgefuehrt
 
 ## Geplant
 
-- `04` nach dem aktuellen Tuning erneut ueber eine kleine Szenenmenge und danach voll laufen lassen
-- `05 --fresh` direkt nach dem verbesserten `04` neu rechnen
-- Namen, Stimmen und Gesichter fuer Hauptfiguren weiter bereinigen
-- spaeter optionalen XTTS-/Coqui-Pfad nur als ausdrueckliches Opt-in dokumentieren, nicht als Standard
+- Hauptfiguren in `08_review_unknowns.py` anhand der neuen Priorisierung sauber benennen
+- danach `06` bis `10` mit den bereinigten Namen und Maps erneut durchlaufen lassen
+- verbleibende `speaker_unknown`-Faelle in `04` weiter reduzieren
+- die Review-Queue noch staerker auf wiederkehrende statt einmalige Faelle fokussieren
+- den optionalen XTTS-/Coqui-Pfad weiter als klares Opt-in dokumentieren, nicht als Standard
 - danach weitere Qualitaetsverbesserungen fuer Render, Figurenkonsistenz und Episodengenerierung angehen
+
+## Aktueller Gesamtstand
+
+Das Projekt ist im Moment am staerksten in diesem Bereich:
+
+- aus realen Serienfolgen automatisch verwertbare Trainingsdaten gewinnen
+- Figuren, Stimmen und Szenen zu einem lokalen Serienwissen verdichten
+- daraus neue Episoden als Text, Shotlist und Preview-Render ableiten
+
+Der Schwerpunkt liegt aktuell noch nicht auf perfekt fotorealistischer Endausgabe, sondern auf:
+
+- sauberer Datenaufbereitung
+- wiederkehrenden Figuren statt Einmal-Treffern
+- nachvollziehbarer lokaler Pipeline
+- brauchbaren Preview- und Review-Schritten
+- reproduzierbarer Generierung statt vollautomatischer TV-Endproduktion
 
 ## Aktueller Stand
 
@@ -260,6 +304,7 @@ Dieser Schritt:
 - erkennt Gesichter in den Szenen ueber `facenet-pytorch` mit OpenCV-Fallback
 - bildet Face-Cluster (`face_001`, `face_002`, ...)
 - konsolidiert Mehrfacherkennungen zuerst lokal innerhalb einer Szene
+- filtert nach dem Voll-Lauf automatisch Einmal-Gesichter mit zu wenig Szenen/Treffern aus der `character_map`
 - ordnet sichtbare Face-Cluster zeitbasiert pro Dialogsegment zu
 - verknuepft diese segmentnahen Face-Cluster mit Sprecher-Clustern
 - uebernimmt manuell vergebene Figurennamen aus `character_map.json`
@@ -270,7 +315,7 @@ Wichtige technische Details:
 
 - wenn eine CUDA-GPU nutzbar ist, laufen MTCNN und Face-Embeddings auf GPU
 - wenn MTCNN in einzelnen Frames keine Box liefert, faellt `05` auf OpenCV-Haar-Cascades zurueck
-- `sample_every_n_frames`, `max_faces_per_frame`, `max_scene_clusters`, `max_visible_faces_per_segment`, `segment_visibility_padding_seconds`, `min_face_size`, `embedding_threshold`, `scene_embedding_threshold` und `detection_confidence_threshold` kommen aus der Projekt-Config
+- `sample_every_n_frames`, `max_faces_per_frame`, `max_scene_clusters`, `max_visible_faces_per_segment`, `segment_visibility_padding_seconds`, `min_face_size`, `face_cluster_min_scenes`, `face_cluster_min_detections`, `embedding_threshold`, `scene_embedding_threshold` und `detection_confidence_threshold` kommen aus der Projekt-Config
 
 Wichtige Ausgaben:
 
@@ -360,8 +405,10 @@ Wichtige Beispiele:
 Bedeutung:
 
 - beim einfachen Start werden alle automatisch benannten Face-Cluster nacheinander gezeigt
+- die Review startet jetzt mit den haeufigsten wiederkehrenden Face-Clustern zuerst
 - `--list-faces` zeigt standardmaessig nur bereits benannte Figuren
 - pro Cluster wird eine Montage mit Szene links und Ausschnitt rechts erzeugt und einzeln in einer blockierenden Vorschau gezeigt
+- pro Cluster werden auch `Szenen` und `Treffer` angezeigt, damit Hauptfiguren schneller erkennbar sind
 - der naechste Face-Cluster wird erst nach einer echten Benennung oder `noface` geoeffnet
 - waehrend der Review werden Beispielnamen wie `Babe Carano`, `Mr. Sammich`, `Teague/Busboy` und `noface` direkt eingeblendet
 - `--assign-face ... --name ...` speichert einen dauerhaften Figurennamen in `character_map.json`
@@ -534,6 +581,7 @@ python 05_link_faces_and_speakers.py --fresh --episode "Game.Shakers.S01E01.GERM
 - `05` hat zwar jetzt `--episode`, aber `04`, `06` und einige andere Schritte arbeiten weiterhin standardmaessig auf dem ersten verfuegbaren Ordner.
 - `character_map.json` und `voice_map.json` sind global und noch nicht pro Folge getrennt.
 - Die Sprecherzuordnung ist heuristisch, nicht diarization-grade production quality.
+- Auch nach dem neuen Filter koennen in `05` noch Nebenfiguren oder Hintergrundgesichter als eigene Cluster auftauchen.
 - Das Trainingsmodell in `07` ist regel-/datengetrieben und nicht mit einem grossen multimodalen KI-Modell vergleichbar.
 - `10` rendert ein Preview-Draft, keine finale Episode.
 - Das eingebaute Lip-Sync in `10` ist ein lokaler audio-reaktiver Preview-Modus, nicht dieselbe Qualitaet wie spezialisierte Deepfake-/Lip-Sync-Modelle.

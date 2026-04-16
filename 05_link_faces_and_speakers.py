@@ -444,6 +444,63 @@ def write_preview_images(
     return [crop_path, context_path]
 
 
+def collect_face_cluster_stats(face_by_scene: dict[str, dict]) -> dict[str, dict[str, int]]:
+    stats: dict[str, dict[str, int | set[str]]] = {}
+    for scene_id, payload in face_by_scene.items():
+        face_clusters = payload.get("face_clusters", []) or []
+        detections = payload.get("detections", []) or []
+        for cluster_id in face_clusters:
+            cluster_stats = stats.setdefault(cluster_id, {"detections": 0, "scenes": set()})
+            cluster_stats["scenes"].add(scene_id)
+        for detection in detections:
+            cluster_id = detection.get("face_cluster")
+            if not cluster_id:
+                continue
+            cluster_stats = stats.setdefault(cluster_id, {"detections": 0, "scenes": set()})
+            cluster_stats["detections"] = int(cluster_stats.get("detections", 0)) + 1
+            cluster_stats["scenes"].add(scene_id)
+    return {
+        cluster_id: {
+            "detections": int(payload.get("detections", 0)),
+            "scene_count": len(payload.get("scenes", set())),
+        }
+        for cluster_id, payload in stats.items()
+    }
+
+
+def prune_face_clusters(char_map: dict, face_by_scene: dict[str, dict], cfg: dict) -> set[str]:
+    min_scenes = int(cfg["character_detection"].get("face_cluster_min_scenes", 2))
+    min_detections = int(cfg["character_detection"].get("face_cluster_min_detections", 3))
+    stats = collect_face_cluster_stats(face_by_scene)
+    kept_clusters: set[str] = set()
+
+    for cluster_id, payload in list(char_map.get("clusters", {}).items()):
+        cluster_stats = stats.get(cluster_id, {})
+        payload["detection_count"] = int(cluster_stats.get("detections", 0))
+        payload["scene_count"] = int(cluster_stats.get("scene_count", 0))
+
+        keep_cluster = (
+            is_ignored_face_payload(payload)
+            or (payload.get("name") and not looks_auto_named(str(payload.get("name", ""))))
+            or payload["scene_count"] >= min_scenes
+            or payload["detection_count"] >= min_detections
+        )
+        if keep_cluster:
+            kept_clusters.add(cluster_id)
+            continue
+        remove_cluster_aliases(char_map, cluster_id)
+        char_map["clusters"].pop(cluster_id, None)
+
+    for payload in face_by_scene.values():
+        payload["face_clusters"] = [cluster_id for cluster_id in payload.get("face_clusters", []) if cluster_id in kept_clusters]
+        payload["detections"] = [
+            detection
+            for detection in payload.get("detections", [])
+            if detection.get("face_cluster") in kept_clusters
+        ]
+    return kept_clusters
+
+
 def visible_faces_for_segment(
     row: dict,
     scene_payload: dict,
@@ -735,6 +792,9 @@ def main() -> None:
         )
         face_by_scene[payload["scene_id"]] = payload
         progress(index, len(scene_files), "Gesichter werden analysiert")
+
+    kept_face_clusters = prune_face_clusters(char_map, face_by_scene, cfg)
+    info(f"Face-Cluster nach Filter: {len(kept_face_clusters)}")
 
     speaker_votes: dict[str, dict[str, float]] = defaultdict(lambda: defaultdict(float))
     for row in transcript_rows:
