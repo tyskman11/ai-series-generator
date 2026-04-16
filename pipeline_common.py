@@ -111,7 +111,12 @@ DEFAULT_CONFIG = {
         "task": "transcribe",
         "merge_gap_seconds": 0.35,
         "min_segment_seconds": 0.6,
+        "voice_embedding_backend": "auto",
+        "voice_embedding_min_seconds": 0.45,
+        "voice_embedding_context_padding_seconds": 0.45,
         "voice_embedding_threshold": 0.84,
+        "voice_embedding_threshold_speechbrain": 0.58,
+        "speaker_cluster_high_quality_min_seconds": 1.0,
     },
     "diarization": {
         "model_name": "pyannote/speaker-diarization-community-1",

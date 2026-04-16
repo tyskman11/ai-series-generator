@@ -437,11 +437,17 @@ Dieser Schritt:
 - synchronisiert ausschliesslich Root-`*.py`-Skripte plus `README.md`
 - ignoriert alle Projektordner und deren Inhalte vollstaendig
 - ignoriert den lokalen Sync-Helfer selbst absichtlich, damit er nicht mit hochgeladen wird
+- laedt niemals Inhalte von GitHub herunter und fuehrt bewusst kein `clone`, `fetch` oder `pull` aus
 - prueft vor dem Push, dass bei Script-Aenderungen auch `README.md` mitgeaendert wurde
 - verwendet standardmaessig das Repository `https://github.com/tyskman11/ai-series-generator`
 - verwendet fuer neue lokale Commits standardmaessig die E-Mail `baumscarry@gmail.com`
 - legt bei vorhandenem `GITHUB_TOKEN` ein fehlendes GitHub-Repo automatisch an
 - erstellt bei neuen Aenderungen einen Commit und pusht den aktuellen Stand nach GitHub
+
+Wichtig:
+
+- lokal ist immer die Quelle der Wahrheit fuer diesen Helfer
+- wenn der Remote-Branch inkompatible Fremd-Aenderungen hat, wird nichts heruntergeladen; der Push scheitert dann bewusst statt lokal etwas zu holen
 
 Wichtige Umgebungsvariablen:
 

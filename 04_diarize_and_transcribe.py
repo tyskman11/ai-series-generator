@@ -26,10 +26,12 @@ from pipeline_common import (
     rerun_in_runtime,
     resolve_project_path,
     run_command,
+    tokens_from_text,
+    warn,
     write_json,
 )
 
-PROCESS_VERSION = 4
+PROCESS_VERSION = 5
 
 
 def wav_duration_seconds(wav_path: Path) -> float:
@@ -37,6 +39,160 @@ def wav_duration_seconds(wav_path: Path) -> float:
         frame_rate = handle.getframerate() or 16000
         frame_count = handle.getnframes() or 0
     return frame_count / frame_rate if frame_rate else 0.0
+
+
+def pool_vector(values: np.ndarray, bins: int) -> np.ndarray:
+    chunks = np.array_split(values.astype(np.float32), bins)
+    pooled = [float(chunk.mean()) if chunk.size else 0.0 for chunk in chunks]
+    return np.asarray(pooled, dtype=np.float32)
+
+
+def load_audio_excerpt(wav_path: Path, start_sec: float, end_sec: float, sample_rate: int = 16000) -> np.ndarray:
+    import soundfile as sf
+    from scipy.signal import resample_poly
+
+    with sf.SoundFile(str(wav_path)) as handle:
+        native_rate = int(handle.samplerate or sample_rate)
+        frame_start = max(0, int(start_sec * native_rate))
+        frame_stop = max(frame_start + 1, int(end_sec * native_rate))
+        handle.seek(frame_start)
+        audio = handle.read(frames=frame_stop - frame_start, dtype="float32", always_2d=False)
+
+    if getattr(audio, "ndim", 1) > 1:
+        audio = audio.mean(axis=1)
+    audio = np.asarray(audio, dtype=np.float32)
+    if native_rate != sample_rate and audio.size:
+        audio = resample_poly(audio, sample_rate, native_rate).astype(np.float32)
+    return audio
+
+
+def trim_silence(audio: np.ndarray, top_db: float = 28.0) -> np.ndarray:
+    if audio.size == 0:
+        return audio
+    max_amplitude = float(np.max(np.abs(audio)))
+    if max_amplitude <= 1e-6:
+        return audio
+    threshold = max_amplitude * (10.0 ** (-top_db / 20.0))
+    voiced = np.flatnonzero(np.abs(audio) >= threshold)
+    if voiced.size == 0:
+        return audio
+    return audio[int(voiced[0]) : int(voiced[-1]) + 1]
+
+
+def prepare_embedding_audio(
+    scene_wav: Path,
+    start_sec: float,
+    end_sec: float,
+    cfg: dict,
+) -> tuple[np.ndarray, int]:
+    sample_rate = 16000
+    padding = float(cfg["transcription"].get("voice_embedding_context_padding_seconds", 0.45))
+    min_seconds = float(cfg["transcription"].get("voice_embedding_min_seconds", 0.45))
+    clip_start = max(0.0, start_sec - padding)
+    clip_end = max(clip_start + min_seconds, end_sec + padding)
+    audio = load_audio_excerpt(scene_wav, clip_start, clip_end, sample_rate=sample_rate)
+    if audio.size == 0:
+        return np.asarray([], dtype=np.float32), sample_rate
+
+    trimmed = trim_silence(audio, top_db=28.0)
+    if trimmed.size >= int(sample_rate * min_seconds):
+        audio = trimmed.astype(np.float32)
+    if audio.size < int(sample_rate * min_seconds):
+        return np.asarray([], dtype=np.float32), sample_rate
+    return audio.astype(np.float32), sample_rate
+
+
+def compute_mfcc_voice_embedding(audio: np.ndarray, sample_rate: int) -> list[float]:
+    import librosa
+
+    if audio.size < int(sample_rate * 0.45):
+        return []
+    mfcc = librosa.feature.mfcc(y=audio, sr=sample_rate, n_mfcc=20)
+    if mfcc.ndim != 2 or int(mfcc.shape[1]) < 6:
+        return []
+    delta = librosa.feature.delta(mfcc, mode="nearest")
+    delta2 = librosa.feature.delta(mfcc, order=2, mode="nearest")
+    contrast = librosa.feature.spectral_contrast(y=audio, sr=sample_rate)
+    centroid = librosa.feature.spectral_centroid(y=audio, sr=sample_rate)
+    bandwidth = librosa.feature.spectral_bandwidth(y=audio, sr=sample_rate)
+    rolloff = librosa.feature.spectral_rolloff(y=audio, sr=sample_rate)
+    rms = librosa.feature.rms(y=audio)
+    zcr = librosa.feature.zero_crossing_rate(y=audio)
+    flatness = librosa.feature.spectral_flatness(y=audio)
+    pitches, voiced_flags, _ = librosa.pyin(
+        audio,
+        fmin=librosa.note_to_hz("C2"),
+        fmax=librosa.note_to_hz("C6"),
+    )
+    voiced_pitches = pitches[voiced_flags] if pitches is not None and voiced_flags is not None else np.asarray([])
+    pitch_stats = np.asarray(
+        [
+            float(np.nanmean(voiced_pitches)) if voiced_pitches.size else 0.0,
+            float(np.nanstd(voiced_pitches)) if voiced_pitches.size else 0.0,
+            float(voiced_pitches.size / max(1, pitches.size if pitches is not None else 1)),
+        ],
+        dtype=np.float32,
+    )
+    features = np.concatenate(
+        [
+            mfcc.mean(axis=1),
+            mfcc.std(axis=1),
+            delta.mean(axis=1),
+            delta.std(axis=1),
+            delta2.mean(axis=1),
+            delta2.std(axis=1),
+            contrast.mean(axis=1),
+            contrast.std(axis=1),
+            centroid.mean(axis=1),
+            centroid.std(axis=1),
+            bandwidth.mean(axis=1),
+            bandwidth.std(axis=1),
+            rolloff.mean(axis=1),
+            rolloff.std(axis=1),
+            rms.mean(axis=1),
+            rms.std(axis=1),
+            zcr.mean(axis=1),
+            zcr.std(axis=1),
+            flatness.mean(axis=1),
+            flatness.std(axis=1),
+            pitch_stats,
+            np.asarray([audio.size / sample_rate], dtype=np.float32),
+        ]
+    ).astype(np.float32)
+    norm = np.linalg.norm(features)
+    if not np.isfinite(norm) or norm == 0:
+        return []
+    return (features / norm).round(6).tolist()
+
+
+def speechbrain_encoder(model_dir: Path, device: str):
+    from speechbrain.inference.speaker import EncoderClassifier
+    from speechbrain.utils.fetching import LocalStrategy
+
+    source = "speechbrain/spkrec-ecapa-voxceleb"
+    run_device = "cuda:0" if device == "cuda" else "cpu"
+    return EncoderClassifier.from_hparams(
+        source=source,
+        savedir=str(model_dir),
+        run_opts={"device": run_device},
+        local_strategy=LocalStrategy.COPY,
+    )
+
+
+def compute_speechbrain_voice_embedding(audio: np.ndarray, encoder, device: str) -> list[float]:
+    import torch
+
+    if audio.size == 0:
+        return []
+    signal = torch.tensor(audio, dtype=torch.float32).unsqueeze(0)
+    if device == "cuda":
+        signal = signal.cuda()
+    with torch.no_grad():
+        embedding = encoder.encode_batch(signal).squeeze().detach().cpu().numpy().astype(np.float32)
+    norm = np.linalg.norm(embedding)
+    if not np.isfinite(norm) or norm == 0:
+        return []
+    return (embedding / norm).round(6).tolist()
 
 
 def export_audio(ffmpeg_path: Path, input_video: Path, output_wav: Path) -> None:
@@ -157,52 +313,23 @@ def transcribe_scene(model, scene_wav: Path, cfg: dict, use_fp16: bool) -> list[
     )
 
 
-def compute_voice_embedding(segment_wav: Path) -> list[float]:
-    import librosa
-
-    audio, sample_rate = librosa.load(str(segment_wav), sr=16000, mono=True)
+def compute_voice_embedding(
+    scene_wav: Path,
+    start_sec: float,
+    end_sec: float,
+    cfg: dict,
+    backend: str,
+    speechbrain_model=None,
+    device: str = "cpu",
+) -> list[float]:
+    audio, sample_rate = prepare_embedding_audio(scene_wav, start_sec, end_sec, cfg)
     if audio.size == 0:
         return []
-    trimmed, _ = librosa.effects.trim(audio, top_db=30)
-    if trimmed.size >= sample_rate // 5:
-        audio = trimmed
-    if audio.size < sample_rate // 5:
-        return []
-
-    mfcc = librosa.feature.mfcc(y=audio, sr=sample_rate, n_mfcc=20)
-    frame_count = int(mfcc.shape[1]) if mfcc.ndim == 2 else 0
-    if frame_count < 3:
-        return []
-    delta_width = min(9, frame_count if frame_count % 2 == 1 else frame_count - 1)
-    if delta_width < 3:
-        return []
-    delta = librosa.feature.delta(mfcc, width=delta_width, mode="nearest")
-    delta2 = librosa.feature.delta(mfcc, order=2, width=delta_width, mode="nearest")
-    rms = librosa.feature.rms(y=audio)
-    zcr = librosa.feature.zero_crossing_rate(y=audio)
-    centroid = librosa.feature.spectral_centroid(y=audio, sr=sample_rate)
-
-    features = np.concatenate(
-        [
-            mfcc.mean(axis=1),
-            mfcc.std(axis=1),
-            delta.mean(axis=1),
-            delta.std(axis=1),
-            delta2.mean(axis=1),
-            delta2.std(axis=1),
-            rms.mean(axis=1),
-            rms.std(axis=1),
-            zcr.mean(axis=1),
-            zcr.std(axis=1),
-            centroid.mean(axis=1),
-            centroid.std(axis=1),
-            np.array([audio.size / sample_rate], dtype=np.float32),
-        ]
-    ).astype(np.float32)
-    norm = np.linalg.norm(features)
-    if not np.isfinite(norm) or norm == 0:
-        return []
-    return (features / norm).round(6).tolist()
+    if backend == "speechbrain" and speechbrain_model is not None:
+        embedding = compute_speechbrain_voice_embedding(audio, speechbrain_model, device=device)
+        if embedding:
+            return embedding
+    return compute_mfcc_voice_embedding(audio, sample_rate)
 
 
 def process_scene(
@@ -214,6 +341,9 @@ def process_scene(
     scene_cache_dir: Path,
     cfg: dict,
     use_fp16: bool,
+    speaker_embedding_backend: str,
+    speechbrain_model=None,
+    device: str = "cpu",
 ) -> list[dict]:
     cache_file = scene_cache_dir / f"{scene_file.stem}.json"
     if cache_file.exists():
@@ -223,6 +353,39 @@ def process_scene(
 
     scene_wav = audio_root / episode_name / f"{scene_file.stem}.wav"
     export_audio(ffmpeg_path, scene_file, scene_wav)
+    cached_rows = resolve_rows(cache_file) if cache_file.exists() else []
+    if cached_rows:
+        rows = []
+        for index, cached in enumerate(cached_rows, start=1):
+            start_sec = float(cached.get("start", 0.0))
+            end_sec = float(cached.get("end", start_sec + 0.15))
+            segment_wav = Path(cached.get("audio_file") or (audio_root / episode_name / f"{scene_file.stem}_seg_{index:03d}.wav"))
+            if not segment_wav.exists():
+                cut_audio_segment(ffmpeg_path, scene_wav, segment_wav, start_sec, end_sec)
+            rows.append(
+                {
+                    "process_version": PROCESS_VERSION,
+                    "scene_id": scene_file.stem,
+                    "segment_id": str(cached.get("segment_id") or f"{scene_file.stem}_seg_{index:03d}"),
+                    "speaker_cluster": "",
+                    "start": round(start_sec, 3),
+                    "end": round(end_sec, 3),
+                    "audio_file": str(segment_wav),
+                    "text": coalesce_text(str(cached.get("text", ""))),
+                    "voice_embedding": compute_voice_embedding(
+                        scene_wav,
+                        start_sec,
+                        end_sec,
+                        cfg,
+                        speaker_embedding_backend,
+                        speechbrain_model=speechbrain_model,
+                        device=device,
+                    ),
+                }
+            )
+        write_json(cache_file, rows)
+        return rows
+
     segments = transcribe_scene(model, scene_wav, cfg, use_fp16)
     rows = []
     for index, segment in enumerate(segments, start=1):
@@ -240,7 +403,15 @@ def process_scene(
                 "end": round(end_sec, 3),
                 "audio_file": str(segment_wav),
                 "text": coalesce_text(str(segment.get("text", ""))),
-                "voice_embedding": compute_voice_embedding(segment_wav),
+                "voice_embedding": compute_voice_embedding(
+                    scene_wav,
+                    start_sec,
+                    end_sec,
+                    cfg,
+                    speaker_embedding_backend,
+                    speechbrain_model=speechbrain_model,
+                    device=device,
+                ),
             }
         )
     write_json(cache_file, rows)
@@ -253,35 +424,103 @@ def resolve_rows(path: Path) -> list[dict]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def assign_speaker_clusters(rows: list[dict], threshold: float) -> tuple[list[dict], list[dict]]:
+def segment_quality(row: dict, cfg: dict) -> str:
+    duration = float(row["end"]) - float(row["start"])
+    words = len(tokens_from_text(str(row.get("text", ""))))
+    high_duration = float(cfg["transcription"].get("speaker_cluster_high_quality_min_seconds", 1.0))
+    if duration >= high_duration and words >= 2:
+        return "high"
+    if duration >= 0.55 and words >= 1:
+        return "medium"
+    return "low"
+
+
+def normalize_embedding(values: list[float]) -> list[float]:
+    vector = np.asarray(values, dtype=np.float32)
+    norm = float(np.linalg.norm(vector))
+    if not np.isfinite(norm) or norm == 0:
+        return []
+    return (vector / norm).round(6).tolist()
+
+
+def best_cluster_match(embedding: list[float], clusters: list[dict]) -> tuple[int, float]:
+    best_index = -1
+    best_score = -1.0
+    for index, cluster in enumerate(clusters):
+        score = cosine_similarity(embedding, cluster["centroid"])
+        if score > best_score:
+            best_score = score
+            best_index = index
+    return best_index, best_score
+
+
+def update_cluster(cluster: dict, embedding: list[float], row: dict) -> None:
+    count = cluster["count"]
+    centroid = np.asarray(cluster["centroid"], dtype=np.float32)
+    current = np.asarray(embedding, dtype=np.float32)
+    blended = ((centroid * count) + current) / (count + 1)
+    cluster["centroid"] = normalize_embedding(blended.tolist())
+    cluster["count"] += 1
+    cluster["scene_ids"].add(row["scene_id"])
+    cluster["segments"].append(row["segment_id"])
+
+
+def create_cluster(clusters: list[dict], embedding: list[float], row: dict) -> dict:
+    cluster = {
+        "cluster_id": f"speaker_{len(clusters) + 1:03d}",
+        "centroid": normalize_embedding(list(embedding)),
+        "count": 1,
+        "scene_ids": {row["scene_id"]},
+        "segments": [row["segment_id"]],
+    }
+    clusters.append(cluster)
+    return cluster
+
+
+def assign_speaker_clusters(rows: list[dict], threshold: float, cfg: dict) -> tuple[list[dict], list[dict]]:
     clusters: list[dict] = []
-    for row in sorted(rows, key=lambda item: (item["scene_id"], float(item["start"]), item["segment_id"])):
+    ordered_rows = sorted(rows, key=lambda item: (item["scene_id"], float(item["start"]), item["segment_id"]))
+    grouped_rows = {
+        "high": [row for row in ordered_rows if (row.get("voice_embedding") and segment_quality(row, cfg) == "high")],
+        "medium": [row for row in ordered_rows if (row.get("voice_embedding") and segment_quality(row, cfg) == "medium")],
+        "low": [row for row in ordered_rows if (row.get("voice_embedding") and segment_quality(row, cfg) == "low")],
+    }
+
+    def assign_row(row: dict, allow_new_cluster: bool, threshold_value: float) -> None:
         embedding = row.get("voice_embedding") or []
         if not embedding:
             row["speaker_cluster"] = "speaker_unknown"
-            continue
-        best_index = -1
-        best_score = -1.0
-        for index, cluster in enumerate(clusters):
-            score = cosine_similarity(embedding, cluster["centroid"])
-            if score > best_score:
-                best_score = score
-                best_index = index
-        if best_index >= 0 and best_score >= threshold:
+            return
+        best_index, best_score = best_cluster_match(embedding, clusters)
+        if best_index >= 0 and best_score >= threshold_value:
             cluster = clusters[best_index]
-            count = cluster["count"]
-            centroid = cluster["centroid"]
-            cluster["centroid"] = [
-                round(((centroid[i] * count) + embedding[i]) / (count + 1), 6)
-                for i in range(len(embedding))
-            ]
-            cluster["count"] += 1
+            update_cluster(cluster, embedding, row)
             row["speaker_cluster"] = cluster["cluster_id"]
-        else:
-            cluster_id = f"speaker_{len(clusters) + 1:03d}"
-            clusters.append({"cluster_id": cluster_id, "centroid": list(embedding), "count": 1})
-            row["speaker_cluster"] = cluster_id
-    return rows, clusters
+            return
+        if allow_new_cluster:
+            cluster = create_cluster(clusters, embedding, row)
+            row["speaker_cluster"] = cluster["cluster_id"]
+            return
+        row["speaker_cluster"] = "speaker_unknown"
+
+    for row in grouped_rows["high"]:
+        assign_row(row, allow_new_cluster=True, threshold_value=threshold)
+    for row in grouped_rows["medium"]:
+        assign_row(row, allow_new_cluster=True, threshold_value=threshold + 0.03)
+    for row in grouped_rows["low"]:
+        assign_row(row, allow_new_cluster=False, threshold_value=threshold + 0.07)
+
+    cluster_payload = [
+        {
+            "cluster_id": cluster["cluster_id"],
+            "centroid": cluster["centroid"],
+            "count": cluster["count"],
+            "scene_count": len(cluster["scene_ids"]),
+            "segments": cluster["segments"][:20],
+        }
+        for cluster in clusters
+    ]
+    return ordered_rows, cluster_payload
 
 
 def main() -> None:
@@ -313,10 +552,26 @@ def main() -> None:
     device = preferred_torch_device(cfg)
     use_fp16 = device == "cuda"
     model_name = cfg["transcription"]["model_name"]
+    requested_backend = str(cfg["transcription"].get("speaker_embedding_backend", "auto")).strip().lower()
+    speaker_backend = "mfcc"
+    speechbrain_model = None
     info(f"Whisper-Modell: {model_name}")
     info(f"Ausführungsmodus: {preferred_execution_label(cfg)}")
     info(f"Rechengerät: {preferred_compute_label(cfg)}")
     model = whisper.load_model(model_name, download_root=str(model_dir), device=device)
+
+    if requested_backend in {"auto", "speechbrain"}:
+        try:
+            speechbrain_model = speechbrain_encoder(
+                PROJECT_ROOT.parent / "runtime" / "models" / "speechbrain" / "ecapa",
+                device=device,
+            )
+            speaker_backend = "speechbrain"
+        except Exception as exc:
+            if requested_backend == "speechbrain":
+                raise
+            warn(f"SpeechBrain-Speaker-Encoder nicht nutzbar, Fallback auf MFCC: {exc}")
+    info(f"Sprecher-Embedding-Backend: {speaker_backend}")
 
     all_rows: list[dict] = []
     for index, scene_file in enumerate(scenes, start=1):
@@ -329,12 +584,17 @@ def main() -> None:
             scene_cache_dir,
             cfg,
             use_fp16,
+            speaker_backend,
+            speechbrain_model=speechbrain_model,
+            device=device,
         )
         all_rows.extend(scene_rows)
         progress(index, len(scenes), "Audio wird transkribiert")
 
-    threshold = float(cfg["transcription"].get("voice_embedding_threshold", 0.84))
-    all_rows, clusters = assign_speaker_clusters(all_rows, threshold)
+    threshold_key = "voice_embedding_threshold_speechbrain" if speaker_backend == "speechbrain" else "voice_embedding_threshold"
+    threshold_default = 0.58 if speaker_backend == "speechbrain" else 0.84
+    threshold = float(cfg["transcription"].get(threshold_key, threshold_default))
+    all_rows, clusters = assign_speaker_clusters(all_rows, threshold, cfg)
     grouped_rows: dict[str, list[dict]] = defaultdict(list)
     for row in all_rows:
         grouped_rows[row["scene_id"]].append(row)
@@ -342,7 +602,15 @@ def main() -> None:
         write_json(scene_cache_dir / f"{scene_id}.json", scene_rows)
 
     write_json(combined_dir / f"{episode_dir.name}_segments.json", all_rows)
-    write_json(scene_cache_dir / "_speaker_clusters.json", {"clusters": clusters, "threshold": threshold})
+    write_json(
+        scene_cache_dir / "_speaker_clusters.json",
+        {
+            "clusters": clusters,
+            "threshold": threshold,
+            "backend": speaker_backend,
+            "process_version": PROCESS_VERSION,
+        },
+    )
     ok(f"Segment-Transkripte gespeichert: {len(all_rows)} Segmente")
 
 

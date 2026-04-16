@@ -225,6 +225,13 @@ def main() -> None:
         required=False,
         pip_extra_args=["--no-deps"],
     )
+    speaker_embeddings_ok = install_group(
+        py,
+        "speaker_embeddings",
+        ["speechbrain"],
+        ["speechbrain"],
+        required=False,
+    )
     tts_ok = install_group(py, "render_tts", ["pyttsx3"], ["pyttsx3"])
     voice_clone_ok = install_group(
         py,
@@ -245,6 +252,7 @@ def main() -> None:
             "core_ai": core_ok,
             "scene_detection": scene_ok,
             "facenet_pytorch": facenet_ok,
+            "speaker_embeddings": speaker_embeddings_ok,
             "render_tts": tts_ok,
             "voice_cloning": voice_clone_ok,
             "updated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
