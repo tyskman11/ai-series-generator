@@ -38,6 +38,25 @@ muss diese `README.md` im gleichen Arbeitsgang mit aktualisiert werden.
 
 Wenn unklar ist, ob eine Aenderung dokumentiert werden muss, gilt: lieber README mit anpassen.
 
+Zusatzregel ab jetzt:
+
+- `README.md` muss immer auch die beiden Bereiche `Gerade in Bearbeitung` und `Geplant` aktuell halten
+- wenn sich Prioritaeten aendern, muessen diese beiden Bereiche im gleichen Arbeitsgang mitgezogen werden
+
+## Gerade in Bearbeitung
+
+- `04_diarize_and_transcribe.py`: Sprechertrennung wird von einfachen MFCC-Heuristiken auf robustere SpeechBrain-Embeddings plus strengere Cluster-Regeln umgestellt
+- `05_link_faces_and_speakers.py`: profitiert als naechster Schritt von besseren Sprecher-Clustern, damit Namen, Stimmen und Gesichter stabiler zusammenfinden
+- Lizenzfreier Standardpfad: der Default-Workflow soll ohne externe Lizenzannahmen laufen und fuer Voice-Ausgabe standardmaessig bei lokalem `pyttsx3` bleiben
+
+## Geplant
+
+- `04` nach dem aktuellen Tuning erneut ueber eine kleine Szenenmenge und danach voll laufen lassen
+- `05 --fresh` direkt nach dem verbesserten `04` neu rechnen
+- Namen, Stimmen und Gesichter fuer Hauptfiguren weiter bereinigen
+- spaeter optionalen XTTS-/Coqui-Pfad nur als ausdrueckliches Opt-in dokumentieren, nicht als Standard
+- danach weitere Qualitaetsverbesserungen fuer Render, Figurenkonsistenz und Episodengenerierung angehen
+
 ## Aktueller Stand
 
 Das Projekt kann aktuell:
@@ -53,7 +72,8 @@ Das Projekt kann aktuell:
 - neue Folgen als Text/Shotlist erzeugen
 - daraus ein Draft-Video mit Karten und TTS rendern
 - pro benannter Figur Referenzbilder und Referenzaudio fuer spaetere Clone-Schritte sammeln
-- bei verfuegbarem `TTS`-Paket automatisch XTTS-basiertes Voice Cloning versuchen
+- im Standardpfad ohne externe Lizenzannahmen mit lokalem `pyttsx3` rendern
+- optional auf ausdruecklichen Wunsch einen XTTS-/Coqui-Pfad vorbereiten
 - fuer benannte Figuren aus Face-Crops ein audio-reaktives Talking-Head-/Lip-Sync-Preview rendern
 
 Das Projekt kann aktuell noch nicht:
@@ -63,7 +83,7 @@ Das Projekt kann aktuell noch nicht:
 - perfekte stiltreue Voice-Clones fuer jede Figur ohne gutes Referenzmaterial
 - stiltreue Video-Generierung auf Produktionsniveau
 
-`10_render_episode.py` erzeugt jetzt ein erweitertes Preview-Video mit statischem Karten-Fallback, optionalem XTTS-Voice-Cloning und eingebautem audio-reaktivem Face-/Lip-Sync-Fallback, aber weiterhin keine finale KI-TV-Episode.
+`10_render_episode.py` erzeugt jetzt ein erweitertes Preview-Video mit statischem Karten-Fallback, lokalem TTS-Standard und eingebautem audio-reaktivem Face-/Lip-Sync-Fallback, aber weiterhin keine finale KI-TV-Episode. Ein optionaler XTTS-/Coqui-Weg bleibt bewusst ausgeschaltet, solange er nicht ausdruecklich angefordert und freigeschaltet wurde.
 
 ## Projektstruktur
 
@@ -126,8 +146,9 @@ Die Runtime wird durch `00_prepare_runtime.py` eingerichtet. Dabei werden je nac
 - `openai-whisper`
 - `scenedetect[opencv]`
 - `facenet-pytorch`
+- `speechbrain` (optional, aber aktuell bevorzugt fuer robustere Sprecher-Embeddings)
 - `pyttsx3`
-- `TTS` (optional fuer XTTS-Voice-Cloning)
+- `TTS` nur optional und nicht Teil des lizenzfreien Standardpfads
 
 ## Schnellstart
 
@@ -156,7 +177,8 @@ Dieser Schritt:
 Wenn GPU-Unterstuetzung verfuegbar ist und in der Config nicht deaktiviert wurde, wird sie ab diesem Schritt fuer die spaeteren Torch-/FFmpeg-Schritte vorbereitet.
 Dabei arbeitet die Pipeline im Alltag als Hybrid-Modus: CPU bleibt fuer I/O, OpenCV, Audio-Features und Fallbacks aktiv, GPU uebernimmt Torch-/Whisper-/FaceNet-Inferenz. Ohne GPU laeuft alles nur auf CPU.
 Zusatz fuer die neue Clone-Stufe: Wenn `TTS` erfolgreich installiert ist, nutzt `10` fuer XTTS automatisch bevorzugt die GPU. Ohne GPU oder ohne `TTS` faellt der Render sauber auf den bisherigen lokalen TTS-Weg zurueck.
-Wichtig fuer XTTS: Das Coqui-Modell darf hier nicht stillschweigend mit einer Lizenzbestaetigung gestartet werden. XTTS wird deshalb erst benutzt, wenn du die Lizenz selbst bestaetigt und danach `cloning.xtts_license_accepted=true` in der Config gesetzt oder beim Rendern `SERIES_ACCEPT_COQUI_LICENSE=1` gesetzt hast.
+Im lizenzfreien Standardpfad installiert `00` das optionale XTTS-/Coqui-Paket nicht automatisch. Wenn du diesen optionalen Weg spaeter trotzdem bewusst vorbereiten willst, setze vor `00` zusaetzlich `SERIES_ENABLE_OPTIONAL_TTS=1`.
+Wichtig fuer XTTS: Das Coqui-Modell darf hier nicht stillschweigend mit einer Lizenzbestaetigung gestartet werden. XTTS wird deshalb erst benutzt, wenn du die Lizenz selbst bestaetigt und danach `cloning.voice_clone_engine='xtts'` sowie `cloning.xtts_license_accepted=true` in der Config gesetzt oder beim Rendern `SERIES_ACCEPT_COQUI_LICENSE=1` gesetzt hast.
 
 Ohne `00` sollten die anderen Schritte nicht gestartet werden.
 
@@ -210,7 +232,7 @@ Dieser Schritt:
 - exportiert Audio pro Szene nach `data/raw/audio`
 - transkribiert jede Szene mit Whisper
 - schneidet daraus Segmente
-- berechnet einfache Voice-Embeddings
+- berechnet Voice-Embeddings, bevorzugt ueber `speechbrain` mit MFCC-Fallback
 - bildet Sprecher-Cluster (`speaker_001`, `speaker_002`, ...)
 
 Wichtige Ausgaben:
@@ -223,6 +245,8 @@ Wichtig:
 
 - Whisper verwendet standardmaessig `large-v3`
 - bei nutzbarer CUDA-GPU wird Whisper direkt auf GPU geladen
+- fuer Sprecher-Embeddings wird bevorzugt ebenfalls GPU genutzt, wenn `speechbrain` verfuegbar ist
+- kleine Einzelsegmente werden aggressiver als `speaker_unknown` behandelt, damit `05` spaeter nicht auf Einmal-Clustern aufbaut
 - dieser Schritt kann sehr lange dauern
 - vorhandene Cache-Dateien werden wiederverwendet, solange die interne `process_version` passt
 
@@ -372,8 +396,8 @@ Dieser Schritt:
 - kann ueber `SERIES_RENDER_EPISODE` gezielt auf eine Folge zeigen
 - erzeugt Kartenbilder, TTS-Audio und MP4-Segmente
 - sammelt fuer benannte Figuren automatisch Referenzaudio aus vorhandenen Sprechersegmenten
-- versucht bei vorhandenem `TTS`-Paket XTTS-Voice-Cloning pro Figur
-- nutzt XTTS aber nur nach expliziter Lizenzfreigabe ueber Config oder Environment-Variable
+- rendert standardmaessig mit lokalem `pyttsx3`
+- versucht XTTS-Voice-Cloning nur noch bei ausdruecklich passender Config und expliziter Lizenzfreigabe
 - erzeugt fuer benannte Figuren ein referenzbasiertes Talking-Head-/Lip-Sync-Preview aus den Face-Crops
 - faellt fuer unbekannte Figuren oder fehlende Assets auf statische Karten + Standard-TTS zurueck
 - setzt alles zu einem Draft-Video zusammen
@@ -407,8 +431,8 @@ Wichtig:
 
 - das Ergebnis ist ein Storyboard-/Preview-Render mit optionalem Voice Cloning und referenzbasiertem Talking Head
 - unbekannte oder nicht benannte Figuren bleiben bei statischen Karten
-- ohne `TTS`-Paket bleibt der Voice-Cloning-Teil automatisch im Fallback
-- ohne gesetzte XTTS-Lizenzfreigabe bleibt der Voice-Cloning-Teil ebenfalls bewusst im Fallback
+- im Standardpfad bleibt der Voice-Teil bewusst bei lokalem `pyttsx3`
+- ohne ausdruecklich aktivierten XTTS-Pfad bleibt der Voice-Cloning-Teil ebenfalls bewusst im Fallback
 - keine echte vollautomatische Video-Generierung auf Produktionsniveau
 
 ### 99 - Alles in einem Lauf

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import shutil
 import sys
@@ -209,6 +210,11 @@ def main() -> None:
     py = ensure_venv()
     info(f"Verwende Python: {py}")
     run([str(py), "-m", "pip", "install", "--upgrade", "pip", "setuptools<81", "wheel"], check=False)
+    clone_cfg = cfg.get("cloning", {}) if isinstance(cfg.get("cloning"), dict) else {}
+    requested_voice_engine = str(clone_cfg.get("voice_clone_engine", "pyttsx3") or "pyttsx3").strip().lower()
+    optional_tts_requested = requested_voice_engine in {"auto", "xtts"} or str(
+        os.environ.get("SERIES_ENABLE_OPTIONAL_TTS", "")
+    ).strip().lower() in {"1", "true", "yes", "y"}
 
     core_ok = install_group(
         py,
@@ -233,13 +239,17 @@ def main() -> None:
         required=False,
     )
     tts_ok = install_group(py, "render_tts", ["pyttsx3"], ["pyttsx3"])
-    voice_clone_ok = install_group(
-        py,
-        "voice_cloning",
-        ["pkg_resources", "TTS.api"],
-        ["setuptools<81", "TTS"],
-        required=False,
-    )
+    voice_clone_ok = False
+    if optional_tts_requested:
+        voice_clone_ok = install_group(
+            py,
+            "voice_cloning",
+            ["pkg_resources", "TTS.api"],
+            ["setuptools<81", "TTS"],
+            required=False,
+        )
+    else:
+        info("Optionales XTTS/Coqui-Paket wird im lizenzfreien Standardpfad nicht automatisch installiert.")
     torch_ok, torch_info = install_torch_stack(py, cfg)
 
     write_json(

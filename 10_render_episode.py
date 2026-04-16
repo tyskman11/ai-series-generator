@@ -72,6 +72,10 @@ def xtts_license_accepted(clone_cfg: dict) -> bool:
     return bool(clone_cfg.get("xtts_license_accepted", False))
 
 
+def requested_voice_clone_engine(clone_cfg: dict) -> str:
+    return str(clone_cfg.get("voice_clone_engine", "pyttsx3") or "pyttsx3").strip().lower()
+
+
 def find_linked_segment_files(cfg: dict) -> list[Path]:
     linked_root = resolve_project_path(cfg["paths"]["linked_segments"])
     return sorted(linked_root.glob("*_linked_segments.json"))
@@ -234,8 +238,15 @@ def synthesize_speech(
     clone_cfg: dict,
     cfg: dict,
 ) -> dict:
-    use_voice_clone = bool(clone_cfg.get("enable_voice_cloning", True)) and reference_wav is not None
+    clone_engine = requested_voice_clone_engine(clone_cfg)
+    use_voice_clone = (
+        bool(clone_cfg.get("enable_voice_cloning", True))
+        and reference_wav is not None
+        and clone_engine in {"auto", "xtts"}
+    )
     fallback_reason = ""
+    if bool(clone_cfg.get("enable_voice_cloning", True)) and reference_wav is not None and clone_engine not in {"auto", "xtts"}:
+        fallback_reason = f"voice_clone_engine_{clone_engine}"
     if use_voice_clone and xtts_available():
         if not xtts_license_accepted(clone_cfg):
             fallback_reason = "xtts_license_not_accepted"

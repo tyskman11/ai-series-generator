@@ -510,16 +510,42 @@ def assign_speaker_clusters(rows: list[dict], threshold: float, cfg: dict) -> tu
     for row in grouped_rows["low"]:
         assign_row(row, allow_new_cluster=False, threshold_value=threshold + 0.07)
 
-    cluster_payload = [
+    minimum_cluster_size = int(cfg["transcription"].get("speaker_cluster_min_segments", 2))
+    cluster_by_id = {cluster["cluster_id"]: cluster for cluster in clusters}
+    for row in ordered_rows:
+        cluster_id = row.get("speaker_cluster", "")
+        cluster = cluster_by_id.get(cluster_id)
+        if cluster is None:
+            continue
+        if cluster["count"] < minimum_cluster_size:
+            row["speaker_cluster"] = "speaker_unknown"
+
+    surviving_ids = sorted(
         {
-            "cluster_id": cluster["cluster_id"],
-            "centroid": cluster["centroid"],
-            "count": cluster["count"],
-            "scene_count": len(cluster["scene_ids"]),
-            "segments": cluster["segments"][:20],
-        }
-        for cluster in clusters
-    ]
+            row["speaker_cluster"]
+            for row in ordered_rows
+            if row.get("speaker_cluster") and row["speaker_cluster"] != "speaker_unknown"
+        },
+        key=lambda cluster_id: (-cluster_by_id[cluster_id]["count"], cluster_id),
+    )
+    cluster_id_map = {cluster_id: f"speaker_{index:03d}" for index, cluster_id in enumerate(surviving_ids, start=1)}
+    for row in ordered_rows:
+        cluster_id = row.get("speaker_cluster", "")
+        if cluster_id in cluster_id_map:
+            row["speaker_cluster"] = cluster_id_map[cluster_id]
+
+    cluster_payload = []
+    for original_id in surviving_ids:
+        cluster = cluster_by_id[original_id]
+        cluster_payload.append(
+            {
+                "cluster_id": cluster_id_map[original_id],
+                "centroid": cluster["centroid"],
+                "count": cluster["count"],
+                "scene_count": len(cluster["scene_ids"]),
+                "segments": cluster["segments"][:20],
+            }
+        )
     return ordered_rows, cluster_payload
 
 
