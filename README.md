@@ -466,12 +466,12 @@ Dieser Schritt:
 - verwendet standardmaessig das Repository `https://github.com/tyskman11/ai-series-generator`
 - verwendet fuer neue lokale Commits standardmaessig die E-Mail `baumscarry@gmail.com`
 - legt bei vorhandenem `GITHUB_TOKEN` ein fehlendes GitHub-Repo automatisch an
-- erstellt bei neuen Aenderungen einen Commit und spiegelt den lokalen Stand per Force-Push nach GitHub
+- erstellt bei neuen Aenderungen einen Commit und spiegelt den lokalen Stand ueber die GitHub-Git-API nach GitHub
 
 Wichtig:
 
 - lokal ist immer die Quelle der Wahrheit fuer diesen Helfer
-- wenn der Remote-Branch andere Historie hat, wird nichts heruntergeladen; stattdessen ueberschreibt der Force-Push den Ziel-Branch mit dem lokalen Stand
+- wenn der Remote-Branch andere Historie oder andere Dateien hat, wird nichts heruntergeladen; stattdessen schreibt die GitHub-API den Ziel-Branch auf den lokalen erlaubten Dateistand um
 
 Wichtige Umgebungsvariablen:
 
@@ -486,7 +486,7 @@ Nuetzliche Beispiele:
 
 - nur pruefen, was passieren wuerde: `python 11_sync_to_github.py --dry-run`
 - mit gespeicherten Git-Credentials spiegeln: `python 11_sync_to_github.py`
-- mit Token spiegeln: `set GITHUB_TOKEN=<token>` und danach `python 11_sync_to_github.py`
+- mit GitHub-API-Token spiegeln: `set GITHUB_TOKEN=<token>` und danach `python 11_sync_to_github.py`
 
 ## Nuetzliche Debug- und Test-Hinweise
 
