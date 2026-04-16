@@ -14,6 +14,7 @@ from pipeline_common import (
     detect_tool,
     error,
     ffmpeg_video_encode_args,
+    has_primary_person_name,
     headline,
     info,
     load_config,
@@ -52,12 +53,7 @@ def parse_speaker_line(line: str) -> tuple[str, str]:
 
 
 def useful_character_name(name: str) -> bool:
-    cleaned = (name or "").strip()
-    if not cleaned:
-        return False
-    if cleaned.lower() in {"unbekannt", "noface", "erzähler"}:
-        return False
-    return re.match(r"^(speaker|figur|face)_\d+$", cleaned.lower()) is None
+    return has_primary_person_name(name)
 
 
 def safe_filename_slug(text: str, fallback: str) -> str:
@@ -206,6 +202,59 @@ def prepare_voice_reference_wav(
     return output_wav if output_wav.exists() else None
 
 
+def estimate_voice_profile(reference_wav: Path | None, character: str, available_voice_ids: list[str], base_rate: int) -> dict:
+    profile = {
+        "character": character,
+        "reference_wav": str(reference_wav) if reference_wav else "",
+        "voice_id": available_voice_ids[0] if available_voice_ids else "",
+        "rate": base_rate,
+        "duration_seconds": round(audio_duration_seconds(reference_wav), 3) if reference_wav else 0.0,
+        "pitch_hz": 0.0,
+        "energy": 0.0,
+    }
+    if not reference_wav or not reference_wav.exists():
+        return profile
+
+    pitch_hz = 0.0
+    energy = 0.0
+    try:
+        import librosa
+        import numpy as np
+
+        samples, sample_rate = librosa.load(str(reference_wav), sr=None, mono=True)
+        if samples.size:
+            energy = float(np.sqrt(np.mean(np.square(samples))))
+            try:
+                f0 = librosa.yin(samples, fmin=70, fmax=350, sr=sample_rate)
+                voiced = f0[(f0 > 70) & (f0 < 350)]
+                if voiced.size:
+                    pitch_hz = float(np.median(voiced))
+            except Exception:
+                pitch_hz = 0.0
+    except Exception:
+        pitch_hz = 0.0
+        energy = 0.0
+
+    voice_index = abs(hash(character.lower())) % max(1, len(available_voice_ids))
+    rate_offset = 0
+    if pitch_hz:
+        if pitch_hz >= 210:
+            rate_offset += 10
+        elif pitch_hz <= 130:
+            rate_offset -= 10
+    if energy:
+        if energy >= 0.09:
+            rate_offset += 5
+        elif energy <= 0.03:
+            rate_offset -= 5
+
+    profile["voice_id"] = available_voice_ids[voice_index] if available_voice_ids else ""
+    profile["rate"] = max(140, min(220, base_rate + rate_offset))
+    profile["pitch_hz"] = round(pitch_hz, 2)
+    profile["energy"] = round(energy, 5)
+    return profile
+
+
 @lru_cache(maxsize=1)
 def xtts_available() -> bool:
     try:
@@ -306,13 +355,14 @@ def list_tts_voices() -> list[str]:
     return [getattr(voice, "id", "") for voice in ordered if getattr(voice, "id", "")]
 
 
-def assign_voices(characters: list[str], base_rate: int) -> dict[str, dict]:
+def assign_voices(characters: list[str], base_rate: int, voice_profiles: dict[str, dict] | None = None) -> dict[str, dict]:
     voice_ids = list_tts_voices() or [""]
     assignments = {}
     for index, character in enumerate(characters):
+        profile = (voice_profiles or {}).get(character, {})
         assignments[character] = {
-            "voice_id": voice_ids[index % len(voice_ids)],
-            "rate": base_rate + ((index % 3) - 1) * 10,
+            "voice_id": profile.get("voice_id", voice_ids[index % len(voice_ids)]),
+            "rate": int(profile.get("rate", base_rate + ((index % 3) - 1) * 10)),
         }
     assignments["erzähler"] = {"voice_id": voice_ids[0], "rate": base_rate}
     return assignments
@@ -945,9 +995,18 @@ def create_final_render(
     return run_ffmpeg_with_codec_fallback(command, video_codec, output_mp4)
 
 
-def update_shotlist_with_render(shotlist_path: Path, shotlist: dict, output_mp4: Path, manifest_path: Path) -> None:
-    shotlist["render_draft"] = str(output_mp4)
-    shotlist["render_manifest"] = str(manifest_path)
+def update_shotlist_with_render(
+    shotlist_path: Path,
+    shotlist: dict,
+    draft_mp4: Path,
+    final_mp4: Path,
+    draft_manifest_path: Path,
+    final_manifest_path: Path,
+) -> None:
+    shotlist["render_draft"] = str(draft_mp4)
+    shotlist["render_final"] = str(final_mp4)
+    shotlist["render_manifest"] = str(draft_manifest_path)
+    shotlist["render_manifest_final"] = str(final_manifest_path)
     write_json(shotlist_path, shotlist)
 
 
@@ -988,7 +1047,6 @@ def main() -> None:
         for character in scene.get("characters", []):
             if character not in all_characters:
                 all_characters.append(character)
-    voice_assignments = assign_voices(all_characters, base_rate)
     fonts = font_bundle()
     info(
         "Clone-Modi: "
@@ -997,13 +1055,15 @@ def main() -> None:
         f"lipsync={'an' if clone_cfg.get('enable_lipsync', True) else 'aus'}"
     )
 
-    render_root = resolve_project_path("generation/renders/drafts") / episode_id
-    cards_dir = render_root / "cards"
-    audio_dir = render_root / "audio"
-    portraits_dir = render_root / "portraits"
-    segments_dir = render_root / "segments"
+    draft_root = resolve_project_path("generation/renders/drafts") / episode_id
+    final_root = resolve_project_path("generation/renders/final") / episode_id
+    cards_dir = draft_root / "cards"
+    audio_dir = draft_root / "audio"
+    portraits_dir = draft_root / "portraits"
+    segments_dir = draft_root / "segments"
     voice_samples_dir = resolve_project_path(cfg["paths"].get("voice_samples", "characters/voice_samples"))
-    for directory in (cards_dir, audio_dir, portraits_dir, segments_dir, voice_samples_dir):
+    voice_models_dir = resolve_project_path("characters/voice_models")
+    for directory in (cards_dir, audio_dir, portraits_dir, segments_dir, voice_samples_dir, voice_models_dir, final_root):
         directory.mkdir(parents=True, exist_ok=True)
 
     prepared_voice_references: dict[str, Path | None] = {}
@@ -1030,9 +1090,35 @@ def main() -> None:
         prepared_voice_references[character] = reference_path
         return reference_path
 
+    voice_profiles_path = voice_samples_dir / "voice_profiles.json"
+    existing_voice_profiles = read_json(voice_profiles_path, {})
+    available_voice_ids = list_tts_voices() or [""]
+    voice_profiles: dict[str, dict] = {}
+    for character in all_characters:
+        reference_wav = prepared_reference_wav(character)
+        existing_profile = existing_voice_profiles.get(character, {})
+        profile = estimate_voice_profile(reference_wav, character, available_voice_ids, base_rate)
+        if existing_profile:
+            profile["voice_id"] = existing_profile.get("voice_id", profile["voice_id"])
+        voice_profiles[character] = profile
+    write_json(voice_profiles_path, voice_profiles)
+    voice_model_paths: dict[str, str] = {}
+    for character, profile in voice_profiles.items():
+        model_path = voice_models_dir / f"{safe_filename_slug(character, 'speaker')}_voice_model.json"
+        model_payload = {
+            "character": character,
+            "engine": requested_voice_clone_engine(clone_cfg),
+            "profile": profile,
+        }
+        write_json(model_path, model_payload)
+        voice_model_paths[character] = str(model_path)
+    voice_assignments = assign_voices(all_characters, base_rate, voice_profiles)
+
     manifest = {
         "episode_id": episode_id,
         "shotlist": str(shotlist_path),
+        "voice_profiles": str(voice_profiles_path),
+        "voice_models": voice_model_paths,
         "render_modes": {
             "voice_cloning": bool(clone_cfg.get("enable_voice_cloning", True)),
             "face_clone": bool(clone_cfg.get("enable_face_clone", True)),
@@ -1141,14 +1227,21 @@ def main() -> None:
     rendered_segments.append(end_segment)
     manifest["segments"].append({"type": "end", "file": str(end_segment), "duration_seconds": closing_card_seconds})
 
-    output_mp4 = render_root / f"{episode_id}_draft.mp4"
-    final_video_codec = create_final_render(ffmpeg, rendered_segments, output_mp4, video_codec)
+    final_mp4 = final_root / f"{episode_id}_final.mp4"
+    final_video_codec = create_final_render(ffmpeg, rendered_segments, final_mp4, video_codec)
+    draft_mp4 = draft_root / f"{episode_id}_draft.mp4"
+    shutil.copy2(final_mp4, draft_mp4)
 
-    manifest_path = render_root / f"{episode_id}_render_manifest.json"
+    draft_manifest_path = draft_root / f"{episode_id}_render_manifest.json"
+    final_manifest_path = final_root / f"{episode_id}_render_manifest.json"
     manifest["final_video_codec"] = final_video_codec
-    write_json(manifest_path, manifest)
-    update_shotlist_with_render(shotlist_path, shotlist, output_mp4, manifest_path)
-    ok(f"Draft-Render erstellt: {output_mp4}")
+    manifest["draft_render"] = str(draft_mp4)
+    manifest["final_render"] = str(final_mp4)
+    write_json(draft_manifest_path, manifest)
+    write_json(final_manifest_path, manifest)
+    update_shotlist_with_render(shotlist_path, shotlist, draft_mp4, final_mp4, draft_manifest_path, final_manifest_path)
+    ok(f"Final-Render erstellt: {final_mp4}")
+    ok(f"Draft-Render erstellt: {draft_mp4}")
 
 
 if __name__ == "__main__":

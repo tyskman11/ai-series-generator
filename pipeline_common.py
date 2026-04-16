@@ -276,6 +276,32 @@ GERMAN_STOPWORDS = {
     "zur",
 }
 
+PLACEHOLDER_PERSON_NAME_PATTERN = re.compile(r"^(speaker|stimme|figur|face|rolle)_[0-9a-z]+$", re.IGNORECASE)
+NON_MANUAL_PERSON_NAMES = {
+    "",
+    "unbekannt",
+    "unknown",
+    "speaker_unknown",
+    "noface",
+    "no face",
+    "ignore",
+    "ignored",
+    "erzähler",
+    "erzaehler",
+}
+BACKGROUND_PERSON_NAMES = {
+    "statist",
+    "statisten",
+    "extra",
+    "extras",
+    "nebenfigur",
+    "nebenfiguren",
+    "hintergrundfigur",
+    "hintergrundfiguren",
+    "background",
+    "crowd",
+}
+
 KEYWORD_BLACKLIST = {
     "also",
     "bitte",
@@ -709,6 +735,45 @@ def is_interactive_session() -> bool:
 
 def tokens_from_text(text: str) -> list[str]:
     return re.findall(r"[A-Za-zÄÖÜäöüß][A-Za-zÄÖÜäöüß\-']+", text)
+
+
+def is_placeholder_person_name(name: str) -> bool:
+    cleaned = coalesce_text(name)
+    if not cleaned:
+        return True
+    lowered = cleaned.lower()
+    if lowered in NON_MANUAL_PERSON_NAMES:
+        return True
+    return bool(PLACEHOLDER_PERSON_NAME_PATTERN.match(lowered))
+
+
+def has_manual_person_name(name: str) -> bool:
+    return not is_placeholder_person_name(name)
+
+
+def is_background_person_name(name: str) -> bool:
+    cleaned = coalesce_text(name)
+    if not cleaned:
+        return False
+    return cleaned.lower() in BACKGROUND_PERSON_NAMES
+
+
+def has_primary_person_name(name: str) -> bool:
+    return has_manual_person_name(name) and not is_background_person_name(name)
+
+
+def canonical_person_name(name: str) -> str:
+    cleaned = coalesce_text(name)
+    if not cleaned:
+        return ""
+    if is_background_person_name(cleaned):
+        return "statist"
+    return cleaned
+
+
+def display_person_name(name: str, fallback: str) -> str:
+    canonical = canonical_person_name(name)
+    return canonical if has_manual_person_name(canonical) else fallback
 
 
 def keyword_token_allowed(token: str) -> bool:

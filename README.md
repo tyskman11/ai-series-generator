@@ -70,20 +70,23 @@ Zusatzregel ab jetzt:
 
 ## Gerade in Bearbeitung
 
-- `05_link_faces_and_speakers.py`: wiederkehrende Figuren werden nach dem Voll-Lauf von Einmal-Gesichtern getrennt, damit `character_map` und Review nicht mit Hintergrundgesichtern ueberlaufen
-- `08_review_unknowns.py`: die interaktive Benennung priorisiert zuerst die haeufigsten wiederkehrenden Face-Cluster, damit Hauptfiguren schneller sauber benannt werden koennen
-- das Zusammenspiel aus `04`-Sprecher-Clustern und `05`-Figurenfilter wird auf kompletten Folgen validiert
-- der lizenzfreie Standardpfad wird weiter abgesichert: Default bleibt lokales `pyttsx3`, optionale XTTS-/Coqui-Wege nur als ausdrueckliches Opt-in
-- der GitHub-Sync wurde auf reine Upload-/Spiegel-Logik per API festgezogen und wird jetzt im Alltag mit dem Projektstand mitgefuehrt
+- `08_review_unknowns.py`: Hauptfiguren muessen weiterhin manuell benannt werden; die Review bleibt deshalb der naechste wichtigste Arbeitsschritt im Alltag
+- das Zusammenspiel aus `04`-Sprecher-Clustern und `05`-Figurenfilter wird weiter auf kompletten Folgen beobachtet, besonders bei Nebenfiguren und `speaker_unknown`
+- der lizenzfreie Standardpfad bleibt Standard: lokales `pyttsx3` statt lizenzpflichtiger Voice-Wege
+- die automatischen Platzhalternamen werden jetzt selbstheilend gehalten: unbenannte Figuren bleiben `face_###`, unbenannte Stimmen bleiben `speaker_###`, und manuell gesetztes `statist` bleibt bewusst eine Nebenfigur
+- der aktuelle End-to-End-Stand wird ueber Tests und Smoke-Runs mitgefuehrt, damit Aenderungen nicht nur im Code, sondern auch im Ablauf verifiziert bleiben
+- neue Folgen koennen jetzt gesammelt in einem Lauf als direkt sichtbare Draft-Episoden erzeugt werden
+- benannte Figuren koennen jetzt direkt als Hauptfigur priorisiert werden, damit `07` sie bevorzugt als Fokusrollen verwendet
+- `10_render_episode.py` schreibt jetzt pro benannter Figur auch ein lokales `voice_model`-JSON und legt das Render-Manifest sowohl im Draft- als auch im Final-Ordner ab
 
 ## Geplant
 
 - Hauptfiguren in `08_review_unknowns.py` anhand der neuen Priorisierung sauber benennen
-- danach `06` bis `10` mit den bereinigten Namen und Maps erneut durchlaufen lassen
+- Nebenfiguren in `08_review_unknowns.py` gezielt als `statist` markieren, damit sie spaeter auftauchen duerfen, aber nicht zu Hauptfiguren werden
+- danach `06` bis `10` mit den echten Namen und gesetzten Prioritaeten erneut durchlaufen lassen, damit Serienmodell, Folgen und Render echte Figurennamen statt generischer Platzhalter nutzen
 - verbleibende `speaker_unknown`-Faelle in `04` weiter reduzieren
 - die Review-Queue noch staerker auf wiederkehrende statt einmalige Faelle fokussieren
-- den optionalen XTTS-/Coqui-Pfad weiter als klares Opt-in dokumentieren, nicht als Standard
-- danach weitere Qualitaetsverbesserungen fuer Render, Figurenkonsistenz und Episodengenerierung angehen
+- spaeter gezielte Qualitaetsverbesserungen fuer Render, Figurenkonsistenz und Episodengenerierung angehen
 
 ## Aktueller Gesamtstand
 
@@ -115,7 +118,10 @@ Das Projekt kann aktuell:
 - ein lokales Serienmodell aus den Datensaetzen ableiten
 - neue Folgen als Text/Shotlist erzeugen
 - daraus ein Draft-Video mit Karten und TTS rendern
+- daraus auch ein `final`-MP4 im Final-Ordner schreiben
 - pro benannter Figur Referenzbilder und Referenzaudio fuer spaetere Clone-Schritte sammeln
+- pro benannter Figur ein lokales Stimmprofil aus Referenzaudio ableiten
+- pro benannter Figur ein lokales `voice_model`-JSON mit Referenzpfad, Rate und Stimmmerkmalen schreiben
 - im Standardpfad ohne externe Lizenzannahmen mit lokalem `pyttsx3` rendern
 - optional auf ausdruecklichen Wunsch einen XTTS-/Coqui-Pfad vorbereiten
 - fuer benannte Figuren aus Face-Crops ein audio-reaktives Talking-Head-/Lip-Sync-Preview rendern
@@ -127,7 +133,7 @@ Das Projekt kann aktuell noch nicht:
 - perfekte stiltreue Voice-Clones fuer jede Figur ohne gutes Referenzmaterial
 - stiltreue Video-Generierung auf Produktionsniveau
 
-`10_render_episode.py` erzeugt jetzt ein erweitertes Preview-Video mit statischem Karten-Fallback, lokalem TTS-Standard und eingebautem audio-reaktivem Face-/Lip-Sync-Fallback, aber weiterhin keine finale KI-TV-Episode. Ein optionaler XTTS-/Coqui-Weg bleibt bewusst ausgeschaltet, solange er nicht ausdruecklich angefordert und freigeschaltet wurde.
+`10_render_episode.py` erzeugt jetzt ein erweitertes Preview-Video mit statischem Karten-Fallback, lokalem TTS-Standard und eingebautem audio-reaktivem Face-/Lip-Sync-Fallback und schreibt zusaetzlich einen `final`-Export. Ein optionaler XTTS-/Coqui-Weg bleibt bewusst ausgeschaltet, solange er nicht ausdruecklich angefordert und freigeschaltet wurde.
 
 ## Projektstruktur
 
@@ -144,6 +150,8 @@ Wichtige Root-Dateien:
 - `08_review_unknowns.py`: offene Zuordnungen anzeigen
 - `09_build_series_bible.py`: Serienbibel aktualisieren
 - `10_render_episode.py`: Storyboard-/TTS-Draft rendern
+- `10_render_episode.py`: zusaetzlich Final-Export und lokale Stimmprofile schreiben
+- `12_generate_preview_episodes.py`: mehrere neue sichtbare Preview-Episoden am Stueck erzeugen
 - `99_process_next_episode.py`: komplette Pipeline ausfuehren
 - `pipeline_common.py`: gemeinsame Helfer fuer Pfade, Config, Runtime und Registry
 
@@ -307,14 +315,18 @@ Dieser Schritt:
 - filtert nach dem Voll-Lauf automatisch Einmal-Gesichter mit zu wenig Szenen/Treffern aus der `character_map`
 - ordnet sichtbare Face-Cluster zeitbasiert pro Dialogsegment zu
 - verknuepft diese segmentnahen Face-Cluster mit Sprecher-Clustern
-- uebernimmt manuell vergebene Figurennamen aus `character_map.json`
+- uebernimmt ausschliesslich manuell vergebene Figurennamen aus `character_map.json`
 - ignoriert Cluster mit dem Namen `noface` kuenftig automatisch
+- behandelt `statist` als bewusst gesetzte Nebenfigur: sichtbar, aber nicht als Hauptrolle
 - baut `character_map.json`, `voice_map.json`, `linked_segments.json` und `review_queue.json`
 
 Wichtige technische Details:
 
 - wenn eine CUDA-GPU nutzbar ist, laufen MTCNN und Face-Embeddings auf GPU
 - wenn MTCNN in einzelnen Frames keine Box liefert, faellt `05` auf OpenCV-Haar-Cascades zurueck
+- alte Platzhalterdaten werden beim Laden automatisch normalisiert, damit fruehere `figur_###`-/`stimme_###`-Artefakte nicht weitergeschleppt werden
+- unbenannte Figuren bleiben technisch `face_###`; unbenannte Sprecher bleiben technisch `speaker_###`
+- `statist` wird intern vereinheitlicht und ohne Alias gespeichert, damit mehrere Extras nicht als eine eindeutige Hauptfigur verwechselt werden
 - `sample_every_n_frames`, `max_faces_per_frame`, `max_scene_clusters`, `max_visible_faces_per_segment`, `segment_visibility_padding_seconds`, `min_face_size`, `face_cluster_min_scenes`, `face_cluster_min_detections`, `embedding_threshold`, `scene_embedding_threshold` und `detection_confidence_threshold` kommen aus der Projekt-Config
 
 Wichtige Ausgaben:
@@ -376,6 +388,10 @@ Wichtig:
 
 - das "Training" ist aktuell ein lokales heuristisches Modell aus Statistiken, Sprecherbeispielen, Keywords und einer Markov-Chain
 - dies ist kein grosses neuronales Generationsmodell
+- solange noch keine Figuren manuell benannt wurden, verwendet `07` bewusst generische Platzhalter wie `Hauptfigur A` und `Hauptfigur B` statt technische Namen wie `face_001` oder `speaker_001`
+- Figuren mit dem Namen `statist` koennen spaeter in Szenen als Nebenfigur auftauchen, werden aber nicht als Hauptfigur ausgewaehlt
+- neue Folgen variieren jetzt pro Episoden-Index sichtbar, statt bei jedem Lauf dieselbe Struktur zu wiederholen
+- priorisierte benannte Figuren werden in `07` bevorzugt als Hauptfiguren ausgewaehlt
 
 ### 08 - Face-Cluster benennen und Review pruefen
 
@@ -394,8 +410,12 @@ Wichtige Beispiele:
 - `python 08_review_unknowns.py --list-faces`
 - `python 08_review_unknowns.py`
 - `python 08_review_unknowns.py --assign-face face_001 --name "Babe Carano"`
+- `python 08_review_unknowns.py --assign-face face_022 --name "Babe Carano" --priority`
+- `python 08_review_unknowns.py --set-priority "Babe Carano"`
+- `python 08_review_unknowns.py --clear-priority "Babe Carano"`
 - `python 08_review_unknowns.py --assign-face face_014 --name "Mr. Sammich"`
 - `python 08_review_unknowns.py --assign-face face_023 --name "Teague/Busboy"`
+- `python 08_review_unknowns.py --assign-face face_055 --name "statist"`
 - `python 08_review_unknowns.py --rename-face face_023 --rename-to "Teague"`
 - `python 08_review_unknowns.py --rename-face "Mr. Sammich" --rename-to "Mr. Sammich Sr."`
 - `python 08_review_unknowns.py --assign-face face_041 --ignore`
@@ -407,13 +427,22 @@ Bedeutung:
 - beim einfachen Start werden alle automatisch benannten Face-Cluster nacheinander gezeigt
 - die Review startet jetzt mit den haeufigsten wiederkehrenden Face-Clustern zuerst
 - `--list-faces` zeigt standardmaessig nur bereits benannte Figuren
-- pro Cluster wird eine Montage mit Szene links und Ausschnitt rechts erzeugt und einzeln in einer blockierenden Vorschau gezeigt
+- `08` normalisiert beim Start alte Platzhalterdaten automatisch zurueck auf `face_###` und `speaker_###`, statt fruehere Auto-Namen weiterzutragen
+- pro Cluster wird eine Montage mit Szene links und Ausschnitt rechts erzeugt und in einer Vorschau mit direkter Eingabe gezeigt
 - pro Cluster werden auch `Szenen` und `Treffer` angezeigt, damit Hauptfiguren schneller erkennbar sind
 - der naechste Face-Cluster wird erst nach einer echten Benennung oder `noface` geoeffnet
-- waehrend der Review werden Beispielnamen wie `Babe Carano`, `Mr. Sammich`, `Teague/Busboy` und `noface` direkt eingeblendet
+- waehrend der Review werden Beispielnamen wie `Babe Carano`, `Mr. Sammich`, `Teague/Busboy`, `noface = ignorieren` und `statist = statist` direkt eingeblendet
+- Namen koennen jetzt direkt im Vorschaufenster eingegeben und mit Enter uebernommen werden
+- im Vorschaufenster gibt es zusaetzlich eine direkte Hauptfiguren-Checkbox
+- unter Windows kann derselbe Name alternativ auch direkt im Terminal eingegeben werden, waehrend die Vorschau offen ist; nach Enter schliesst die Vorschau automatisch und die naechste Figur folgt
+- im Terminal kann `!Name` direkt als priorisierte Hauptfigur gespeichert werden
+- wenn das Vorschaufenster nur geschlossen wird, faellt `08` automatisch auf die normale Terminal-Eingabe fuer denselben Cluster zurueck
 - `--assign-face ... --name ...` speichert einen dauerhaften Figurennamen in `character_map.json`
+- `--priority` markiert die Figur als bevorzugte Hauptfigur fuer `07`
+- `--set-priority ...` und `--clear-priority ...` aendern die Hauptfiguren-Priorisierung spaeter auch ohne Umbenennung
 - `--rename-face ... --rename-to ...` benennt einen vorhandenen Charakter per Face-ID oder aktuellem Namen um
 - `--assign-face ... --ignore` setzt den Namen intern auf `noface`
+- `--assign-face ... --name "statist"` speichert bewusst eine Nebenfigur, die spaeter sichtbar sein darf, aber nicht als Hauptrolle zaehlt
 - `--review-faces` geht interaktiv durch automatisch benannte Cluster
 - `--show-queue` zeigt nur die offene Sprecher-/Segment-Review an
 - nach einer Namensvergabe werden `voice_map.json`, alle vorhandenen `linked_segments.json` und die `review_queue.json` direkt aktualisiert
@@ -448,10 +477,13 @@ Dieser Schritt:
 - erzeugt fuer benannte Figuren ein referenzbasiertes Talking-Head-/Lip-Sync-Preview aus den Face-Crops
 - faellt fuer unbekannte Figuren oder fehlende Assets auf statische Karten + Standard-TTS zurueck
 - setzt alles zu einem Draft-Video zusammen
-- schreibt ausserdem ein Render-Manifest
+- schreibt zusaetzlich ein `final`-MP4 nach `generation/renders/final/<folge>`
+- schreibt ausserdem ein Render-Manifest in Draft und Final
+- schreibt pro benannter Figur ein lokales `voice_model`-JSON unter `characters/voice_models`
 
 Wenn der installierte FFmpeg-Encoder es unterstuetzt und GPU-Nutzung aktiviert ist, wird fuer das Rendern automatisch NVENC verwendet. Sonst faellt `10` auf CPU-Encoding zurueck.
 Wenn XTTS lokal verfuegbar ist, wird fuer das Voice Cloning ebenfalls das bevorzugte Torch-Geraet verwendet. Die eingebaute Lip-Sync-Variante ist ein audio-reaktiver Preview-Modus auf Basis der erkannten Face-Crops und kein externes Wav2Lip-/SadTalker-Setup.
+Ohne lizenzpflichtiges Clone-Modell bleibt die Stimme trotzdem ein lokaler TTS-Fallback; zusaetzlich werden jetzt aber pro benannter Figur Referenz-WAVs und ein lokales Stimmprofil unter `characters/voice_samples` aufgebaut.
 
 Beispiel fuer gezielten Render in PowerShell:
 
@@ -460,6 +492,29 @@ $env:SERIES_RENDER_EPISODE='folge_02'
 python 10_render_episode.py
 Remove-Item Env:SERIES_RENDER_EPISODE
 ```
+
+### 12 - Mehrere sichtbare Folgen erzeugen
+
+`python 12_generate_preview_episodes.py`
+
+Dieser Schritt:
+
+- erzeugt mehrere neue Folgen hintereinander
+- rendert jede neue Folge direkt als Draft-MP4
+- rendert jede neue Folge direkt auch als Final-MP4
+- aktualisiert danach die Serienbibel
+
+Beispiele:
+
+- `python 12_generate_preview_episodes.py`
+- `python 12_generate_preview_episodes.py --count 3`
+
+Wichtig:
+
+- Standard sind `2` neue sichtbare Folgen pro Lauf
+- gerendert wird jeweils direkt die gerade neu erzeugte Folge
+- die Draft-Videos landen wie gewohnt unter `generation/renders/drafts/folge_XX`
+- die Final-Videos liegen unter `generation/renders/final/folge_XX`
 
 Beispiel fuer XTTS nach eigener Lizenzbestaetigung:
 
@@ -472,7 +527,10 @@ Remove-Item Env:SERIES_ACCEPT_COQUI_LICENSE
 Wichtige Ausgaben:
 
 - `generation/renders/drafts/<folge>/<folge>_draft.mp4`
+- `generation/renders/final/<folge>/<folge>_final.mp4`
 - `generation/renders/drafts/<folge>/<folge>_render_manifest.json`
+- `generation/renders/final/<folge>/<folge>_render_manifest.json`
+- `characters/voice_models/<figur>_voice_model.json`
 
 Wichtig:
 
@@ -551,6 +609,35 @@ Remove-Item Env:SERIES_MAX_SCENES
 
 Das ist hilfreich fuer kurze Testlaeufe.
 
+### Tests und Smoke-Runs
+
+Fuer den aktuellen Stand gibt es zusaetzlich einen kleinen automatisierten Testblock:
+
+```powershell
+python -m unittest discover -s tests -v
+```
+
+Aktuell geprueft sind unter anderem:
+
+- Platzhaltererkennung fuer manuelle gegen technische Namen
+- Stimmenzuordnung mit und ohne manuell benannten Face-Cluster
+- Normalisierung alter `figur_###`-/`stimme_###`-Artefakte
+- generische Episoden-Fallbacks, solange noch keine Figuren benannt wurden
+- `statist` als Nebenfiguren-Status ohne Hauptrollen-Promotion
+- unterschiedliche Episoden-Ausgabe fuer unterschiedliche Folgen-Indizes
+- Hauptfiguren-Priorisierung bei der Benennung
+- nachtraegliches Priorisieren und Entpriorisieren benannter Figuren
+
+Empfohlener Smoke-Run nach groesseren Aenderungen:
+
+```powershell
+python 05_link_faces_and_speakers.py
+python 06_build_dataset.py
+python 07_generate_episode.py
+python 09_build_series_bible.py
+python 10_render_episode.py
+```
+
 ### Wiederholung von Schritt 05
 
 Wenn `05` einfach noch einmal laufen soll:
@@ -582,8 +669,10 @@ python 05_link_faces_and_speakers.py --fresh --episode "Game.Shakers.S01E01.GERM
 - `character_map.json` und `voice_map.json` sind global und noch nicht pro Folge getrennt.
 - Die Sprecherzuordnung ist heuristisch, nicht diarization-grade production quality.
 - Auch nach dem neuen Filter koennen in `05` noch Nebenfiguren oder Hintergrundgesichter als eigene Cluster auftauchen.
+- Solange Hauptfiguren noch nicht manuell benannt wurden, erzeugt `07` generische Hauptrollen (`Hauptfigur A/B`) statt echte Rollennamen.
 - Das Trainingsmodell in `07` ist regel-/datengetrieben und nicht mit einem grossen multimodalen KI-Modell vergleichbar.
 - `10` rendert ein Preview-Draft, keine finale Episode.
+- das `final`-MP4 nutzt aktuell denselben lokalen Render-Inhalt wie der Draft; es ist ein sauber abgelegter Final-Export, aber noch keine qualitativ andere Filmfassung.
 - Das eingebaute Lip-Sync in `10` ist ein lokaler audio-reaktiver Preview-Modus, nicht dieselbe Qualitaet wie spezialisierte Deepfake-/Lip-Sync-Modelle.
 - XTTS-Voice-Cloning funktioniert nur fuer Figuren mit brauchbarem Referenzaudio und installiertem `TTS`-Paket.
 - XTTS braucht zusaetzlich eine von dir explizit bestaetigte Coqui-Lizenzfreigabe; ohne diese rendert `10` absichtlich weiter mit Fallback-TTS.
@@ -617,4 +706,10 @@ Wenn nur neue Episoden auf Basis des vorhandenen Datensatzes erzeugt werden soll
 ```powershell
 python 07_generate_episode.py
 python 10_render_episode.py
+```
+
+Wenn direkt mehrere neue sichtbare Folgen erzeugt werden sollen:
+
+```powershell
+python 12_generate_preview_episodes.py --count 2
 ```

@@ -13,12 +13,16 @@ import numpy as np
 
 from pipeline_common import (
     PROJECT_ROOT,
+    canonical_person_name,
     coalesce_text,
     cosine_similarity,
+    display_person_name,
     error,
     first_dir,
+    has_manual_person_name,
     headline,
     info,
+    is_background_person_name,
     is_interactive_session,
     limited_items,
     load_config,
@@ -150,12 +154,7 @@ def next_cluster_id(prefix: str, existing: dict[str, dict]) -> str:
 
 
 def looks_auto_named(name: str) -> bool:
-    return (
-        not name
-        or name == "unbekannt"
-        or name.startswith("figur_")
-        or name.startswith("stimme_")
-    )
+    return not has_manual_person_name(name)
 
 
 def normalize_alias_name(name: str) -> str:
@@ -185,26 +184,122 @@ def assign_character_name(
     assigned_name: str,
     *,
     auto_named: bool | None = None,
+    priority: bool | None = None,
 ) -> dict:
     payload = char_map.setdefault("clusters", {}).setdefault(cluster_id, {})
     remove_cluster_aliases(char_map, cluster_id)
 
-    final_name = (assigned_name or cluster_id).strip() or cluster_id
+    final_name = canonical_person_name((assigned_name or cluster_id).strip() or cluster_id) or cluster_id
     ignored = is_ignored_face_name(final_name)
     if ignored:
         final_name = "noface"
+    background_role = is_background_person_name(final_name)
+    effective_priority = False if ignored or background_role else bool(priority) if priority is not None else bool(payload.get("priority", False))
 
     payload["name"] = final_name
     payload["ignored"] = ignored
+    payload["background_role"] = background_role
+    payload["priority"] = effective_priority
     payload["auto_named"] = looks_auto_named(final_name) if auto_named is None else bool(auto_named)
 
     normalized_alias = normalize_alias_name(final_name)
-    if ignored or not normalized_alias:
+    if ignored or background_role or not normalized_alias:
         payload["aliases"] = []
     else:
         payload["aliases"] = [normalized_alias]
         char_map.setdefault("aliases", {})[normalized_alias] = cluster_id
     return payload
+
+
+def face_display_name(payload: dict | None, cluster_id: str) -> str:
+    if payload is None:
+        return cluster_id
+    return display_person_name(str(payload.get("name", "")), cluster_id)
+
+
+def normalize_loaded_maps(char_map: dict, voice_map: dict) -> tuple[int, int]:
+    changed_faces = 0
+    changed_voices = 0
+
+    char_map["aliases"] = {}
+    for cluster_id, payload in char_map.get("clusters", {}).items():
+        if is_ignored_face_payload(payload):
+            if payload.get("name") != "noface":
+                payload["name"] = "noface"
+                changed_faces += 1
+            if not payload.get("ignored"):
+                payload["ignored"] = True
+                changed_faces += 1
+            if payload.get("background_role"):
+                payload["background_role"] = False
+                changed_faces += 1
+            if payload.get("priority"):
+                payload["priority"] = False
+                changed_faces += 1
+            if payload.get("auto_named", False):
+                payload["auto_named"] = False
+                changed_faces += 1
+            if payload.get("aliases"):
+                payload["aliases"] = []
+                changed_faces += 1
+            continue
+
+        normalized_name = display_person_name(str(payload.get("name", "")), cluster_id)
+        background_role = is_background_person_name(normalized_name)
+        if payload.get("name") != normalized_name:
+            payload["name"] = normalized_name
+            changed_faces += 1
+        if payload.get("ignored"):
+            payload["ignored"] = False
+            changed_faces += 1
+        if bool(payload.get("background_role")) != background_role:
+            payload["background_role"] = background_role
+            changed_faces += 1
+        effective_priority = False if background_role else bool(payload.get("priority", False))
+        if bool(payload.get("priority", False)) != effective_priority:
+            payload["priority"] = effective_priority
+            changed_faces += 1
+
+        if has_manual_person_name(normalized_name):
+            if payload.get("auto_named", True):
+                payload["auto_named"] = False
+                changed_faces += 1
+            normalized_alias = normalize_alias_name(normalized_name)
+            aliases = [normalized_alias] if normalized_alias and not background_role else []
+            if payload.get("aliases") != aliases:
+                payload["aliases"] = aliases
+                changed_faces += 1
+            if normalized_alias and not background_role:
+                char_map["aliases"][normalized_alias] = cluster_id
+        else:
+            if not payload.get("auto_named", False):
+                payload["auto_named"] = True
+                changed_faces += 1
+            if payload.get("background_role"):
+                payload["background_role"] = False
+                changed_faces += 1
+            if payload.get("priority"):
+                payload["priority"] = False
+                changed_faces += 1
+            if payload.get("aliases"):
+                payload["aliases"] = []
+                changed_faces += 1
+
+    voice_map["aliases"] = {}
+    for speaker_cluster, payload in voice_map.get("clusters", {}).items():
+        linked_face = payload.get("linked_face_cluster")
+        linked_face_payload = char_map.get("clusters", {}).get(linked_face, {})
+        normalized_name = display_person_name(str(payload.get("name", "")), speaker_cluster)
+        if linked_face and not is_ignored_face_payload(linked_face_payload):
+            normalized_name = display_person_name(str(linked_face_payload.get("name", "")), speaker_cluster)
+        if payload.get("name") != normalized_name:
+            payload["name"] = normalized_name
+            changed_voices += 1
+        if payload.get("auto_named") is not True:
+            payload["auto_named"] = True
+            changed_voices += 1
+
+    return changed_faces, changed_voices
 
 
 def normalize_embedding(vector: list[float]) -> list[float]:
@@ -390,7 +485,7 @@ def register_new_face(
     interactive: bool,
     auto_open: bool,
 ) -> str:
-    default_name = f"figur_{cluster_id.split('_')[1]}"
+    default_name = cluster_id
     assigned_name = default_name
     if interactive:
         user_name = ask_name("Figur", cluster_id, preview_files, auto_open)
@@ -714,14 +809,12 @@ def resolve_voice_names(voice_map: dict, speaker_votes: dict[str, dict[str, floa
             if is_ignored_face_payload(face_payload):
                 linked_face = None
             else:
-                face_name = face_payload.get("name", linked_face)
                 payload["linked_face_cluster"] = linked_face
-                payload["name"] = face_name
+                payload["name"] = display_person_name(str(face_payload.get("name", "")), speaker_cluster)
                 payload["auto_named"] = True
         if linked_face is None:
             payload.pop("linked_face_cluster", None)
-            number = speaker_cluster.split("_")[1] if "_" in speaker_cluster else speaker_cluster
-            payload["name"] = f"stimme_{number}"
+            payload["name"] = speaker_cluster
             payload["auto_named"] = True
 
 
@@ -762,6 +855,12 @@ def main() -> None:
     char_map.setdefault("aliases", {})
     voice_map.setdefault("clusters", {})
     voice_map.setdefault("aliases", {})
+    normalized_faces, normalized_voices = normalize_loaded_maps(char_map, voice_map)
+    if normalized_faces or normalized_voices:
+        info(
+            f"Bestehende Maps normalisiert: {normalized_faces} Face-Eintraege, "
+            f"{normalized_voices} Sprecher-Eintraege."
+        )
     interactive = bool(cfg["character_detection"].get("interactive_assignment", False)) and is_interactive_session()
     auto_open = bool(cfg.get("preview_open_automatically", False))
     sample_every = int(cfg["character_detection"].get("sample_every_n_frames", 8))
@@ -828,11 +927,11 @@ def main() -> None:
             max_visible_faces_per_segment,
         )
         visible_names = [
-            char_map["clusters"].get(face_cluster, {}).get("name", face_cluster)
+            face_display_name(char_map["clusters"].get(face_cluster, {}), face_cluster)
             for face_cluster in visible_faces
         ]
         voice_payload = voice_map.get("clusters", {}).get(row["speaker_cluster"], {})
-        speaker_name = voice_payload.get("name", row["speaker_cluster"])
+        speaker_name = display_person_name(voice_payload.get("name", ""), row["speaker_cluster"])
         linked_face = voice_payload.get("linked_face_cluster")
         segment_linked_face = linked_face if linked_face in visible_faces else None
         needs_preview = looks_auto_named(speaker_name)

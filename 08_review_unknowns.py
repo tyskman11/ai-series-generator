@@ -5,9 +5,14 @@ import argparse
 from pathlib import Path
 
 from pipeline_common import (
+    canonical_person_name,
+    current_os,
+    display_person_name,
     error,
+    has_manual_person_name,
     headline,
     info,
+    is_background_person_name,
     is_interactive_session,
     load_config,
     ok,
@@ -26,14 +31,17 @@ IGNORED_FACE_NAMES = {
     "false positive",
     "kein gesicht",
 }
-EXAMPLE_FACE_NAMES = [
+EXAMPLE_FACE_HINTS = [
     "Babe Carano",
     "Mr. Sammich",
     "Teague/Busboy",
     "Hudson",
     "Triple G",
-    "noface",
+    "noface = ignorieren",
+    "statist = statist",
 ]
+REVIEW_SKIP_TOKEN = "__skip__"
+REVIEW_QUIT_TOKEN = "__quit__"
 
 
 def parse_args() -> argparse.Namespace:
@@ -42,6 +50,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--show-queue", action="store_true", help="Zeigt die offene review_queue.json statt der Face-Review.")
     parser.add_argument("--assign-face", help="Face-Cluster-ID wie face_001.")
     parser.add_argument("--name", help="Name fuer --assign-face, z. B. 'Babe Carano'.")
+    parser.add_argument("--priority", action="store_true", help="Markiert --assign-face oder --rename-face als priorisierte Hauptfigur.")
+    parser.add_argument("--set-priority", help="Setzt fuer einen bereits benannten Face-Cluster per ID oder Name die Hauptfiguren-Prioritaet.")
+    parser.add_argument("--clear-priority", help="Entfernt fuer einen bereits benannten Face-Cluster per ID oder Name die Hauptfiguren-Prioritaet.")
     parser.add_argument("--rename-face", help="Bereits benannten Face-Cluster per ID oder aktuellem Namen umbenennen.")
     parser.add_argument("--rename-to", help="Neuer Name fuer --rename-face.")
     parser.add_argument("--ignore", action="store_true", help="Setzt --assign-face auf 'noface' und ignoriert das Cluster kuenftig.")
@@ -61,12 +72,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def looks_auto_named(name: str) -> bool:
-    return (
-        not name
-        or name == "unbekannt"
-        or name.startswith("figur_")
-        or name.startswith("stimme_")
-    )
+    return not has_manual_person_name(name)
 
 
 def normalize_alias_name(name: str) -> str:
@@ -117,26 +123,36 @@ def resolve_face_reference(char_map: dict, reference: str) -> str:
     return matches[0]
 
 
-def assign_character_name(char_map: dict, cluster_id: str, assigned_name: str) -> dict:
+def assign_character_name(char_map: dict, cluster_id: str, assigned_name: str, priority: bool | None = None) -> dict:
     payload = char_map.setdefault("clusters", {}).setdefault(cluster_id, {})
     remove_cluster_aliases(char_map, cluster_id)
 
-    final_name = (assigned_name or cluster_id).strip() or cluster_id
+    final_name = canonical_person_name((assigned_name or cluster_id).strip() or cluster_id) or cluster_id
     ignored = is_ignored_face_name(final_name)
     if ignored:
         final_name = "noface"
+    background_role = is_background_person_name(final_name)
+    effective_priority = False if ignored or background_role else bool(priority) if priority is not None else bool(payload.get("priority", False))
 
     payload["name"] = final_name
     payload["ignored"] = ignored
+    payload["background_role"] = background_role
+    payload["priority"] = effective_priority
     payload["auto_named"] = False
 
     normalized_alias = normalize_alias_name(final_name)
-    if ignored or not normalized_alias:
+    if ignored or background_role or not normalized_alias:
         payload["aliases"] = []
     else:
         payload["aliases"] = [normalized_alias]
         char_map.setdefault("aliases", {})[normalized_alias] = cluster_id
     return payload
+
+
+def face_display_name(payload: dict | None, cluster_id: str) -> str:
+    if payload is None:
+        return cluster_id
+    return display_person_name(str(payload.get("name", "")), cluster_id)
 
 
 def preview_files(payload: dict) -> list[Path]:
@@ -249,43 +265,168 @@ def create_face_review_sheet(cluster_id: str, payload: dict) -> Path | None:
     return output_path
 
 
-def show_preview_window(image_path: Path, title: str) -> bool:
-    if not image_path.exists():
+def poll_terminal_line(buffer: list[str]) -> str | None:
+    if current_os() != "windows":
+        return None
+    try:
+        import msvcrt
+    except Exception:
+        return None
+
+    while msvcrt.kbhit():
+        char = msvcrt.getwch()
+        if char in ("\r", "\n"):
+            print()
+            line = "".join(buffer).strip()
+            buffer.clear()
+            return line
+        if char == "\003":
+            raise KeyboardInterrupt
+        if char == "\b":
+            if buffer:
+                buffer.pop()
+            continue
+        if char in ("\x00", "\xe0"):
+            try:
+                msvcrt.getwch()
+            except Exception:
+                pass
+            continue
+        buffer.append(char)
+        try:
+            print(char, end="", flush=True)
+        except Exception:
+            pass
+    return None
+
+
+def parse_assignment_input(answer: str) -> tuple[str, bool | None]:
+    raw = (answer or "").strip()
+    if not raw:
+        return "", None
+    if raw.startswith("!"):
+        return raw[1:].strip(), True
+    return raw, None
+
+
+def prompt_priority_for_name(name: str) -> bool:
+    final_name = canonical_person_name(name)
+    if not final_name or is_ignored_face_name(final_name) or is_background_person_name(final_name) or not has_manual_person_name(final_name):
         return False
+    print("Hauptfigur priorisieren? [j/N]")
+    try:
+        decision = input("> ").strip().lower()
+    except EOFError:
+        return False
+    return decision in {"j", "ja", "y", "yes", "1"}
+
+
+def show_preview_assignment_window(image_path: Path, title: str) -> dict[str, object] | None:
+    if not image_path.exists():
+        return None
     try:
         import tkinter as tk
         from PIL import Image, ImageTk
     except Exception:
-        return False
+        return None
 
     image = Image.open(image_path).convert("RGB")
     image.thumbnail((1200, 900))
+
+    result: dict[str, object] = {"value": None, "priority": False}
+    terminal_buffer: list[str] = []
 
     window = tk.Tk()
     window.title(title)
     window.attributes("-topmost", True)
     window.configure(bg="#1f2937")
-    window.bind("<Escape>", lambda _event: window.destroy())
-    window.bind("<Return>", lambda _event: window.destroy())
+
+    def finish(value: str | None, priority: bool | None = None) -> None:
+        if result["value"] is not None:
+            return
+        result["value"] = None if value is None else value.strip()
+        if priority is not None:
+            result["priority"] = bool(priority)
+        try:
+            window.destroy()
+        except Exception:
+            pass
+
+    window.protocol("WM_DELETE_WINDOW", lambda: finish(None))
+    window.bind("<Escape>", lambda _event: finish(None))
 
     photo = ImageTk.PhotoImage(image)
     label = tk.Label(window, image=photo, bg="#1f2937")
     label.image = photo
     label.pack(padx=12, pady=(12, 8))
 
+    entry_var = tk.StringVar()
+    entry = tk.Entry(window, textvariable=entry_var, width=42, font=("Segoe UI", 11))
+    entry.pack(padx=12, pady=(0, 8), fill="x")
+    entry.focus_set()
+    priority_var = tk.BooleanVar(value=False)
+    entry.bind("<Return>", lambda _event: finish(entry_var.get(), priority_var.get()))
+
     hint = tk.Label(
         window,
-        text="Fenster schliessen oder Enter/Escape druecken, dann Namen eingeben.",
+        text="Name hier eingeben oder im Terminal tippen. Enter uebernimmt sofort. 'noface' ignoriert, 'statist' setzt eine Nebenfigur. '!Name' im Terminal markiert direkt eine Hauptfigur.",
         fg="white",
         bg="#1f2937",
+        wraplength=900,
+        justify="left",
     )
     hint.pack(padx=12, pady=(0, 8))
 
-    button = tk.Button(window, text="Weiter zur Eingabe", command=window.destroy)
-    button.pack(padx=12, pady=(0, 12))
-    button.focus_set()
+    priority_check = tk.Checkbutton(
+        window,
+        text="Als Hauptfigur priorisieren",
+        variable=priority_var,
+        fg="white",
+        bg="#1f2937",
+        selectcolor="#111827",
+        activebackground="#1f2937",
+        activeforeground="white",
+    )
+    priority_check.pack(padx=12, pady=(0, 8), anchor="w")
+
+    button_row = tk.Frame(window, bg="#1f2937")
+    button_row.pack(padx=12, pady=(0, 12), fill="x")
+    tk.Button(button_row, text="Uebernehmen", command=lambda: finish(entry_var.get(), priority_var.get())).pack(side="left", padx=(0, 8))
+    tk.Button(button_row, text="Statist", command=lambda: finish("statist", False)).pack(side="left", padx=(0, 8))
+    tk.Button(button_row, text="NoFace", command=lambda: finish("noface", False)).pack(side="left", padx=(0, 8))
+    tk.Button(button_row, text="Terminal", command=lambda: finish(None)).pack(side="left", padx=(0, 8))
+    tk.Button(button_row, text="Beenden", command=lambda: finish(REVIEW_QUIT_TOKEN, False)).pack(side="right")
+
+    def poll_terminal() -> None:
+        if result["value"] is not None:
+            return
+        line = poll_terminal_line(terminal_buffer)
+        if line is not None:
+            parsed_name, parsed_priority = parse_assignment_input(line)
+            finish(parsed_name, parsed_priority)
+            return
+        try:
+            window.after(80, poll_terminal)
+        except Exception:
+            pass
+
+    if is_interactive_session() and current_os() == "windows":
+        window.after(80, poll_terminal)
+
     window.mainloop()
-    return True
+    return result
+
+
+def prompt_terminal_assignment() -> tuple[str, bool | None]:
+    print(f"Beispielnamen: {' | '.join(EXAMPLE_FACE_HINTS)}")
+    print("Name eingeben. 'noface' ignoriert den Treffer, 'statist' speichert eine Nebenfigur, '!Name' priorisiert als Hauptfigur. 'q' beendet die Review.")
+    raw = input("> ").strip()
+    name, explicit_priority = parse_assignment_input(raw)
+    if not name:
+        return "", explicit_priority
+    if explicit_priority is not None:
+        return name, explicit_priority
+    return name, prompt_priority_for_name(name)
 
 
 def cluster_sort_key(item: tuple[str, dict]) -> tuple[int, int, int, str]:
@@ -305,6 +446,7 @@ def hydrate_face_clusters_from_previews(cfg: dict, char_map: dict) -> int:
         return 0
 
     added = 0
+    allow_new_clusters = not bool(char_map.get("clusters"))
     for preview_dir in sorted(previews_root.glob("face_*")):
         if not preview_dir.is_dir():
             continue
@@ -314,8 +456,10 @@ def hydrate_face_clusters_from_previews(cfg: dict, char_map: dict) -> int:
             payload.setdefault("preview_dir", str(preview_dir))
             payload.setdefault("samples", max(1, len(list(preview_dir.glob("*_crop.jpg")))))
             continue
-        suffix = cluster_id.split("_", 1)[1] if "_" in cluster_id else cluster_id
-        payload["name"] = f"figur_{suffix}"
+        if not allow_new_clusters:
+            char_map["clusters"].pop(cluster_id, None)
+            continue
+        payload["name"] = cluster_id
         payload["preview_dir"] = str(preview_dir)
         payload["samples"] = max(1, len(list(preview_dir.glob("*_crop.jpg"))))
         payload["auto_named"] = True
@@ -323,6 +467,91 @@ def hydrate_face_clusters_from_previews(cfg: dict, char_map: dict) -> int:
         payload["aliases"] = []
         added += 1
     return added
+
+
+def normalize_placeholder_maps(char_map: dict, voice_map: dict) -> tuple[int, int]:
+    changed_faces = 0
+    changed_voices = 0
+
+    char_map["aliases"] = {}
+    for cluster_id, payload in char_map.get("clusters", {}).items():
+        if is_ignored_face_payload(payload):
+            if payload.get("name") != "noface":
+                payload["name"] = "noface"
+                changed_faces += 1
+            if not payload.get("ignored"):
+                payload["ignored"] = True
+                changed_faces += 1
+            if payload.get("background_role"):
+                payload["background_role"] = False
+                changed_faces += 1
+            if payload.get("priority"):
+                payload["priority"] = False
+                changed_faces += 1
+            if payload.get("auto_named", False):
+                payload["auto_named"] = False
+                changed_faces += 1
+            if payload.get("aliases"):
+                payload["aliases"] = []
+                changed_faces += 1
+            continue
+
+        normalized_name = display_person_name(str(payload.get("name", "")), cluster_id)
+        background_role = is_background_person_name(normalized_name)
+        if payload.get("name") != normalized_name:
+            payload["name"] = normalized_name
+            changed_faces += 1
+        if payload.get("ignored"):
+            payload["ignored"] = False
+            changed_faces += 1
+        if bool(payload.get("background_role")) != background_role:
+            payload["background_role"] = background_role
+            changed_faces += 1
+        effective_priority = False if background_role else bool(payload.get("priority", False))
+        if bool(payload.get("priority", False)) != effective_priority:
+            payload["priority"] = effective_priority
+            changed_faces += 1
+
+        if has_manual_person_name(normalized_name):
+            if payload.get("auto_named", True):
+                payload["auto_named"] = False
+                changed_faces += 1
+            normalized_alias = normalize_alias_name(normalized_name)
+            aliases = [normalized_alias] if normalized_alias and not background_role else []
+            if payload.get("aliases") != aliases:
+                payload["aliases"] = aliases
+                changed_faces += 1
+            if normalized_alias and not background_role:
+                char_map["aliases"][normalized_alias] = cluster_id
+        else:
+            if not payload.get("auto_named", False):
+                payload["auto_named"] = True
+                changed_faces += 1
+            if payload.get("background_role"):
+                payload["background_role"] = False
+                changed_faces += 1
+            if payload.get("priority"):
+                payload["priority"] = False
+                changed_faces += 1
+            if payload.get("aliases"):
+                payload["aliases"] = []
+                changed_faces += 1
+
+    voice_map["aliases"] = {}
+    for speaker_cluster, payload in voice_map.get("clusters", {}).items():
+        linked_face = payload.get("linked_face_cluster")
+        linked_face_payload = char_map.get("clusters", {}).get(linked_face, {})
+        normalized_name = display_person_name(str(payload.get("name", "")), speaker_cluster)
+        if linked_face and not is_ignored_face_payload(linked_face_payload):
+            normalized_name = display_person_name(str(linked_face_payload.get("name", "")), speaker_cluster)
+        if payload.get("name") != normalized_name:
+            payload["name"] = normalized_name
+            changed_voices += 1
+        if payload.get("auto_named") is not True:
+            payload["auto_named"] = True
+            changed_voices += 1
+
+    return changed_faces, changed_voices
 
 
 def refresh_voice_map(char_map: dict, voice_map: dict) -> None:
@@ -335,13 +564,12 @@ def refresh_voice_map(char_map: dict, voice_map: dict) -> None:
         if face_payload is None or is_ignored_face_payload(face_payload):
             payload.pop("linked_face_cluster", None)
             if payload.get("auto_named", True) or looks_auto_named(str(payload.get("name", ""))):
-                number = speaker_cluster.split("_")[1] if "_" in speaker_cluster else speaker_cluster
-                payload["name"] = f"stimme_{number}"
+                payload["name"] = speaker_cluster
                 payload["auto_named"] = True
             continue
 
         if payload.get("auto_named", True) or looks_auto_named(str(payload.get("name", ""))):
-            payload["name"] = face_payload.get("name", linked_face)
+            payload["name"] = display_person_name(str(face_payload.get("name", "")), speaker_cluster)
             payload["auto_named"] = True
 
 
@@ -362,7 +590,7 @@ def refresh_linked_segments(cfg: dict, char_map: dict, voice_map: dict) -> int:
                 changed = True
 
             visible_names = [
-                char_map.get("clusters", {}).get(cluster_id, {}).get("name", cluster_id)
+                face_display_name(char_map.get("clusters", {}).get(cluster_id, {}), cluster_id)
                 for cluster_id in visible_clusters
             ]
             if visible_names != row.get("visible_character_names", []):
@@ -370,7 +598,7 @@ def refresh_linked_segments(cfg: dict, char_map: dict, voice_map: dict) -> int:
                 changed = True
 
             voice_payload = voice_map.get("clusters", {}).get(row.get("speaker_cluster"), {})
-            speaker_name = voice_payload.get("name", row.get("speaker_cluster"))
+            speaker_name = display_person_name(voice_payload.get("name", ""), row.get("speaker_cluster"))
             if speaker_name != row.get("speaker_name"):
                 row["speaker_name"] = speaker_name
                 changed = True
@@ -417,12 +645,14 @@ def print_cluster(cluster_id: str, payload: dict) -> None:
     scene_count = payload.get("scene_count", 0)
     detection_count = payload.get("detection_count", 0)
     auto_named = payload.get("auto_named", False)
+    priority = bool(payload.get("priority", False))
     print(f"{cluster_id}: {name}")
     print(f"  Status: {status}")
     print(f"  Samples: {samples}")
     print(f"  Szenen: {scene_count}")
     print(f"  Treffer: {detection_count}")
     print(f"  Auto: {auto_named}")
+    print(f"  Priorisiert: {priority}")
     print(f"  Preview: {preview_dir}")
 
 
@@ -472,18 +702,26 @@ def interactive_face_review(cfg: dict, char_map: dict, voice_map: dict, include_
             if montage:
                 print(f"Montage: {montage}")
                 if open_previews:
-                    shown = show_preview_window(montage, f"{cluster_id} Vorschau")
-                    if not shown:
-                        info("Keine blockierende Vorschau verfuegbar. Verwende den Montage-Pfad oben.")
+                    info("Vorschau ist offen. Name kann direkt im Fenster oder parallel im Terminal eingegeben werden.")
             for context_path, crop_path in preview_pairs(payload):
                 if context_path:
                     print(f"Szene: {context_path}")
                 if crop_path:
                     print(f"Ausschnitt: {crop_path}")
-            print(f"Beispielnamen: {' | '.join(EXAMPLE_FACE_NAMES)}")
-            print("Name eingeben. Weiter geht es erst nach Benennung oder 'noface'. 'q' beendet die Review.")
+            preview_name = ""
+            preview_priority: bool | None = None
+            if open_previews and montage:
+                preview_result = show_preview_assignment_window(montage, f"{cluster_id} Vorschau")
+                if preview_result is not None:
+                    preview_name = str(preview_result.get("value") or "").strip()
+                    preview_priority = bool(preview_result.get("priority", False))
             try:
-                answer = input("> ").strip()
+                if preview_name:
+                    answer = preview_name
+                    explicit_priority = preview_priority
+                else:
+                    answer, explicit_priority = prompt_terminal_assignment()
+                answer = answer.strip()
             except EOFError:
                 info("Keine weitere Eingabe verfuegbar. Review wird nach der aktuellen Vorschau beendet.")
                 stop_review = True
@@ -491,13 +729,16 @@ def interactive_face_review(cfg: dict, char_map: dict, voice_map: dict, include_
             if not answer:
                 info("Bitte einen Namen eingeben oder 'noface' verwenden. Der aktuelle Face-Cluster bleibt geoeffnet.")
                 continue
-            if answer.lower() == "q":
+            if answer.lower() == "q" or answer == REVIEW_QUIT_TOKEN:
                 break
-            assign_character_name(char_map, cluster_id, answer)
+            if answer == REVIEW_SKIP_TOKEN:
+                info("Aktueller Face-Cluster wurde nicht veraendert.")
+                break
+            assign_character_name(char_map, cluster_id, answer, priority=explicit_priority)
             payload = char_map["clusters"][cluster_id]
             changed += 1
             break
-        if stop_review or answer.lower() == "q":
+        if stop_review or answer.lower() == "q" or answer == REVIEW_QUIT_TOKEN:
             break
 
     if changed:
@@ -507,11 +748,11 @@ def interactive_face_review(cfg: dict, char_map: dict, voice_map: dict, include_
         info("Keine Aenderungen vorgenommen.")
 
 
-def assign_single_face(cfg: dict, char_map: dict, voice_map: dict, cluster_id: str, assigned_name: str) -> None:
+def assign_single_face(cfg: dict, char_map: dict, voice_map: dict, cluster_id: str, assigned_name: str, priority: bool = False) -> None:
     payload = char_map.get("clusters", {}).get(cluster_id)
     if payload is None:
         raise FileNotFoundError(f"Face-Cluster nicht gefunden: {cluster_id}")
-    assign_character_name(char_map, cluster_id, assigned_name)
+    assign_character_name(char_map, cluster_id, assigned_name, priority=priority)
     changed_linked_files, review_count = persist_updates(cfg, char_map, voice_map)
     final_name = char_map["clusters"][cluster_id]["name"]
     ok(
@@ -520,13 +761,43 @@ def assign_single_face(cfg: dict, char_map: dict, voice_map: dict, cluster_id: s
     )
 
 
-def rename_face(cfg: dict, char_map: dict, voice_map: dict, reference: str, new_name: str) -> None:
+def rename_face(cfg: dict, char_map: dict, voice_map: dict, reference: str, new_name: str, priority: bool = False) -> None:
     cluster_id = resolve_face_reference(char_map, reference)
-    assign_character_name(char_map, cluster_id, new_name)
+    assign_character_name(char_map, cluster_id, new_name, priority=priority)
     changed_linked_files, review_count = persist_updates(cfg, char_map, voice_map)
     final_name = char_map["clusters"][cluster_id]["name"]
     ok(
         f"{cluster_id} wurde umbenannt zu {final_name}. "
+        f"{changed_linked_files} Linked-Segment-Dateien synchronisiert, {review_count} offene Review-Faelle."
+    )
+
+
+def set_character_priority(char_map: dict, reference: str, priority: bool) -> tuple[str, dict]:
+    cluster_id = resolve_face_reference(char_map, reference)
+    payload = char_map.get("clusters", {}).get(cluster_id)
+    if payload is None:
+        raise FileNotFoundError(f"Face-Cluster nicht gefunden: {reference}")
+
+    final_name = canonical_person_name(str(payload.get("name", cluster_id)))
+    if is_ignored_face_payload(payload):
+        raise ValueError(f"{cluster_id} ist als noface/ignoriert markiert und kann nicht priorisiert werden.")
+    if is_background_person_name(final_name):
+        raise ValueError(f"{cluster_id} ist als statist/Nebenfigur markiert und kann nicht priorisiert werden.")
+    if not has_manual_person_name(final_name):
+        raise ValueError(f"{cluster_id} hat noch keinen manuellen Figurennamen und kann erst danach priorisiert werden.")
+
+    payload["priority"] = bool(priority)
+    payload["auto_named"] = False
+    return cluster_id, payload
+
+
+def update_face_priority(cfg: dict, char_map: dict, voice_map: dict, reference: str, priority: bool) -> None:
+    cluster_id, payload = set_character_priority(char_map, reference, priority)
+    changed_linked_files, review_count = persist_updates(cfg, char_map, voice_map)
+    final_name = payload.get("name", cluster_id)
+    state = "priorisiert" if priority else "nicht mehr priorisiert"
+    ok(
+        f"{cluster_id} ({final_name}) ist jetzt {state}. "
         f"{changed_linked_files} Linked-Segment-Dateien synchronisiert, {review_count} offene Review-Faelle."
     )
 
@@ -560,22 +831,42 @@ def main() -> None:
     char_map.setdefault("aliases", {})
     voice_map.setdefault("clusters", {})
     voice_map.setdefault("aliases", {})
+    normalized_faces, normalized_voices = normalize_placeholder_maps(char_map, voice_map)
+    if normalized_faces or normalized_voices:
+        info(
+            f"Bestehende Maps normalisiert: {normalized_faces} Face-Eintraege, "
+            f"{normalized_voices} Sprecher-Eintraege."
+        )
     hydrated = hydrate_face_clusters_from_previews(cfg, char_map)
     if hydrated:
         info(f"{hydrated} Face-Cluster aus vorhandenen Preview-Ordnern ergänzt.")
+    if normalized_faces or normalized_voices or hydrated:
+        changed_linked_files, review_count = persist_updates(cfg, char_map, voice_map)
+        info(
+            f"Maps synchronisiert: {changed_linked_files} Linked-Segment-Dateien aktualisiert, "
+            f"{review_count} offene Review-Faelle."
+        )
 
     if args.assign_face:
         assigned_name = "noface" if args.ignore else (args.name or "").strip()
         if not assigned_name:
             raise ValueError("Bitte --name angeben oder --ignore verwenden.")
-        assign_single_face(cfg, char_map, voice_map, args.assign_face, assigned_name)
+        assign_single_face(cfg, char_map, voice_map, args.assign_face, assigned_name, priority=args.priority)
         return
 
     if args.rename_face:
         new_name = (args.rename_to or "").strip()
         if not new_name:
             raise ValueError("Bitte --rename-to angeben.")
-        rename_face(cfg, char_map, voice_map, args.rename_face, new_name)
+        rename_face(cfg, char_map, voice_map, args.rename_face, new_name, priority=args.priority)
+        return
+
+    if args.set_priority:
+        update_face_priority(cfg, char_map, voice_map, args.set_priority, True)
+        return
+
+    if args.clear_priority:
+        update_face_priority(cfg, char_map, voice_map, args.clear_priority, False)
         return
 
     if args.review_faces:

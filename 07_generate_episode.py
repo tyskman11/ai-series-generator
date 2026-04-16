@@ -1,14 +1,18 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import argparse
 import random
 import time
 from collections import Counter, defaultdict
 
 from pipeline_common import (
     coalesce_text,
+    display_person_name,
     error,
     extract_keywords,
+    has_primary_person_name,
+    is_background_person_name,
     headline,
     info,
     load_config,
@@ -21,6 +25,8 @@ from pipeline_common import (
     write_text,
 )
 
+GENERIC_FOCUS_CHARACTERS = ["Hauptfigur A", "Hauptfigur B", "Hauptfigur C"]
+
 
 def next_episode_id(story_dir) -> str:
     numbers = []
@@ -32,8 +38,29 @@ def next_episode_id(story_dir) -> str:
     return f"folge_{((max(numbers) + 1) if numbers else 1):02d}"
 
 
+def parse_episode_index(episode_id: str) -> int:
+    try:
+        return max(1, int(str(episode_id).split("_")[1]))
+    except Exception:
+        return 1
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Serienmodell trainieren und neue Folge erzeugen")
+    parser.add_argument("--episode-id", help="Zielt auf eine konkrete Folge-ID wie folge_02.")
+    return parser.parse_args()
+
+
 def useful_character(name: str) -> bool:
-    return bool(name) and name != "unbekannt"
+    return has_primary_person_name(name)
+
+
+def background_character(name: str) -> bool:
+    return is_background_person_name(name)
+
+
+def fallback_focus_characters(count: int = 2) -> list[str]:
+    return GENERIC_FOCUS_CHARACTERS[: max(2, min(count, len(GENERIC_FOCUS_CHARACTERS)))]
 
 
 def build_markov_chain(lines: list[str], order: int = 2) -> dict[str, dict[str, int]]:
@@ -49,13 +76,79 @@ def build_markov_chain(lines: list[str], order: int = 2) -> dict[str, dict[str, 
     return {state: dict(next_tokens) for state, next_tokens in chain.items()}
 
 
-def build_series_model(dataset_files: list, cfg: dict) -> dict:
-    character_stats: dict[str, dict[str, int]] = defaultdict(lambda: {"scene_count": 0, "line_count": 0})
+def build_character_directory(char_map: dict) -> dict[str, dict]:
+    directory: dict[str, dict] = {}
+    for cluster_id, payload in char_map.get("clusters", {}).items():
+        if payload.get("ignored"):
+            continue
+        name = display_person_name(str(payload.get("name", "")), cluster_id)
+        if not name:
+            continue
+        entry = directory.setdefault(
+            name,
+            {
+                "priority": False,
+                "background_role": False,
+                "scene_count_hint": 0,
+                "detection_count_hint": 0,
+                "face_clusters": [],
+            },
+        )
+        entry["priority"] = entry["priority"] or bool(payload.get("priority", False))
+        entry["background_role"] = entry["background_role"] or background_character(name)
+        entry["scene_count_hint"] += int(payload.get("scene_count", 0) or 0)
+        entry["detection_count_hint"] += int(payload.get("detection_count", 0) or 0)
+        if cluster_id not in entry["face_clusters"]:
+            entry["face_clusters"].append(cluster_id)
+    return directory
+
+
+def extract_scene_characters(row: dict, character_directory: dict[str, dict]) -> list[str]:
+    names: list[str] = []
+    for name in row.get("characters_visible", []) or []:
+        if useful_character(name) or background_character(name):
+            if name not in names:
+                names.append(name)
+
+    cluster_to_name: dict[str, str] = {}
+    for name, payload in character_directory.items():
+        for cluster_id in payload.get("face_clusters", []):
+            cluster_to_name[cluster_id] = name
+
+    for cluster in row.get("face_clusters", []) or []:
+        cluster_id = ""
+        if isinstance(cluster, dict):
+            cluster_id = str(cluster.get("cluster_id", ""))
+        elif isinstance(cluster, str):
+            cluster_id = cluster
+        mapped = cluster_to_name.get(cluster_id, "")
+        if mapped and mapped not in names:
+            names.append(mapped)
+
+    for segment in row.get("transcript_segments", []) or []:
+        for cluster_id in segment.get("visible_face_clusters", []) or []:
+            mapped = cluster_to_name.get(str(cluster_id), "")
+            if mapped and mapped not in names:
+                names.append(mapped)
+        speaker_name = coalesce_text(segment.get("speaker_name", ""))
+        if useful_character(speaker_name) and speaker_name not in names:
+            names.append(speaker_name)
+    return names
+
+
+def build_series_model(dataset_files: list, cfg: dict, char_map: dict) -> dict:
+    character_directory = build_character_directory(char_map)
+    character_stats: dict[str, dict[str, int | bool]] = defaultdict(lambda: {"scene_count": 0, "line_count": 0, "priority": False})
     speaker_samples: dict[str, list[str]] = defaultdict(list)
     transcripts = []
     scene_library = []
     speaker_counter: Counter[str] = Counter()
     keyword_counter: Counter[str] = Counter()
+
+    for name, payload in character_directory.items():
+        if useful_character(name):
+            character_stats[name]["scene_count"] += int(payload.get("scene_count_hint", 0))
+            character_stats[name]["priority"] = bool(payload.get("priority", False))
 
     for dataset_file in dataset_files:
         rows = read_json(dataset_file, [])
@@ -65,9 +158,11 @@ def build_series_model(dataset_files: list, cfg: dict) -> dict:
                 transcripts.append(transcript)
             scene_keywords = row.get("scene_keywords") or extract_keywords([transcript], limit=8)
             keyword_counter.update(scene_keywords)
-            characters = [name for name in row.get("characters_visible", []) if useful_character(name)]
+            characters = [name for name in extract_scene_characters(row, character_directory) if useful_character(name)]
             for character in characters:
                 character_stats[character]["scene_count"] += 1
+                if character in character_directory:
+                    character_stats[character]["priority"] = bool(character_directory[character].get("priority", False))
             for segment in row.get("transcript_segments", []):
                 speaker_name = segment.get("speaker_name", "")
                 text = coalesce_text(segment.get("text", ""))
@@ -89,7 +184,7 @@ def build_series_model(dataset_files: list, cfg: dict) -> dict:
 
     top_characters = sorted(
         character_stats.items(),
-        key=lambda item: (-item[1]["scene_count"], -item[1]["line_count"], item[0]),
+        key=lambda item: (-int(bool(item[1].get("priority", False))), -int(item[1]["scene_count"]), -int(item[1]["line_count"]), item[0]),
     )
     top_keywords = extract_keywords(transcripts, limit=20)
     if not top_keywords:
@@ -184,7 +279,7 @@ def build_dialogue(
 ) -> list[str]:
     speaker_samples = model.get("speaker_samples", {})
     speaker_a = focus_characters[0]
-    speaker_b = focus_characters[1] if len(focus_characters) > 1 else "figur_002"
+    speaker_b = focus_characters[1] if len(focus_characters) > 1 else fallback_focus_characters(2)[1]
     callback_candidates = [
         clean_callback(line)
         for speaker in (speaker_a, speaker_b)
@@ -200,16 +295,26 @@ def build_dialogue(
 
 
 def select_focus_characters(model: dict, rng: random.Random, count: int = 3) -> list[str]:
-    candidates = [row["name"] for row in model.get("characters", []) if useful_character(row["name"])]
+    prioritized = [row["name"] for row in model.get("characters", []) if useful_character(row["name"]) and bool(row.get("priority", False))]
+    candidates = prioritized or [row["name"] for row in model.get("characters", []) if useful_character(row["name"])]
     if not candidates:
-        candidates = [speaker for speaker in model.get("speakers", {}).keys() if speaker]
+        candidates = [speaker for speaker in model.get("speakers", {}).keys() if useful_character(speaker)]
     if not candidates:
-        return ["figur_001", "figur_002"]
+        return fallback_focus_characters(min(count, 2))
     if len(candidates) == 1:
-        return [candidates[0], "figur_002"]
+        return [candidates[0], fallback_focus_characters(2)[1]]
     if len(candidates) <= count:
         return candidates
     return candidates[:count]
+
+
+def select_background_characters(model: dict, count: int = 1) -> list[str]:
+    candidates = [row["name"] for row in model.get("characters", []) if background_character(row["name"])]
+    deduped: list[str] = []
+    for candidate in candidates:
+        if candidate not in deduped:
+            deduped.append(candidate)
+    return deduped[:count]
 
 
 def scene_title(beat: str, keyword: str) -> str:
@@ -222,13 +327,21 @@ def summary_line(characters: list[str], keyword: str, beat: str) -> str:
     return f"{joined} {verb} das Thema '{keyword}' voran und geraten in eine typische {beat.lower()}-Situation."
 
 
-def generate_episode_package(model: dict, cfg: dict) -> tuple[dict, str]:
+def generate_episode_package(model: dict, cfg: dict, episode_index: int = 1) -> tuple[dict, str]:
     generation_cfg = cfg.get("generation", {})
-    rng = random.Random(int(generation_cfg.get("seed", 42)) + len(model.get("dataset_files", [])))
+    rng_seed = int(generation_cfg.get("seed", 42)) + len(model.get("dataset_files", [])) + (episode_index * 101)
+    rng = random.Random(rng_seed)
     keywords = model.get("keywords", []) or ["idee", "chaos", "plan", "showdown"]
+    if len(keywords) > 1:
+        keyword_offset = episode_index % len(keywords)
+        keywords = keywords[keyword_offset:] + keywords[:keyword_offset]
     scene_count = int(generation_cfg.get("default_scene_count", 6))
     focus_characters = select_focus_characters(model, rng)
+    background_characters = select_background_characters(model, count=1)
     beats = ["Cold Open", "Plan", "Komplikation", "Verwechslung", "Wendepunkt", "Auflösung"]
+    if len(beats) > 1:
+        beat_offset = episode_index % len(beats)
+        beats = beats[beat_offset:] + beats[:beat_offset]
 
     scenes = []
     markdown_lines = [
@@ -242,11 +355,17 @@ def generate_episode_package(model: dict, cfg: dict) -> tuple[dict, str]:
         "",
         "## Szenenplan",
         "",
+        f"- Episoden-Seed: {rng_seed}",
+        "",
     ]
     for scene_index in range(scene_count):
         beat = beats[scene_index % len(beats)]
         keyword = keywords[scene_index % len(keywords)]
         scene_characters = focus_characters[: max(2, min(len(focus_characters), 2 + (scene_index % 2)))]
+        if background_characters and scene_index % 3 == 1:
+            background_name = background_characters[0]
+            if background_name not in scene_characters:
+                scene_characters.append(background_name)
         summary = summary_line(scene_characters, keyword, beat)
         dialogue = build_dialogue(beat, scene_characters, model, rng, cfg, keyword)
         scene_id = f"scene_{scene_index + 1:04d}"
@@ -284,6 +403,7 @@ def generate_episode_package(model: dict, cfg: dict) -> tuple[dict, str]:
 
 def main() -> None:
     rerun_in_runtime()
+    args = parse_args()
     headline("Serienmodell trainieren und neue Folge erzeugen")
     cfg = load_config()
     dataset_root = resolve_project_path(cfg["paths"]["datasets_video_training"])
@@ -292,7 +412,8 @@ def main() -> None:
         info("Keine Datensätze gefunden.")
         return
 
-    model = build_series_model(dataset_files, cfg)
+    char_map = read_json(resolve_project_path(cfg["paths"]["character_map"]), {"clusters": {}, "aliases": {}})
+    model = build_series_model(dataset_files, cfg, char_map)
     model_path = resolve_project_path(cfg["paths"]["series_model"])
     model_path.parent.mkdir(parents=True, exist_ok=True)
     write_json(model_path, model)
@@ -302,8 +423,8 @@ def main() -> None:
     story_dir.mkdir(parents=True, exist_ok=True)
     shotlist_dir.mkdir(parents=True, exist_ok=True)
 
-    episode_id = next_episode_id(story_dir)
-    episode_package, markdown = generate_episode_package(model, cfg)
+    episode_id = (args.episode_id or "").strip() or next_episode_id(story_dir)
+    episode_package, markdown = generate_episode_package(model, cfg, parse_episode_index(episode_id))
     markdown = markdown.replace("# Neue Folge", f"# {episode_id}", 1)
     write_text(story_dir / f"{episode_id}.md", markdown)
     write_json(
