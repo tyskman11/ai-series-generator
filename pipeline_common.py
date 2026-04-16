@@ -115,7 +115,7 @@ DEFAULT_CONFIG = {
         "voice_embedding_min_seconds": 0.45,
         "voice_embedding_context_padding_seconds": 0.45,
         "voice_embedding_threshold": 0.84,
-        "voice_embedding_threshold_speechbrain": 0.50,
+        "voice_embedding_threshold_speechbrain": 0.44,
         "speaker_cluster_high_quality_min_seconds": 1.0,
         "speaker_cluster_min_segments": 2,
     },
