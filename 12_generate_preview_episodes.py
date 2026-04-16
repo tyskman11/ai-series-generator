@@ -41,19 +41,20 @@ def main() -> None:
 
     headline("Mehrere sichtbare Preview-Episoden erzeugen")
     generated: list[str] = []
+    run_step("07_train_series_model.py")
     for index in range(count):
         before = latest_episode_id()
-        run_step("07_generate_episode.py")
+        run_step("09_generate_episode_from_trained_model.py")
         episode_id = latest_episode_id()
         if not episode_id or episode_id == before:
             raise RuntimeError("Neue Episode konnte nicht ermittelt werden.")
         env = os.environ.copy()
         env["SERIES_RENDER_EPISODE"] = episode_id
-        run_step("10_render_episode.py", env=env)
+        run_step("11_render_episode.py", env=env)
         generated.append(episode_id)
         ok(f"{index + 1}/{count}: {episode_id} erzeugt und gerendert.")
 
-    run_step("09_build_series_bible.py")
+    run_step("10_build_series_bible.py")
     ok(f"Fertig. Neue sichtbare Episoden: {', '.join(generated)}")
 
 

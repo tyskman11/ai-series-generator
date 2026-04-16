@@ -6,11 +6,13 @@ import math
 import re
 import shutil
 import wave
+from difflib import SequenceMatcher
 from functools import lru_cache
 from pathlib import Path
 
 from pipeline_common import (
     PROJECT_ROOT,
+    coalesce_text,
     detect_tool,
     error,
     ffmpeg_video_encode_args,
@@ -52,6 +54,13 @@ def parse_speaker_line(line: str) -> tuple[str, str]:
     return speaker.strip() or "erzähler", text.strip()
 
 
+def scene_dialogue_source(scene: dict, line_index: int) -> dict:
+    sources = scene.get("dialogue_sources", []) or []
+    if 0 <= line_index < len(sources) and isinstance(sources[line_index], dict):
+        return dict(sources[line_index])
+    return {}
+
+
 def useful_character_name(name: str) -> bool:
     return has_primary_person_name(name)
 
@@ -86,6 +95,107 @@ def build_audio_segment_index(audio_root: Path) -> dict[str, list[Path]]:
     return index
 
 
+def build_scene_clip_index(scene_root: Path) -> dict[tuple[str, str], Path]:
+    index: dict[tuple[str, str], Path] = {}
+    if not scene_root.exists():
+        return index
+    for episode_dir in scene_root.iterdir():
+        if not episode_dir.is_dir():
+            continue
+        for clip_path in episode_dir.glob("scene_*.mp4"):
+            index[(episode_dir.name, clip_path.stem)] = clip_path
+    return index
+
+
+def text_tokens(text: str) -> set[str]:
+    return {token for token in re.findall(r"[a-zA-ZäöüÄÖÜß0-9]+", (text or "").lower()) if len(token) >= 2}
+
+
+def text_similarity_score(left: str, right: str) -> tuple[float, float]:
+    left_text = (left or "").strip().lower()
+    right_text = (right or "").strip().lower()
+    if not left_text or not right_text:
+        return 0.0, 0.0
+    left_tokens = text_tokens(left_text)
+    right_tokens = text_tokens(right_text)
+    overlap = 0.0
+    union = left_tokens | right_tokens
+    if union:
+        overlap = len(left_tokens & right_tokens) / max(1, len(union))
+    sequence = SequenceMatcher(None, left_text, right_text).ratio()
+    score = (overlap * 0.55) + (sequence * 0.45)
+    return round(score, 4), round(overlap, 4)
+
+
+def episode_name_from_linked_path(linked_path: Path) -> str:
+    suffix = "_linked_segments"
+    stem = linked_path.stem
+    return stem[:-len(suffix)] if stem.endswith(suffix) else stem
+
+
+def build_original_line_library(cfg: dict) -> dict[str, list[dict]]:
+    audio_index = build_audio_segment_index(resolve_project_path("data/raw/audio"))
+    scene_index = build_scene_clip_index(resolve_project_path(cfg["paths"]["scene_clips"]))
+    library: dict[str, list[dict]] = {}
+    for linked_path in find_linked_segment_files(cfg):
+        episode_name = episode_name_from_linked_path(linked_path)
+        for entry in read_json(linked_path, []):
+            speaker_name = (entry.get("speaker_name") or "").strip()
+            text = (entry.get("text") or "").strip()
+            segment_id = (entry.get("segment_id") or "").strip()
+            scene_id = (entry.get("scene_id") or "").strip()
+            if not useful_character_name(speaker_name) or not text or not segment_id or not scene_id:
+                continue
+            audio_candidates = [path for path in audio_index.get(segment_id, []) if path.exists()]
+            scene_clip_path = scene_index.get((episode_name, scene_id))
+            if not audio_candidates or scene_clip_path is None or not scene_clip_path.exists():
+                continue
+            start = float(entry.get("start", 0.0) or 0.0)
+            end = float(entry.get("end", 0.0) or 0.0)
+            if end <= start:
+                continue
+            library.setdefault(speaker_name, []).append(
+                {
+                    "episode_name": episode_name,
+                    "scene_id": scene_id,
+                    "segment_id": segment_id,
+                    "text": text,
+                    "audio_path": str(audio_candidates[0]),
+                    "scene_clip_path": str(scene_clip_path),
+                    "start": start,
+                    "end": end,
+                    "duration_seconds": round(end - start, 3),
+                    "speaker_reference_frames": entry.get("speaker_reference_frames", []) or [],
+                    "score_tokens": sorted(text_tokens(text)),
+                }
+            )
+    return library
+
+
+def select_retrieval_segment(character: str, text: str, library: dict[str, list[dict]], clone_cfg: dict) -> dict | None:
+    if not bool(clone_cfg.get("enable_original_line_reuse", True)):
+        return None
+    threshold = float(clone_cfg.get("original_line_similarity_threshold", 0.74))
+    min_overlap = float(clone_cfg.get("original_line_min_token_overlap", 0.34))
+    best_entry: dict | None = None
+    best_score = 0.0
+    best_overlap = 0.0
+    for entry in library.get(character, []):
+        score, overlap = text_similarity_score(text, entry.get("text", ""))
+        if score > best_score or (score == best_score and overlap > best_overlap):
+            best_score = score
+            best_overlap = overlap
+            best_entry = entry
+    if best_entry is None:
+        return None
+    if best_score < threshold or best_overlap < min_overlap:
+        return None
+    selected = dict(best_entry)
+    selected["match_score"] = round(best_score, 4)
+    selected["token_overlap"] = round(best_overlap, 4)
+    return selected
+
+
 def pick_character_preview_paths(character: str, char_map: dict, max_images: int = 2) -> list[Path]:
     images: list[Path] = []
     for payload in char_map.get("clusters", {}).values():
@@ -99,6 +209,27 @@ def pick_character_preview_paths(character: str, char_map: dict, max_images: int
         for pattern in ("*_crop.jpg", "*_context.jpg", "*.jpg"):
             for candidate in sorted(preview_dir.glob(pattern)):
                 if candidate not in images:
+                    images.append(candidate)
+            if images:
+                break
+        if images:
+            break
+    return images[:max_images]
+
+
+def pick_character_context_paths(character: str, char_map: dict, max_images: int = 2) -> list[Path]:
+    images: list[Path] = []
+    for payload in char_map.get("clusters", {}).values():
+        if payload.get("ignored"):
+            continue
+        if payload.get("name") != character:
+            continue
+        preview_dir = Path(payload.get("preview_dir", ""))
+        if not preview_dir.exists():
+            continue
+        for pattern in ("*_context.jpg", "*_speaker_frame_*.jpg", "*.jpg"):
+            for candidate in sorted(preview_dir.glob(pattern)):
+                if candidate not in images and candidate.exists():
                     images.append(candidate)
             if images:
                 break
@@ -473,9 +604,13 @@ def draw_chip(draw: ImageDraw.ImageDraw, x: int, y: int, text: str, font: ImageF
 def pick_reference_images(scene: dict, char_map: dict, max_images: int = 2) -> list[Path]:
     images: list[Path] = []
     for character in scene.get("characters", []):
-        for candidate in pick_character_preview_paths(character, char_map, max_images=max_images):
+        for candidate in pick_character_context_paths(character, char_map, max_images=max_images):
             if candidate not in images:
                 images.append(candidate)
+        if not images:
+            for candidate in pick_character_preview_paths(character, char_map, max_images=max_images):
+                if candidate not in images:
+                    images.append(candidate)
         if len(images) >= max_images:
             break
     return images[:max_images]
@@ -558,42 +693,29 @@ def apply_audio_reactive_face_effect(
     width, height = result.size
 
     if openness > 0.02:
-        mouth_overlay = Image.new("RGBA", result.size, (0, 0, 0, 0))
-        mouth_draw = ImageDraw.Draw(mouth_overlay)
-        mouth_left = int(width * 0.31)
-        mouth_right = int(width * 0.69)
-        mouth_center_y = int(height * 0.73)
-        mouth_height = max(8, int((height * 0.07) + (height * 0.08 * openness)))
-        mouth_draw.ellipse(
-            (
-                mouth_left,
-                mouth_center_y - mouth_height // 2,
-                mouth_right,
-                mouth_center_y + mouth_height // 2,
-            ),
-            fill=(28, 6, 10, int(120 + 90 * openness)),
-        )
-        mouth_draw.ellipse(
-            (
-                mouth_left + 18,
-                mouth_center_y - max(4, mouth_height // 4),
-                mouth_right - 18,
-                mouth_center_y + max(4, mouth_height // 4),
-            ),
-            outline=(255, 178, 178, int(70 * openness)),
-            width=2,
-        )
-        result = Image.alpha_composite(result, mouth_overlay)
-
-        jaw_region = result.crop((int(width * 0.18), int(height * 0.58), int(width * 0.82), height))
+        jaw_top = int(height * 0.60)
+        jaw_left = int(width * 0.18)
+        jaw_right = int(width * 0.82)
+        jaw_region = result.crop((jaw_left, jaw_top, jaw_right, height))
         stretched = jaw_region.resize(
             (jaw_region.width, jaw_region.height + int(jaw_pixels * openness)),
             resample=Image.Resampling.BICUBIC,
         )
         jaw_canvas = Image.new("RGBA", result.size, (0, 0, 0, 0))
-        jaw_canvas.paste(stretched, (int(width * 0.18), int(height * 0.58)))
-        jaw_canvas.putalpha(int(45 * openness))
+        paste_y = min(height - stretched.height, jaw_top)
+        jaw_canvas.paste(stretched, (jaw_left, paste_y))
+        jaw_canvas.putalpha(int(34 * openness))
+        lip_shadow = Image.new("RGBA", result.size, (0, 0, 0, 0))
+        lip_draw = ImageDraw.Draw(lip_shadow)
+        lip_shadow_y = int(height * 0.74)
+        lip_draw.rounded_rectangle(
+            (int(width * 0.33), lip_shadow_y, int(width * 0.67), lip_shadow_y + max(5, int(7 + openness * 9))),
+            radius=6,
+            fill=(24, 10, 14, int(28 + 36 * openness)),
+        )
+        lip_shadow = lip_shadow.filter(ImageFilter.GaussianBlur(2.2))
         result = Image.alpha_composite(result, jaw_canvas)
+        result = Image.alpha_composite(result, lip_shadow)
 
     if blink:
         blink_overlay = Image.new("RGBA", result.size, (0, 0, 0, 0))
@@ -614,7 +736,7 @@ def apply_audio_reactive_face_effect(
 
 def create_audio_reactive_portrait_video(
     ffmpeg: Path,
-    face_image_path: Path,
+    face_image_paths: list[Path],
     audio_path: Path,
     output_mp4: Path,
     fps: int,
@@ -629,20 +751,28 @@ def create_audio_reactive_portrait_video(
     sensitivity = float(clone_cfg.get("mouth_sensitivity", 1.6))
     jaw_pixels = int(clone_cfg.get("jaw_pixels", 10))
     blink_interval = max(18, int(clone_cfg.get("blink_interval_frames", 90)))
+    motion_strength = float(clone_cfg.get("portrait_motion_strength", 4.0))
+    crossfade_span = max(6, int(clone_cfg.get("portrait_crossfade_span_frames", 18)))
+    usable_images = [path for path in face_image_paths if path.exists()]
+    if not usable_images:
+        raise FileNotFoundError("Keine Portrait-Bilder fuer den Lipsync-Fallback gefunden.")
 
     frame_dir = output_mp4.parent / f"{output_mp4.stem}_frames"
     shutil.rmtree(frame_dir, ignore_errors=True)
     frame_dir.mkdir(parents=True, exist_ok=True)
 
-    base_face = Image.open(face_image_path).convert("RGB")
+    base_faces = [Image.open(path).convert("RGB") for path in usable_images[:6]]
     envelope = audio_envelope(audio_path, fps)
     frame_count = max(1, len(envelope))
 
     for frame_index in range(frame_count):
         openness = min(1.0, envelope[frame_index] * sensitivity)
-        phase = frame_index / max(1, frame_count - 1)
-        zoom_variation = zoom + 0.015 * math.sin(frame_index / 11.0)
-        bob_y = int(4 * math.sin(frame_index / 7.5))
+        zoom_variation = zoom + 0.012 * math.sin(frame_index / 11.0)
+        bob_y = int(motion_strength * math.sin(frame_index / 7.5))
+        image_index = (frame_index // crossfade_span) % len(base_faces)
+        next_index = (image_index + 1) % len(base_faces)
+        blend_phase = (frame_index % crossfade_span) / max(1, crossfade_span - 1)
+        base_face = Image.blend(base_faces[image_index], base_faces[next_index], blend_phase)
         scaled = ImageOps.fit(
             base_face,
             (max(width, int(width * zoom_variation)), max(height, int(height * zoom_variation))),
@@ -687,50 +817,41 @@ def create_line_card(
     height: int,
     fonts: dict[str, ImageFont.ImageFont],
 ) -> None:
-    from PIL import Image, ImageDraw
+    from PIL import Image, ImageDraw, ImageOps
 
     speaker, spoken_text = parse_speaker_line(line_text)
     accent = palette_for_name(speaker)
-    image = create_background(width, height, accent)
+
+    if reference_images:
+        source = Image.open(reference_images[0]).convert("RGB")
+        image = ImageOps.fit(source, (width, height), method=Image.Resampling.LANCZOS)
+    else:
+        image = create_background(width, height, accent)
+
+    overlay = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+    overlay_draw = ImageDraw.Draw(overlay)
+    overlay_draw.rectangle((0, 0, width, 170), fill=(8, 12, 18, 105))
+    overlay_draw.rectangle((0, height - 250, width, height), fill=(5, 8, 14, 195))
+    image = Image.alpha_composite(image.convert("RGBA"), overlay).convert("RGB")
     draw = ImageDraw.Draw(image)
 
-    draw.text((70, 50), episode_id.upper(), font=fonts["small"], fill=(215, 223, 238))
-    draw.text((70, 82), scene.get("title", "Szene"), font=fonts["title"], fill="white")
-    subtitle = f"{scene.get('beat', '')} | {scene.get('location', '')} | {scene.get('mood', '')}"
-    draw.text((72, 150), subtitle, font=fonts["subtitle"], fill=(205, 214, 230))
+    draw.text((42, 28), episode_id.upper(), font=fonts["small"], fill=(220, 228, 236))
+    draw.text((42, 58), scene.get("title", "Szene"), font=fonts["subtitle"], fill="white")
 
-    summary_box = (72, 205, 760, 380)
-    draw.rounded_rectangle(summary_box, radius=28, fill=(255, 255, 255, 28), outline=(255, 255, 255, 48), width=2)
-    summary_lines = wrap_text(draw, scene.get("summary", ""), fonts["body"], 640)
-    y = 228
-    for line in summary_lines[:5]:
-        draw.text((98, y), line, font=fonts["body"], fill=(236, 239, 244))
-        y += 34
-
-    chip_x = 72
-    chip_y = 398
+    chip_x = 42
+    chip_y = 106
     for character in scene.get("characters", [])[:3]:
         chip_width = draw_chip(draw, chip_x, chip_y, character, fonts["small"], palette_for_name(character))
-        chip_x += chip_width + 14
+        chip_x += chip_width + 12
 
-    quote_box = (72, 470, 1210, 650)
-    draw.rounded_rectangle(quote_box, radius=32, fill=(11, 14, 22, 210), outline=accent + (255,), width=4)
-    draw.text((102, 500), speaker.upper(), font=fonts["subtitle"], fill=accent)
-    quote_lines = wrap_text(draw, spoken_text, fonts["quote"], 1060)
-    y = 548
+    subtitle_box = (34, height - 218, width - 34, height - 34)
+    draw.rounded_rectangle(subtitle_box, radius=30, fill=(6, 10, 16, 228), outline=accent + (235,), width=4)
+    draw.text((64, height - 194), speaker.upper(), font=fonts["subtitle"], fill=accent)
+    quote_lines = wrap_text(draw, spoken_text, fonts["quote"], width - 128)
+    y = height - 142
     for line in quote_lines[:3]:
-        draw.text((102, y), line, font=fonts["quote"], fill="white")
-        y += 44
-
-    right_panel_x = PORTRAIT_PANEL_X
-    draw.rounded_rectangle((right_panel_x - 10, 185, 1210, 440), radius=28, fill=(255, 255, 255, 20))
-    paste_reference_images(image, reference_images, right_panel_x, PORTRAIT_PANEL_Y, PORTRAIT_PANEL_W, PORTRAIT_PANEL_H)
-
-    prompt_lines = wrap_text(draw, scene.get("prompt", ""), fonts["small"], 320)
-    prompt_y = 660
-    for line in prompt_lines[:2]:
-        draw.text((860, prompt_y), line, font=fonts["small"], fill=(220, 226, 235))
-        prompt_y += 26
+        draw.text((64, y), line, font=fonts["quote"], fill="white")
+        y += 42
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     image.save(output_path, quality=95)
@@ -749,11 +870,13 @@ def create_title_card(
     accent = (88, 154, 255)
     image = create_background(width, height, accent)
     draw = ImageDraw.Draw(image)
+    display_title = coalesce_text(shotlist.get("display_title", "")) or episode_id.upper()
+    episode_title = coalesce_text(shotlist.get("episode_title", ""))
     draw.text((96, 120), "AI Serien Draft", font=fonts["subtitle"], fill=(214, 223, 238))
-    draw.text((92, 168), episode_id.upper(), font=fonts["title"], fill="white")
+    draw.text((92, 168), display_title, font=fonts["title"], fill="white")
     focus = ", ".join(shotlist.get("focus_characters", [])[:3]) or "Neue Figuren"
     keywords = ", ".join(shotlist.get("keywords", [])[:6])
-    body = f"Hauptfiguren: {focus}\nThemen: {keywords}"
+    body = f"Titel: {episode_title or display_title}\nHauptfiguren: {focus}\nThemen: {keywords}"
     y = 300
     for line in body.splitlines():
         draw.text((98, y), line, font=fonts["body"], fill=(236, 239, 244))
@@ -900,6 +1023,46 @@ def create_line_segment(
     run_ffmpeg_with_codec_fallback(command, video_codec, output_mp4)
 
 
+def create_original_scene_segment(
+    ffmpeg: Path,
+    scene_clip_path: Path,
+    start_seconds: float,
+    end_seconds: float,
+    output_mp4: Path,
+    width: int,
+    height: int,
+    video_codec: str,
+) -> None:
+    duration = max(0.12, float(end_seconds) - float(start_seconds))
+
+    def command(codec: str) -> list[str]:
+        return [
+            str(ffmpeg),
+            "-hide_banner",
+            "-y",
+            "-ss",
+            f"{max(0.0, float(start_seconds)):.3f}",
+            "-i",
+            str(scene_clip_path),
+            "-t",
+            f"{duration:.3f}",
+            "-vf",
+            f"scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:black,format=yuv420p",
+            *ffmpeg_video_encode_args(codec, quality=19),
+            "-c:a",
+            "aac",
+            "-b:a",
+            "192k",
+            "-ar",
+            "44100",
+            "-ac",
+            "2",
+            str(output_mp4),
+        ]
+
+    run_ffmpeg_with_codec_fallback(command, video_codec, output_mp4)
+
+
 def create_lipsync_segment(
     ffmpeg: Path,
     background_image_path: Path,
@@ -1033,15 +1196,20 @@ def main() -> None:
     width = int(render_cfg.get("width", 1280))
     height = int(render_cfg.get("height", 720))
     fps = int(render_cfg.get("fps", 30))
+    include_title_cards = bool(render_cfg.get("include_title_cards", False))
     audio_pad_seconds = float(render_cfg.get("audio_pad_seconds", 0.35))
     title_card_seconds = float(render_cfg.get("title_card_seconds", 2.5))
     closing_card_seconds = float(render_cfg.get("closing_card_seconds", 2.0))
     base_rate = int(render_cfg.get("voice_rate", 175))
     clone_cfg = cfg.get("cloning", {})
+    allow_original_reuse = bool(clone_cfg.get("enable_original_line_reuse", False)) and str(
+        shotlist.get("generation_mode", "")
+    ).strip().lower() != "synthetic_preview"
     info(f"FFmpeg-Videoencoder: {video_codec}")
 
     char_map = read_json(resolve_project_path(cfg["paths"]["character_map"]), {"clusters": {}, "aliases": {}})
     voice_reference_library = build_voice_reference_library(cfg)
+    original_line_library = build_original_line_library(cfg)
     all_characters = shotlist.get("focus_characters", [])[:]
     for scene in scenes:
         for character in scene.get("characters", []):
@@ -1062,7 +1230,7 @@ def main() -> None:
     portraits_dir = draft_root / "portraits"
     segments_dir = draft_root / "segments"
     voice_samples_dir = resolve_project_path(cfg["paths"].get("voice_samples", "characters/voice_samples"))
-    voice_models_dir = resolve_project_path("characters/voice_models")
+    voice_models_dir = resolve_project_path(cfg["paths"].get("voice_models", "characters/voice_models"))
     for directory in (cards_dir, audio_dir, portraits_dir, segments_dir, voice_samples_dir, voice_models_dir, final_root):
         directory.mkdir(parents=True, exist_ok=True)
 
@@ -1105,10 +1273,17 @@ def main() -> None:
     voice_model_paths: dict[str, str] = {}
     for character, profile in voice_profiles.items():
         model_path = voice_models_dir / f"{safe_filename_slug(character, 'speaker')}_voice_model.json"
+        retrieval_samples = sorted(
+            original_line_library.get(character, []),
+            key=lambda item: (-float(item.get("duration_seconds", 0.0)), str(item.get("segment_id", ""))),
+        )[: int(clone_cfg.get("max_voice_model_samples", 48))]
         model_payload = {
             "character": character,
             "engine": requested_voice_clone_engine(clone_cfg),
+            "model_type": "retrieval_profile",
             "profile": profile,
+            "sample_count": len(retrieval_samples),
+            "samples": retrieval_samples,
         }
         write_json(model_path, model_payload)
         voice_model_paths[character] = str(model_path)
@@ -1116,6 +1291,9 @@ def main() -> None:
 
     manifest = {
         "episode_id": episode_id,
+        "episode_label": shotlist.get("episode_label", episode_id),
+        "episode_title": shotlist.get("episode_title", ""),
+        "display_title": shotlist.get("display_title", episode_id),
         "shotlist": str(shotlist_path),
         "voice_profiles": str(voice_profiles_path),
         "voice_models": voice_model_paths,
@@ -1128,12 +1306,13 @@ def main() -> None:
     }
     rendered_segments: list[Path] = []
 
-    title_card = cards_dir / "000_title.png"
-    title_segment = segments_dir / "000_title.mp4"
-    create_title_card(episode_id, shotlist, title_card, width, height, fonts)
-    create_silent_segment(ffmpeg, title_card, title_segment, width, height, fps, title_card_seconds, video_codec)
-    rendered_segments.append(title_segment)
-    manifest["segments"].append({"type": "title", "file": str(title_segment), "duration_seconds": title_card_seconds})
+    if include_title_cards:
+        title_card = cards_dir / "000_title.png"
+        title_segment = segments_dir / "000_title.mp4"
+        create_title_card(episode_id, shotlist, title_card, width, height, fonts)
+        create_silent_segment(ffmpeg, title_card, title_segment, width, height, fps, title_card_seconds, video_codec)
+        rendered_segments.append(title_segment)
+        manifest["segments"].append({"type": "title", "file": str(title_segment), "duration_seconds": title_card_seconds})
 
     segment_index = 1
     for scene in scenes:
@@ -1146,59 +1325,123 @@ def main() -> None:
             portrait_path = portraits_dir / f"{segment_index:03d}_{scene['scene_id']}_{line_index:02d}_portrait.mp4"
             segment_path = segments_dir / f"{segment_index:03d}_{scene['scene_id']}_{line_index:02d}.mp4"
 
-            speaker_images = pick_character_preview_paths(speaker, char_map, max_images=1)
+            speaker_images = pick_character_context_paths(speaker, char_map, max_images=1) or pick_character_preview_paths(speaker, char_map, max_images=1)
             line_reference_images = speaker_images or reference_images
             voice_reference_wav = prepared_reference_wav(speaker)
+            planned_source = scene_dialogue_source(scene, line_index - 1)
+            retrieved_original = None
+            if (
+                allow_original_reuse
+                and
+                planned_source.get("type") == "original_line"
+                and Path(str(planned_source.get("video_file", ""))).exists()
+                and float(planned_source.get("end", 0.0) or 0.0) > float(planned_source.get("start", 0.0) or 0.0)
+            ):
+                retrieved_original = {
+                    "audio_path": str(planned_source.get("audio_file", "")),
+                    "scene_clip_path": str(planned_source.get("video_file", "")),
+                    "start": float(planned_source.get("start", 0.0) or 0.0),
+                    "end": float(planned_source.get("end", 0.0) or 0.0),
+                    "segment_id": str(planned_source.get("segment_id", "")),
+                    "match_score": 1.0,
+                    "token_overlap": 1.0,
+                    "planned_source": True,
+                }
+            elif allow_original_reuse:
+                retrieved_original = select_retrieval_segment(speaker, spoken_text or line, original_line_library, clone_cfg)
 
-            create_line_card(episode_id, scene, line, line_reference_images or reference_images, card_path, width, height, fonts)
-            voice_meta = synthesize_speech(
-                spoken_text or line,
-                audio_path,
-                speaker,
-                voice["voice_id"],
-                int(voice["rate"]),
-                voice_reference_wav,
-                clone_cfg,
-                cfg,
+            create_line_card(
+                coalesce_text(shotlist.get("episode_label", "")) or episode_id,
+                scene,
+                line,
+                line_reference_images or reference_images,
+                card_path,
+                width,
+                height,
+                fonts,
             )
 
             visual_mode = "static_card"
             face_reference_path = ""
-            if (
-                bool(clone_cfg.get("enable_face_clone", True))
-                and bool(clone_cfg.get("enable_lipsync", True))
-                and line_reference_images
-            ):
-                try:
-                    face_reference_path = str(line_reference_images[0])
-                    create_audio_reactive_portrait_video(
-                        ffmpeg,
-                        line_reference_images[0],
-                        audio_path,
-                        portrait_path,
-                        fps,
-                        video_codec,
-                        clone_cfg,
-                    )
-                    create_lipsync_segment(
-                        ffmpeg,
-                        card_path,
-                        portrait_path,
-                        audio_path,
-                        segment_path,
-                        width,
-                        height,
-                        fps,
-                        audio_pad_seconds,
-                        video_codec,
-                    )
-                    visual_mode = "audio_reactive_face_clone"
-                except Exception as exc:
-                    warn(f"Lip-Sync-Fallback fuer {speaker} fehlgeschlagen, nutze statische Karte: {exc}")
-                    create_line_segment(ffmpeg, card_path, audio_path, segment_path, width, height, fps, audio_pad_seconds, video_codec)
-                    visual_mode = "static_card"
+            voice_meta: dict
+            if retrieved_original is not None:
+                source_audio_path = Path(str(retrieved_original.get("audio_path", "")))
+                source_scene_clip = Path(str(retrieved_original.get("scene_clip_path", "")))
+                if source_audio_path.exists():
+                    shutil.copy2(source_audio_path, audio_path)
+                create_original_scene_segment(
+                    ffmpeg,
+                    source_scene_clip,
+                    float(retrieved_original.get("start", 0.0) or 0.0),
+                    float(retrieved_original.get("end", 0.0) or 0.0),
+                    segment_path,
+                    width,
+                    height,
+                    video_codec,
+                )
+                frames = [Path(path) for path in retrieved_original.get("speaker_reference_frames", []) if Path(path).exists()]
+                face_reference_path = str(frames[0]) if frames else ""
+                visual_mode = "original_scene_reuse"
+                voice_meta = {
+                    "engine": "planned_original_line_reuse" if retrieved_original.get("planned_source") else "original_sample_reuse",
+                    "speaker_name": speaker,
+                    "reference_wav": str(source_audio_path),
+                    "device": preferred_torch_device(cfg),
+                    "voice_cloned": True,
+                    "fallback_reason": "",
+                    "retrieval_score": float(retrieved_original.get("match_score", 0.0) or 0.0),
+                    "retrieval_overlap": float(retrieved_original.get("token_overlap", 0.0) or 0.0),
+                    "reused_scene_clip": str(source_scene_clip),
+                    "reused_segment_id": str(retrieved_original.get("segment_id", "")),
+                }
             else:
-                create_line_segment(ffmpeg, card_path, audio_path, segment_path, width, height, fps, audio_pad_seconds, video_codec)
+                voice_meta = synthesize_speech(
+                    spoken_text or line,
+                    audio_path,
+                    speaker,
+                    voice["voice_id"],
+                    int(voice["rate"]),
+                    voice_reference_wav,
+                    clone_cfg,
+                    cfg,
+                )
+
+                portrait_source_images = pick_character_preview_paths(speaker, char_map, max_images=4) or line_reference_images or reference_images
+                if (
+                    bool(clone_cfg.get("enable_face_clone", True))
+                    and bool(clone_cfg.get("enable_lipsync", True))
+                    and portrait_source_images
+                ):
+                    try:
+                        face_reference_path = str(portrait_source_images[0])
+                        create_audio_reactive_portrait_video(
+                            ffmpeg,
+                            portrait_source_images,
+                            audio_path,
+                            portrait_path,
+                            fps,
+                            video_codec,
+                            clone_cfg,
+                        )
+                        create_lipsync_segment(
+                            ffmpeg,
+                            card_path,
+                            portrait_path,
+                            audio_path,
+                            segment_path,
+                            width,
+                            height,
+                            fps,
+                            audio_pad_seconds,
+                            video_codec,
+                        )
+                        visual_mode = "animated_reference_portrait"
+                    except Exception as exc:
+                        warn(f"Lip-Sync-Fallback fuer {speaker} fehlgeschlagen, nutze statische Karte: {exc}")
+                        create_line_segment(ffmpeg, card_path, audio_path, segment_path, width, height, fps, audio_pad_seconds, video_codec)
+                        visual_mode = "static_card"
+                else:
+                    create_line_segment(ffmpeg, card_path, audio_path, segment_path, width, height, fps, audio_pad_seconds, video_codec)
 
             rendered_segments.append(segment_path)
             manifest["segments"].append(
@@ -1213,6 +1456,10 @@ def main() -> None:
                     "voice_reference_wav": voice_meta.get("reference_wav", ""),
                     "voice_cloned": bool(voice_meta.get("voice_cloned")),
                     "voice_fallback_reason": voice_meta.get("fallback_reason", ""),
+                    "retrieval_score": float(voice_meta.get("retrieval_score", 0.0) or 0.0),
+                    "retrieval_overlap": float(voice_meta.get("retrieval_overlap", 0.0) or 0.0),
+                    "reused_segment_id": voice_meta.get("reused_segment_id", ""),
+                    "reused_scene_clip": voice_meta.get("reused_scene_clip", ""),
                     "visual_mode": visual_mode,
                     "face_reference": face_reference_path,
                     "file": str(segment_path),
@@ -1220,12 +1467,13 @@ def main() -> None:
             )
             segment_index += 1
 
-    end_card = cards_dir / "999_end.png"
-    end_segment = segments_dir / "999_end.mp4"
-    create_end_card(end_card, width, height, fonts)
-    create_silent_segment(ffmpeg, end_card, end_segment, width, height, fps, closing_card_seconds, video_codec)
-    rendered_segments.append(end_segment)
-    manifest["segments"].append({"type": "end", "file": str(end_segment), "duration_seconds": closing_card_seconds})
+    if include_title_cards:
+        end_card = cards_dir / "999_end.png"
+        end_segment = segments_dir / "999_end.mp4"
+        create_end_card(end_card, width, height, fonts)
+        create_silent_segment(ffmpeg, end_card, end_segment, width, height, fps, closing_card_seconds, video_codec)
+        rendered_segments.append(end_segment)
+        manifest["segments"].append({"type": "end", "file": str(end_segment), "duration_seconds": closing_card_seconds})
 
     final_mp4 = final_root / f"{episode_id}_final.mp4"
     final_video_codec = create_final_render(ffmpeg, rendered_segments, final_mp4, video_codec)

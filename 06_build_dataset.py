@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import argparse
 from collections import defaultdict
+from pathlib import Path
 
 from pipeline_common import (
     error,
@@ -19,6 +21,24 @@ from pipeline_common import (
 )
 
 
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Trainingsdatensatz bauen")
+    parser.add_argument("--episode", help="Name des Szenenordners unter data/processed/scene_clips.")
+    return parser.parse_args()
+
+
+def resolve_episode_dir(scene_root: Path, episode_name: str | None) -> Path | None:
+    if episode_name:
+        candidate = scene_root / Path(episode_name).name
+        if candidate.is_dir():
+            return candidate
+        for folder in sorted(scene_root.glob("*")):
+            if folder.is_dir() and folder.name == Path(episode_name).stem:
+                return folder
+        raise FileNotFoundError(f"Szenenordner nicht gefunden: {episode_name}")
+    return first_dir(scene_root)
+
+
 def unique_preserve(values: list[str]) -> list[str]:
     seen = set()
     result = []
@@ -32,10 +52,11 @@ def unique_preserve(values: list[str]) -> list[str]:
 
 def main() -> None:
     rerun_in_runtime()
+    args = parse_args()
     headline("Trainingsdatensatz bauen")
     cfg = load_config()
     scene_root = resolve_project_path(cfg["paths"]["scene_clips"])
-    episode_dir = first_dir(scene_root)
+    episode_dir = resolve_episode_dir(scene_root, args.episode)
     if episode_dir is None:
         info("Keine Szenenordner gefunden.")
         return

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import argparse
 from pathlib import Path
 
 from pipeline_common import (
@@ -20,6 +21,29 @@ from pipeline_common import (
     resolve_project_path,
     run_command,
 )
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Folge in Szenen zerlegen")
+    parser.add_argument("--episode-file", help="Dateiname oder Pfad der importierten Arbeitsdatei unter data/raw/episodes.")
+    return parser.parse_args()
+
+
+def resolve_episode_file(episodes_dir: Path, episode_file: str | None) -> Path | None:
+    if episode_file:
+        requested_name = Path(episode_file).name
+        candidate = Path(episode_file)
+        if not candidate.is_absolute():
+            candidate = episodes_dir / requested_name
+        if candidate.is_file():
+            return candidate
+        for video in sorted(episodes_dir.glob("*")):
+            if not video.is_file():
+                continue
+            if requested_name in {video.name, video.stem}:
+                return video
+        raise FileNotFoundError(f"Importierte Arbeitsdatei nicht gefunden: {episode_file}")
+    return first_video(episodes_dir)
 
 
 def export_scene(
@@ -70,6 +94,7 @@ def detect_scenes_with_py_scene_detect(episode: Path, threshold: float) -> list[
 
 def main() -> None:
     rerun_in_runtime()
+    args = parse_args()
     headline("Folge in Szenen zerlegen")
     cfg = load_config()
     ffmpeg = detect_tool(PROJECT_ROOT / "tools" / "ffmpeg" / "bin", "ffmpeg")
@@ -79,7 +104,7 @@ def main() -> None:
     scene_index_root = resolve_project_path(cfg["paths"]["scene_index"])
     inbox_dir = resolve_project_path(cfg["paths"]["inbox_episodes"])
 
-    episode = first_video(episodes_dir)
+    episode = resolve_episode_file(episodes_dir, args.episode_file)
     if episode is None:
         info("Keine importierte Arbeitsdatei gefunden.")
         return
