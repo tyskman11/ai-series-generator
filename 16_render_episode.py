@@ -12,8 +12,13 @@ from pathlib import Path
 
 from pipeline_common import (
     PROJECT_ROOT,
+    adapter_training_status,
+    backend_fine_tune_status,
     coalesce_text,
     detect_tool,
+    ensure_adapter_training_ready,
+    ensure_backend_fine_tune_ready,
+    ensure_fine_tune_training_ready,
     ensure_foundation_training_ready,
     error,
     ffmpeg_video_encode_args,
@@ -33,6 +38,7 @@ from pipeline_common import (
     resolve_project_path,
     run_command,
     save_step_autosave,
+    fine_tune_training_status,
     warn,
     write_json,
     write_text,
@@ -1285,6 +1291,12 @@ def main() -> None:
             if character not in all_characters:
                 all_characters.append(character)
     ensure_foundation_training_ready(cfg, characters=all_characters, for_render=True)
+    ensure_adapter_training_ready(cfg, characters=all_characters, for_render=True)
+    adapter_status = adapter_training_status(cfg, characters=all_characters)
+    ensure_fine_tune_training_ready(cfg, characters=all_characters, for_render=True)
+    fine_tune_status = fine_tune_training_status(cfg, characters=all_characters)
+    ensure_backend_fine_tune_ready(cfg, characters=all_characters, for_render=True)
+    backend_status = backend_fine_tune_status(cfg, characters=all_characters)
     fonts = font_bundle()
     info(
         "Clone-Modi: "
@@ -1376,6 +1388,19 @@ def main() -> None:
         write_json(model_path, model_payload)
         voice_model_paths[character] = str(model_path)
     voice_assignments = assign_voices(all_characters, base_rate, voice_profiles)
+    backend_character_index = backend_status.get("character_index", {}) if isinstance(backend_status.get("character_index"), dict) else {}
+    backend_voice_profiles = {}
+    for character in all_characters:
+        status_row = backend_character_index.get(coalesce_text(character).lower(), {})
+        backends = status_row.get("backends", {}) if isinstance(status_row.get("backends"), dict) else {}
+        voice_backend = backends.get("voice", {}) if isinstance(backends.get("voice"), dict) else {}
+        backend_voice_profiles[character] = {
+            "voice_clone_ready": bool(status_row.get("voice_clone_ready", False) or voice_backend.get("voice_clone_ready", False)),
+            "voice_quality_score": float(status_row.get("voice_quality_score", 0.0) or voice_backend.get("voice_quality_score", 0.0) or 0.0),
+            "voice_duration_seconds": float(status_row.get("voice_duration_seconds", 0.0) or voice_backend.get("voice_duration_seconds", 0.0) or 0.0),
+            "backend": str(voice_backend.get("backend", "")),
+            "bundle_path": str(((voice_backend.get("artifacts", {}) if isinstance(voice_backend.get("artifacts"), dict) else {}).get("bundle_path", "")) or ""),
+        }
 
     manifest = {
         "episode_id": episode_id,
@@ -1383,8 +1408,12 @@ def main() -> None:
         "episode_title": shotlist.get("episode_title", ""),
         "display_title": shotlist.get("display_title", episode_id),
         "shotlist": str(shotlist_path),
+        "adapter_training_summary": str(adapter_status.get("summary_path", "")) if adapter_status.get("summary_exists") else "",
+        "fine_tune_training_summary": str(fine_tune_status.get("summary_path", "")) if fine_tune_status.get("summary_exists") else "",
+        "backend_fine_tune_summary": str(backend_status.get("summary_path", "")) if backend_status.get("summary_exists") else "",
         "voice_profiles": str(voice_profiles_path),
         "voice_models": voice_model_paths,
+        "backend_voice_profiles": backend_voice_profiles,
         "render_modes": {
             "voice_cloning": bool(clone_cfg.get("enable_voice_cloning", True)),
             "face_clone": bool(clone_cfg.get("enable_face_clone", True)),
@@ -1426,6 +1455,7 @@ def main() -> None:
         for line_index, line in enumerate(scene.get("dialogue_lines", []), start=1):
             speaker, spoken_text = parse_speaker_line(line)
             voice = voice_assignments.get(speaker) or voice_assignments["erzähler"]
+            backend_voice_profile = backend_voice_profiles.get(speaker, {})
             audio_path = audio_dir / f"{segment_index:03d}_{scene['scene_id']}_{line_index:02d}.wav"
             card_path = cards_dir / f"{segment_index:03d}_{scene['scene_id']}_{line_index:02d}.png"
             portrait_path = portraits_dir / f"{segment_index:03d}_{scene['scene_id']}_{line_index:02d}_portrait.mp4"
@@ -1585,6 +1615,10 @@ def main() -> None:
                     "voice_reference_wav": voice_meta.get("reference_wav", ""),
                     "voice_cloned": bool(voice_meta.get("voice_cloned")),
                     "voice_fallback_reason": voice_meta.get("fallback_reason", ""),
+                    "backend_voice_clone_ready": bool(backend_voice_profile.get("voice_clone_ready", False)),
+                    "backend_voice_quality_score": float(backend_voice_profile.get("voice_quality_score", 0.0) or 0.0),
+                    "backend_voice_duration_seconds": float(backend_voice_profile.get("voice_duration_seconds", 0.0) or 0.0),
+                    "backend_voice_bundle": backend_voice_profile.get("bundle_path", ""),
                     "retrieval_score": float(voice_meta.get("retrieval_score", 0.0) or 0.0),
                     "retrieval_overlap": float(voice_meta.get("retrieval_overlap", 0.0) or 0.0),
                     "reused_segment_id": voice_meta.get("reused_segment_id", ""),

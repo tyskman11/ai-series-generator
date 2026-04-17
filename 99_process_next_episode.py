@@ -14,6 +14,7 @@ from pipeline_common import (
     load_config,
     next_unprocessed_video,
     ok,
+    read_json,
     rerun_in_runtime,
     resolve_project_path,
     runtime_python,
@@ -27,15 +28,18 @@ EPISODE_STEPS = [
     "03_split_scenes.py",
     "04_diarize_and_transcribe.py",
     "05_link_faces_and_speakers.py",
-    "06_build_dataset.py",
 ]
 GLOBAL_STEPS = [
-    "07_train_series_model.py",
+    "07_build_dataset.py",
+    "08_train_series_model.py",
     "09_prepare_foundation_training.py",
     "10_train_foundation_models.py",
-    "11_generate_episode_from_trained_model.py",
-    "12_build_series_bible.py",
-    "13_render_episode.py",
+    "11_train_adapter_models.py",
+    "12_train_fine_tune_models.py",
+    "13_run_backend_finetunes.py",
+    "14_generate_episode_from_trained_model.py",
+    "15_build_series_bible.py",
+    "16_render_episode.py",
 ]
 
 
@@ -56,6 +60,14 @@ def cleanup_processed_inbox_episode(path: Path) -> bool:
 
 def autosave_dir(cfg: dict) -> Path:
     return resolve_project_path("runtime/autosaves/99_process_next_episode")
+
+
+def status_json_path(cfg: dict) -> Path:
+    return autosave_dir(cfg) / "current_status.json"
+
+
+def status_markdown_path(cfg: dict) -> Path:
+    return autosave_dir(cfg) / "current_status.md"
 
 
 def utc_timestamp() -> str:
@@ -83,6 +95,7 @@ def default_state() -> dict:
         "current_phase": None,
         "current_episode_file": None,
         "current_episode_name": None,
+        "current_step": None,
         "episode_steps_completed": {},
         "processed_episodes": [],
         "global_steps_completed": [],
@@ -115,7 +128,129 @@ def prune_autosaves(cfg: dict) -> None:
             pass
 
 
-def save_autosave(cfg: dict, state: dict, reason: str) -> Path:
+def known_episode_names(state: dict) -> list[str]:
+    names = set(state.get("processed_episodes", []) or [])
+    names.update((state.get("episode_steps_completed", {}) or {}).keys())
+    current_episode = str(state.get("current_episode_name") or "").strip()
+    if current_episode:
+        names.add(current_episode)
+    return sorted(name for name in names if str(name).strip())
+
+
+def build_status_snapshot(cfg: dict, state: dict, inbox_dir: Path | None = None) -> dict:
+    pending_inbox_count = 0
+    if inbox_dir is not None and inbox_dir.exists():
+        pending_inbox_count = len([path for path in inbox_dir.iterdir() if path.is_file()])
+
+    episode_rows = []
+    processed = set(state.get("processed_episodes", []) or [])
+    current_phase = str(state.get("current_phase") or "").strip().lower()
+    current_episode = str(state.get("current_episode_name") or "").strip()
+    current_step = str(state.get("current_step") or "").strip()
+    for episode_name in known_episode_names(state):
+        completed = completed_episode_steps(state, episode_name)
+        remaining = [step for step in EPISODE_STEPS if step not in completed]
+        if episode_name in processed:
+            status = "completed"
+        elif current_phase == "episode" and episode_name == current_episode:
+            status = "running"
+        elif completed:
+            status = "partial"
+        else:
+            status = "pending"
+        episode_rows.append(
+            {
+                "episode": episode_name,
+                "status": status,
+                "completed_steps": completed,
+                "remaining_steps": remaining,
+                "current_step": current_step if status == "running" else None,
+            }
+        )
+
+    global_rows = []
+    completed_global_steps = set(state.get("global_steps_completed", []) or [])
+    for step_name in global_steps_to_run(cfg):
+        if step_name in completed_global_steps:
+            status = "completed"
+        elif current_phase == "global" and current_step == step_name:
+            status = "running"
+        else:
+            status = "pending"
+        global_rows.append({"step": step_name, "status": status})
+
+    return {
+        "status": str(state.get("status", "running")),
+        "updated_at": str(state.get("updated_at", "")),
+        "autosave_reason": str(state.get("autosave_reason", "")),
+        "setup_completed": bool(state.get("setup_completed", False)),
+        "processed_count": int(state.get("processed_count", 0) or 0),
+        "pending_inbox_count": pending_inbox_count,
+        "current_phase": state.get("current_phase"),
+        "current_episode_file": state.get("current_episode_file"),
+        "current_episode_name": state.get("current_episode_name"),
+        "current_step": state.get("current_step"),
+        "episode_progress": episode_rows,
+        "global_progress": global_rows,
+    }
+
+
+def render_status_markdown(snapshot: dict) -> str:
+    lines = [
+        "# 99 Process Status",
+        "",
+        f"- Status: {snapshot.get('status', '-')}",
+        f"- Aktualisiert: {snapshot.get('updated_at', '-')}",
+        f"- Grund: {snapshot.get('autosave_reason', '-')}",
+        f"- Setup fertig: {'ja' if snapshot.get('setup_completed') else 'nein'}",
+        f"- Verarbeitete Quellfolgen: {snapshot.get('processed_count', 0)}",
+        f"- Dateien aktuell in Inbox: {snapshot.get('pending_inbox_count', 0)}",
+        f"- Phase: {snapshot.get('current_phase') or '-'}",
+        f"- Laufende Folge: {snapshot.get('current_episode_name') or '-'}",
+        f"- Laufender Schritt: {snapshot.get('current_step') or '-'}",
+        "",
+        "## Episodenstatus",
+        "",
+    ]
+    episode_progress = snapshot.get("episode_progress", []) or []
+    if episode_progress:
+        for row in episode_progress:
+            remaining = ", ".join(row.get("remaining_steps", []) or []) or "-"
+            completed = ", ".join(row.get("completed_steps", []) or []) or "-"
+            lines.extend(
+                [
+                    f"### {row.get('episode')}",
+                    f"- Status: {row.get('status')}",
+                    f"- Erledigt: {completed}",
+                    f"- Offen: {remaining}",
+                    f"- Aktueller Schritt: {row.get('current_step') or '-'}",
+                    "",
+                ]
+            )
+    else:
+        lines.append("Keine Episoden im aktuellen Status vorhanden.")
+        lines.append("")
+
+    lines.append("## Globaler Status")
+    lines.append("")
+    global_progress = snapshot.get("global_progress", []) or []
+    if global_progress:
+        for row in global_progress:
+            lines.append(f"- {row.get('step')}: {row.get('status')}")
+    else:
+        lines.append("- Keine globalen Schritte aktiv.")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def write_status_files(cfg: dict, snapshot: dict) -> None:
+    root = autosave_dir(cfg)
+    root.mkdir(parents=True, exist_ok=True)
+    status_json_path(cfg).write_text(json.dumps(snapshot, ensure_ascii=False, indent=2), encoding="utf-8")
+    status_markdown_path(cfg).write_text(render_status_markdown(snapshot), encoding="utf-8")
+
+
+def save_autosave(cfg: dict, state: dict, reason: str, inbox_dir: Path | None = None) -> Path:
     root = autosave_dir(cfg)
     root.mkdir(parents=True, exist_ok=True)
     state["updated_at"] = utc_timestamp()
@@ -123,6 +258,7 @@ def save_autosave(cfg: dict, state: dict, reason: str) -> Path:
     target = root / autosave_filename()
     target.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
     prune_autosaves(cfg)
+    write_status_files(cfg, build_status_snapshot(cfg, state, inbox_dir))
     return target
 
 
@@ -131,7 +267,7 @@ def episode_step_args(script_name: str, episode_file: str, episode_name: str) ->
         return []
     if script_name == "03_split_scenes.py":
         return ["--episode-file", episode_file]
-    if script_name in {"04_diarize_and_transcribe.py", "05_link_faces_and_speakers.py", "06_build_dataset.py"}:
+    if script_name in {"04_diarize_and_transcribe.py", "05_link_faces_and_speakers.py"}:
         return ["--episode", episode_name]
     return []
 
@@ -142,7 +278,8 @@ def episode_step_title(script_name: str, episode_file: str, episode_name: str) -
         "03_split_scenes.py": f"Szenenerkennung: {episode_name}",
         "04_diarize_and_transcribe.py": f"Audiosegmentierung und Transkription: {episode_name}",
         "05_link_faces_and_speakers.py": f"Gesichter und Stimmen verknüpfen: {episode_name}",
-        "06_build_dataset.py": f"Trainingsdatensatz: {episode_name}",
+        "07_build_dataset.py": "Trainingsdatensatz aus reviewtem Bestand aufbauen",
+        "08_train_series_model.py": "Serienmodell aus reviewtem Datensatz trainieren",
     }
     return titles.get(script_name, episode_name)
 
@@ -175,23 +312,39 @@ def mark_episode_completed(state: dict, episode_name: str) -> None:
     state["current_phase"] = None
     state["current_episode_file"] = None
     state["current_episode_name"] = None
+    state["current_step"] = None
+
+
+def open_review_item_count(cfg: dict) -> int:
+    queue = read_json(resolve_project_path(cfg["paths"]["review_queue"]), {"items": []})
+    items = queue.get("items", []) if isinstance(queue, dict) else []
+    return len(items) if isinstance(items, list) else 0
 
 
 def global_steps_to_run(cfg: dict) -> list[str]:
     foundation_cfg = cfg.get("foundation_training", {}) if isinstance(cfg.get("foundation_training"), dict) else {}
+    adapter_cfg = cfg.get("adapter_training", {}) if isinstance(cfg.get("adapter_training"), dict) else {}
+    fine_tune_cfg = cfg.get("fine_tune_training", {}) if isinstance(cfg.get("fine_tune_training"), dict) else {}
+    backend_cfg = cfg.get("backend_fine_tune", {}) if isinstance(cfg.get("backend_fine_tune"), dict) else {}
     needs_foundation_training = bool(foundation_cfg.get("required_before_generate", True)) or bool(
         foundation_cfg.get("required_before_render", True)
     )
-    steps = ["07_train_series_model.py"]
+    steps = ["07_build_dataset.py", "08_train_series_model.py"]
     if bool(foundation_cfg.get("prepare_after_batch", False)) or needs_foundation_training:
         steps.append("09_prepare_foundation_training.py")
         if bool(foundation_cfg.get("auto_train_after_prepare", False)) or needs_foundation_training:
             steps.append("10_train_foundation_models.py")
+            if bool(adapter_cfg.get("auto_train_after_foundation", True)):
+                steps.append("11_train_adapter_models.py")
+                if bool(fine_tune_cfg.get("auto_train_after_adapter", True)):
+                    steps.append("12_train_fine_tune_models.py")
+                    if bool(backend_cfg.get("auto_run_after_fine_tune", True)):
+                        steps.append("13_run_backend_finetunes.py")
     steps.extend(
         [
-            "11_generate_episode_from_trained_model.py",
-            "12_build_series_bible.py",
-            "13_render_episode.py",
+            "14_generate_episode_from_trained_model.py",
+            "15_build_series_bible.py",
+            "16_render_episode.py",
         ]
     )
     return steps
@@ -199,12 +352,16 @@ def global_steps_to_run(cfg: dict) -> list[str]:
 
 def global_step_title(script_name: str) -> str:
     titles = {
-        "07_train_series_model.py": "Serienmodell trainieren",
+        "07_build_dataset.py": "Trainingsdatensatz aus reviewtem Bestand bauen",
+        "08_train_series_model.py": "Serienmodell trainieren",
         "09_prepare_foundation_training.py": "Foundation-Training vorbereiten",
         "10_train_foundation_models.py": "Foundation-Modelle trainieren",
-        "11_generate_episode_from_trained_model.py": "Neue Folge aus trainiertem Modell erzeugen",
-        "12_build_series_bible.py": "Serienbibel aktualisieren",
-        "13_render_episode.py": "Storyboard-Video rendern",
+        "11_train_adapter_models.py": "Lokale Adapter-Profile trainieren",
+        "12_train_fine_tune_models.py": "Lokale Fine-Tune-Profile trainieren",
+        "13_run_backend_finetunes.py": "Konkrete Backend-Fine-Tune-Laeufe erzeugen",
+        "14_generate_episode_from_trained_model.py": "Neue Folge aus trainiertem Modell erzeugen",
+        "15_build_series_bible.py": "Serienbibel aktualisieren",
+        "16_render_episode.py": "Storyboard-Video rendern",
     }
     return titles[script_name]
 
@@ -220,9 +377,14 @@ def main() -> None:
         info("Vorhandenen Autosave gefunden. Pipeline setzt am letzten erfolgreich abgeschlossenen Schritt fort.")
 
     if not bool(state.get("setup_completed", False)):
+        state["current_phase"] = "setup"
+        state["current_step"] = SETUP_STEP
+        save_autosave(cfg, state, "setup_started", inbox_dir)
         run_step(SETUP_STEP, "Projektstruktur")
         state["setup_completed"] = True
-        save_autosave(cfg, state, "setup_completed")
+        state["current_phase"] = None
+        state["current_step"] = None
+        save_autosave(cfg, state, "setup_completed", inbox_dir)
 
     while True:
         current_episode_file = str(state.get("current_episode_file") or "").strip()
@@ -239,45 +401,68 @@ def main() -> None:
             state["current_phase"] = "episode"
             state["current_episode_file"] = next_video_name
             state["current_episode_name"] = episode_name
+            state["current_step"] = None
             state.setdefault("episode_steps_completed", {}).setdefault(episode_name, [])
-            save_autosave(cfg, state, f"episode_selected:{episode_name}")
+            save_autosave(cfg, state, f"episode_selected:{episode_name}", inbox_dir)
 
         info(f"Starte Batch-Folge: {next_video_name}")
         finished_steps = set(completed_episode_steps(state, episode_name))
         for script_name in EPISODE_STEPS:
             if script_name in finished_steps:
                 continue
+            state["current_phase"] = "episode"
+            state["current_episode_file"] = next_video_name
+            state["current_episode_name"] = episode_name
+            state["current_step"] = script_name
+            save_autosave(cfg, state, f"episode_step_started:{episode_name}:{script_name}", inbox_dir)
             run_step(
                 script_name,
                 episode_step_title(script_name, next_video_name, episode_name),
                 episode_step_args(script_name, next_video_name, episode_name),
             )
             mark_episode_step_completed(state, episode_name, script_name)
-            save_autosave(cfg, state, f"{episode_name}:{script_name}")
+            save_autosave(cfg, state, f"{episode_name}:{script_name}", inbox_dir)
 
         inbox_file = inbox_dir / next_video_name
         if cleanup_processed_inbox_episode(inbox_file):
             info(f"Inbox-Datei entfernt: {next_video_name}")
         mark_episode_completed(state, episode_name)
-        save_autosave(cfg, state, f"episode_completed:{episode_name}")
+        save_autosave(cfg, state, f"episode_completed:{episode_name}", inbox_dir)
+
+    review_count = open_review_item_count(cfg)
+    if review_count > 0:
+        info(
+            f"Es gibt noch {review_count} offene Review-Faelle. "
+            "Fuehre zuerst 06_review_unknowns.py aus, bevor Datensatz, Training, Generierung oder Render starten."
+        )
+        state["current_phase"] = "review"
+        state["current_step"] = "06_review_unknowns.py"
+        save_autosave(cfg, state, "review_pending", inbox_dir)
+        return
 
     if int(state.get("processed_count", 0) or 0) == 0:
+        write_status_files(cfg, build_status_snapshot(cfg, state, inbox_dir))
         info("Keine neuen Folgen im Inbox-Ordner gefunden.")
         return
 
     state["current_phase"] = "global"
-    save_autosave(cfg, state, "global_phase_started")
+    state["current_step"] = None
+    save_autosave(cfg, state, "global_phase_started", inbox_dir)
     completed_global_steps = set(state.get("global_steps_completed", []) or [])
     for script_name in global_steps_to_run(cfg):
         if script_name in completed_global_steps:
             continue
+        state["current_phase"] = "global"
+        state["current_step"] = script_name
+        save_autosave(cfg, state, f"global_step_started:{script_name}", inbox_dir)
         run_step(script_name, global_step_title(script_name))
         mark_global_step_completed(state, script_name)
-        save_autosave(cfg, state, f"global:{script_name}")
+        save_autosave(cfg, state, f"global:{script_name}", inbox_dir)
 
     state["status"] = "completed"
     state["current_phase"] = None
-    save_autosave(cfg, state, "pipeline_completed")
+    state["current_step"] = None
+    save_autosave(cfg, state, "pipeline_completed", inbox_dir)
     ok(f"Die Pipeline ist komplett durchgelaufen. Neue Quellfolgen verarbeitet: {state['processed_count']}")
 
 

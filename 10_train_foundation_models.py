@@ -34,6 +34,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Lokale Foundation-Packs fuer Bild, Video und Stimme trainieren")
     parser.add_argument("--limit-characters", type=int, default=0, help="Optional nur die ersten N Figuren trainieren.")
     parser.add_argument("--character", help="Optional nur eine bestimmte Figur trainieren.")
+    parser.add_argument("--force", action="store_true", help="Trainiert vorhandene Foundation-Packs bewusst neu.")
     return parser.parse_args()
 
 
@@ -87,16 +88,27 @@ def wav_duration_seconds(path: Path) -> float:
     return frame_count / frame_rate if frame_rate else 0.0
 
 
-def voice_stats(paths: list[Path]) -> dict:
+def voice_stats(paths: list[Path], cfg: dict) -> dict:
+    foundation_cfg = cfg.get("foundation_training", {}) if isinstance(cfg.get("foundation_training"), dict) else {}
     durations = [wav_duration_seconds(path) for path in paths if path.exists()]
     if not durations:
-        return {"sample_count": 0}
+        return {"sample_count": 0, "duration_seconds_total": 0.0, "quality_score": 0.0, "clone_ready": False}
     total_duration = sum(durations)
+    min_total_duration = float(foundation_cfg.get("min_voice_duration_seconds_total", 8.0) or 8.0)
+    target_total_duration = float(foundation_cfg.get("target_voice_duration_seconds_total", 18.0) or 18.0)
+    min_voice_samples = max(1, int(foundation_cfg.get("min_voice_samples_for_clone", 4) or 4))
+    coverage_score = min(1.0, total_duration / max(1.0, target_total_duration))
+    sample_score = min(1.0, len(durations) / max(1.0, float(min_voice_samples + 2)))
+    max_duration_score = min(1.0, max(durations) / 4.0)
+    quality_score = round((coverage_score * 0.55) + (sample_score * 0.30) + (max_duration_score * 0.15), 4)
+    clone_ready = len(durations) >= min_voice_samples and total_duration >= min_total_duration
     return {
         "sample_count": len(durations),
         "duration_seconds_total": round(total_duration, 3),
         "duration_seconds_mean": round(total_duration / max(1, len(durations)), 3),
         "duration_seconds_max": round(max(durations), 3),
+        "quality_score": quality_score,
+        "clone_ready": clone_ready,
     }
 
 
@@ -137,7 +149,7 @@ def build_training_pack(manifest: dict, cfg: dict) -> dict:
         },
         "image_pack": image_stats(frame_paths),
         "video_pack": video_stats(video_entries),
-        "voice_pack": voice_stats(voice_paths),
+        "voice_pack": voice_stats(voice_paths, cfg),
         "training_ready": bool(frame_paths or voice_paths or video_entries),
         "target_inference_minutes": [float(cfg.get("generation", {}).get("target_episode_minutes_min", 20.0)), float(cfg.get("generation", {}).get("target_episode_minutes_max", 24.0))],
     }
@@ -178,7 +190,7 @@ def main() -> None:
         slug = str(manifest.get("slug", "") or "figur")
         autosave_target = slug
         pack_path = pack_path_for_manifest(cfg, manifest)
-        if foundation_pack_completed(pack_path):
+        if not args.force and foundation_pack_completed(pack_path):
             payload = read_json(pack_path, {})
             info(f"Foundation-Pack bereits vorhanden: {character_name}")
         else:
@@ -202,6 +214,9 @@ def main() -> None:
                         "frame_samples": int(payload.get("image_pack", {}).get("sample_count", 0)),
                         "video_samples": int(payload.get("video_pack", {}).get("sample_count", 0)),
                         "voice_samples": int(payload.get("voice_pack", {}).get("sample_count", 0)),
+                        "voice_duration_seconds": float(payload.get("voice_pack", {}).get("duration_seconds_total", 0.0) or 0.0),
+                        "voice_quality_score": float(payload.get("voice_pack", {}).get("quality_score", 0.0) or 0.0),
+                        "voice_clone_ready": bool(payload.get("voice_pack", {}).get("clone_ready", False)),
                     },
                 )
             except Exception as exc:
@@ -220,6 +235,9 @@ def main() -> None:
                 "frame_samples": int(payload.get("image_pack", {}).get("sample_count", 0)),
                 "video_samples": int(payload.get("video_pack", {}).get("sample_count", 0)),
                 "voice_samples": int(payload.get("voice_pack", {}).get("sample_count", 0)),
+                "voice_duration_seconds": float(payload.get("voice_pack", {}).get("duration_seconds_total", 0.0) or 0.0),
+                "voice_quality_score": float(payload.get("voice_pack", {}).get("quality_score", 0.0) or 0.0),
+                "voice_clone_ready": bool(payload.get("voice_pack", {}).get("clone_ready", False)),
                 "autosave": load_step_autosave("10_train_foundation_models", autosave_target),
             }
         )

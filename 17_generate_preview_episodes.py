@@ -51,38 +51,48 @@ def main() -> None:
     count = max(1, int(args.count))
     cfg = load_config()
     foundation_cfg = cfg.get("foundation_training", {}) if isinstance(cfg.get("foundation_training"), dict) else {}
+    adapter_cfg = cfg.get("adapter_training", {}) if isinstance(cfg.get("adapter_training"), dict) else {}
+    fine_tune_cfg = cfg.get("fine_tune_training", {}) if isinstance(cfg.get("fine_tune_training"), dict) else {}
+    backend_cfg = cfg.get("backend_fine_tune", {}) if isinstance(cfg.get("backend_fine_tune"), dict) else {}
 
     headline("Mehrere sichtbare Preview-Episoden erzeugen")
     generated: list[str] = []
     autosave_target = f"count_{count}"
-    mark_step_started("14_generate_preview_episodes", autosave_target, {"requested_count": count})
+    mark_step_started("17_generate_preview_episodes", autosave_target, {"requested_count": count})
     try:
-        run_step("07_train_series_model.py")
+        run_step("07_build_dataset.py")
+        run_step("08_train_series_model.py")
         if bool(foundation_cfg.get("required_before_generate", True)) or bool(foundation_cfg.get("required_before_render", True)):
             run_step("09_prepare_foundation_training.py")
             run_step("10_train_foundation_models.py")
+            if bool(adapter_cfg.get("auto_train_after_foundation", True)):
+                run_step("11_train_adapter_models.py")
+                if bool(fine_tune_cfg.get("auto_train_after_adapter", True)):
+                    run_step("12_train_fine_tune_models.py")
+                    if bool(backend_cfg.get("auto_run_after_fine_tune", True)):
+                        run_step("13_run_backend_finetunes.py")
         for index in range(count):
             before = latest_episode_id()
-            run_step("11_generate_episode_from_trained_model.py")
+            run_step("14_generate_episode_from_trained_model.py")
             episode_id = latest_episode_id()
             if not episode_id or episode_id == before:
                 raise RuntimeError("Neue Episode konnte nicht ermittelt werden.")
             env = os.environ.copy()
             env["SERIES_RENDER_EPISODE"] = episode_id
-            run_step("13_render_episode.py", env=env)
+            run_step("16_render_episode.py", env=env)
             generated.append(episode_id)
             ok(f"{index + 1}/{count}: {episode_id} erzeugt und gerendert.")
 
-        run_step("12_build_series_bible.py")
+        run_step("15_build_series_bible.py")
         mark_step_completed(
-            "14_generate_preview_episodes",
+            "17_generate_preview_episodes",
             autosave_target,
             {"requested_count": count, "generated_episodes": generated, "generated_count": len(generated)},
         )
         ok(f"Fertig. Neue sichtbare Episoden: {', '.join(generated)}")
     except Exception as exc:
         mark_step_failed(
-            "14_generate_preview_episodes",
+            "17_generate_preview_episodes",
             str(exc),
             autosave_target,
             {"requested_count": count, "generated_episodes": generated, "generated_count": len(generated)},

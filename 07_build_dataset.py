@@ -31,6 +31,7 @@ PROCESS_VERSION = 1
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Trainingsdatensatz bauen")
     parser.add_argument("--episode", help="Name des Szenenordners unter data/processed/scene_clips.")
+    parser.add_argument("--force", action="store_true", help="Baut vorhandene Datensaetze bewusst neu auf.")
     return parser.parse_args()
 
 
@@ -46,7 +47,7 @@ def episode_dataset_completed(episode_dir: Path, cfg: dict) -> bool:
         return False
     if not isinstance(rows, list) or len(rows) <= 0:
         return False
-    autosave_state = completed_step_state("06_build_dataset", episode_dir.name, PROCESS_VERSION)
+    autosave_state = completed_step_state("07_build_dataset", episode_dir.name, PROCESS_VERSION)
     if manifest:
         if int(manifest.get("process_version", 0) or 0) != PROCESS_VERSION:
             return False
@@ -67,6 +68,16 @@ def next_undataseted_episode_dir(scene_root: Path, cfg: dict) -> Path | None:
     return first_dir(scene_root)
 
 
+def pending_undataseted_episode_dirs(scene_root: Path, cfg: dict) -> list[Path]:
+    pending = []
+    for folder in sorted(scene_root.glob("*")):
+        if not folder.is_dir():
+            continue
+        if not episode_dataset_completed(folder, cfg):
+            pending.append(folder)
+    return pending
+
+
 def resolve_episode_dir(scene_root: Path, episode_name: str | None, cfg: dict) -> Path | None:
     if episode_name:
         candidate = scene_root / Path(episode_name).name
@@ -77,6 +88,15 @@ def resolve_episode_dir(scene_root: Path, episode_name: str | None, cfg: dict) -
                 return folder
         raise FileNotFoundError(f"Szenenordner nicht gefunden: {episode_name}")
     return next_undataseted_episode_dir(scene_root, cfg)
+
+
+def resolve_episode_dirs_for_processing(scene_root: Path, episode_name: str | None, cfg: dict, force: bool = False) -> list[Path]:
+    if episode_name:
+        episode_dir = resolve_episode_dir(scene_root, episode_name, cfg)
+        return [episode_dir] if episode_dir is not None else []
+    if force:
+        return [folder for folder in sorted(scene_root.glob("*")) if folder.is_dir()]
+    return pending_undataseted_episode_dirs(scene_root, cfg)
 
 
 def unique_preserve(values: list[str]) -> list[str]:
@@ -90,20 +110,11 @@ def unique_preserve(values: list[str]) -> list[str]:
     return result
 
 
-def main() -> None:
-    rerun_in_runtime()
-    args = parse_args()
-    headline("Trainingsdatensatz bauen")
-    cfg = load_config()
-    scene_root = resolve_project_path(cfg["paths"]["scene_clips"])
-    episode_dir = resolve_episode_dir(scene_root, args.episode, cfg)
-    if episode_dir is None:
-        info("Keine Szenenordner gefunden.")
-        return
+def process_episode_dir(episode_dir: Path, cfg: dict, force: bool = False) -> bool:
     autosave_target = episode_dir.name
-    if episode_dataset_completed(episode_dir, cfg):
+    if not force and episode_dataset_completed(episode_dir, cfg):
         mark_step_completed(
-            "06_build_dataset",
+            "07_build_dataset",
             autosave_target,
             {
                 "episode_id": episode_dir.name,
@@ -113,7 +124,7 @@ def main() -> None:
             },
         )
         ok(f"Datensatz bereits vorhanden: {episode_dir.name}")
-        return
+        return False
 
     linked_rows = read_json(
         resolve_project_path(cfg["paths"]["linked_segments"]) / f"{episode_dir.name}_linked_segments.json",
@@ -121,7 +132,7 @@ def main() -> None:
     )
     if not linked_rows:
         info("Keine verknüpften Segmente gefunden.")
-        return
+        return False
 
     faces_summary = {
         row["scene_id"]: row.get("face_clusters", [])
@@ -138,7 +149,7 @@ def main() -> None:
     dataset_rows = []
     scene_ids = sorted(grouped_rows)
     mark_step_started(
-        "06_build_dataset",
+        "07_build_dataset",
         autosave_target,
         {
             "episode_id": episode_dir.name,
@@ -181,7 +192,7 @@ def main() -> None:
             )
             processed_scene_ids.append(scene_id)
             save_step_autosave(
-                "06_build_dataset",
+                "07_build_dataset",
                 autosave_target,
                 {
                     "status": "in_progress",
@@ -212,7 +223,7 @@ def main() -> None:
             },
         )
         mark_step_completed(
-            "06_build_dataset",
+            "07_build_dataset",
             autosave_target,
             {
                 "episode_id": episode_dir.name,
@@ -225,9 +236,10 @@ def main() -> None:
             },
         )
         ok(f"Datensatz erstellt: {len(dataset_rows)} Szenen")
+        return True
     except Exception as exc:
         mark_step_failed(
-            "06_build_dataset",
+            "07_build_dataset",
             str(exc),
             autosave_target,
             {
@@ -239,6 +251,30 @@ def main() -> None:
             },
         )
         raise
+
+
+def main() -> None:
+    rerun_in_runtime()
+    args = parse_args()
+    headline("Trainingsdatensatz bauen")
+    cfg = load_config()
+    scene_root = resolve_project_path(cfg["paths"]["scene_clips"])
+    episode_dirs = resolve_episode_dirs_for_processing(scene_root, args.episode, cfg, args.force)
+    if not episode_dirs:
+        if args.episode:
+            info("Keine passenden Szenenordner gefunden.")
+        else:
+            info("Keine offenen Folgen für Schritt 07 gefunden.")
+        return
+
+    processed_count = 0
+    total = len(episode_dirs)
+    for index, episode_dir in enumerate(episode_dirs, start=1):
+        info(f"Bearbeite {index}/{total}: {episode_dir.name}")
+        if process_episode_dir(episode_dir, cfg, force=args.force):
+            processed_count += 1
+
+    ok(f"Batch abgeschlossen: {processed_count} Folgen in 07 verarbeitet.")
 
 
 if __name__ == "__main__":

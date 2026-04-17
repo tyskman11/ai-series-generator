@@ -74,6 +74,9 @@ DEFAULT_STRUCTURE = {
             "manifests": {},
             "plans": {},
             "checkpoints": {},
+            "adapters": {},
+            "finetunes": {},
+            "backend_runs": {},
             "logs": {},
         }
     },
@@ -121,6 +124,9 @@ DEFAULT_CONFIG = {
         "foundation_manifests": "training/foundation/manifests",
         "foundation_plans": "training/foundation/plans",
         "foundation_checkpoints": "training/foundation/checkpoints",
+        "foundation_adapters": "training/foundation/adapters",
+        "foundation_finetunes": "training/foundation/finetunes",
+        "foundation_backend_runs": "training/foundation/backend_runs",
         "foundation_logs": "training/foundation/logs",
     },
     "transcription": {
@@ -137,6 +143,12 @@ DEFAULT_CONFIG = {
         "voice_embedding_threshold_speechbrain": 0.44,
         "speaker_cluster_high_quality_min_seconds": 1.0,
         "speaker_cluster_min_segments": 2,
+        "speaker_unknown_rescue_margin": 0.08,
+        "speaker_unknown_neighbor_margin": 0.12,
+        "speaker_unknown_episode_rescue_margin": 0.11,
+        "speaker_unknown_episode_embedding_margin": 0.04,
+        "speaker_unknown_episode_min_token_score": 2.2,
+        "speaker_unknown_episode_min_token_margin": 0.8,
     },
     "diarization": {
         "model_name": "pyannote/speaker-diarization-community-1",
@@ -165,6 +177,12 @@ DEFAULT_CONFIG = {
         "review_known_face_min_consensus": 2,
         "review_known_face_strong_match_threshold": 0.84,
         "review_known_face_min_reference_quality": 5.0,
+        "review_known_face_identity_relaxed_consensus_strength": 5.0,
+        "review_known_face_identity_weak_strength": 2.0,
+        "review_known_face_identity_threshold_bonus_max": 0.03,
+        "review_known_face_identity_margin_bonus_max": 0.02,
+        "review_known_face_identity_weak_threshold_penalty": 0.02,
+        "review_known_face_identity_weak_margin_penalty": 0.01,
     },
     "generation": {
         "default_scene_count": 6,
@@ -195,6 +213,39 @@ DEFAULT_CONFIG = {
         "image_base_model": "stabilityai/stable-diffusion-xl-base-1.0",
         "video_base_model": "Lightricks/LTX-Video",
         "voice_base_model": "openbmb/VoxCPM2",
+        "min_voice_duration_seconds_total": 8.0,
+        "target_voice_duration_seconds_total": 18.0,
+        "min_voice_samples_for_clone": 4,
+    },
+    "adapter_training": {
+        "auto_train_after_foundation": True,
+        "required_before_generate": True,
+        "required_before_render": True,
+        "min_image_samples": 8,
+        "min_video_samples": 4,
+        "min_voice_samples": 4,
+        "min_voice_duration_seconds_total": 8.0,
+        "min_voice_quality_score": 0.45,
+        "image_histogram_bins": 24,
+        "image_thumbnail_size": 96,
+        "voice_mfcc_count": 20,
+    },
+    "fine_tune_training": {
+        "auto_train_after_adapter": True,
+        "required_before_generate": True,
+        "required_before_render": True,
+        "min_modalities_ready": 1,
+        "target_steps_image": 1200,
+        "target_steps_voice": 800,
+        "target_steps_video": 600,
+    },
+    "backend_fine_tune": {
+        "auto_run_after_fine_tune": True,
+        "required_before_generate": True,
+        "required_before_render": True,
+        "image_backend": "lora-image",
+        "video_backend": "motion-adapter",
+        "voice_backend": "speaker-adapter",
     },
     "cloning": {
         "enable_voice_cloning": True,
@@ -949,6 +1000,21 @@ def foundation_summary_path(cfg: dict[str, Any]) -> Path:
     return checkpoint_root / "foundation_training_summary.json"
 
 
+def adapter_summary_path(cfg: dict[str, Any]) -> Path:
+    adapter_root = resolve_project_path(cfg["paths"].get("foundation_adapters", "training/foundation/adapters"))
+    return adapter_root / "adapter_training_summary.json"
+
+
+def fine_tune_summary_path(cfg: dict[str, Any]) -> Path:
+    finetune_root = resolve_project_path(cfg["paths"].get("foundation_finetunes", "training/foundation/finetunes"))
+    return finetune_root / "fine_tune_training_summary.json"
+
+
+def backend_run_summary_path(cfg: dict[str, Any]) -> Path:
+    backend_root = resolve_project_path(cfg["paths"].get("foundation_backend_runs", "training/foundation/backend_runs"))
+    return backend_root / "backend_fine_tune_summary.json"
+
+
 def foundation_training_required(cfg: dict[str, Any]) -> bool:
     foundation_cfg = cfg.get("foundation_training", {}) if isinstance(cfg.get("foundation_training"), dict) else {}
     return bool(foundation_cfg.get("required_before_generate", True))
@@ -960,6 +1026,36 @@ def foundation_render_required(cfg: dict[str, Any]) -> bool:
     if bool(clone_cfg.get("require_trained_voice_models", True)):
         return True
     return bool(foundation_cfg.get("required_before_render", True))
+
+
+def adapter_training_required(cfg: dict[str, Any]) -> bool:
+    adapter_cfg = cfg.get("adapter_training", {}) if isinstance(cfg.get("adapter_training"), dict) else {}
+    return bool(adapter_cfg.get("required_before_generate", True))
+
+
+def adapter_render_required(cfg: dict[str, Any]) -> bool:
+    adapter_cfg = cfg.get("adapter_training", {}) if isinstance(cfg.get("adapter_training"), dict) else {}
+    return bool(adapter_cfg.get("required_before_render", True))
+
+
+def fine_tune_training_required(cfg: dict[str, Any]) -> bool:
+    fine_tune_cfg = cfg.get("fine_tune_training", {}) if isinstance(cfg.get("fine_tune_training"), dict) else {}
+    return bool(fine_tune_cfg.get("required_before_generate", True))
+
+
+def fine_tune_render_required(cfg: dict[str, Any]) -> bool:
+    fine_tune_cfg = cfg.get("fine_tune_training", {}) if isinstance(cfg.get("fine_tune_training"), dict) else {}
+    return bool(fine_tune_cfg.get("required_before_render", True))
+
+
+def backend_fine_tune_required(cfg: dict[str, Any]) -> bool:
+    backend_cfg = cfg.get("backend_fine_tune", {}) if isinstance(cfg.get("backend_fine_tune"), dict) else {}
+    return bool(backend_cfg.get("required_before_generate", True))
+
+
+def backend_fine_tune_render_required(cfg: dict[str, Any]) -> bool:
+    backend_cfg = cfg.get("backend_fine_tune", {}) if isinstance(cfg.get("backend_fine_tune"), dict) else {}
+    return bool(backend_cfg.get("required_before_render", True))
 
 
 def _normalized_training_name(name: str) -> str:
@@ -984,6 +1080,15 @@ def load_foundation_training_index(cfg: dict[str, Any]) -> dict[str, dict[str, A
             "pack_path": pack_path,
             "pack_exists": pack_path.exists(),
             "voice_samples": max(int(row.get("voice_samples", 0) or 0), int(voice_pack.get("sample_count", 0) or 0)),
+            "voice_duration_seconds": max(
+                float(row.get("voice_duration_seconds", 0.0) or 0.0),
+                float(voice_pack.get("duration_seconds_total", 0.0) or 0.0),
+            ),
+            "voice_quality_score": max(
+                float(row.get("voice_quality_score", 0.0) or 0.0),
+                float(voice_pack.get("quality_score", 0.0) or 0.0),
+            ),
+            "voice_clone_ready": bool(row.get("voice_clone_ready", False) or voice_pack.get("clone_ready", False)),
             "video_samples": max(int(row.get("video_samples", 0) or 0), int(video_pack.get("sample_count", 0) or 0)),
             "frame_samples": max(int(row.get("frame_samples", 0) or 0), int(image_pack.get("sample_count", 0) or 0)),
         }
@@ -994,6 +1099,7 @@ def foundation_training_status(
     cfg: dict[str, Any],
     characters: Iterable[str] | None = None,
     model_path: Path | None = None,
+    require_voice_clone: bool = False,
 ) -> dict[str, Any]:
     summary_path = foundation_summary_path(cfg)
     series_model_path = model_path or resolve_project_path(cfg["paths"].get("series_model", "generation/model/series_model.json"))
@@ -1013,6 +1119,9 @@ def foundation_training_status(
             missing_characters.append(display_name)
             continue
         if int(row.get("voice_samples", 0) or 0) <= 0:
+            weak_characters.append(display_name)
+            continue
+        if require_voice_clone and not bool(row.get("voice_clone_ready", False)):
             weak_characters.append(display_name)
     summary_new_enough = summary_exists and (not model_exists or summary_mtime >= model_mtime)
     return {
@@ -1035,7 +1144,12 @@ def ensure_foundation_training_ready(
     for_render: bool = False,
 ) -> dict[str, Any]:
     required = foundation_render_required(cfg) if for_render else foundation_training_required(cfg)
-    status = foundation_training_status(cfg, characters=characters, model_path=model_path)
+    status = foundation_training_status(
+        cfg,
+        characters=characters,
+        model_path=model_path,
+        require_voice_clone=for_render,
+    )
     if not required:
         return status
     if not status["summary_exists"]:
@@ -1044,7 +1158,7 @@ def ensure_foundation_training_ready(
         )
     if not status["summary_new_enough"]:
         raise RuntimeError(
-            "Foundation-Training ist aelter als das aktuelle Serienmodell. Fuehre nach 07_train_series_model.py erneut 09_prepare_foundation_training.py und 10_train_foundation_models.py aus."
+        "Foundation-Training ist aelter als das aktuelle Serienmodell. Fuehre nach 08_train_series_model.py erneut 09_prepare_foundation_training.py und 10_train_foundation_models.py aus."
         )
     if status["missing_characters"]:
         missing = ", ".join(status["missing_characters"])
@@ -1055,5 +1169,339 @@ def ensure_foundation_training_ready(
         weak = ", ".join(status["weak_characters"])
         raise RuntimeError(
             f"Fuer diese Figuren fehlen brauchbare Voice-Samples im Training: {weak}. Pruefe 05/08 und trainiere danach 09_prepare_foundation_training.py und 10_train_foundation_models.py erneut."
+        )
+    return status
+
+
+def load_adapter_training_index(cfg: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    summary_payload = read_json(adapter_summary_path(cfg), {})
+    index: dict[str, dict[str, Any]] = {}
+    for row in summary_payload.get("characters", []) or []:
+        character_name = coalesce_text(row.get("character", ""))
+        if not character_name:
+            continue
+        profile_path = Path(str(row.get("profile_path", "") or ""))
+        profile_payload = read_json(profile_path, {}) if profile_path.exists() else {}
+        modalities = profile_payload.get("modalities", {}) if isinstance(profile_payload.get("modalities"), dict) else {}
+        index[_normalized_training_name(character_name)] = {
+            "character": character_name,
+            "profile_path": profile_path,
+            "profile_exists": profile_path.exists(),
+            "training_ready": bool(row.get("training_ready", False) or profile_payload.get("training_ready", False)),
+            "modalities_ready": list(row.get("modalities_ready", []) or profile_payload.get("modalities_ready", []) or []),
+            "image_samples": max(
+                int(row.get("image_samples", 0) or 0),
+                int((modalities.get("image", {}) or {}).get("sample_count", 0) or 0),
+            ),
+            "voice_samples": max(
+                int(row.get("voice_samples", 0) or 0),
+                int((modalities.get("voice", {}) or {}).get("sample_count", 0) or 0),
+            ),
+            "voice_duration_seconds": max(
+                float(row.get("voice_duration_seconds", 0.0) or 0.0),
+                float((modalities.get("voice", {}) or {}).get("duration_seconds_total", 0.0) or 0.0),
+            ),
+            "voice_quality_score": max(
+                float(row.get("voice_quality_score", 0.0) or 0.0),
+                float((modalities.get("voice", {}) or {}).get("quality_score", 0.0) or 0.0),
+            ),
+            "voice_clone_ready": bool(
+                row.get("voice_clone_ready", False) or (modalities.get("voice", {}) or {}).get("clone_ready", False)
+            ),
+            "video_samples": max(
+                int(row.get("video_samples", 0) or 0),
+                int((modalities.get("video", {}) or {}).get("sample_count", 0) or 0),
+            ),
+        }
+    return index
+
+
+def adapter_training_status(
+    cfg: dict[str, Any],
+    characters: Iterable[str] | None = None,
+    require_voice_clone: bool = False,
+) -> dict[str, Any]:
+    summary_path = adapter_summary_path(cfg)
+    foundation_path = foundation_summary_path(cfg)
+    summary_exists = summary_path.exists()
+    foundation_exists = foundation_path.exists()
+    summary_mtime = summary_path.stat().st_mtime if summary_exists else 0.0
+    foundation_mtime = foundation_path.stat().st_mtime if foundation_exists else 0.0
+    index = load_adapter_training_index(cfg) if summary_exists else {}
+    missing_characters: list[str] = []
+    weak_characters: list[str] = []
+    for character in characters or []:
+        display_name = coalesce_text(character)
+        if not has_primary_person_name(display_name):
+            continue
+        row = index.get(_normalized_training_name(display_name))
+        if row is None or not row.get("profile_exists") or not row.get("training_ready"):
+            missing_characters.append(display_name)
+            continue
+        if int(row.get("image_samples", 0) or 0) <= 0 and int(row.get("voice_samples", 0) or 0) <= 0:
+            weak_characters.append(display_name)
+            continue
+        if require_voice_clone and int(row.get("voice_samples", 0) or 0) > 0 and not bool(row.get("voice_clone_ready", False)):
+            weak_characters.append(display_name)
+    summary_new_enough = summary_exists and (not foundation_exists or summary_mtime >= foundation_mtime)
+    return {
+        "summary_path": summary_path,
+        "summary_exists": summary_exists,
+        "summary_new_enough": summary_new_enough,
+        "foundation_summary_path": foundation_path,
+        "foundation_summary_exists": foundation_exists,
+        "character_index": index,
+        "missing_characters": missing_characters,
+        "weak_characters": weak_characters,
+    }
+
+
+def ensure_adapter_training_ready(
+    cfg: dict[str, Any],
+    *,
+    characters: Iterable[str] | None = None,
+    for_render: bool = False,
+) -> dict[str, Any]:
+    required = adapter_render_required(cfg) if for_render else adapter_training_required(cfg)
+    status = adapter_training_status(cfg, characters=characters, require_voice_clone=for_render)
+    if not required:
+        return status
+    if not status["summary_exists"]:
+        raise RuntimeError(
+        "Adapter-Training fehlt. Fuehre vor Generierung/Render zuerst 11_train_adapter_models.py aus."
+        )
+    if not status["summary_new_enough"]:
+        raise RuntimeError(
+        "Adapter-Training ist aelter als das aktuelle Foundation-Training. Fuehre nach 10_train_foundation_models.py erneut 11_train_adapter_models.py aus."
+        )
+    if status["missing_characters"]:
+        missing = ", ".join(status["missing_characters"])
+        raise RuntimeError(
+        f"Fuer diese Figuren fehlen trainierte Adapter-Profile: {missing}. Fuehre 11_train_adapter_models.py erneut aus."
+        )
+    if status["weak_characters"]:
+        weak = ", ".join(status["weak_characters"])
+        raise RuntimeError(
+        f"Fuer diese Figuren sind die Adapter-Profile noch zu schwach: {weak}. Pruefe 09/10 und trainiere danach 11_train_adapter_models.py erneut."
+        )
+    return status
+
+
+def load_fine_tune_training_index(cfg: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    summary_payload = read_json(fine_tune_summary_path(cfg), {})
+    index: dict[str, dict[str, Any]] = {}
+    for row in summary_payload.get("characters", []) or []:
+        character_name = coalesce_text(row.get("character", ""))
+        if not character_name:
+            continue
+        profile_path = Path(str(row.get("fine_tune_path", "") or ""))
+        profile_payload = read_json(profile_path, {}) if profile_path.exists() else {}
+        index[_normalized_training_name(character_name)] = {
+            "character": character_name,
+            "fine_tune_path": profile_path,
+            "profile_exists": profile_path.exists(),
+            "training_ready": bool(row.get("training_ready", False) or profile_payload.get("training_ready", False)),
+            "modalities_ready": list(row.get("modalities_ready", []) or profile_payload.get("modalities_ready", []) or []),
+            "target_steps": dict(row.get("target_steps", {}) or profile_payload.get("target_steps", {}) or {}),
+            "completed_steps": dict(row.get("completed_steps", {}) or profile_payload.get("completed_steps", {}) or {}),
+            "voice_duration_seconds": max(
+                float(row.get("voice_duration_seconds", 0.0) or 0.0),
+                float(profile_payload.get("voice_duration_seconds", 0.0) or 0.0),
+            ),
+            "voice_quality_score": max(
+                float(row.get("voice_quality_score", 0.0) or 0.0),
+                float(profile_payload.get("voice_quality_score", 0.0) or 0.0),
+            ),
+            "voice_clone_ready": bool(row.get("voice_clone_ready", False) or profile_payload.get("voice_clone_ready", False)),
+        }
+    return index
+
+
+def fine_tune_training_status(
+    cfg: dict[str, Any],
+    characters: Iterable[str] | None = None,
+    require_voice_clone: bool = False,
+) -> dict[str, Any]:
+    summary_path = fine_tune_summary_path(cfg)
+    adapter_path = adapter_summary_path(cfg)
+    summary_exists = summary_path.exists()
+    adapter_exists = adapter_path.exists()
+    summary_mtime = summary_path.stat().st_mtime if summary_exists else 0.0
+    adapter_mtime = adapter_path.stat().st_mtime if adapter_exists else 0.0
+    index = load_fine_tune_training_index(cfg) if summary_exists else {}
+    missing_characters: list[str] = []
+    weak_characters: list[str] = []
+    for character in characters or []:
+        display_name = coalesce_text(character)
+        if not has_primary_person_name(display_name):
+            continue
+        row = index.get(_normalized_training_name(display_name))
+        if row is None or not row.get("profile_exists") or not row.get("training_ready"):
+            missing_characters.append(display_name)
+            continue
+        modalities_ready = list(row.get("modalities_ready", []) or [])
+        if not modalities_ready:
+            weak_characters.append(display_name)
+            continue
+        if require_voice_clone and "voice" in modalities_ready and not bool(row.get("voice_clone_ready", False)):
+            weak_characters.append(display_name)
+    summary_new_enough = summary_exists and (not adapter_exists or summary_mtime >= adapter_mtime)
+    return {
+        "summary_path": summary_path,
+        "summary_exists": summary_exists,
+        "summary_new_enough": summary_new_enough,
+        "adapter_summary_path": adapter_path,
+        "adapter_summary_exists": adapter_exists,
+        "character_index": index,
+        "missing_characters": missing_characters,
+        "weak_characters": weak_characters,
+    }
+
+
+def ensure_fine_tune_training_ready(
+    cfg: dict[str, Any],
+    *,
+    characters: Iterable[str] | None = None,
+    for_render: bool = False,
+) -> dict[str, Any]:
+    required = fine_tune_render_required(cfg) if for_render else fine_tune_training_required(cfg)
+    status = fine_tune_training_status(cfg, characters=characters, require_voice_clone=for_render)
+    if not required:
+        return status
+    if not status["summary_exists"]:
+        raise RuntimeError(
+        "Fine-Tune-Training fehlt. Fuehre vor Generierung/Render zuerst 12_train_fine_tune_models.py aus."
+        )
+    if not status["summary_new_enough"]:
+        raise RuntimeError(
+        "Fine-Tune-Training ist aelter als das aktuelle Adapter-Training. Fuehre nach 11_train_adapter_models.py erneut 12_train_fine_tune_models.py aus."
+        )
+    if status["missing_characters"]:
+        missing = ", ".join(status["missing_characters"])
+        raise RuntimeError(
+        f"Fuer diese Figuren fehlen trainierte Fine-Tune-Profile: {missing}. Fuehre 12_train_fine_tune_models.py erneut aus."
+        )
+    if status["weak_characters"]:
+        weak = ", ".join(status["weak_characters"])
+        raise RuntimeError(
+        f"Fuer diese Figuren sind die Fine-Tune-Profile noch zu schwach: {weak}. Fuehre 12_train_fine_tune_models.py erneut aus."
+        )
+    return status
+
+
+def load_backend_run_index(cfg: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    summary_payload = read_json(backend_run_summary_path(cfg), {})
+    index: dict[str, dict[str, Any]] = {}
+    for row in summary_payload.get("characters", []) or []:
+        character_name = coalesce_text(row.get("character", ""))
+        if not character_name:
+            continue
+        run_path = Path(str(row.get("backend_run_path", "") or ""))
+        run_payload = read_json(run_path, {}) if run_path.exists() else {}
+        index[_normalized_training_name(character_name)] = {
+            "character": character_name,
+            "backend_run_path": run_path,
+            "run_exists": run_path.exists(),
+            "training_ready": bool(row.get("training_ready", False) or run_payload.get("training_ready", False)),
+            "modalities_ready": list(row.get("modalities_ready", []) or run_payload.get("modalities_ready", []) or []),
+            "voice_duration_seconds": max(
+                float(row.get("voice_duration_seconds", 0.0) or 0.0),
+                float(run_payload.get("voice_duration_seconds", 0.0) or 0.0),
+            ),
+            "voice_quality_score": max(
+                float(row.get("voice_quality_score", 0.0) or 0.0),
+                float(run_payload.get("voice_quality_score", 0.0) or 0.0),
+            ),
+            "voice_clone_ready": bool(row.get("voice_clone_ready", False) or run_payload.get("voice_clone_ready", False)),
+            "backends": dict(row.get("backends", {}) or run_payload.get("backends", {}) or {}),
+        }
+    return index
+
+
+def backend_fine_tune_status(
+    cfg: dict[str, Any],
+    characters: Iterable[str] | None = None,
+    require_voice_clone: bool = False,
+) -> dict[str, Any]:
+    summary_path = backend_run_summary_path(cfg)
+    fine_tune_path = fine_tune_summary_path(cfg)
+    summary_exists = summary_path.exists()
+    fine_tune_exists = fine_tune_path.exists()
+    summary_mtime = summary_path.stat().st_mtime if summary_exists else 0.0
+    fine_tune_mtime = fine_tune_path.stat().st_mtime if fine_tune_exists else 0.0
+    index = load_backend_run_index(cfg) if summary_exists else {}
+    missing_characters: list[str] = []
+    weak_characters: list[str] = []
+    for character in characters or []:
+        display_name = coalesce_text(character)
+        if not has_primary_person_name(display_name):
+            continue
+        row = index.get(_normalized_training_name(display_name))
+        if row is None or not row.get("run_exists") or not row.get("training_ready"):
+            missing_characters.append(display_name)
+            continue
+        if not list(row.get("modalities_ready", []) or []):
+            weak_characters.append(display_name)
+            continue
+        if require_voice_clone and "voice" in list(row.get("modalities_ready", []) or []) and not bool(row.get("voice_clone_ready", False)):
+            weak_characters.append(display_name)
+            continue
+        backends = row.get("backends", {}) if isinstance(row.get("backends"), dict) else {}
+        artifact_missing = False
+        for backend_payload in backends.values():
+            if not isinstance(backend_payload, dict):
+                artifact_missing = True
+                break
+            artifacts = backend_payload.get("artifacts", {}) if isinstance(backend_payload.get("artifacts"), dict) else {}
+            required_paths = [
+                str(artifacts.get("job_path", "") or "").strip(),
+                str(artifacts.get("bundle_path", "") or "").strip(),
+                str(artifacts.get("weights_path", "") or "").strip(),
+            ]
+            if not all(required_paths) or not all(Path(path).exists() for path in required_paths):
+                artifact_missing = True
+                break
+        if artifact_missing:
+            weak_characters.append(display_name)
+    summary_new_enough = summary_exists and (not fine_tune_exists or summary_mtime >= fine_tune_mtime)
+    return {
+        "summary_path": summary_path,
+        "summary_exists": summary_exists,
+        "summary_new_enough": summary_new_enough,
+        "fine_tune_summary_path": fine_tune_path,
+        "fine_tune_summary_exists": fine_tune_exists,
+        "character_index": index,
+        "missing_characters": missing_characters,
+        "weak_characters": weak_characters,
+    }
+
+
+def ensure_backend_fine_tune_ready(
+    cfg: dict[str, Any],
+    *,
+    characters: Iterable[str] | None = None,
+    for_render: bool = False,
+) -> dict[str, Any]:
+    required = backend_fine_tune_render_required(cfg) if for_render else backend_fine_tune_required(cfg)
+    status = backend_fine_tune_status(cfg, characters=characters, require_voice_clone=for_render)
+    if not required:
+        return status
+    if not status["summary_exists"]:
+        raise RuntimeError(
+        "Backend-Fine-Tune-Laeufe fehlen. Fuehre vor Generierung/Render zuerst 13_run_backend_finetunes.py aus."
+        )
+    if not status["summary_new_enough"]:
+        raise RuntimeError(
+        "Backend-Fine-Tune-Laeufe sind aelter als das aktuelle Fine-Tune-Training. Fuehre nach 12_train_fine_tune_models.py erneut 13_run_backend_finetunes.py aus."
+        )
+    if status["missing_characters"]:
+        missing = ", ".join(status["missing_characters"])
+        raise RuntimeError(
+        f"Fuer diese Figuren fehlen Backend-Fine-Tune-Laeufe: {missing}. Fuehre 13_run_backend_finetunes.py erneut aus."
+        )
+    if status["weak_characters"]:
+        weak = ", ".join(status["weak_characters"])
+        raise RuntimeError(
+        f"Fuer diese Figuren sind die Backend-Fine-Tune-Laeufe noch zu schwach: {weak}. Fuehre 13_run_backend_finetunes.py erneut aus."
         )
     return status

@@ -22,7 +22,7 @@ def main() -> None:
     rerun_in_runtime()
     headline("Serienbibel aufbauen")
     cfg = load_config()
-    mark_step_started("12_build_series_bible", "global")
+    mark_step_started("15_build_series_bible", "global")
     model_path = resolve_project_path(cfg["paths"]["series_model"])
     model = read_json(model_path, {})
     if not model:
@@ -70,13 +70,13 @@ def main() -> None:
         write_json(bible_json_path, bible_json)
         write_text(bible_markdown_path, "\n".join(markdown_lines))
         mark_step_completed(
-            "12_build_series_bible",
+            "15_build_series_bible",
             "global",
             {"series_bible_json": str(bible_json_path), "series_bible_markdown": str(bible_markdown_path)},
         )
         ok("Serienbibel wurde aktualisiert.")
     except Exception as exc:
-        mark_step_failed("12_build_series_bible", str(exc), "global")
+        mark_step_failed("15_build_series_bible", str(exc), "global")
         raise
 
 

@@ -34,7 +34,7 @@ Die Pipeline ist modular. Jeder Schritt kann einzeln gestartet werden, oder alle
 - die Pipeline kann neue Folgen als Markdown und Shotlist aus dem bisherigen Material ableiten
 - neue Folgen tragen jetzt neben `folge_0x` auch einen echten Episodentitel wie `Folge 05: Das Baumhaus-Spiel`
 - die Titelfindung zieht dafuer jetzt bevorzugt markante Begriffe aus echten Originaldialogen wie `Rollerteller` oder `Videospiele`, statt rohe Problemwoerter direkt in den Titel zu heben
-- `13_render_episode.py` erzeugt ein visuelles Draft-Video statt nur Textartefakte
+- `16_render_episode.py` erzeugt ein visuelles Draft-Video statt nur Textartefakte
 - die Standardausgabe bleibt bewusst lokal und lizenzarm, damit der Default-Workflow robust bleibt
 - der GitHub-Sync spiegelt jetzt nur erlaubte lokale Dateien nach GitHub und holt nie Remote-Inhalte herunter
 
@@ -44,7 +44,7 @@ Diese Datei ist ein Pflichtdokument.
 
 Bei jeder Aenderung an:
 
-- `00_prepare_runtime.py` bis `14_generate_preview_episodes.py`
+- `00_prepare_runtime.py` bis `19_sync_to_github.py`
 - `99_process_next_episode.py`
 - `pipeline_common.py`
 - `ai_series_project/configs/project.json`
@@ -66,61 +66,76 @@ Zusatzregel ab jetzt:
 ## Fokus Im Moment
 
 - Hauptfiguren schneller von Hintergrundgesichtern trennen
-- bereits bekannte Gesichter in `08_review_unknowns.py` vor der Review automatisch wiederfinden und zusammenfuehren
+- bereits bekannte Gesichter in `06_review_unknowns.py` vor der Review automatisch wiederfinden und zusammenfuehren
 - den Standardpfad stabil, lokal und ohne Lizenzpflichten halten
 - den lokalen Code-Stand sauber nach GitHub spiegeln, ohne jemals etwas herunterzuladen
 
 ## Gerade in Bearbeitung
 
-- `08_review_unknowns.py`: Hauptfiguren muessen weiterhin manuell benannt werden; bekannte Gesichter werden davor jetzt aber mit einem robusteren Mehrfachreferenz-Matcher pro Figur wiedererkannt und zusammengefuehrt, damit fuer die Review wirklich nur noch Unbekannte uebrig bleiben
-- `08_review_unknowns.py` lernt jetzt nach jeder manuellen Benennung sofort weiter: weitere offene Face-Cluster werden iterativ gegen die neu gewonnene Figur referenziert und offene Sprecher-Reviews mit genau einer sichtbaren benannten Figur werden konservativ direkt mitgezogen
-- das Zusammenspiel aus `04`-Sprecher-Clustern und `05`-Figurenfilter wird weiter auf kompletten Folgen beobachtet, besonders bei Nebenfiguren und `speaker_unknown`
+- `06_review_unknowns.py`: Hauptfiguren muessen weiterhin manuell benannt werden; bekannte Gesichter werden davor jetzt aber mit einem robusteren Mehrfachreferenz-Matcher pro Figur wiedererkannt und zusammengefuehrt, damit fuer die Review wirklich nur noch Unbekannte uebrig bleiben
+- `06_review_unknowns.py` gewichtet bekannte Figuren jetzt zusaetzlich nach Identitaetsstaerke: grosse, gut belegte Figuren duerfen minimal entspannter gematcht werden, schwache Identitaeten bleiben bewusst strenger
+- `06_review_unknowns.py` lernt jetzt nach jeder manuellen Benennung sofort weiter: weitere offene Face-Cluster werden iterativ gegen die neu gewonnene Figur referenziert und offene Sprecher-Reviews mit genau einer sichtbaren benannten Figur werden konservativ direkt mitgezogen
+- `06_review_unknowns.py` blendet fuer offene Cluster jetzt zusaetzlich automatische Rollenhinweise wie `hauptfigur-kandidat`, `nebenfigur-kandidat` oder `statist-kandidat` ein, damit Hauptfiguren schneller benannt und Nebenfiguren schneller als `statist` einsortiert werden koennen
+- `04_diarize_and_transcribe.py` versucht verbleibende `speaker_unknown`-Segmente jetzt nach dem ersten Cluster-Pass noch einmal konservativ ueber Nachbarschaft und Embedding-Aehnlichkeit auf bestehende Sprecher zurueckzufuehren
+- `04_diarize_and_transcribe.py` hat jetzt zusaetzlich einen zweiten folgeweiten Konsens-Pass: `speaker_unknown` wird nur dann auf eine bekannte Stimme gezogen, wenn Embedding und sprachliches Profil derselben Figur zusammenpassen
+- das Zusammenspiel aus `04`-Sprecher-Clustern und `05`-Figurenfilter wird weiter auf kompletten Folgen beobachtet, besonders bei Nebenfiguren und den danach noch verbleibenden `speaker_unknown`
 - der lizenzfreie Standardpfad bleibt Standard: lokales `pyttsx3` statt lizenzpflichtiger Voice-Wege
 - die automatischen Platzhalternamen werden jetzt selbstheilend gehalten: unbenannte Figuren bleiben `face_###`, unbenannte Stimmen bleiben `speaker_###`, und manuell gesetztes `statist` bleibt bewusst eine Nebenfigur
 - der aktuelle End-to-End-Stand wird ueber Tests und Smoke-Runs mitgefuehrt, damit Aenderungen nicht nur im Code, sondern auch im Ablauf verifiziert bleiben
 - neue Folgen koennen jetzt gesammelt in einem Lauf als direkt sichtbare Draft-Episoden erzeugt werden
 - `99_process_next_episode.py` wird gerade auf echten Inbox-Batch-Betrieb fuer viele neue Quellfolgen gleichzeitig gefestigt
-- `99_process_next_episode.py` entfernt erfolgreich verarbeitete Inbox-Folgen jetzt direkt nach `06` einzeln aus dem Inbox-Ordner, statt sie erst gesammelt am Ende eines grossen Batch-Laufs verschwinden zu lassen
+- Inbox-Dateien werden jetzt bereits in `02_import_episode.py` direkt nach erfolgreicher Vollkopie nach `data/raw/episodes` entfernt; `99_process_next_episode.py` arbeitet dadurch immer nur noch mit den importierten Arbeitskopien weiter
 - `99_process_next_episode.py` schreibt jetzt nach jedem erfolgreich abgeschlossenen Schritt einen Autosave-Checkpoint, behaelt davon nur die letzten zwei und setzt bei einem Abbruch spaeter automatisch am letzten sauberen Schritt fort
+- `99_process_next_episode.py` schreibt jetzt zusaetzlich laufend `current_status.json` und `current_status.md` mit Episoden- und Globalstatus, damit grosse Inbox-Stapel pro Folge transparent beobachtet werden koennen
 - `03_split_scenes.py` erkennt jetzt auch beim Neustart sauber, wenn eine Folge bereits erfolgreich in Szenen zerlegt wurde, und ueberspringt den Schritt dann idempotent statt blind erneut zu exportieren
 - `03_split_scenes.py` arbeitet ohne `--episode-file` jetzt den kompletten aktuellen Stapel in `data/raw/episodes` nacheinander ab, statt nur eine einzelne Arbeitskopie
-- `04_diarize_and_transcribe.py`, `05_link_faces_and_speakers.py` und `06_build_dataset.py` arbeiten bei Einzelstarts ohne Parameter jetzt ebenfalls die naechste noch nicht erfolgreich verarbeitete Folge ab, statt immer wieder denselben ersten Ordner zu nehmen
-- `02_import_episode.py` bis `06_build_dataset.py` schreiben jetzt ebenfalls pro Folge Start-/Erfolgs-/Fehler-Autosaves unter `ai_series_project/runtime/autosaves/steps`
+- `04_diarize_and_transcribe.py`, `05_link_faces_and_speakers.py` und `07_build_dataset.py` arbeiten ohne explizite Folge jetzt den kompletten offenen Stapel nacheinander ab, statt nur eine einzelne Folge zu nehmen oder immer wieder am selben Ordner haengenzubleiben
+- `02_import_episode.py` bis `07_build_dataset.py` schreiben jetzt ebenfalls pro Folge Start-/Erfolgs-/Fehler-Autosaves unter `ai_series_project/runtime/autosaves/steps`
 - `02_import_episode.py` kann jetzt optional den kompletten Inbox-Stapel in einem Lauf importieren, damit `03` danach alle bereits importierten Folgen nacheinander abarbeiten kann
-- `04_diarize_and_transcribe.py`, `05_link_faces_and_speakers.py` und `06_build_dataset.py` bewerten einen Schritt jetzt erst dann als wirklich fertig, wenn aktuelle Prozessversion, Erfolgsmarker und Schritt-Autosave zusammenpassen
-- `14_generate_preview_episodes.py` schreibt jetzt ebenfalls einen globalen Wrapper-Autosave fuer komplette Multi-Episoden-Laeufe
-- benannte Figuren koennen jetzt direkt als Hauptfigur priorisiert werden, damit `07` sie bevorzugt als Fokusrollen verwendet
-- `13_render_episode.py` schreibt jetzt pro benannter Figur auch ein lokales `voice_model`-JSON und legt das Render-Manifest sowohl im Draft- als auch im Final-Ordner ab
-- `13_render_episode.py` wurde fuer lange Windows-Renderlaeufe auf eine FFmpeg-Concat-Liste umgestellt, damit der Final-Render nicht mehr an `WinError 206` durch zu lange Kommandozeilen scheitert
-- der lokale TTS-Fallback in `13_render_episode.py` bevorzugt jetzt auf Windows zwingend vorhandene deutsche Systemstimmen wie `Hedda` statt alte englische Altprofile weiterzuverwenden
-- `11_generate_episode_from_trained_model.py` erzeugt neue Preview-Folgen jetzt wieder bewusst als synthetische Modellvorschau statt als Zusammenstellung von Originalsegmenten
+- `04_diarize_and_transcribe.py`, `05_link_faces_and_speakers.py` und `07_build_dataset.py` bewerten einen Schritt jetzt erst dann als wirklich fertig, wenn aktuelle Prozessversion, Erfolgsmarker und Schritt-Autosave zusammenpassen
+- `07_build_dataset.py` und `10_train_foundation_models.py` haben jetzt zusaetzlich `--force`, damit man nach manueller Figurenpflege oder Datenkorrekturen bewusst sauber neu aufbauen kann
+- `18_refresh_after_manual_review.py` fuehrt jetzt den echten Rebuild nach manueller Figurenpflege als festen Kettenlauf aus: `07 --force -> 08 -> 09 --force -> 10 --force -> 11 --force -> 12 --force -> 13 --force -> 14 -> 15 -> 16`
+- `11_train_adapter_models.py` trainiert jetzt lokale Adapter-Profile fuer Bild, Stimme und Clip-Dynamik und haengt sich standardmaessig zwischen `10` und `14` in die Trainingskette
+- `12_train_fine_tune_models.py` trainiert jetzt darauf aufbauend lokale Fine-Tune-Profile mit Zielschritten pro Modalitaet und haengt sich standardmaessig zwischen `11` und `14` in die Trainingskette
+- `13_run_backend_finetunes.py` erzeugt jetzt daraus konkrete Backend-Fine-Tune-Laeufe pro Modalitaet, materialisiert lokale Backend-Artefakte pro Figur und haengt sich standardmaessig zwischen `12` und `14` in die Trainingskette
+- der neue Fine-Tune-Block wird jetzt auf echtem Bestand beobachtet, besonders dort, wo bisher nur Bild/Video-Modalitaeten, aber noch keine starken Voice-Samples vorhanden sind
+- `17_generate_preview_episodes.py` schreibt jetzt ebenfalls einen globalen Wrapper-Autosave fuer komplette Multi-Episoden-Laeufe
+- benannte Figuren koennen jetzt direkt als Hauptfigur priorisiert werden, damit `08` sie bevorzugt als Fokusrollen verwendet
+- `16_render_episode.py` schreibt jetzt pro benannter Figur auch ein lokales `voice_model`-JSON und legt das Render-Manifest sowohl im Draft- als auch im Final-Ordner ab
+- Voice-Samples werden jetzt ueber `10 -> 11 -> 12 -> 13 -> 16` mit Dauer-, Qualitaets- und Clone-Bereitschaftsmetriken durchgetragen, damit der Stimmenpfad pro Figur sichtbar belastbar bleibt
+- die neue Voice-Clone-Bereitschaft blockiert jetzt bewusst erst den Render-Pfad; Generierung darf weiter mit trainierten Packs laufen, auch wenn eine Figur fuer echten Clone noch nicht stark genug ist
+- `16_render_episode.py` wurde fuer lange Windows-Renderlaeufe auf eine FFmpeg-Concat-Liste umgestellt, damit der Final-Render nicht mehr an `WinError 206` durch zu lange Kommandozeilen scheitert
+- der lokale TTS-Fallback in `16_render_episode.py` bevorzugt jetzt auf Windows zwingend vorhandene deutsche Systemstimmen wie `Hedda` statt alte englische Altprofile weiterzuverwenden
+- `14_generate_episode_from_trained_model.py` erzeugt neue Preview-Folgen jetzt wieder bewusst als synthetische Modellvorschau statt als Zusammenstellung von Originalsegmenten
 - die Ziellaenge neuer Folgen wird jetzt aus den verarbeiteten Quellfolgen abgeleitet, statt starr auf einen Serienbereich festgelegt zu sein
 - `09_prepare_foundation_training.py` zieht fehlende Basismodelle jetzt standardmaessig automatisch nach und prueft vorhandene Downloads auf neuere Remote-Revisionen, damit vorhandene Modelle bei Bedarf aktualisiert werden
 - `09_prepare_foundation_training.py` erkennt bei alten bereits vorhandenen Hugging-Face-Downloads jetzt auch den lokalen Cache-Stand und behandelt identische Modelle als `skip` statt denselben Stand erneut komplett herunterzuladen
 - `09_prepare_foundation_training.py` behandelt unvollstaendige Hugging-Face-Cache-Dateien bei identischer Revision jetzt zuerst als lokalen Cleanup-Fall statt als erneuten Voll-Download; nur bei echter anderer Revision wird ein Reparatur-/Update-Lauf gestartet
 - der alte Karten-/Crop-Look wird im Fallback gerade durch Vollbild-Referenzframes ersetzt; der peinliche Portrait-Lip-Sync ist im Default jetzt bewusst deaktiviert
 - der fruehere Cartoon-/Mii-Mund im Portrait-Fallback ist entfernt; der lokale Fallback arbeitet jetzt mit mehreren echten Referenzframes und sanfterem Gesichtswarp
-- `11_generate_episode_from_trained_model.py` mischt jetzt deutlich staerker echte Sprecher-Samples in die neuen Dialoge, damit `13` mehr Originalstimmen wiederverwenden kann
-- `11_generate_episode_from_trained_model.py` schreibt jetzt echte Episodentitel in Markdown, Shotlist und Render-Metadaten statt nur `folge_0x` und filtert schwache Keyword-Titel wie `meinem`, `soll` oder `wieder` deutlich haerter aus
+- `14_generate_episode_from_trained_model.py` mischt jetzt deutlich staerker echte Sprecher-Samples in die neuen Dialoge, damit `16` mehr Originalstimmen wiederverwenden kann
+- `14_generate_episode_from_trained_model.py` schreibt jetzt echte Episodentitel in Markdown, Shotlist und Render-Metadaten statt nur `folge_0x` und filtert schwache Keyword-Titel wie `meinem`, `soll` oder `wieder` deutlich haerter aus
 - `09_prepare_foundation_training.py` bereitet jetzt den naechsten Block fuer echtes Bild-/Video-/Voice-Fine-Tuning vor: 720p-Frames, kurze Trainingsclips, Voice-Referenzen, Download-Ziele und Trainingsplaene
-- `14_generate_preview_episodes.py` und `99_process_next_episode.py` fuehren jetzt standardmaessig erst `07`, dann `09`, dann `10` aus, bevor `11` oder `13` ueberhaupt starten
-- `11_generate_episode_from_trained_model.py` blockt jetzt hart, wenn das Foundation-Training fehlt oder aelter als das aktuelle Serienmodell ist
-- `13_render_episode.py` blockt jetzt zusaetzlich, wenn fuer die Fokusfiguren keine trainierten Foundation-/Voice-Packs vorhanden sind, statt still weiter nur auf altes System-TTS zu kippen
+- `17_generate_preview_episodes.py` und `99_process_next_episode.py` fuehren jetzt standardmaessig erst `07`, dann `08`, dann `09`, dann `10`, dann `11`, dann `12`, dann `13` aus, bevor `14`, `15` oder `16` ueberhaupt starten
+- `14_generate_episode_from_trained_model.py` blockt jetzt hart, wenn das Training fehlt oder aelter als das aktuelle Serienmodell ist
+- `16_render_episode.py` blockt jetzt zusaetzlich, wenn fuer die Fokusfiguren keine trainierten Trainingspacks vorhanden sind, statt still weiter nur auf altes System-TTS zu kippen
 - der aktuelle Render-Pfad wird gerade gegen lange Segmentstapel auf Windows weiter gehaertet, damit auch grosse Finalfolgen stabil fertig zusammengebaut werden
 - der Stimmenpfad wird gerade weiter von einfachem System-TTS weggezogen; kurzfristig ist der englische Windows-Fallback entfernt, mittelfristig braucht der Projektstand einen echten lokalen Clone-Runner statt nur Profil-/Fallback-Logik
 
 ## Geplant
 
-- Hauptfiguren in `08_review_unknowns.py` anhand der neuen Priorisierung sauber benennen
-- Nebenfiguren in `08_review_unknowns.py` gezielt als `statist` markieren, damit sie spaeter auftauchen duerfen, aber nicht zu Hauptfiguren werden
-- danach `06` bis `10` mit den echten Namen und gesetzten Prioritaeten erneut durchlaufen lassen, damit Serienmodell, Folgen und Render echte Figurennamen statt generischer Platzhalter nutzen
-- verbleibende `speaker_unknown`-Faelle in `04` weiter reduzieren
-- die neue digiKam-inspirierte Mehrfachreferenz-Erkennung in `08_review_unknowns.py` auf kompletten Staffeln weiter feinjustieren
-- Batch-Laeufe spaeter noch mit Resume-/Statusdetails pro Folge ausbauen, damit sehr grosse Inbox-Stapel noch transparenter werden
-- den Foundation-Training-Block von vorbereiteten Datensaetzen und Foundation-Packs zu echten Bild-/Video-/Voice-Adapter- und spaeter Fine-Tune-Laeufen ausbauen
+- Hauptfiguren in `06_review_unknowns.py` anhand der neuen Priorisierung sauber benennen
+- Nebenfiguren in `06_review_unknowns.py` gezielt als `statist` markieren, damit sie spaeter auftauchen duerfen, aber nicht zu Hauptfiguren werden
+- danach `18_refresh_after_manual_review.py` ueber den final benannten Bestand laufen lassen, damit Datensaetze, Modell, Foundation-Packs, Folge, Serienbibel und Render mit echten Namen und Prioritaeten neu aufgebaut werden
+- verbleibende `speaker_unknown`-Faelle in `04` nach dem neuen Zwei-Stufen-Rescue-Pass auf kompletten Staffeln weiter feinjustieren
+- die neue digiKam-inspirierte Mehrfachreferenz-Erkennung in `06_review_unknowns.py` nach der neuen Identitaetsgewichtung auf kompletten Staffeln weiter feinjustieren
+- den neuen Fine-Tune-Block hinter `12_train_fine_tune_models.py` spaeter von lokalen Profilen zu echten Fine-Tune-Laeufen auf Modellgewichts-Ebene ausbauen
+- die neuen lokalen Fine-Tune-Profile nach den jetzt durchgezogenen Voice-Qualitaetsmetriken weiter mit besseren Voice-Samples und spaeter echten Stimmenklon-Backends verknuepfen
+- den Render-Pfad nach den neuen Voice-Clone-Metriken weiter so ausbauen, dass clone-bereite Figuren spaeter sauber auf echte lokale Stimmen-Backends geschaltet werden koennen
+- die neuen Backend-Fine-Tune-Laeufe aus `13_run_backend_finetunes.py` nach den jetzt materialisierten lokalen Backend-Artefakten spaeter an echte Trainingsbackends statt nur an lokale Laufartefakte anbinden
 - die neue Modell-Update-Pruefung in `09_prepare_foundation_training.py` auf laengeren Serienlaeufen beobachten, besonders bei grossen Remote-Modellen
 - spaeter erst wieder einen Lip-Sync-Pfad aktivieren, wenn er qualitativ wirklich auf Serienniveau wirkt
-- den neuen Foundation-Training-Block spaeter um echte Fine-Tune-Runner fuer Bild/Video/Stimme erweitern, sobald die vorbereiteten Datensaetze stabil genug sind
+- die neuen lokalen Fine-Tune-Profile spaeter zu echten Modellgewichts-Fine-Tunes fuer Bild/Video/Stimme ausbauen, sobald die vorbereiteten Datensaetze stabil genug sind
 - spaeter gezielte Qualitaetsverbesserungen fuer Render, Figurenkonsistenz und Episodengenerierung angehen
 
 ## Aktueller Gesamtstand
@@ -161,6 +176,9 @@ Das Projekt kann aktuell:
 - pro benannter Figur ein lokales Retrieval-Modell aus Originalsegmenten aufbauen, damit passende neue Zeilen wenn moeglich mit echter Originalstimme wiedergegeben werden
 - neue Dialoge als synthetische Preview aus dem trainierten Modell erzeugen
 - die Ziel-Laufzeit neuer Folgen aus den verarbeiteten Quellfolgen ableiten
+- lokale Adapter-Profile fuer Bild, Stimme und Clip-Dynamik aus den Foundation-Manifeste trainieren
+- lokale Fine-Tune-Profile mit Zielschritten pro Modalitaet aus den Adapter-Profilen ableiten
+- konkrete Backend-Fine-Tune-Laeufe pro Modalitaet aus den Fine-Tune-Profilen erzeugen und als lokale Backend-Artefakte materialisieren
 - im Standardpfad ohne externe Lizenzannahmen mit lokalem `pyttsx3` rendern
 - optional auf ausdruecklichen Wunsch einen XTTS-/Coqui-Pfad vorbereiten
 - fuer Fallback-Segmente jetzt statt UI-Karten bevorzugt Vollbild-Referenzframes mit minimaler Untertitel-Einblendung rendern
@@ -173,7 +191,7 @@ Das Projekt kann aktuell noch nicht:
 - perfekte stiltreue Voice-Clones fuer jede Figur ohne gutes Referenzmaterial
 - stiltreue Video-Generierung auf Produktionsniveau
 
-`13_render_episode.py` rendert neue Preview-Folgen im Standard jetzt wieder aus synthetisch erzeugten Episoden-Assets und greift nicht mehr automatisch auf zusammengewuerfelte Originalsegmente zurueck. Der bisher peinliche Portrait-Lip-Sync ist im Standardpfad deaktiviert. Ein optionaler XTTS-/Coqui-Weg bleibt bewusst ausgeschaltet, solange er nicht ausdruecklich angefordert und freigeschaltet wurde.
+`16_render_episode.py` rendert neue Preview-Folgen im Standard jetzt wieder aus synthetisch erzeugten Episoden-Assets und greift nicht mehr automatisch auf zusammengewuerfelte Originalsegmente zurueck. Der bisher peinliche Portrait-Lip-Sync ist im Standardpfad deaktiviert. Ein optionaler XTTS-/Coqui-Weg bleibt bewusst ausgeschaltet, solange er nicht ausdruecklich angefordert und freigeschaltet wurde.
 
 ## Projektstruktur
 
@@ -185,17 +203,20 @@ Wichtige Root-Dateien:
 - `03_split_scenes.py`: importierte Folge in Szenen zerlegen
 - `04_diarize_and_transcribe.py`: Audio extrahieren, transkribieren, Sprecher clustern
 - `05_link_faces_and_speakers.py`: Gesichter erkennen und mit Stimmen verknuepfen
-- `06_build_dataset.py`: Trainingsdatensatz bauen
-- `07_train_series_model.py`: Serienmodell trainieren
-- `08_review_unknowns.py`: offene Zuordnungen anzeigen
+- `06_review_unknowns.py`: offene Zuordnungen anzeigen und manuell benennen
+- `07_build_dataset.py`: Trainingsdatensatz bauen
+- `08_train_series_model.py`: Serienmodell trainieren
 - `09_prepare_foundation_training.py`: 720p-Frames, Clips, Voice-Referenzen und Basis-Downloads fuer spaeteres Fine-Tuning vorbereiten
 - `10_train_foundation_models.py`: lokale Foundation-Packs fuer Bild, Video und Stimme trainieren
-- `11_generate_episode_from_trained_model.py`: neue Folge aus trainiertem Serienmodell erzeugen
-- `12_build_series_bible.py`: Serienbibel aktualisieren
-- `13_render_episode.py`: Storyboard-/TTS-Draft rendern
-- `13_render_episode.py`: zusaetzlich Final-Export und lokale Stimmprofile schreiben
-- `14_generate_preview_episodes.py`: mehrere neue sichtbare Preview-Episoden am Stueck erzeugen
-- `15_sync_to_github.py`: Root-Skripte und README optional nach GitHub spiegeln
+- `11_train_adapter_models.py`: lokale Adapter-Profile fuer Bild, Stimme und Clip-Dynamik trainieren
+- `12_train_fine_tune_models.py`: lokale Fine-Tune-Profile aus den Adapter-Profilen trainieren
+- `13_run_backend_finetunes.py`: konkrete Backend-Fine-Tune-Laeufe aus den lokalen Fine-Tune-Profilen ableiten
+- `14_generate_episode_from_trained_model.py`: neue Folge aus trainiertem Serienmodell erzeugen
+- `15_build_series_bible.py`: Serienbibel aktualisieren
+- `16_render_episode.py`: Storyboard-/TTS-Draft rendern, Final-Export und lokale Stimmprofile schreiben
+- `17_generate_preview_episodes.py`: mehrere neue sichtbare Preview-Episoden am Stueck erzeugen
+- `18_refresh_after_manual_review.py`: Datensaetze, Modell, Trainingspacks und Folge nach manueller Figurenpflege bewusst neu aufbauen
+- `19_sync_to_github.py`: Root-Skripte und README optional nach GitHub spiegeln
 - `99_process_next_episode.py`: komplette Pipeline ausfuehren
 - `pipeline_common.py`: gemeinsame Helfer fuer Pfade, Config, Runtime und Registry
 
@@ -219,6 +240,9 @@ Wichtige Projektordner:
 - `ai_series_project/generation/shotlists`: Shotlists fuer neue Folgen
 - `ai_series_project/generation/renders/drafts`: gerenderte Draft-Videos
 - `ai_series_project/series_bible/episode_summaries`: Serienbibel
+- `ai_series_project/training/foundation/adapters`: lokale Adapter-Profile und Adapter-Zusammenfassungen
+- `ai_series_project/training/foundation/finetunes`: lokale Fine-Tune-Profile und Fine-Tune-Zusammenfassungen
+- `ai_series_project/training/foundation/backend_runs`: konkrete Backend-Fine-Tune-Laeufe und Backend-Zusammenfassungen
 - `runtime/venv`: lokale Python-Umgebung
 - `tools`: Tool-Fallback auf Root-Ebene
 
@@ -340,7 +364,8 @@ Wichtig:
 
 Dieser Schritt:
 
-- nimmt ohne `--episode` automatisch den naechsten Szenenordner unter `data/processed/scene_clips`, fuer den noch keine erfolgreiche `04`-Ausgabe mit aktueller Prozessversion vorliegt
+- verarbeitet ohne `--episode` automatisch alle noch offenen Szenenordner unter `data/processed/scene_clips` nacheinander
+- mit `--episode "<folgenordner>"` kann weiter gezielt genau eine Folge verarbeitet werden
 - exportiert Audio pro Szene nach `data/raw/audio`
 - transkribiert jede Szene mit Whisper
 - schneidet daraus Segmente
@@ -360,10 +385,11 @@ Wichtig:
 - bei nutzbarer CUDA-GPU wird Whisper direkt auf GPU geladen
 - fuer Sprecher-Embeddings wird bevorzugt ebenfalls GPU genutzt, wenn `speechbrain` verfuegbar ist
 - kleine Einzelsegmente werden aggressiver als `speaker_unknown` behandelt, damit `05` spaeter nicht auf Einmal-Clustern aufbaut
+- verbleibende `speaker_unknown`-Zeilen bekommen danach jetzt noch einen konservativen Rescue-Pass ueber Nachbarschaft und Embedding-Aehnlichkeit zu stabilen Sprechern
 - dieser Schritt kann sehr lange dauern
 - vorhandene Cache-Dateien werden wiederverwendet, solange die interne `process_version` passt
-- optional kann `04` jetzt gezielt einen Szenenordner verarbeiten: `python 04_diarize_and_transcribe.py --episode "<folgenordner>"`
-- wenn fuer eine Folge bereits die aktuellen Segment- und Cluster-Dateien aus `04` vorhanden sind, wird sie bei Einzelstarts automatisch uebersprungen
+- optional kann `04` gezielt einen Szenenordner verarbeiten: `python 04_diarize_and_transcribe.py --episode "<folgenordner>"`
+- wenn fuer eine Folge bereits die aktuellen Segment- und Cluster-Dateien aus `04` vorhanden sind, wird sie sauber uebersprungen
 - `04` speichert seinen Fortschritt ueber Szenen-Caches und zusaetzliche Schritt-Autosaves; dadurch kann ein Abbruch spaeter pro Szene weiterlaufen und wird erst bei aktueller Prozessversion als abgeschlossen gewertet
 
 ### 05 - Gesichter und Stimmen verknuepfen
@@ -373,6 +399,8 @@ Wichtig:
 Dieser Schritt:
 
 - liest die Sprechersegmente aus `04`
+- verarbeitet ohne `--episode` automatisch alle noch offenen Folgen nacheinander
+- mit `--episode "<folgenordner>"` kann weiter gezielt genau eine Folge verarbeitet werden
 - erkennt Gesichter in den Szenen ueber `facenet-pytorch` mit OpenCV-Fallback
 - bildet Face-Cluster (`face_001`, `face_002`, ...)
 - konsolidiert Mehrfacherkennungen zuerst lokal innerhalb einer Szene
@@ -411,12 +439,13 @@ Neue CLI-Optionen:
 Bedeutung:
 
 - normaler Lauf: nutzt vorhandene Maps und Face-Caches weiter
-- ohne `--episode` nimmt `05` jetzt automatisch den naechsten Szenenordner, fuer den noch keine erfolgreiche Face-/Linked-Segment-Ausgabe vorliegt
+- ohne `--episode` verarbeitet `05` jetzt den kompletten offenen Stapel statt nur den naechsten Szenenordner
 - `--fresh`: loescht die bisherigen `05`-Artefakte vor dem Lauf
 - `--episode`: waehlt gezielt einen Szenenordner
 - wenn fuer eine Folge bereits `linked_segments` und `face_summary` vorhanden sind, beendet sich `05` ohne `--fresh` sauber mit `bereits vorhanden`
 - `05` setzt bei Teilabbruch weiter auf seine bestehenden Face-Szenencaches und Schritt-Autosaves; zusaetzlich markiert `_face_linking_success.json` nur vollstaendig erfolgreiche Laeufe
 - nur fuer einen bewusst kompletten Reset bleibt `--fresh` der richtige Weg
+- `--fresh` ist bewusst nur zusammen mit `--episode` erlaubt, damit globale Maps bei einem Batchlauf nicht versehentlich fuer alle Folgen geleert werden
 
 Sehr wichtig:
 
@@ -424,22 +453,26 @@ Sehr wichtig:
 - `--fresh` setzt daher die aktuellen Maps komplett zurueck und nicht nur einen einzelnen Character
 - wenn du ein Cluster spaeter auf `noface` setzt, wird es bei kuenftigen `05`-Laeufen nicht mehr als sichtbare Figur verwendet
 
-### 06 - Trainingsdatensatz bauen
+### 07 - Trainingsdatensatz bauen
 
-`python 06_build_dataset.py`
+`python 07_build_dataset.py`
 
 Dieser Schritt:
 
 - liest `linked_segments`
+- verarbeitet ohne `--episode` automatisch alle noch offenen Folgen nacheinander
+- mit `--episode "<folgenordner>"` kann weiter gezielt genau eine Folge verarbeitet werden
+- mit `--force` werden vorhandene Datensaetze bewusst neu aufgebaut
 - baut pro Szene einen kompakten Datensatz mit Figuren, Transkript, Keywords und Segmentdetails
 - schreibt den Datensatz nach `data/datasets/video_training`
 
 Wichtig:
 
-- optional kann `06` jetzt gezielt einen Szenenordner verarbeiten: `python 06_build_dataset.py --episode "<folgenordner>"`
-- ohne `--episode` nimmt `06` jetzt automatisch den naechsten Szenenordner, fuer den noch kein Datensatz existiert
-- wenn ein Datensatz fuer die Folge bereits vorhanden ist, wird sie bei Einzelstarts sauber uebersprungen
-- `06` schreibt waehrend des Aufbaus Schritt-Autosaves und sichert einen erfolgreichen Lauf zusaetzlich ueber `dataset_manifest.json` mit aktueller `process_version`
+- optional kann `07` jetzt gezielt einen Szenenordner verarbeiten: `python 07_build_dataset.py --episode "<folgenordner>"`
+- ohne `--episode` verarbeitet `07` jetzt den kompletten offenen Stapel statt nur den naechsten Szenenordner
+- `python 07_build_dataset.py --force` baut den kompletten Datensatzstapel bewusst neu auf
+- wenn ein Datensatz fuer die Folge bereits vorhanden ist, wird sie sauber uebersprungen
+- `07` schreibt waehrend des Aufbaus Schritt-Autosaves und sichert einen erfolgreichen Lauf zusaetzlich ueber `dataset_manifest.json` mit aktueller `process_version`
 
 ### Schritt-Autosaves
 
@@ -455,18 +488,21 @@ Aktuell relevant:
 - `03_split_scenes.py`: speichert Start/Erfolg/Fehler pro Folge zusaetzlich zum Split-Erfolgsmarker
 - `04_diarize_and_transcribe.py`: speichert laufend bereits fertig transkribierte Szenen pro Folge
 - `05_link_faces_and_speakers.py`: speichert laufend bereits analysierte Szenen und den finalen Linking-Status pro Folge
-- `06_build_dataset.py`: speichert laufend bereits uebernommene Szenen und den finalen Datensatzstatus pro Folge
-- `07_train_series_model.py`: schreibt Start/Erfolg des Modelltrainings
+- `07_build_dataset.py`: speichert laufend bereits uebernommene Szenen und den finalen Datensatzstatus pro Folge
+- `08_train_series_model.py`: schreibt Start/Erfolg des Modelltrainings
 - `09_prepare_foundation_training.py`: schreibt Start/Erfolg der Vorbereitungsphase
 - `10_train_foundation_models.py`: speichert Fortschritt pro Figur und ueberspringt bereits fertige Foundation-Packs
-- `11_generate_episode_from_trained_model.py`: speichert Start/Erfolg pro erzeugter Folge
-- `12_build_series_bible.py`: speichert Start/Erfolg der Serienbibel
-- `13_render_episode.py`: speichert Fortschritt pro Render-Folge und setzt bei vorhandenen Segmenten am bestehenden Stand wieder an
-- `14_generate_preview_episodes.py`: speichert Start/Erfolg/Fehler fuer komplette Multi-Episoden-Laeufe
+- `14_generate_episode_from_trained_model.py`: speichert Start/Erfolg pro erzeugter Folge
+- `15_build_series_bible.py`: speichert Start/Erfolg der Serienbibel
+- `16_render_episode.py`: speichert Fortschritt pro Render-Folge und setzt bei vorhandenen Segmenten am bestehenden Stand wieder an
+- `11_train_adapter_models.py`: speichert Fortschritt pro Figur und schreibt zusaetzlich einen globalen Adapter-Zusammenfassungsstand
+- `12_train_fine_tune_models.py`: speichert Fortschritt pro Figur und schreibt zusaetzlich einen globalen Fine-Tune-Zusammenfassungsstand
+- `13_run_backend_finetunes.py`: speichert Fortschritt pro Figur und schreibt zusaetzlich einen globalen Backend-Zusammenfassungsstand
+- `17_generate_preview_episodes.py`: speichert Start/Erfolg/Fehler fuer komplette Multi-Episoden-Laeufe
 
-### 07 - Serienmodell trainieren
+### 08 - Serienmodell trainieren
 
-`python 07_train_series_model.py`
+`python 08_train_series_model.py`
 
 Dieser Schritt:
 
@@ -483,7 +519,7 @@ Wichtig:
 
 - das "Training" ist aktuell ein lokales heuristisches Modell aus Statistiken, Sprecherbeispielen, Keywords und einer Markov-Chain
 - dies ist kein grosses neuronales Generationsmodell
-- die eigentliche Episodengenerierung passiert jetzt erst in `11_generate_episode_from_trained_model.py`
+- die eigentliche Episodengenerierung passiert jetzt erst in `14_generate_episode_from_trained_model.py`
 
 ### 09 - Foundation-Training vorbereiten
 
@@ -533,6 +569,7 @@ Dieser Schritt:
 
 - liest die Manifeste aus `09`
 - trainiert lokale Foundation-Packs fuer Bild, Video und Stimme pro Figur
+- trainiert mit `--force` vorhandene Foundation-Packs bewusst neu
 - schreibt pro Figur einen `foundation_pack.json`-Checkpoint
 - schreibt eine Trainingszusammenfassung fuer den aktuellen Lauf
 
@@ -541,14 +578,89 @@ Wichtige Ausgaben:
 - `training/foundation/checkpoints/<figur>/foundation_pack.json`
 - `training/foundation/checkpoints/foundation_training_summary.json`
 
-### 11 - Neue Folge aus trainiertem Modell erzeugen
+Wichtig:
 
-`python 11_generate_episode_from_trained_model.py`
+- ohne `--force` werden bereits fertige Foundation-Packs sauber uebersprungen
+- `python 10_train_foundation_models.py --force` trainiert vorhandene Packs bewusst neu, zum Beispiel nach manuellen Figurenkorrekturen
+- der naechste optionale Trainingsblock ist jetzt `python 11_train_adapter_models.py`
+
+### 11 - Lokale Adapter-Profile trainieren
+
+`python 11_train_adapter_models.py`
+
+Dieser Schritt:
+
+- liest die Foundation-Manifeste aus `09`
+- liest die Foundation-Packs aus `10`
+- trainiert daraus lokale Adapter-Profile fuer Bild, Stimme und Clip-Dynamik
+- schreibt pro Figur ein `adapter_profile.json`
+- schreibt eine globale Adapter-Zusammenfassung fuer den aktuellen Lauf
+
+Wichtige Ausgaben:
+
+- `training/foundation/adapters/<figur>/adapter_profile.json`
+- `training/foundation/adapters/adapter_training_summary.json`
+
+Wichtig:
+
+- ohne `--force` werden bereits fertige Adapter-Profile sauber uebersprungen
+- `python 11_train_adapter_models.py --force` trainiert vorhandene Adapter-Profile bewusst neu
+- im aktuellen Stand sind das lokale Profil-/Adapter-Checkpoints, noch keine echten Fine-Tunes auf Modellgewichts-Ebene
+
+### 12 - Lokale Fine-Tune-Profile trainieren
+
+`python 12_train_fine_tune_models.py`
+
+Dieser Schritt:
+
+- liest die Adapter-Zusammenfassung aus `11`
+- trainiert daraus lokale Fine-Tune-Profile mit Zielschritten pro Modalitaet
+- schreibt pro Figur ein `fine_tune_profile.json`
+- schreibt eine globale Fine-Tune-Zusammenfassung fuer den aktuellen Lauf
+
+Wichtige Ausgaben:
+
+- `training/foundation/finetunes/<figur>/fine_tune_profile.json`
+- `training/foundation/finetunes/fine_tune_training_summary.json`
+
+Wichtig:
+
+- ohne `--force` werden bereits fertige Fine-Tune-Profile sauber uebersprungen
+- `python 12_train_fine_tune_models.py --force` trainiert vorhandene Fine-Tune-Profile bewusst neu
+- im aktuellen Stand sind das lokale Fine-Tune-Checkpoints und Zielschritt-Profile, noch keine echten Modellgewichts-Fine-Tunes
+
+### 13 - Konkrete Backend-Fine-Tune-Laeufe ableiten
+
+`python 13_run_backend_finetunes.py`
+
+Dieser Schritt:
+
+- liest die Fine-Tune-Zusammenfassung aus `12`
+- erzeugt daraus konkrete Backend-Laufdeskriptoren pro Figur und Modalitaet
+- mappt Bild, Video und Stimme auf konkrete Backend-Typen wie `lora-image`, `motion-adapter` oder `speaker-adapter`
+- schreibt pro Figur einen `backend_fine_tune_run.json`
+- schreibt eine globale Backend-Zusammenfassung fuer den aktuellen Lauf
+
+Wichtige Ausgaben:
+
+- `training/foundation/backend_runs/<figur>/backend_fine_tune_run.json`
+- `training/foundation/backend_runs/backend_fine_tune_summary.json`
+
+Wichtig:
+
+- ohne `--force` werden bereits fertige Backend-Laeufe sauber uebersprungen
+- `python 13_run_backend_finetunes.py --force` erzeugt vorhandene Backend-Laeufe bewusst neu
+- im aktuellen Stand sind das konkrete lokale Run-Deskriptoren fuer spaetere echte Backend-Anbindungen, noch keine echten externen Trainingsjobs
+
+### 14 - Neue Folge aus trainiertem Modell erzeugen
+
+`python 14_generate_episode_from_trained_model.py`
 
 Dieser Schritt:
 
 - liest das bereits trainierte `series_model.json`
 - verlangt davor frisches Foundation-Training
+- kann optional zusaetzlich aktuelles Adapter-Training verlangen, wenn `adapter_training.required_before_generate=true` gesetzt ist
 - erzeugt daraus eine neue Folge als Markdown
 - erzeugt eine passende Shotlist als JSON
 - vergibt zusaetzlich einen sichtbaren Episodentitel wie `Folge 05: Das Baumhaus-Spiel`
@@ -564,16 +676,16 @@ Die technische Datei-ID bleibt absichtlich `folge_XX`, damit die Pipeline stabil
 
 Wichtig:
 
-- solange noch keine Figuren manuell benannt wurden, verwendet `15` bewusst generische Platzhalter wie `Hauptfigur A` und `Hauptfigur B` statt technische Namen wie `face_001` oder `speaker_001`
+- solange noch keine Figuren manuell benannt wurden, verwendet `14` bewusst generische Platzhalter wie `Hauptfigur A` und `Hauptfigur B` statt technische Namen wie `face_001` oder `speaker_001`
 - Figuren mit dem Namen `statist` koennen spaeter in Szenen als Nebenfigur auftauchen, werden aber nicht als Hauptfigur ausgewaehlt
 - neue Folgen variieren jetzt pro Episoden-Index sichtbar, statt bei jedem Lauf dieselbe Struktur zu wiederholen
 - priorisierte benannte Figuren werden bevorzugt als Hauptfiguren ausgewaehlt
-- im Standardpfad erzeugt `09` Preview-Folgen synthetisch aus dem trainierten Modell und nicht aus geplanten Originalsegmenten
-- nur wenn `generation.prefer_original_dialogue_remix=true` gesetzt ist, plant `09` Dialogzeilen wieder bevorzugt aus echten vorhandenen Originalsegmenten
+- im Standardpfad erzeugt `14` Preview-Folgen synthetisch aus dem trainierten Modell und nicht aus geplanten Originalsegmenten
+- nur wenn `generation.prefer_original_dialogue_remix=true` gesetzt ist, plant `14` Dialogzeilen wieder bevorzugt aus echten vorhandenen Originalsegmenten
 
-### 08 - Face-Cluster benennen und Review pruefen
+### 06 - Face-Cluster benennen und Review pruefen
 
-`python 08_review_unknowns.py`
+`python 06_review_unknowns.py`
 
 Dieser Schritt kann jetzt drei Dinge:
 
@@ -585,42 +697,43 @@ Dieser Schritt kann jetzt drei Dinge:
 
 Wichtige Beispiele:
 
-- `python 08_review_unknowns.py --list-faces`
-- `python 08_review_unknowns.py --created`
-- `python 08_review_unknowns.py`
-- `python 08_review_unknowns.py --all`
-- `python 08_review_unknowns.py --assign-face face_001 --name "Babe Carano"`
-- `python 08_review_unknowns.py --assign-face face_022 --name "Babe Carano" --priority`
-- `python 08_review_unknowns.py --set-priority "Babe Carano"`
-- `python 08_review_unknowns.py --clear-priority "Babe Carano"`
-- `python 08_review_unknowns.py --assign-face face_014 --name "Mr. Sammich"`
-- `python 08_review_unknowns.py --assign-face face_023 --name "Teague/Busboy"`
-- `python 08_review_unknowns.py --assign-face face_055 --name "statist"`
-- `python 08_review_unknowns.py --rename-face face_023 --rename-to "Teague"`
-- `python 08_review_unknowns.py --rename-face "Mr. Sammich" --rename-to "Mr. Sammich Sr."`
-- `python 08_review_unknowns.py --assign-face face_041 --ignore`
-- `python 08_review_unknowns.py --review-faces --open-previews`
-- `python 08_review_unknowns.py --show-queue`
+- `python 06_review_unknowns.py --list-faces`
+- `python 06_review_unknowns.py --created`
+- `python 06_review_unknowns.py`
+- `python 06_review_unknowns.py --all`
+- `python 06_review_unknowns.py --assign-face face_001 --name "Babe Carano"`
+- `python 06_review_unknowns.py --assign-face face_022 --name "Babe Carano" --priority`
+- `python 06_review_unknowns.py --set-priority "Babe Carano"`
+- `python 06_review_unknowns.py --clear-priority "Babe Carano"`
+- `python 06_review_unknowns.py --assign-face face_014 --name "Mr. Sammich"`
+- `python 06_review_unknowns.py --assign-face face_023 --name "Teague/Busboy"`
+- `python 06_review_unknowns.py --assign-face face_055 --name "statist"`
+- `python 06_review_unknowns.py --rename-face face_023 --rename-to "Teague"`
+- `python 06_review_unknowns.py --rename-face "Mr. Sammich" --rename-to "Mr. Sammich Sr."`
+- `python 06_review_unknowns.py --assign-face face_041 --ignore`
+- `python 06_review_unknowns.py --review-faces --open-previews`
+- `python 06_review_unknowns.py --show-queue`
 
 Bedeutung:
 
-- beim einfachen Start gleicht `08` zuerst offene Face-Cluster gegen bereits bekannte benannte Figuren ab und nutzt dafuer jetzt mehrere hochwertige Referenz-Cluster pro Figur statt nur einen einzelnen Figuren-Centroid
+- beim einfachen Start gleicht `06` zuerst offene Face-Cluster gegen bereits bekannte benannte Figuren ab und nutzt dafuer jetzt mehrere hochwertige Referenz-Cluster pro Figur statt nur einen einzelnen Figuren-Centroid
 - danach werden wirklich nur noch die uebrigen unbekannten Face-Cluster nacheinander gezeigt
 - die Review startet jetzt mit den haeufigsten wiederkehrenden Face-Clustern zuerst
-- `08` arbeitet nicht mehr nur einen alten 25er-Snapshot ab: nach jeder Namensvergabe wird sofort neu gescannt, bekannte Gesichter werden erneut automatisch zusammengefuehrt und erst dann der naechste wirklich offene Fall gezeigt
+- `06` arbeitet nicht mehr nur einen alten 25er-Snapshot ab: nach jeder Namensvergabe wird sofort neu gescannt, bekannte Gesichter werden erneut automatisch zusammengefuehrt und erst dann der naechste wirklich offene Fall gezeigt
 - nach jeder Namensvergabe laeuft dieser Auto-Lernschritt jetzt mehrfach bis zum Stillstand, damit nicht nur ein einzelner weiterer Treffer, sondern moeglichst viele unmittelbar passende offene Face- und Sprecher-Faelle direkt in derselben Session verschwinden
-- der automatische Vorab-Abgleich in `08` arbeitet jetzt qualitativ aehnlicher wie moderne Foto-Manager: Referenz-Cluster werden nach Qualitaet gewichtet, mehrere Referenzen derselben Figur werden gemeinsam ausgewertet und ein Treffer wird nur uebernommen, wenn Score, Abstand zur zweitbesten Figur und Konsens ueber mehrere Referenzen passen
-- das Standardlimit fuer `08` ist jetzt `20` offene Face-Cluster pro normalem Start
-- dieses `20`er-Limit ist jetzt ein echtes Session-Budget: nach jedem bearbeiteten Fall sinkt die Session-Anzeige wirklich herunter und `08` fuellt die Session nach Re-Scans nicht wieder heimlich auf `20` auf
-- sobald diese Session-Restmenge `0` erreicht, beendet `08` den normalen Lauf sauber; nur `python 08_review_unknowns.py --all` bearbeitet danach wirklich weiter alle noch offenen Faelle
+- der automatische Vorab-Abgleich in `06` arbeitet jetzt qualitativ aehnlicher wie moderne Foto-Manager: Referenz-Cluster werden nach Qualitaet gewichtet, mehrere Referenzen derselben Figur werden gemeinsam ausgewertet und ein Treffer wird nur uebernommen, wenn Score, Abstand zur zweitbesten Figur und Konsens ueber mehrere Referenzen passen
+- das Standardlimit fuer `06` ist jetzt `20` offene Face-Cluster pro normalem Start
+- dieses `20`er-Limit ist jetzt ein echtes Session-Budget: nach jedem bearbeiteten Fall sinkt die Session-Anzeige wirklich herunter und `06` fuellt die Session nach Re-Scans nicht wieder heimlich auf `20` auf
+- sobald diese Session-Restmenge `0` erreicht, beendet `06` den normalen Lauf sauber; nur `python 06_review_unknowns.py --all` bearbeitet danach wirklich weiter alle noch offenen Faelle
 - `--list-faces` zeigt standardmaessig nur bereits benannte Figuren
 - `--created` zeigt nur die bereits erstellten echten Figurennamen als einfache Liste wie `Babe`, `Kenzie` oder `Hudson`
-- `08` normalisiert beim Start alte Platzhalterdaten automatisch zurueck auf `face_###` und `speaker_###`, statt fruehere Auto-Namen weiterzutragen
+- `06` normalisiert beim Start alte Platzhalterdaten automatisch zurueck auf `face_###` und `speaker_###`, statt fruehere Auto-Namen weiterzutragen
 - wenn derselbe Figurenname mehrfach vergeben wird, bleiben alle diese Face-Cluster bewusst unter derselben Figur gruppiert; ein weiterer `Babe`-Treffer erhoeht also die Face-Anzahl fuer `Babe`, statt eine neue Figur zu erzeugen
 - `character_map.json` speichert diese Gruppierung jetzt auch explizit unter `identities` sowie pro Cluster ueber `identity_name`, `identity_primary_cluster`, `identity_cluster_ids` und `identity_cluster_count`
 - pro Cluster wird eine Montage mit Szene links und Ausschnitt rechts erzeugt und in einer Vorschau mit direkter Eingabe gezeigt
 - pro Cluster werden auch `Szenen` und `Treffer` angezeigt, damit Hauptfiguren schneller erkennbar sind
-- pro benannter Figur zeigt `08` jetzt auch `Figuren-Faces`, also wie viele unterschiedliche Face-Cluster bereits derselben Figur zugeordnet sind
+- pro offenem Cluster zeigt `06` jetzt zusaetzlich automatische Rollenhinweise wie `hauptfigur-kandidat`, `nebenfigur-kandidat` oder `statist-kandidat` samt Review-Tipp an
+- pro benannter Figur zeigt `06` jetzt auch `Figuren-Faces`, also wie viele unterschiedliche Face-Cluster bereits derselben Figur zugeordnet sind
 - im Vorschaufenster werden jetzt gleichzeitig die Session-Restmenge und die tatsaechlich insgesamt noch offenen Face-Cluster laufend angezeigt
 - der naechste Face-Cluster wird erst nach einer echten Benennung oder `noface` geoeffnet
 - waehrend der Review werden Beispielnamen wie `Babe Carano`, `Mr. Sammich`, `Teague/Busboy`, `noface = ignorieren` und `statist = statist` direkt eingeblendet
@@ -645,24 +758,9 @@ Bedeutung:
 - dabei werden jetzt auch offene Sprecher-Reviews konservativ direkt weiter reduziert, wenn fuer einen Sprecher ueber mehrere offene Segmente hinweg immer dieselbe einzelne benannte Figur sichtbar ist
 - die Grenzwerte fuer den automatischen Vorab-Abgleich liegen jetzt in `character_detection.review_known_face_threshold`, `review_known_face_margin`, `review_known_face_reference_count`, `review_known_face_top_k`, `review_known_face_consensus_threshold`, `review_known_face_min_consensus`, `review_known_face_strong_match_threshold` und `review_known_face_min_reference_quality`
 
-### 10 - Serienbibel aktualisieren
+### 15 - Serienbibel aktualisieren
 
-`python 12_build_series_bible.py`
-
-Dieser Schritt:
-
-- liest `series_model.json`
-- schreibt eine JSON- und Markdown-Serienbibel
-- listet Hauptfiguren, Themen und Referenzszenen auf
-
-Wichtige Ausgaben:
-
-- `series_bible/episode_summaries/auto_series_bible.json`
-- `series_bible/episode_summaries/auto_series_bible.md`
-
-### 12 - Serienbibel aktualisieren
-
-`python 12_build_series_bible.py`
+`python 15_build_series_bible.py`
 
 Dieser Schritt:
 
@@ -675,9 +773,9 @@ Wichtige Ausgaben:
 - `series_bible/episode_summaries/auto_series_bible.json`
 - `series_bible/episode_summaries/auto_series_bible.md`
 
-### 13 - Draft-Video rendern
+### 16 - Draft-Video rendern
 
-`python 13_render_episode.py`
+`python 16_render_episode.py`
 
 Dieser Schritt:
 
@@ -701,7 +799,7 @@ Dieser Schritt:
 - schreibt pro benannter Figur ein lokales `voice_model`-JSON unter `characters/voice_models`
 - nutzt fuer den finalen Zusammenschnitt jetzt eine FFmpeg-Concat-Datei statt einer extrem langen Eingabeliste, damit Windows nicht mehr an zu langen Render-Kommandos scheitert
 
-Wenn der installierte FFmpeg-Encoder es unterstuetzt und GPU-Nutzung aktiviert ist, wird fuer das Rendern automatisch NVENC verwendet. Sonst faellt `10` auf CPU-Encoding zurueck.
+Wenn der installierte FFmpeg-Encoder es unterstuetzt und GPU-Nutzung aktiviert ist, wird fuer das Rendern automatisch NVENC verwendet. Sonst faellt `16` auf CPU-Encoding zurueck.
 Wenn XTTS lokal verfuegbar ist, wird fuer das Voice Cloning ebenfalls das bevorzugte Torch-Geraet verwendet. Die eingebaute Lip-Sync-Variante ist ein audio-reaktiver Preview-Modus auf Basis der erkannten Face-Crops und kein externes Wav2Lip-/SadTalker-Setup.
 Ohne lizenzpflichtiges Clone-Modell bleibt die Stimme trotzdem ein lokaler TTS-Fallback; zusaetzlich werden jetzt aber pro benannter Figur Referenz-WAVs und ein lokales Stimmprofil unter `characters/voice_samples` aufgebaut.
 
@@ -709,19 +807,23 @@ Beispiel fuer gezielten Render in PowerShell:
 
 ```powershell
 $env:SERIES_RENDER_EPISODE='folge_02'
-python 13_render_episode.py
+python 16_render_episode.py
 Remove-Item Env:SERIES_RENDER_EPISODE
 ```
 
-### 14 - Mehrere sichtbare Folgen erzeugen
+### 17 - Mehrere sichtbare Folgen erzeugen
 
-`python 14_generate_preview_episodes.py`
+`python 17_generate_preview_episodes.py`
 
 Dieser Schritt:
 
-- trainiert zuerst das Serienmodell
+- baut zuerst den Datensatz aus dem aktuellen reviewten Bestand neu auf
+- trainiert danach das Serienmodell
 - bereitet danach automatisch den Foundation-Trainingssatz vor
 - trainiert danach automatisch die Foundation-Packs
+- trainiert danach automatisch auch die lokalen Adapter-Profile
+- trainiert danach automatisch auch die lokalen Fine-Tune-Profile
+- erzeugt danach automatisch auch die konkreten Backend-Fine-Tune-Laeufe
 - erzeugt erst danach mehrere neue Folgen hintereinander
 - rendert jede neue Folge direkt als Draft-MP4
 - rendert jede neue Folge direkt auch als Final-MP4
@@ -730,13 +832,13 @@ Dieser Schritt:
 
 Beispiele:
 
-- `python 14_generate_preview_episodes.py`
-- `python 14_generate_preview_episodes.py --count 3`
+- `python 17_generate_preview_episodes.py`
+- `python 17_generate_preview_episodes.py --count 3`
 
 Wichtig:
 
 - Standard sind `2` neue sichtbare Folgen pro Lauf
-- die Reihenfolge ist jetzt hart: `07 -> 09 -> 10 -> 11 -> 13 -> 12`
+- die Reihenfolge ist jetzt hart: `07 -> 08 -> 09 -> 10 -> 11 -> 12 -> 13 -> 14 -> 16 -> 15`
 - gerendert wird jeweils direkt die gerade neu erzeugte Folge
 - die Draft-Videos landen wie gewohnt unter `generation/renders/drafts/folge_XX`
 - die Final-Videos liegen unter `generation/renders/final/folge_XX`
@@ -745,7 +847,7 @@ Beispiel fuer XTTS nach eigener Lizenzbestaetigung:
 
 ```powershell
 $env:SERIES_ACCEPT_COQUI_LICENSE='1'
-python 13_render_episode.py
+python 16_render_episode.py
 Remove-Item Env:SERIES_ACCEPT_COQUI_LICENSE
 ```
 
@@ -777,29 +879,37 @@ Fuehrt diese Schritte nacheinander aus:
 - `03_split_scenes.py --episode-file <datei>`
 - `04_diarize_and_transcribe.py --episode <folgenordner>`
 - `05_link_faces_and_speakers.py --episode <folgenordner>`
-- `06_build_dataset.py --episode <folgenordner>`
-- `07_train_series_model.py`
+- danach manuelle Review:
+- `06_review_unknowns.py`
+- erst danach global:
+- `07_build_dataset.py`
+- `08_train_series_model.py`
 - `09_prepare_foundation_training.py`
 - `10_train_foundation_models.py`
-- `11_generate_episode_from_trained_model.py`
-- `12_build_series_bible.py`
-- `13_render_episode.py`
+- `11_train_adapter_models.py`
+- `12_train_fine_tune_models.py`
+- `13_run_backend_finetunes.py`
+- `14_generate_episode_from_trained_model.py`
+- `15_build_series_bible.py`
+- `16_render_episode.py`
 
 Wichtig:
 
 - `99` arbeitet jetzt alle neuen Quellfolgen im Inbox-Ordner nacheinander ab, nicht nur die erste
-- wenn z. B. `60` neue `mp4`-Folgen in `data/inbox/episodes` liegen, werden diese `60` Folgen nacheinander importiert, gesplittet, transkribiert, verknuepft und als Datensatz verarbeitet
+- wenn z. B. `60` neue `mp4`-Folgen in `data/inbox/episodes` liegen, werden diese `60` Folgen nacheinander importiert, gesplittet, transkribiert und verknuepft
 - jede einzelne Inbox-Folge wird bereits in `02_import_episode.py` entfernt, sobald ihre Arbeitskopie erfolgreich in `data/raw/episodes` liegt
-- erst nachdem alle neuen Quellfolgen vorverarbeitet wurden, werden `07`, `09`, `10`, `11`, `12` und `13` einmal fuer den aktualisierten Gesamtstand ausgefuehrt
+- erst nachdem alle neuen Quellfolgen bis `05` vorverarbeitet wurden und keine offenen Review-Faelle fuer `06_review_unknowns.py` mehr uebrig sind, werden `07`, `08`, `09`, `10`, `11`, `12`, `13`, `14`, `15` und `16` einmal fuer den aktualisierten Gesamtstand ausgefuehrt
 - nach jedem erfolgreich abgeschlossenen Schritt schreibt `99` einen Autosave unter `ai_series_project/runtime/autosaves/99_process_next_episode`
+- parallel schreibt `99` dort jetzt auch `current_status.json` und `current_status.md` mit aktuellem Episodenstatus, Globalstatus, Rest-Inbox und laufendem Schritt
 - es bleiben dabei bewusst maximal die letzten `2` Autosaves erhalten
 - wenn `99` unterwegs abbricht, nimmt der naechste Start automatisch den letzten gueltigen Autosave und setzt genau dort wieder an
-- `11` und `13` blocken jetzt bewusst, wenn `09`/`10` fehlen oder aelter als das aktuelle Serienmodell sind
+- `99` trainiert bewusst nicht ueber offene Review-Faelle hinweg; wenn nach `05` noch offene Eintraege in der Review-Queue liegen, stoppt der Lauf sauber und fordert zuerst `06_review_unknowns.py`
+- `14` und `16` blocken jetzt bewusst, wenn Training fehlt oder aelter als das aktuelle Serienmodell ist; `11`, `12` und `13` sind im Standardpfad ebenfalls Pflicht vor Generierung/Render
 - wenn keine neue Inbox-Folge vorhanden ist, beendet sich `99` sauber ohne neuen Generierungsdurchlauf
 
-### 15 - GitHub synchronisieren (optional)
+### 19 - GitHub synchronisieren (optional)
 
-`python 15_sync_to_github.py`
+`python 19_sync_to_github.py`
 
 Dieser Schritt:
 
@@ -830,9 +940,39 @@ Wichtige Umgebungsvariablen:
 
 Nuetzliche Beispiele:
 
-- nur pruefen, was passieren wuerde: `python 15_sync_to_github.py --dry-run`
-- mit gespeicherten Git-Credentials spiegeln: `python 15_sync_to_github.py`
-- mit GitHub-API-Token spiegeln: `set GITHUB_TOKEN=<token>` und danach `python 15_sync_to_github.py`
+- nur pruefen, was passieren wuerde: `python 19_sync_to_github.py --dry-run`
+- mit gespeicherten Git-Credentials spiegeln: `python 19_sync_to_github.py`
+- mit GitHub-API-Token spiegeln: `set GITHUB_TOKEN=<token>` und danach `python 19_sync_to_github.py`
+
+### 18 - Rebuild nach manueller Figuren-Review
+
+`python 18_refresh_after_manual_review.py`
+
+Dieser Schritt:
+
+- baut nach manueller Figurenpflege den kompletten abhaengigen Stand bewusst neu auf
+- startet dafuer in fester Reihenfolge:
+- `07_build_dataset.py --force`
+- `08_train_series_model.py`
+- `09_prepare_foundation_training.py --force`
+- `10_train_foundation_models.py --force`
+- `11_train_adapter_models.py --force`
+- `12_train_fine_tune_models.py --force`
+- `13_run_backend_finetunes.py --force`
+- danach optional auch:
+- `14_generate_episode_from_trained_model.py`
+- `15_build_series_bible.py`
+- `16_render_episode.py`
+
+Nuetzliche Varianten:
+
+- `python 18_refresh_after_manual_review.py --skip-downloads`
+- `python 18_refresh_after_manual_review.py --stop-after-training`
+
+Wichtig:
+
+- dieser Helfer ist genau fuer den Fall gedacht, dass nach `06` viele Figuren sauber benannt oder priorisiert wurden
+- damit muessen `07`, `08`, `09`, `10`, `11`, `12` und `13` nicht mehr einzeln mit `--force` von Hand hintereinander gestartet werden
 
 ## Nuetzliche Debug- und Test-Hinweise
 
@@ -873,13 +1013,22 @@ Empfohlener Smoke-Run nach groesseren Aenderungen:
 
 ```powershell
 python 05_link_faces_and_speakers.py
-python 06_build_dataset.py
-python 07_train_series_model.py
+python 07_build_dataset.py
+python 08_train_series_model.py
 python 09_prepare_foundation_training.py --skip-downloads
 python 10_train_foundation_models.py
-python 11_generate_episode_from_trained_model.py
-python 12_build_series_bible.py
-python 13_render_episode.py
+python 11_train_adapter_models.py
+python 12_train_fine_tune_models.py
+python 13_run_backend_finetunes.py
+python 14_generate_episode_from_trained_model.py
+python 15_build_series_bible.py
+python 16_render_episode.py
+```
+
+Wenn nach `06` viele Figuren neu benannt oder priorisiert wurden, ist statt der einzelnen Rebuild-Schritte jetzt dieser eine Lauf gedacht:
+
+```powershell
+python 18_refresh_after_manual_review.py --skip-downloads
 ```
 
 ### Wiederholung von Schritt 05
@@ -908,19 +1057,19 @@ python 05_link_faces_and_speakers.py --fresh --episode "Game.Shakers.S01E01.GERM
 
 ## Bekannte Grenzen
 
-- Die meisten Einzel-Skripte arbeiten standardmaessig auf dem ersten verfuegbaren Szenenordner bzw. der ersten Folge.
-- `05` hat zwar jetzt `--episode`, aber `04`, `06` und einige andere Schritte arbeiten weiterhin standardmaessig auf dem ersten verfuegbaren Ordner.
+- `03`, `04`, `05` und `06` arbeiten inzwischen stapelweise ueber offene Folgen, aber die wirklich saubere Qualitaet der Zuordnung haengt weiter stark an manueller Figurenpflege in `08`
+- `05 --fresh` bleibt bewusst ein gezielter Einzel-Folgen-Modus, weil `character_map.json` und `voice_map.json` global sind
 - `character_map.json` und `voice_map.json` sind global und noch nicht pro Folge getrennt.
 - Die Sprecherzuordnung ist heuristisch, nicht diarization-grade production quality.
 - Auch nach dem neuen Filter koennen in `05` noch Nebenfiguren oder Hintergrundgesichter als eigene Cluster auftauchen.
 - Solange Hauptfiguren noch nicht manuell benannt wurden, erzeugt `07` generische Hauptrollen (`Hauptfigur A/B`) statt echte Rollennamen.
 - Das Trainingsmodell in `07` ist regel-/datengetrieben und nicht mit einem grossen multimodalen KI-Modell vergleichbar.
-- `10` rendert weiter lokal und modular; auch das `final`-MP4 ist noch keine vollwertige TV-Endproduktion.
+- `16` rendert weiter lokal und modular; auch das `final`-MP4 ist noch keine vollwertige TV-Endproduktion.
 - das `final`-MP4 nutzt aktuell denselben lokalen Render-Inhalt wie der Draft; es ist ein sauber abgelegter Final-Export, aber noch keine qualitativ andere Filmfassung.
 - Die beste lokale Stimmennaehe kommt jetzt aus der Wiederverwendung passender Originalsegmente; fuer komplett neue Saetze ohne guten Treffer bleibt der Fallback eine generierte Stimme und klingt deshalb nicht identisch zur Originalfigur.
-- Das eingebaute Lip-Sync in `10` ist jetzt ohne Cartoon-Mund, aber weiterhin ein lokaler Fallback und nicht dieselbe Qualitaet wie spezialisierte Deepfake-/Lip-Sync-Modelle.
+- Das eingebaute Lip-Sync in `16` ist jetzt ohne Cartoon-Mund, aber weiterhin ein lokaler Fallback und nicht dieselbe Qualitaet wie spezialisierte Deepfake-/Lip-Sync-Modelle.
 - XTTS-Voice-Cloning funktioniert nur fuer Figuren mit brauchbarem Referenzaudio und installiertem `TTS`-Paket.
-- XTTS braucht zusaetzlich eine von dir explizit bestaetigte Coqui-Lizenzfreigabe; ohne diese rendert `10` absichtlich weiter mit Fallback-TTS.
+- XTTS braucht zusaetzlich eine von dir explizit bestaetigte Coqui-Lizenzfreigabe; ohne diese rendert `16` absichtlich weiter mit Fallback-TTS.
 - `large-v3` auf CPU ist moeglich, aber deutlich langsamer als auf GPU.
 
 ## Empfohlene Pflege bei Code-Aenderungen
@@ -949,15 +1098,25 @@ python 99_process_next_episode.py
 Wenn nur neue Episoden auf Basis des vorhandenen Datensatzes erzeugt werden sollen:
 
 ```powershell
-python 07_train_series_model.py
+python 08_train_series_model.py
 python 09_prepare_foundation_training.py --skip-downloads
 python 10_train_foundation_models.py
-python 11_generate_episode_from_trained_model.py
-python 13_render_episode.py
+python 11_train_adapter_models.py
+python 12_train_fine_tune_models.py
+python 13_run_backend_finetunes.py
+python 14_generate_episode_from_trained_model.py
+python 16_render_episode.py
+```
+
+Wenn nach manueller Figurenbenennung alles sauber mit den neuen Namen neu aufgebaut werden soll:
+
+```powershell
+python 18_refresh_after_manual_review.py --skip-downloads
 ```
 
 Wenn direkt mehrere neue sichtbare Folgen erzeugt werden sollen:
 
 ```powershell
-python 14_generate_preview_episodes.py --count 2
+python 17_generate_preview_episodes.py --count 2
 ```
+

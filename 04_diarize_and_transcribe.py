@@ -37,7 +37,7 @@ from pipeline_common import (
     write_json,
 )
 
-PROCESS_VERSION = 5
+PROCESS_VERSION = 6
 
 
 def parse_args() -> argparse.Namespace:
@@ -81,6 +81,16 @@ def next_untranscribed_episode_dir(scene_root: Path, cfg: dict) -> Path | None:
     return first_dir(scene_root)
 
 
+def pending_untranscribed_episode_dirs(scene_root: Path, cfg: dict) -> list[Path]:
+    pending = []
+    for folder in sorted(scene_root.glob("*")):
+        if not folder.is_dir():
+            continue
+        if not episode_transcription_completed(folder, cfg):
+            pending.append(folder)
+    return pending
+
+
 def resolve_episode_dir(scene_root: Path, episode_name: str | None, cfg: dict) -> Path | None:
     if episode_name:
         candidate = scene_root / Path(episode_name).name
@@ -91,6 +101,13 @@ def resolve_episode_dir(scene_root: Path, episode_name: str | None, cfg: dict) -
                 return folder
         raise FileNotFoundError(f"Szenenordner nicht gefunden: {episode_name}")
     return next_untranscribed_episode_dir(scene_root, cfg)
+
+
+def resolve_episode_dirs_for_processing(scene_root: Path, episode_name: str | None, cfg: dict) -> list[Path]:
+    if episode_name:
+        episode_dir = resolve_episode_dir(scene_root, episode_name, cfg)
+        return [episode_dir] if episode_dir is not None else []
+    return pending_untranscribed_episode_dirs(scene_root, cfg)
 
 
 def wav_duration_seconds(wav_path: Path) -> float:
@@ -536,6 +553,177 @@ def create_cluster(clusters: list[dict], embedding: list[float], row: dict) -> d
     return cluster
 
 
+def rescue_unknown_speaker_rows(
+    ordered_rows: list[dict],
+    cluster_by_id: dict[str, dict],
+    surviving_ids: set[str],
+    threshold: float,
+    cfg: dict,
+) -> int:
+    rescue_margin = float(cfg["transcription"].get("speaker_unknown_rescue_margin", 0.08))
+    neighbor_margin = float(cfg["transcription"].get("speaker_unknown_neighbor_margin", 0.12))
+    rescued = 0
+    rows_by_scene: dict[str, list[dict]] = defaultdict(list)
+    for row in ordered_rows:
+        rows_by_scene[str(row.get("scene_id", ""))].append(row)
+
+    for scene_rows in rows_by_scene.values():
+        for index, row in enumerate(scene_rows):
+            if row.get("speaker_cluster") != "speaker_unknown":
+                continue
+            embedding = row.get("voice_embedding") or []
+            if not embedding:
+                continue
+
+            neighbor_candidates: list[str] = []
+            previous_cluster = scene_rows[index - 1].get("speaker_cluster", "") if index > 0 else ""
+            next_cluster = scene_rows[index + 1].get("speaker_cluster", "") if index + 1 < len(scene_rows) else ""
+            if previous_cluster in surviving_ids:
+                neighbor_candidates.append(previous_cluster)
+            if next_cluster in surviving_ids:
+                neighbor_candidates.append(next_cluster)
+            if len(neighbor_candidates) == 2 and neighbor_candidates[0] != neighbor_candidates[1]:
+                neighbor_candidates = []
+
+            assigned_cluster = ""
+            if neighbor_candidates:
+                candidate_id = neighbor_candidates[0]
+                neighbor_score = cosine_similarity(embedding, cluster_by_id[candidate_id]["centroid"])
+                if neighbor_score >= max(0.0, threshold - neighbor_margin):
+                    assigned_cluster = candidate_id
+            if not assigned_cluster:
+                best_index, best_score = best_cluster_match(
+                    embedding,
+                    [cluster_by_id[cluster_id] for cluster_id in sorted(surviving_ids)],
+                )
+                candidate_ids = sorted(surviving_ids)
+                if best_index >= 0 and best_score >= max(0.0, threshold - rescue_margin):
+                    assigned_cluster = candidate_ids[best_index]
+
+            if assigned_cluster:
+                row["speaker_cluster"] = assigned_cluster
+                update_cluster(cluster_by_id[assigned_cluster], embedding, row)
+                rescued += 1
+    return rescued
+
+
+def cluster_text_profiles(ordered_rows: list[dict], surviving_ids: set[str]) -> dict[str, dict]:
+    profiles: dict[str, dict] = {}
+    for cluster_id in sorted(surviving_ids):
+        profiles[cluster_id] = {
+            "token_weights": defaultdict(float),
+            "token_rows": 0,
+            "scene_ids": set(),
+        }
+
+    for row in ordered_rows:
+        cluster_id = str(row.get("speaker_cluster", ""))
+        if cluster_id not in profiles:
+            continue
+        tokens = [
+            token
+            for token in tokens_from_text(str(row.get("text", "")))
+            if len(token) >= 4 and token.isalpha()
+        ]
+        if not tokens:
+            continue
+        profile = profiles[cluster_id]
+        quality = segment_quality(row, {"transcription": {}})
+        quality_weight = 1.6 if quality == "high" else 1.2 if quality == "medium" else 1.0
+        for token in set(tokens):
+            profile["token_weights"][token] += quality_weight
+        profile["token_rows"] += 1
+        profile["scene_ids"].add(str(row.get("scene_id", "")))
+
+    return profiles
+
+
+def best_profile_token_match(tokens: list[str], text_profiles: dict[str, dict]) -> tuple[str, float, float]:
+    candidate_scores: list[tuple[str, float]] = []
+    unique_tokens = [token for token in dict.fromkeys(tokens) if len(token) >= 4 and token.isalpha()]
+    if not unique_tokens:
+        return "", 0.0, 0.0
+
+    for cluster_id, profile in text_profiles.items():
+        token_weights = profile.get("token_weights", {})
+        if not token_weights:
+            continue
+        score = sum(float(token_weights.get(token, 0.0)) for token in unique_tokens)
+        if score <= 0:
+            continue
+        candidate_scores.append((cluster_id, score))
+
+    if not candidate_scores:
+        return "", 0.0, 0.0
+    candidate_scores.sort(key=lambda item: item[1], reverse=True)
+    best_cluster, best_score = candidate_scores[0]
+    second_score = candidate_scores[1][1] if len(candidate_scores) > 1 else 0.0
+    return best_cluster, float(best_score), float(best_score - second_score)
+
+
+def rescue_unknown_speaker_rows_with_episode_consensus(
+    ordered_rows: list[dict],
+    cluster_by_id: dict[str, dict],
+    surviving_ids: set[str],
+    threshold: float,
+    cfg: dict,
+) -> int:
+    rescue_margin = float(cfg["transcription"].get("speaker_unknown_episode_rescue_margin", 0.11))
+    embedding_margin = float(cfg["transcription"].get("speaker_unknown_episode_embedding_margin", 0.04))
+    min_token_score = float(cfg["transcription"].get("speaker_unknown_episode_min_token_score", 2.2))
+    min_token_margin = float(cfg["transcription"].get("speaker_unknown_episode_min_token_margin", 0.8))
+    rescued = 0
+    text_profiles = cluster_text_profiles(ordered_rows, surviving_ids)
+    candidate_clusters = [cluster_by_id[cluster_id] for cluster_id in sorted(surviving_ids)]
+    candidate_ids = [cluster["cluster_id"] for cluster in candidate_clusters]
+
+    for row in ordered_rows:
+        if row.get("speaker_cluster") != "speaker_unknown":
+            continue
+        embedding = row.get("voice_embedding") or []
+        if not embedding:
+            continue
+        row_tokens = [
+            token
+            for token in tokens_from_text(str(row.get("text", "")))
+            if len(token) >= 4 and token.isalpha()
+        ]
+        if not row_tokens:
+            continue
+
+        best_index, best_score = best_cluster_match(embedding, candidate_clusters)
+        if best_index < 0:
+            continue
+        ranked_scores = sorted(
+            (
+                cosine_similarity(embedding, cluster["centroid"]),
+                cluster["cluster_id"],
+            )
+            for cluster in candidate_clusters
+        )
+        ranked_scores.sort(reverse=True)
+        second_embedding_score = ranked_scores[1][0] if len(ranked_scores) > 1 else -1.0
+        best_embedding_cluster = candidate_ids[best_index]
+        if best_score < max(0.0, threshold - rescue_margin):
+            continue
+        if best_score - second_embedding_score < embedding_margin:
+            continue
+
+        best_text_cluster, best_text_score, text_margin = best_profile_token_match(row_tokens, text_profiles)
+        if not best_text_cluster:
+            continue
+        if best_text_cluster != best_embedding_cluster:
+            continue
+        if best_text_score < min_token_score or text_margin < min_token_margin:
+            continue
+
+        row["speaker_cluster"] = best_embedding_cluster
+        update_cluster(cluster_by_id[best_embedding_cluster], embedding, row)
+        rescued += 1
+
+    return rescued
+
+
 def assign_speaker_clusters(rows: list[dict], threshold: float, cfg: dict) -> tuple[list[dict], list[dict]]:
     clusters: list[dict] = []
     ordered_rows = sorted(rows, key=lambda item: (item["scene_id"], float(item["start"]), item["segment_id"]))
@@ -579,6 +767,26 @@ def assign_speaker_clusters(rows: list[dict], threshold: float, cfg: dict) -> tu
         if cluster["count"] < minimum_cluster_size:
             row["speaker_cluster"] = "speaker_unknown"
 
+    surviving_ids = {
+        row["speaker_cluster"]
+        for row in ordered_rows
+        if row.get("speaker_cluster") and row["speaker_cluster"] != "speaker_unknown"
+    }
+    if surviving_ids:
+        rescue_unknown_speaker_rows(ordered_rows, cluster_by_id, surviving_ids, threshold, cfg)
+        surviving_ids = {
+            row["speaker_cluster"]
+            for row in ordered_rows
+            if row.get("speaker_cluster") and row["speaker_cluster"] != "speaker_unknown"
+        }
+        rescue_unknown_speaker_rows_with_episode_consensus(
+            ordered_rows,
+            cluster_by_id,
+            surviving_ids,
+            threshold,
+            cfg,
+        )
+
     surviving_ids = sorted(
         {
             row["speaker_cluster"]
@@ -608,17 +816,16 @@ def assign_speaker_clusters(rows: list[dict], threshold: float, cfg: dict) -> tu
     return ordered_rows, cluster_payload
 
 
-def main() -> None:
-    rerun_in_runtime()
-    args = parse_args()
-    headline("Sprecher segmentieren und transkribieren")
-    cfg = load_config()
-    ffmpeg = detect_tool(PROJECT_ROOT / "tools" / "ffmpeg" / "bin", "ffmpeg")
-    scene_root = resolve_project_path(cfg["paths"]["scene_clips"])
-    episode_dir = resolve_episode_dir(scene_root, args.episode, cfg)
-    if episode_dir is None:
-        info("Keine Szenenordner gefunden.")
-        return
+def process_episode_dir(
+    episode_dir: Path,
+    cfg: dict,
+    ffmpeg: Path,
+    model,
+    use_fp16: bool,
+    speaker_backend: str,
+    speechbrain_model,
+    device: str,
+) -> bool:
     autosave_target = episode_dir.name
     if episode_transcription_completed(episode_dir, cfg):
         mark_step_completed(
@@ -632,32 +839,18 @@ def main() -> None:
             },
         )
         ok(f"Transkription bereits erfolgreich vorhanden: {episode_dir.name}")
-        return
+        return False
 
     scenes = limited_items(sorted(episode_dir.glob("*.mp4")))
     if not scenes:
         info("Keine Szene-Dateien gefunden.")
-        return
+        return False
 
     audio_root = resolve_project_path("data/raw/audio")
     scene_cache_dir = resolve_project_path(cfg["paths"]["speaker_segments"]) / episode_dir.name
     combined_dir = resolve_project_path(cfg["paths"]["speaker_transcripts"])
     scene_cache_dir.mkdir(parents=True, exist_ok=True)
     combined_dir.mkdir(parents=True, exist_ok=True)
-
-    import whisper
-
-    model_dir = resolve_project_path(cfg["paths"]["whisper_model_dir"])
-    model_dir.mkdir(parents=True, exist_ok=True)
-    device = preferred_torch_device(cfg)
-    use_fp16 = device == "cuda"
-    model_name = cfg["transcription"]["model_name"]
-    requested_backend = str(cfg["transcription"].get("speaker_embedding_backend", "auto")).strip().lower()
-    speaker_backend = "mfcc"
-    speechbrain_model = None
-    info(f"Whisper-Modell: {model_name}")
-    info(f"Ausführungsmodus: {preferred_execution_label(cfg)}")
-    info(f"Rechengerät: {preferred_compute_label(cfg)}")
     mark_step_started(
         "04_diarize_and_transcribe",
         autosave_target,
@@ -666,26 +859,11 @@ def main() -> None:
             "process_version": PROCESS_VERSION,
             "scene_count": len(scenes),
             "device": device,
-            "model_name": model_name,
+            "model_name": cfg["transcription"]["model_name"],
         },
     )
     completed_scene_ids: list[str] = []
     try:
-        model = whisper.load_model(model_name, download_root=str(model_dir), device=device)
-
-        if requested_backend in {"auto", "speechbrain"}:
-            try:
-                speechbrain_model = speechbrain_encoder(
-                    PROJECT_ROOT.parent / "runtime" / "models" / "speechbrain" / "ecapa",
-                    device=device,
-                )
-                speaker_backend = "speechbrain"
-            except Exception as exc:
-                if requested_backend == "speechbrain":
-                    raise
-                warn(f"SpeechBrain-Speaker-Encoder nicht nutzbar, Fallback auf MFCC: {exc}")
-        info(f"Sprecher-Embedding-Backend: {speaker_backend}")
-
         all_rows: list[dict] = []
         for index, scene_file in enumerate(scenes, start=1):
             scene_rows = process_scene(
@@ -755,6 +933,7 @@ def main() -> None:
             },
         )
         ok(f"Segment-Transkripte gespeichert: {len(all_rows)} Segmente")
+        return True
     except Exception as exc:
         mark_step_failed(
             "04_diarize_and_transcribe",
@@ -768,6 +947,71 @@ def main() -> None:
             },
         )
         raise
+
+
+def main() -> None:
+    rerun_in_runtime()
+    args = parse_args()
+    headline("Sprecher segmentieren und transkribieren")
+    cfg = load_config()
+    ffmpeg = detect_tool(PROJECT_ROOT / "tools" / "ffmpeg" / "bin", "ffmpeg")
+    scene_root = resolve_project_path(cfg["paths"]["scene_clips"])
+    episode_dirs = resolve_episode_dirs_for_processing(scene_root, args.episode, cfg)
+    if not episode_dirs:
+        if args.episode:
+            info("Keine passenden Szenenordner gefunden.")
+        else:
+            info("Keine offenen Folgen für Schritt 04 gefunden.")
+        return
+
+    model_name = cfg["transcription"]["model_name"]
+    device = preferred_torch_device(cfg)
+    use_fp16 = device == "cuda"
+    requested_backend = str(cfg["transcription"].get("speaker_embedding_backend", "auto")).strip().lower()
+    speaker_backend = "mfcc"
+    speechbrain_model = None
+    model = None
+    info(f"Whisper-Modell: {model_name}")
+    info(f"Ausführungsmodus: {preferred_execution_label(cfg)}")
+    info(f"Rechengerät: {preferred_compute_label(cfg)}")
+
+    processed_count = 0
+    total = len(episode_dirs)
+    for index, episode_dir in enumerate(episode_dirs, start=1):
+        info(f"Bearbeite {index}/{total}: {episode_dir.name}")
+        if model is None:
+            import whisper
+
+            model_dir = resolve_project_path(cfg["paths"]["whisper_model_dir"])
+            model_dir.mkdir(parents=True, exist_ok=True)
+            model = whisper.load_model(model_name, download_root=str(model_dir), device=device)
+
+            if requested_backend in {"auto", "speechbrain"}:
+                try:
+                    speechbrain_model = speechbrain_encoder(
+                        PROJECT_ROOT.parent / "runtime" / "models" / "speechbrain" / "ecapa",
+                        device=device,
+                    )
+                    speaker_backend = "speechbrain"
+                except Exception as exc:
+                    if requested_backend == "speechbrain":
+                        raise
+                    warn(f"SpeechBrain-Speaker-Encoder nicht nutzbar, Fallback auf MFCC: {exc}")
+            info(f"Sprecher-Embedding-Backend: {speaker_backend}")
+
+        if process_episode_dir(
+            episode_dir,
+            cfg,
+            ffmpeg,
+            model,
+            use_fp16,
+            speaker_backend,
+            speechbrain_model,
+            device,
+        ):
+            processed_count += 1
+
+    ok(f"Batch abgeschlossen: {processed_count} Folgen in 04 verarbeitet.")
 
 
 if __name__ == "__main__":

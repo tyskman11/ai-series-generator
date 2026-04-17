@@ -153,10 +153,27 @@ def next_unlinked_episode_dir(scene_root: Path, cfg: dict) -> Path | None:
     return first_dir(scene_root)
 
 
+def pending_unlinked_episode_dirs(scene_root: Path, cfg: dict) -> list[Path]:
+    pending = []
+    for folder in sorted(scene_root.glob("*")):
+        if not folder.is_dir():
+            continue
+        if not episode_face_linking_completed(folder, cfg):
+            pending.append(folder)
+    return pending
+
+
 def resolve_episode_dir_for_processing(scene_root: Path, episode_name: str | None, cfg: dict) -> Path | None:
     if episode_name:
         return resolve_episode_dir(scene_root, episode_name)
     return next_unlinked_episode_dir(scene_root, cfg)
+
+
+def resolve_episode_dirs_for_processing(scene_root: Path, episode_name: str | None, cfg: dict) -> list[Path]:
+    if episode_name:
+        episode_dir = resolve_episode_dir(scene_root, episode_name)
+        return [episode_dir] if episode_dir is not None else []
+    return pending_unlinked_episode_dirs(scene_root, cfg)
 
 
 def create_contact_sheet(image_paths: list[Path], output_path: Path) -> Path | None:
@@ -872,18 +889,27 @@ def resolve_voice_names(voice_map: dict, speaker_votes: dict[str, dict[str, floa
             payload["auto_named"] = True
 
 
-def main() -> None:
-    rerun_in_runtime()
-    args = parse_args()
-    headline("Gesichter erkennen und mit Stimmen verknüpfen")
-    cfg = load_config()
-    scene_root = resolve_project_path(cfg["paths"]["scene_clips"])
-    episode_dir = resolve_episode_dir_for_processing(scene_root, args.episode, cfg)
-    if episode_dir is None:
-        info("Keine Szenenordner gefunden.")
-        return
+def process_episode_dir(
+    episode_dir: Path,
+    cfg: dict,
+    *,
+    fresh_run: bool,
+    faces_root: Path,
+    linked_root: Path,
+    previews_root: Path,
+    char_map: dict,
+    voice_map: dict,
+    engine,
+    interactive: bool,
+    auto_open: bool,
+    sample_every: int,
+    max_faces_per_frame: int,
+    max_visible_faces_per_segment: int,
+    segment_padding_seconds: float,
+    threshold: float,
+) -> bool:
     autosave_target = episode_dir.name
-    if not args.fresh and episode_face_linking_completed(episode_dir, cfg):
+    if not fresh_run and episode_face_linking_completed(episode_dir, cfg):
         mark_step_completed(
             "05_link_faces_and_speakers",
             autosave_target,
@@ -895,13 +921,10 @@ def main() -> None:
             },
         )
         ok(f"Gesichts-/Stimmen-Verknüpfung bereits vorhanden: {episode_dir.name}")
-        return
+        return False
 
-    faces_root = resolve_project_path(cfg["paths"]["faces"])
     faces_episode_dir = faces_root / episode_dir.name
-    linked_root = resolve_project_path(cfg["paths"]["linked_segments"])
-    previews_root = PROJECT_ROOT / "characters" / "previews"
-    if args.fresh:
+    if fresh_run:
         reset_step_outputs(cfg, episode_dir, faces_episode_dir, previews_root)
 
     transcript_rows = read_json(
@@ -910,36 +933,12 @@ def main() -> None:
     )
     if not transcript_rows:
         info("Keine Sprecher-Transkripte gefunden.")
-        return
+        return False
 
     scenes = {scene.stem: scene for scene in limited_items(sorted(episode_dir.glob("*.mp4")))}
     faces_episode_dir.mkdir(parents=True, exist_ok=True)
     linked_root.mkdir(parents=True, exist_ok=True)
     previews_root.mkdir(parents=True, exist_ok=True)
-
-    char_map = read_json(resolve_project_path(cfg["paths"]["character_map"]), EMPTY_CLUSTER_MAP)
-    voice_map = read_json(resolve_project_path(cfg["paths"]["voice_map"]), EMPTY_CLUSTER_MAP)
-    char_map.setdefault("clusters", {})
-    char_map.setdefault("aliases", {})
-    voice_map.setdefault("clusters", {})
-    voice_map.setdefault("aliases", {})
-    normalized_faces, normalized_voices = normalize_loaded_maps(char_map, voice_map)
-    if normalized_faces or normalized_voices:
-        info(
-            f"Bestehende Maps normalisiert: {normalized_faces} Face-Eintraege, "
-            f"{normalized_voices} Sprecher-Eintraege."
-        )
-    interactive = bool(cfg["character_detection"].get("interactive_assignment", False)) and is_interactive_session()
-    auto_open = bool(cfg.get("preview_open_automatically", False))
-    sample_every = int(cfg["character_detection"].get("sample_every_n_frames", 8))
-    max_faces_per_frame = int(cfg["character_detection"].get("max_faces_per_frame", 3))
-    max_visible_faces_per_segment = int(cfg["character_detection"].get("max_visible_faces_per_segment", 3))
-    segment_padding_seconds = float(cfg["character_detection"].get("segment_visibility_padding_seconds", 0.35))
-    threshold = float(cfg["character_detection"].get("embedding_threshold", 0.72))
-    engine = create_face_engine(cfg)
-    info(f"Ausführungsmodus: {preferred_execution_label(cfg)}")
-    info(f"Rechengerät: {preferred_compute_label(cfg)}")
-    info(f"Gesichtserkennung: {engine['mode']}")
 
     face_by_scene: dict[str, dict] = {}
     scene_files = list(scenes.values())
@@ -947,14 +946,14 @@ def main() -> None:
     mark_step_started(
         "05_link_faces_and_speakers",
         autosave_target,
-        {
-            "episode_id": episode_dir.name,
-            "process_version": PROCESS_VERSION,
-            "scene_count": len(scene_files),
-            "transcript_count": len(transcript_rows),
-            "fresh_run": bool(args.fresh),
-        },
-    )
+            {
+                "episode_id": episode_dir.name,
+                "process_version": PROCESS_VERSION,
+                "scene_count": len(scene_files),
+                "transcript_count": len(transcript_rows),
+                "fresh_run": bool(fresh_run),
+            },
+        )
     try:
         for index, scene_file in enumerate(scene_files, start=1):
             payload = process_scene_faces(
@@ -1103,6 +1102,7 @@ def main() -> None:
             },
         )
         ok(f"Verknüpfung abgeschlossen: {len(linked_rows)} Segmente")
+        return True
     except Exception as exc:
         mark_step_failed(
             "05_link_faces_and_speakers",
@@ -1117,6 +1117,81 @@ def main() -> None:
             },
         )
         raise
+
+
+def main() -> None:
+    rerun_in_runtime()
+    args = parse_args()
+    headline("Gesichter erkennen und mit Stimmen verknüpfen")
+    cfg = load_config()
+    scene_root = resolve_project_path(cfg["paths"]["scene_clips"])
+    episode_dirs = resolve_episode_dirs_for_processing(scene_root, args.episode, cfg)
+    if not episode_dirs:
+        if args.episode:
+            info("Keine passenden Szenenordner gefunden.")
+        else:
+            info("Keine offenen Folgen für Schritt 05 gefunden.")
+        return
+    if args.fresh and not args.episode:
+        raise ValueError("--fresh erfordert --episode, damit bestehende globale Maps nicht versehentlich für einen Batchlauf geleert werden.")
+
+    faces_root = resolve_project_path(cfg["paths"]["faces"])
+    linked_root = resolve_project_path(cfg["paths"]["linked_segments"])
+    previews_root = PROJECT_ROOT / "characters" / "previews"
+    if args.fresh:
+        char_map = json.loads(json.dumps(EMPTY_CLUSTER_MAP))
+        voice_map = json.loads(json.dumps(EMPTY_CLUSTER_MAP))
+    else:
+        char_map = read_json(resolve_project_path(cfg["paths"]["character_map"]), EMPTY_CLUSTER_MAP)
+        voice_map = read_json(resolve_project_path(cfg["paths"]["voice_map"]), EMPTY_CLUSTER_MAP)
+    char_map.setdefault("clusters", {})
+    char_map.setdefault("aliases", {})
+    voice_map.setdefault("clusters", {})
+    voice_map.setdefault("aliases", {})
+    normalized_faces, normalized_voices = normalize_loaded_maps(char_map, voice_map)
+    if normalized_faces or normalized_voices:
+        info(
+            f"Bestehende Maps normalisiert: {normalized_faces} Face-Eintraege, "
+            f"{normalized_voices} Sprecher-Eintraege."
+        )
+
+    interactive = bool(cfg["character_detection"].get("interactive_assignment", False)) and is_interactive_session()
+    auto_open = bool(cfg.get("preview_open_automatically", False))
+    sample_every = int(cfg["character_detection"].get("sample_every_n_frames", 8))
+    max_faces_per_frame = int(cfg["character_detection"].get("max_faces_per_frame", 3))
+    max_visible_faces_per_segment = int(cfg["character_detection"].get("max_visible_faces_per_segment", 3))
+    segment_padding_seconds = float(cfg["character_detection"].get("segment_visibility_padding_seconds", 0.35))
+    threshold = float(cfg["character_detection"].get("embedding_threshold", 0.72))
+    engine = create_face_engine(cfg)
+    info(f"Ausführungsmodus: {preferred_execution_label(cfg)}")
+    info(f"Rechengerät: {preferred_compute_label(cfg)}")
+    info(f"Gesichtserkennung: {engine['mode']}")
+
+    processed_count = 0
+    total = len(episode_dirs)
+    for index, episode_dir in enumerate(episode_dirs, start=1):
+        info(f"Bearbeite {index}/{total}: {episode_dir.name}")
+        if process_episode_dir(
+            episode_dir,
+            cfg,
+            fresh_run=bool(args.fresh),
+            faces_root=faces_root,
+            linked_root=linked_root,
+            previews_root=previews_root,
+            char_map=char_map,
+            voice_map=voice_map,
+            engine=engine,
+            interactive=interactive,
+            auto_open=auto_open,
+            sample_every=sample_every,
+            max_faces_per_frame=max_faces_per_frame,
+            max_visible_faces_per_segment=max_visible_faces_per_segment,
+            segment_padding_seconds=segment_padding_seconds,
+            threshold=threshold,
+        ):
+            processed_count += 1
+
+    ok(f"Batch abgeschlossen: {processed_count} Folgen in 05 verarbeitet.")
 
 
 if __name__ == "__main__":

@@ -952,7 +952,7 @@ def main() -> None:
     parse_args()
     headline("Serienmodell trainieren")
     cfg = load_config()
-    mark_step_started("07_train_series_model", "global")
+    mark_step_started("08_train_series_model", "global")
     dataset_root = resolve_project_path(cfg["paths"]["datasets_video_training"])
     dataset_files = sorted(dataset_root.glob("*_dataset.json"))
     if not dataset_files:
@@ -965,13 +965,13 @@ def main() -> None:
         model_path.parent.mkdir(parents=True, exist_ok=True)
         write_json(model_path, model)
         mark_step_completed(
-            "07_train_series_model",
+            "08_train_series_model",
             "global",
             {"series_model": str(model_path), "dataset_count": len(dataset_files)},
         )
         ok(f"Serienmodell trainiert: {model_path}")
     except Exception as exc:
-        mark_step_failed("07_train_series_model", str(exc), "global", {"dataset_count": len(dataset_files)})
+        mark_step_failed("08_train_series_model", str(exc), "global", {"dataset_count": len(dataset_files)})
         raise
 
 

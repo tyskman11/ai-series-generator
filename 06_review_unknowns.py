@@ -540,10 +540,53 @@ def cluster_sort_key(item: tuple[str, dict]) -> tuple[int, int, int, str]:
     cluster_id, payload = item
     ignored_rank = 1 if is_ignored_face_payload(payload) else 0
     named_rank = 1 if not looks_auto_named(str(payload.get("name", ""))) else 0
+    activity_rank = -face_activity_score(payload)
     scene_rank = -int(payload.get("scene_count", 0))
     detection_rank = -int(payload.get("detection_count", 0))
     samples_rank = -int(payload.get("samples", 0))
-    return (ignored_rank, named_rank, scene_rank, detection_rank, samples_rank, cluster_id)
+    return (ignored_rank, named_rank, activity_rank, scene_rank, detection_rank, samples_rank, cluster_id)
+
+
+def face_activity_score(payload: dict) -> float:
+    return (
+        (float(payload.get("scene_count", 0)) * 4.0)
+        + (float(payload.get("samples", 0)) * 2.0)
+        + (float(payload.get("detection_count", 0)) * 0.2)
+        + (10.0 if bool(payload.get("priority", False)) else 0.0)
+    )
+
+
+def suggested_face_role(payload: dict) -> str:
+    if bool(payload.get("priority", False)):
+        return "hauptfigur-kandidat"
+    if is_ignored_face_payload(payload):
+        return "ignorieren"
+    if is_background_person_name(str(payload.get("name", ""))):
+        return "statist"
+
+    score = face_activity_score(payload)
+    scene_count = int(payload.get("scene_count", 0) or 0)
+    detection_count = int(payload.get("detection_count", 0) or 0)
+    samples = int(payload.get("samples", 0) or 0)
+
+    if score >= 42.0 or scene_count >= 10 or detection_count >= 60:
+        return "hauptfigur-kandidat"
+    if score <= 10.0 and scene_count <= 2 and detection_count <= 12 and samples <= 3:
+        return "statist-kandidat"
+    return "nebenfigur-kandidat"
+
+
+def suggested_face_action_hint(payload: dict) -> str:
+    role = suggested_face_role(payload)
+    if role == "hauptfigur-kandidat":
+        return "Tipp: echter Name + optional Hauptfigur setzen"
+    if role == "statist-kandidat":
+        return "Tipp: eher 'statist' oder 'noface' prüfen"
+    if role == "statist":
+        return "Tipp: bereits als Statist gespeichert"
+    if role == "ignorieren":
+        return "Tipp: bereits ignoriert"
+    return "Tipp: echter Name oder 'statist' prüfen"
 
 
 def hydrate_face_clusters_from_previews(cfg: dict, char_map: dict) -> int:
@@ -705,6 +748,16 @@ def identity_embedding(clusters: list[tuple[str, dict]]) -> list[float]:
     return normalize_embedding([value / total_weight for value in weighted])
 
 
+def known_face_identity_strength(payload: dict) -> float:
+    cluster_count = float(payload.get("cluster_count", 0) or 0)
+    references = payload.get("references") or []
+    average_quality = 0.0
+    if references:
+        average_quality = sum(float(reference.get("quality", 0.0) or 0.0) for reference in references) / len(references)
+    priority_bonus = 1.0 if bool(payload.get("priority", False)) else 0.0
+    return round((cluster_count * 0.8) + (average_quality * 0.06) + priority_bonus, 3)
+
+
 def select_identity_reference_clusters(
     clusters: list[tuple[str, dict]],
     max_references: int,
@@ -761,7 +814,9 @@ def known_face_reference_identities(char_map: dict, cfg: dict | None = None) -> 
             ],
             "cluster_count": len(clusters),
             "embedding": embedding,
+            "priority": identity_has_priority(char_map, identity_name),
         }
+        identities[identity_name]["identity_strength"] = known_face_identity_strength(identities[identity_name])
     return identities
 
 
@@ -813,6 +868,7 @@ def score_known_face_identity(embedding: list[float], payload: dict, cfg: dict |
     return {
         "identity": str(payload.get("name", "")),
         "primary_cluster": str(payload.get("primary_cluster", "")),
+        "identity_strength": float(payload.get("identity_strength", 0.0) or 0.0),
         "score": composite_score,
         "best_reference_score": best_reference_score,
         "average_top_score": average_top_score,
@@ -863,6 +919,12 @@ def known_face_match_config(cfg: dict) -> dict[str, float | int]:
         "min_consensus": int(face_cfg.get("review_known_face_min_consensus", 2)),
         "strong_match_threshold": float(face_cfg.get("review_known_face_strong_match_threshold", 0.84)),
         "min_reference_quality": float(face_cfg.get("review_known_face_min_reference_quality", 5.0)),
+        "identity_relaxed_consensus_strength": float(face_cfg.get("review_known_face_identity_relaxed_consensus_strength", 5.0)),
+        "identity_weak_strength": float(face_cfg.get("review_known_face_identity_weak_strength", 2.0)),
+        "identity_threshold_bonus_max": float(face_cfg.get("review_known_face_identity_threshold_bonus_max", 0.03)),
+        "identity_margin_bonus_max": float(face_cfg.get("review_known_face_identity_margin_bonus_max", 0.02)),
+        "identity_weak_threshold_penalty": float(face_cfg.get("review_known_face_identity_weak_threshold_penalty", 0.02)),
+        "identity_weak_margin_penalty": float(face_cfg.get("review_known_face_identity_weak_margin_penalty", 0.01)),
     }
 
 
@@ -887,9 +949,32 @@ def plan_known_face_matches(cfg: dict, char_map: dict) -> dict[str, dict]:
         best_score = float(best_match.get("score", -1.0))
         second_score = float(ranked[1]["score"]) if len(ranked) > 1 else -1.0
         score_margin = best_score - max(second_score, -1.0)
-        has_consensus = int(best_match.get("consensus_count", 0)) >= min_consensus
+        identity_strength = float(best_match.get("identity_strength", 0.0) or 0.0)
+        relaxed_consensus_strength = float(match_cfg.get("identity_relaxed_consensus_strength", 5.0))
+        weak_strength = float(match_cfg.get("identity_weak_strength", 2.0))
+        threshold_bonus_max = float(match_cfg.get("identity_threshold_bonus_max", 0.03))
+        margin_bonus_max = float(match_cfg.get("identity_margin_bonus_max", 0.02))
+        weak_threshold_penalty = float(match_cfg.get("identity_weak_threshold_penalty", 0.02))
+        weak_margin_penalty = float(match_cfg.get("identity_weak_margin_penalty", 0.01))
+
+        if identity_strength >= relaxed_consensus_strength:
+            effective_min_consensus = max(1, min_consensus - 1)
+            strength_factor = min(1.0, max(0.0, (identity_strength - relaxed_consensus_strength) / max(1.0, relaxed_consensus_strength)))
+            effective_threshold = threshold - (threshold_bonus_max * strength_factor)
+            effective_margin = max(0.02, margin - (margin_bonus_max * strength_factor))
+        elif identity_strength <= weak_strength:
+            effective_min_consensus = min_consensus
+            weakness_factor = min(1.0, max(0.0, (weak_strength - identity_strength) / max(1.0, weak_strength)))
+            effective_threshold = threshold + (weak_threshold_penalty * weakness_factor)
+            effective_margin = margin + (weak_margin_penalty * weakness_factor)
+        else:
+            effective_min_consensus = min_consensus
+            effective_threshold = threshold
+            effective_margin = margin
+
+        has_consensus = int(best_match.get("consensus_count", 0)) >= effective_min_consensus
         strong_single_match = float(best_match.get("best_reference_score", -1.0)) >= strong_match_threshold
-        if best_score < threshold or score_margin < margin or (not has_consensus and not strong_single_match):
+        if best_score < effective_threshold or score_margin < effective_margin or (not has_consensus and not strong_single_match):
             continue
         target_cluster = str(best_match.get("primary_cluster", "")).strip()
         if not target_cluster:
@@ -903,6 +988,10 @@ def plan_known_face_matches(cfg: dict, char_map: dict) -> dict[str, dict]:
             "average_top_score": round(float(best_match.get("average_top_score", -1.0)), 4),
             "centroid_score": round(float(best_match.get("centroid_score", -1.0)), 4),
             "consensus_count": int(best_match.get("consensus_count", 0)),
+            "effective_min_consensus": effective_min_consensus,
+            "effective_threshold": round(effective_threshold, 4),
+            "effective_margin": round(effective_margin, 4),
+            "identity_strength": round(identity_strength, 3),
             "best_reference_cluster": str(best_match.get("best_reference_cluster", "")),
         }
     return matches
@@ -1314,6 +1403,8 @@ def print_cluster(char_map: dict, cluster_id: str, payload: dict) -> None:
     auto_named = payload.get("auto_named", False)
     priority = bool(payload.get("priority", False))
     identity_count = identity_cluster_count(char_map, str(name)) if has_manual_person_name(str(name)) and not is_background_person_name(str(name)) else 1
+    role_hint = suggested_face_role(payload)
+    action_hint = suggested_face_action_hint(payload)
     print(f"{cluster_id}: {name}")
     print(f"  Status: {status}")
     print(f"  Samples: {samples}")
@@ -1322,6 +1413,8 @@ def print_cluster(char_map: dict, cluster_id: str, payload: dict) -> None:
     print(f"  Figuren-Faces: {identity_count}")
     print(f"  Auto: {auto_named}")
     print(f"  Priorisiert: {priority}")
+    print(f"  Rollenhinweis: {role_hint}")
+    print(f"  Review-Tipp: {action_hint}")
     print(f"  Preview: {preview_dir}")
 
 
@@ -1437,6 +1530,8 @@ def interactive_face_review(cfg: dict, char_map: dict, voice_map: dict, include_
         cluster_id, payload = candidates[0]
         session_remaining_count = session_case_budget_remaining(limit, handled_count)
         total_open_count = len(face_review_candidates(char_map, include_named, 0, set()))
+        role_hint = suggested_face_role(payload)
+        action_hint = suggested_face_action_hint(payload)
         answer = ""
         while True:
             montage = create_face_review_sheet(cluster_id, payload)
@@ -1445,6 +1540,8 @@ def interactive_face_review(cfg: dict, char_map: dict, voice_map: dict, include_
             print_cluster(char_map, cluster_id, payload)
             print(f"Session verbleibend inkl. aktuellem Fall: {session_remaining_count}")
             print(f"Tatsaechlich offen gesamt: {total_open_count}")
+            print(f"Automatischer Rollenhinweis: {role_hint}")
+            print(f"Automatischer Review-Tipp: {action_hint}")
             if montage:
                 print(f"Montage: {montage}")
                 if open_previews:
@@ -1463,7 +1560,8 @@ def interactive_face_review(cfg: dict, char_map: dict, voice_map: dict, include_
                     f"{cluster_id} Vorschau | Session: {session_remaining_count} | Offen: {total_open_count}",
                     status_text=(
                         f"Session verbleibend inkl. aktuellem Fall: {session_remaining_count} | "
-                        f"Tatsaechlich offen gesamt: {total_open_count}"
+                        f"Tatsaechlich offen gesamt: {total_open_count} | "
+                        f"Rollenhinweis: {role_hint} | {action_hint}"
                     ),
                     initial_priority=identity_has_priority(char_map, str(payload.get("name", cluster_id))),
                     quick_assignments=quick_assignments,
