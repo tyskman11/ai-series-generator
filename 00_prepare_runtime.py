@@ -20,14 +20,17 @@ from pipeline_common import (
     mark_step_started,
     nvidia_gpu_available,
     ok,
+    runtime_environment_tag,
+    runtime_python,
     runtime_settings,
+    runtime_venv_dir,
     warn,
     write_json,
 )
 
 
 def venv_python() -> Path:
-    return SCRIPT_DIR / "runtime" / "venv" / "Scripts" / "python.exe"
+    return runtime_python()
 
 
 def run(cmd: list[str], check: bool = True) -> subprocess.CompletedProcess[str]:
@@ -37,7 +40,7 @@ def run(cmd: list[str], check: bool = True) -> subprocess.CompletedProcess[str]:
 def ensure_venv() -> Path:
     py = venv_python()
     headline("Python-Umgebung erstellen")
-    venv_dir = py.parent.parent
+    venv_dir = runtime_venv_dir()
     cfg_file = venv_dir / "pyvenv.cfg"
     if py.exists() and cfg_file.exists():
         cfg_text = cfg_file.read_text(encoding="utf-8", errors="ignore").lower()
@@ -212,6 +215,7 @@ def main() -> None:
     mark_step_started("00_prepare_runtime", "global")
     cfg = ensure_project_structure(write_config_file=True)
     py = ensure_venv()
+    info(f"Runtime-Tag: {runtime_environment_tag()}")
     info(f"Verwende Python: {py}")
     run([str(py), "-m", "pip", "install", "--upgrade", "pip", "setuptools<81", "wheel"], check=False)
     clone_cfg = cfg.get("cloning", {}) if isinstance(cfg.get("cloning"), dict) else {}
@@ -260,6 +264,8 @@ def main() -> None:
         SCRIPT_DIR / "runtime" / "package_status.json",
         {
             "python": str(py),
+            "runtime_tag": runtime_environment_tag(),
+            "runtime_dir": str(runtime_venv_dir()),
             "torch": torch_ok,
             "torch_info": torch_info,
             "nvidia_gpu_detected": nvidia_gpu_available(),
@@ -282,6 +288,8 @@ def main() -> None:
         "global",
         {
             "python": str(py),
+            "runtime_tag": runtime_environment_tag(),
+            "runtime_dir": str(runtime_venv_dir()),
             "torch": bool(torch_ok),
             "cuda_available": bool(torch_info.get("cuda_available", False)),
             "voice_cloning": bool(voice_clone_ok),

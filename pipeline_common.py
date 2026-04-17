@@ -7,6 +7,7 @@ import os
 import platform
 import re
 import shutil
+import struct
 import subprocess
 import sys
 import time
@@ -465,11 +466,36 @@ def current_os() -> str:
     raise RuntimeError(f"Nicht unterstütztes Betriebssystem: {platform.system()}")
 
 
+def current_architecture() -> str:
+    machine = re.sub(r"[^a-z0-9]+", "_", platform.machine().strip().lower())
+    aliases = {
+        "amd64": "x86_64",
+        "x64": "x86_64",
+        "x86_64": "x86_64",
+        "aarch64": "arm64",
+        "arm64": "arm64",
+        "armv8": "arm64",
+    }
+    return aliases.get(machine, machine or "unknown")
+
+
+def current_bitness() -> str:
+    return f"{struct.calcsize('P') * 8}bit"
+
+
+def runtime_environment_tag() -> str:
+    return f"{current_os()}_{current_architecture()}_{current_bitness()}"
+
+
+def runtime_venv_dir() -> Path:
+    return SCRIPT_DIR / "runtime" / f"venv_{runtime_environment_tag()}"
+
+
 def runtime_python() -> Path:
     if current_os() == "windows":
-        candidate = SCRIPT_DIR / "runtime" / "venv" / "Scripts" / "python.exe"
+        candidate = runtime_venv_dir() / "Scripts" / "python.exe"
     else:
-        candidate = SCRIPT_DIR / "runtime" / "venv" / "bin" / "python3"
+        candidate = runtime_venv_dir() / "bin" / "python3"
     if candidate.exists():
         return candidate
     return Path(sys.executable).resolve()
