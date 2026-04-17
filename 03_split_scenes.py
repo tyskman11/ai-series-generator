@@ -3,9 +3,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import time
 from pathlib import Path
 
 from pipeline_common import (
+    LiveProgressReporter,
     PROJECT_ROOT,
     detect_tool,
     error,
@@ -176,6 +178,9 @@ def split_single_episode(
     video_codec: str,
     scene_root: Path,
     scene_index_root: Path,
+    live_reporter: LiveProgressReporter | None = None,
+    episode_index: int = 1,
+    episode_total: int = 1,
 ) -> bool:
     autosave_target = episode.stem
     out_dir = scene_root / episode.stem
@@ -214,11 +219,22 @@ def split_single_episode(
         scenes = limited_items(scenes)
 
         if scenes:
+            episode_started_at = time.time()
             lines = ["scene_number,start_seconds,end_seconds"]
             for index, (start_sec, end_sec) in enumerate(scenes, start=1):
                 lines.append(f"{index},{start_sec:.3f},{end_sec:.3f}")
                 export_scene(ffmpeg, episode, out_dir, start_sec, end_sec, index, video_codec)
-                progress(index, len(scenes), f"Szenen werden exportiert ({episode.stem})")
+                if live_reporter is not None:
+                    live_reporter.update(
+                        (episode_index - 1) + (index / max(1, len(scenes))),
+                        current_label=f"scene_{index:04d}.mp4",
+                        parent_label=episode.name,
+                        extra_label=f"Zeitfenster: {start_sec:.3f}s bis {end_sec:.3f}s",
+                        scope_current=index,
+                        scope_total=len(scenes),
+                        scope_started_at=episode_started_at,
+                        scope_label=f"Folge {episode_index}/{episode_total}",
+                    )
             scene_csv.write_text("\n".join(lines) + "\n", encoding="utf-8")
             created = len(scenes)
             write_split_success_marker(marker_path, episode, created, scene_csv, "scenedetect")
@@ -326,10 +342,36 @@ def main() -> None:
         return
 
     processed = 0
+    live_reporter = LiveProgressReporter(
+        script_name="03_split_scenes.py",
+        total=max(1, len(pending)),
+        phase_label="Folgen in Szenen zerlegen",
+        parent_label="Batch",
+    )
     for index, current_episode in enumerate(pending, start=1):
-        info(f"Bearbeite {index}/{len(pending)}: {current_episode.name}")
-        split_single_episode(current_episode, cfg, ffmpeg, video_codec, scene_root, scene_index_root)
+        split_single_episode(
+            current_episode,
+            cfg,
+            ffmpeg,
+            video_codec,
+            scene_root,
+            scene_index_root,
+            live_reporter=live_reporter,
+            episode_index=index,
+            episode_total=len(pending),
+        )
         processed += 1
+        live_reporter.update(
+            index,
+            current_label=current_episode.name,
+            parent_label=current_episode.name,
+            extra_label=f"Folge abgeschlossen: {current_episode.name}",
+            scope_current=1,
+            scope_total=1,
+            scope_started_at=time.time(),
+            scope_label=f"Folge {index}/{len(pending)}",
+        )
+    live_reporter.finish(current_label="Batch", extra_label=f"Folgen verarbeitet: {processed}")
     ok(f"Batch abgeschlossen: {processed} Folgen in 03 verarbeitet.")
 
 

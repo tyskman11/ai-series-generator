@@ -6,6 +6,7 @@ import importlib.util
 from pathlib import Path
 
 from pipeline_common import (
+    LiveProgressReporter,
     adapter_training_status,
     backend_fine_tune_status,
     ensure_adapter_training_ready,
@@ -59,11 +60,20 @@ def main() -> None:
 
     autosave_target = (args.episode_id or "").strip() or "auto_next"
     mark_step_started("14_generate_episode_from_trained_model", autosave_target, {"series_model": str(model_path)})
+    reporter = LiveProgressReporter(
+        script_name="14_generate_episode_from_trained_model.py",
+        total=4,
+        phase_label="Neue Episode erzeugen",
+        parent_label=autosave_target,
+    )
     try:
+        reporter.update(0, current_label="Serienmodell laden", extra_label="Laeuft jetzt: trainiertes Modell und Trainingsstatus pruefen", force=True)
         model = read_json(model_path, {})
         if not model:
+            reporter.finish(current_label="Serienmodell", extra_label="Abbruch: Modell ist leer")
             info("Das Serienmodell ist leer. Fuehre zuerst 08_train_series_model.py aus.")
             return
+        reporter.update(1, current_label="Trainingsstatus pruefen", extra_label="Foundation-, Adapter-, Fine-Tune- und Backend-Status werden geprueft")
         ensure_foundation_training_ready(cfg, model_path=model_path)
         ensure_adapter_training_ready(cfg)
         adapter_status = adapter_training_status(cfg)
@@ -78,9 +88,11 @@ def main() -> None:
         shotlist_dir.mkdir(parents=True, exist_ok=True)
 
         episode_id = (args.episode_id or "").strip() or STEP08.next_episode_id(story_dir)
+        reporter.update(2, current_label=episode_id, extra_label="Laeuft jetzt: Episodenpaket aus trainiertem Modell erzeugen")
         episode_package, markdown = STEP08.generate_episode_package(model, cfg, STEP08.parse_episode_index(episode_id))
         story_path = story_dir / f"{episode_id}.md"
         shotlist_path = shotlist_dir / f"{episode_id}.json"
+        reporter.update(3, current_label=episode_id, extra_label="Laeuft jetzt: Story und Shotlist schreiben")
         write_text(story_path, markdown)
         write_json(
             shotlist_path,
@@ -93,6 +105,7 @@ def main() -> None:
                 **episode_package,
             },
         )
+        reporter.finish(current_label=episode_id, extra_label=f"Episode geschrieben: {story_path.name} und {shotlist_path.name}")
         mark_step_completed(
             "14_generate_episode_from_trained_model",
             episode_id,

@@ -6,6 +6,7 @@ import time
 from pathlib import Path
 
 from pipeline_common import (
+    LiveProgressReporter,
     backend_run_summary_path,
     coalesce_text,
     error,
@@ -216,7 +217,12 @@ def main() -> None:
         return
 
     summary_rows: list[dict] = []
-    for row in filtered_rows:
+    reporter = LiveProgressReporter(
+        script_name="13_run_backend_finetunes.py",
+        total=len(filtered_rows),
+        phase_label="Backend-Fine-Tunes vorbereiten",
+    )
+    for index, row in enumerate(filtered_rows, start=1):
         character_name = coalesce_text(row.get("character", ""))
         fine_tune_path = Path(str(row.get("fine_tune_path", "") or ""))
         fine_tune_payload = read_json(fine_tune_path, {}) if fine_tune_path.exists() else {}
@@ -273,6 +279,12 @@ def main() -> None:
                 "autosave": load_step_autosave("13_run_backend_finetunes", autosave_target),
             }
         )
+        reporter.update(
+            index,
+            current_label=character_name,
+            extra_label=f"Backend-Laeufe bisher: {len(summary_rows)}",
+        )
+    reporter.finish(current_label="Backend-Fine-Tunes", extra_label=f"Backend-Laeufe gesamt: {len(summary_rows)}")
 
     summary_path = backend_run_summary_path(cfg)
     write_json(

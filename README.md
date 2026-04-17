@@ -37,6 +37,7 @@ Die Pipeline ist modular. Jeder Schritt kann einzeln gestartet werden, oder alle
 - `16_render_episode.py` erzeugt ein visuelles Draft-Video statt nur Textartefakte
 - die Standardausgabe bleibt bewusst lokal und lizenzarm, damit der Default-Workflow robust bleibt
 - der GitHub-Sync spiegelt jetzt nur erlaubte lokale Dateien nach GitHub und holt nie Remote-Inhalte herunter
+- lange Laeufe zeigen jetzt ein gemeinsames Live-Dashboard statt bloesser Prozentzaehler: Skript, Schritt, aktuelle Datei/Figur/Folge, Fortschrittsbalken, `Ende aktuell` und `Ende gesamt` werden direkt im Terminal laufend an derselben Stelle aktualisiert
 
 ## Wichtige Dokumentationsregel
 
@@ -87,6 +88,7 @@ Zusatzregel ab jetzt:
 - Inbox-Dateien werden jetzt bereits in `02_import_episode.py` direkt nach erfolgreicher Vollkopie nach `data/raw/episodes` entfernt; `99_process_next_episode.py` arbeitet dadurch immer nur noch mit den importierten Arbeitskopien weiter
 - `99_process_next_episode.py` schreibt jetzt nach jedem erfolgreich abgeschlossenen Schritt einen Autosave-Checkpoint, behaelt davon nur die letzten zwei und setzt bei einem Abbruch spaeter automatisch am letzten sauberen Schritt fort
 - `99_process_next_episode.py` schreibt jetzt zusaetzlich laufend `current_status.json` und `current_status.md` mit Episoden- und Globalstatus, damit grosse Inbox-Stapel pro Folge transparent beobachtet werden koennen
+- `03`, `04`, `05`, `07`, `09`, `10`, `11`, `12`, `13`, `14`, `15`, `16`, `17`, `18` und `99` nutzen jetzt einen gemeinsamen Live-Reporter als mehrzeiliges Terminal-Dashboard statt unklarer Prozent-Ausgaben; die Ausgabe nennt immer Schritt, aktuelle Datei/Figur/Folge, Fortschrittsbalken, `Ende aktuell` und `Ende gesamt`
 - `03_split_scenes.py` erkennt jetzt auch beim Neustart sauber, wenn eine Folge bereits erfolgreich in Szenen zerlegt wurde, und ueberspringt den Schritt dann idempotent statt blind erneut zu exportieren
 - `03_split_scenes.py` arbeitet ohne `--episode-file` jetzt den kompletten aktuellen Stapel in `data/raw/episodes` nacheinander ab, statt nur eine einzelne Arbeitskopie
 - `04_diarize_and_transcribe.py`, `05_link_faces_and_speakers.py` und `07_build_dataset.py` arbeiten ohne explizite Folge jetzt den kompletten offenen Stapel nacheinander ab, statt nur eine einzelne Folge zu nehmen oder immer wieder am selben Ordner haengenzubleiben

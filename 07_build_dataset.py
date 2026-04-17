@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 import argparse
+import time
 from collections import defaultdict
 from pathlib import Path
 
 from pipeline_common import (
+    LiveProgressReporter,
     completed_step_state,
     error,
     extract_keywords,
@@ -110,7 +112,14 @@ def unique_preserve(values: list[str]) -> list[str]:
     return result
 
 
-def process_episode_dir(episode_dir: Path, cfg: dict, force: bool = False) -> bool:
+def process_episode_dir(
+    episode_dir: Path,
+    cfg: dict,
+    force: bool = False,
+    live_reporter: LiveProgressReporter | None = None,
+    episode_index: int = 1,
+    episode_total: int = 1,
+) -> bool:
     autosave_target = episode_dir.name
     if not force and episode_dataset_completed(episode_dir, cfg):
         mark_step_completed(
@@ -160,6 +169,7 @@ def process_episode_dir(episode_dir: Path, cfg: dict, force: bool = False) -> bo
     )
     processed_scene_ids: list[str] = []
     try:
+        episode_started_at = time.time()
         for index, scene_id in enumerate(scene_ids, start=1):
             scene_segments = sorted(grouped_rows[scene_id], key=lambda row: (float(row["start"]), row["segment_id"]))
             transcript = " ".join(segment["text"] for segment in scene_segments if segment.get("text"))
@@ -205,7 +215,17 @@ def process_episode_dir(episode_dir: Path, cfg: dict, force: bool = False) -> bo
                     "last_scene_id": scene_id,
                 },
             )
-            progress(index, len(scene_ids), "Datensatz wird aufgebaut")
+            if live_reporter is not None:
+                live_reporter.update(
+                    (episode_index - 1) + (index / max(1, len(scene_ids))),
+                    current_label=scene_id,
+                    parent_label=episode_dir.name,
+                    extra_label=f"Datensatzzeilen bisher: {len(dataset_rows)}",
+                    scope_current=index,
+                    scope_total=len(scene_ids),
+                    scope_started_at=episode_started_at,
+                    scope_label=f"Folge {episode_index}/{episode_total}",
+                )
 
         dataset_root = resolve_project_path(cfg["paths"]["datasets_video_training"])
         dataset_root.mkdir(parents=True, exist_ok=True)
@@ -269,11 +289,34 @@ def main() -> None:
 
     processed_count = 0
     total = len(episode_dirs)
+    live_reporter = LiveProgressReporter(
+        script_name="07_build_dataset.py",
+        total=max(1, total),
+        phase_label="Datensaetze bauen",
+        parent_label="Batch",
+    )
     for index, episode_dir in enumerate(episode_dirs, start=1):
-        info(f"Bearbeite {index}/{total}: {episode_dir.name}")
-        if process_episode_dir(episode_dir, cfg, force=args.force):
+        if process_episode_dir(
+            episode_dir,
+            cfg,
+            force=args.force,
+            live_reporter=live_reporter,
+            episode_index=index,
+            episode_total=total,
+        ):
             processed_count += 1
+            live_reporter.update(
+                index,
+                current_label=episode_dir.name,
+                parent_label=episode_dir.name,
+                extra_label=f"Folge abgeschlossen: {episode_dir.name}",
+                scope_current=1,
+                scope_total=1,
+                scope_started_at=time.time(),
+                scope_label=f"Folge {index}/{total}",
+            )
 
+    live_reporter.finish(current_label="Batch", extra_label=f"Folgen verarbeitet: {processed_count}")
     ok(f"Batch abgeschlossen: {processed_count} Folgen in 07 verarbeitet.")
 
 

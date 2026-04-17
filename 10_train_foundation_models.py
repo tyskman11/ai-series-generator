@@ -11,6 +11,7 @@ import numpy as np
 from PIL import Image
 
 from pipeline_common import (
+    LiveProgressReporter,
     coalesce_text,
     error,
     headline,
@@ -185,7 +186,12 @@ def main() -> None:
     checkpoint_root = resolve_project_path(cfg["paths"]["foundation_checkpoints"])
     checkpoint_root.mkdir(parents=True, exist_ok=True)
     summary: list[dict] = []
-    for manifest in manifests:
+    reporter = LiveProgressReporter(
+        script_name="10_train_foundation_models.py",
+        total=len(manifests),
+        phase_label="Foundation-Packs trainieren",
+    )
+    for index, manifest in enumerate(manifests, start=1):
         character_name = coalesce_text(manifest.get("name", ""))
         slug = str(manifest.get("slug", "") or "figur")
         autosave_target = slug
@@ -241,6 +247,12 @@ def main() -> None:
                 "autosave": load_step_autosave("10_train_foundation_models", autosave_target),
             }
         )
+        reporter.update(
+            index,
+            current_label=character_name,
+            extra_label=f"Trainierte Packs bisher: {len(summary)}",
+        )
+    reporter.finish(current_label="Foundation-Training", extra_label=f"Trainierte Packs gesamt: {len(summary)}")
 
     summary_path = checkpoint_root / "foundation_training_summary.json"
     write_json(

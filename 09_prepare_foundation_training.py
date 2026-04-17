@@ -13,6 +13,7 @@ from collections import defaultdict
 from pathlib import Path
 
 from pipeline_common import (
+    LiveProgressReporter,
     SCRIPT_DIR,
     coalesce_text,
     detect_tool,
@@ -683,7 +684,12 @@ def main() -> None:
         manifests: list[dict] = []
         manifest_root = resolve_project_path(cfg["paths"]["foundation_manifests"])
         manifest_root.mkdir(parents=True, exist_ok=True)
-        for character in candidates:
+        reporter = LiveProgressReporter(
+            script_name="09_prepare_foundation_training.py",
+            total=len(candidates),
+            phase_label="Foundation-Daten vorbereiten",
+        )
+        for index, character in enumerate(candidates, start=1):
             character_rows = collect_character_rows(rows, character["name"], known_clusters)
             if not character_rows:
                 continue
@@ -691,6 +697,12 @@ def main() -> None:
             manifest = prepare_character_dataset(ffmpeg_path, character, character_rows, cfg, force=args.force)
             manifests.append(manifest)
             write_json(manifest_root / f"{character['slug']}_manifest.json", manifest)
+            reporter.update(
+                index,
+                current_label=str(character.get("name", "")),
+                extra_label=f"Manifeste bisher: {len(manifests)}",
+            )
+        reporter.finish(current_label="Foundation-Training", extra_label=f"Manifeste gesamt: {len(manifests)}")
 
         download_targets = build_download_targets(cfg)
         downloaded: list[dict] = []

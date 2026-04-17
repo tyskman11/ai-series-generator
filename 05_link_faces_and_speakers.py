@@ -5,6 +5,7 @@ import argparse
 import json
 import shutil
 import sys
+import time
 from collections import defaultdict
 from pathlib import Path
 
@@ -12,6 +13,7 @@ import cv2
 import numpy as np
 
 from pipeline_common import (
+    LiveProgressReporter,
     PROJECT_ROOT,
     canonical_person_name,
     completed_step_state,
@@ -907,6 +909,9 @@ def process_episode_dir(
     max_visible_faces_per_segment: int,
     segment_padding_seconds: float,
     threshold: float,
+    live_reporter: LiveProgressReporter | None = None,
+    episode_index: int = 1,
+    episode_total: int = 1,
 ) -> bool:
     autosave_target = episode_dir.name
     if not fresh_run and episode_face_linking_completed(episode_dir, cfg):
@@ -955,6 +960,8 @@ def process_episode_dir(
             },
         )
     try:
+        episode_started_at = time.time()
+        episode_total_units = max(1, len(scene_files) + len(transcript_rows))
         for index, scene_file in enumerate(scene_files, start=1):
             payload = process_scene_faces(
                 scene_file,
@@ -984,7 +991,17 @@ def process_episode_dir(
                     "last_scene_id": payload["scene_id"],
                 },
             )
-            progress(index, len(scene_files), "Gesichter werden analysiert")
+            if live_reporter is not None:
+                live_reporter.update(
+                    (episode_index - 1) + (index / episode_total_units),
+                    current_label=scene_file.name,
+                    parent_label=episode_dir.name,
+                    extra_label=f"Face-Cluster bisher: {len(face_clusters)}",
+                    scope_current=index,
+                    scope_total=episode_total_units,
+                    scope_started_at=episode_started_at,
+                    scope_label=f"Folge {episode_index}/{episode_total}",
+                )
 
         kept_face_clusters = prune_face_clusters(char_map, face_by_scene, cfg)
         info(f"Face-Cluster nach Filter: {len(kept_face_clusters)}")
@@ -1011,6 +1028,12 @@ def process_episode_dir(
 
         review_items = []
         linked_rows = []
+        link_reporter = LiveProgressReporter(
+            script_name="05_link_faces_and_speakers.py",
+            total=len(transcript_rows),
+            phase_label="Stimmen mit Figuren verknuepfen",
+            parent_label=episode_dir.name,
+        )
         for index, row in enumerate(transcript_rows, start=1):
             scene_payload = face_by_scene.get(row["scene_id"], {})
             visible_faces = visible_faces_for_segment(
@@ -1058,7 +1081,17 @@ def process_episode_dir(
             linked_rows.append(linked_row)
             if looks_auto_named(speaker_name) or any(looks_auto_named(name) for name in visible_names):
                 review_items.append(linked_row)
-            progress(index, len(transcript_rows), "Stimmen werden mit Figuren verknüpft")
+            if live_reporter is not None:
+                live_reporter.update(
+                    (episode_index - 1) + ((len(scene_files) + index) / episode_total_units),
+                    current_label=str(row.get("segment_id", "")),
+                    parent_label=episode_dir.name,
+                    extra_label=f"Sprecher: {str(row.get('speaker_cluster', '')) or 'unbekannt'}",
+                    scope_current=len(scene_files) + index,
+                    scope_total=episode_total_units,
+                    scope_started_at=episode_started_at,
+                    scope_label=f"Folge {episode_index}/{episode_total}",
+                )
 
         face_summary = [
             {
@@ -1169,8 +1202,13 @@ def main() -> None:
 
     processed_count = 0
     total = len(episode_dirs)
+    live_reporter = LiveProgressReporter(
+        script_name="05_link_faces_and_speakers.py",
+        total=max(1, total),
+        phase_label="Gesichter und Stimmen verknuepfen",
+        parent_label="Batch",
+    )
     for index, episode_dir in enumerate(episode_dirs, start=1):
-        info(f"Bearbeite {index}/{total}: {episode_dir.name}")
         if process_episode_dir(
             episode_dir,
             cfg,
@@ -1188,8 +1226,22 @@ def main() -> None:
             max_visible_faces_per_segment=max_visible_faces_per_segment,
             segment_padding_seconds=segment_padding_seconds,
             threshold=threshold,
+            live_reporter=live_reporter,
+            episode_index=index,
+            episode_total=total,
         ):
             processed_count += 1
+            live_reporter.update(
+                index,
+                current_label=episode_dir.name,
+                parent_label=episode_dir.name,
+                extra_label=f"Folge abgeschlossen: {episode_dir.name}",
+                scope_current=1,
+                scope_total=1,
+                scope_started_at=time.time(),
+                scope_label=f"Folge {index}/{total}",
+            )
+    live_reporter.finish(current_label="Batch", extra_label=f"Folgen verarbeitet: {processed_count}")
 
     ok(f"Batch abgeschlossen: {processed_count} Folgen in 05 verarbeitet.")
 

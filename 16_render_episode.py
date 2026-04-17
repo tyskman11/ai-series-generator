@@ -5,12 +5,14 @@ import os
 import math
 import re
 import shutil
+import time
 import wave
 from difflib import SequenceMatcher
 from functools import lru_cache
 from pathlib import Path
 
 from pipeline_common import (
+    LiveProgressReporter,
     PROJECT_ROOT,
     adapter_training_status,
     backend_fine_tune_status,
@@ -1449,8 +1451,18 @@ def main() -> None:
         )
         manifest["segments"].append({"type": "title", "file": str(title_segment), "duration_seconds": title_card_seconds})
 
+    total_dialogue_segments = sum(len(scene.get("dialogue_lines", []) or []) for scene in scenes)
+    dialogue_reporter = LiveProgressReporter(
+        script_name="16_render_episode.py",
+        total=max(1, total_dialogue_segments),
+        phase_label="Render-Segmente erzeugen",
+        parent_label=episode_id,
+    )
     segment_index = 1
+    rendered_dialogue_segments = 0
     for scene in scenes:
+        scene_started_at = time.time()
+        scene_dialogue_total = max(1, len(scene.get("dialogue_lines", []) or []))
         reference_images = pick_reference_images(scene, char_map)
         for line_index, line in enumerate(scene.get("dialogue_lines", []), start=1):
             speaker, spoken_text = parse_speaker_line(line)
@@ -1628,7 +1640,25 @@ def main() -> None:
                     "file": str(segment_path),
                 }
             )
+            rendered_dialogue_segments += 1
+            dialogue_reporter.update(
+                rendered_dialogue_segments,
+                current_label=segment_path.name,
+                extra_label=f"Szene: {scene['scene_id']} | Sprecher: {speaker}",
+                scope_current=line_index,
+                scope_total=scene_dialogue_total,
+                scope_started_at=scene_started_at,
+                scope_label=f"Szene {scene['scene_id']}",
+            )
             segment_index += 1
+    dialogue_reporter.finish(
+        current_label=episode_id,
+        extra_label=f"Dialogsegmente gesamt: {rendered_dialogue_segments}",
+        scope_current=scene_dialogue_total if scenes else None,
+        scope_total=scene_dialogue_total if scenes else None,
+        scope_started_at=scene_started_at if scenes else None,
+        scope_label=f"Szene {scenes[-1]['scene_id']}" if scenes else "",
+    )
 
     if include_title_cards:
         end_card = cards_dir / "999_end.png"

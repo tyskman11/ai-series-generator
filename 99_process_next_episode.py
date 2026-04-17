@@ -3,10 +3,12 @@ from __future__ import annotations
 
 import json
 import subprocess
+import time
 from datetime import datetime
 from pathlib import Path
 
 from pipeline_common import (
+    LiveProgressReporter,
     SCRIPT_DIR,
     error,
     headline,
@@ -372,6 +374,18 @@ def main() -> None:
     cfg = load_config()
     inbox_dir = resolve_project_path(cfg["paths"]["inbox_episodes"])
     state = load_latest_autosave(cfg) or default_state()
+    initial_inbox_files = sorted([path for path in inbox_dir.iterdir() if path.is_file()]) if inbox_dir.exists() else []
+    initial_episode_total = len(initial_inbox_files)
+    resume_episode = str(state.get("current_episode_name") or "").strip()
+    if resume_episode and resume_episode not in set(state.get("processed_episodes", []) or []):
+        initial_episode_total += 1
+    episode_batch_reporter = LiveProgressReporter(
+        script_name="99_process_next_episode.py",
+        total=max(1, initial_episode_total),
+        phase_label="Quellfolgen verarbeiten",
+        parent_label="Inbox-Batch",
+    )
+    processed_in_this_run = 0
 
     if load_latest_autosave(cfg):
         info("Vorhandenen Autosave gefunden. Pipeline setzt am letzten erfolgreich abgeschlossenen Schritt fort.")
@@ -407,26 +421,61 @@ def main() -> None:
 
         info(f"Starte Batch-Folge: {next_video_name}")
         finished_steps = set(completed_episode_steps(state, episode_name))
+        episode_step_reporter = LiveProgressReporter(
+            script_name="99_process_next_episode.py",
+            total=len(EPISODE_STEPS),
+            phase_label="Schritte je Quellfolge",
+            parent_label=episode_name,
+        )
         for script_name in EPISODE_STEPS:
             if script_name in finished_steps:
                 continue
+            step_title = episode_step_title(script_name, next_video_name, episode_name)
+            step_started_at = time.time()
             state["current_phase"] = "episode"
             state["current_episode_file"] = next_video_name
             state["current_episode_name"] = episode_name
             state["current_step"] = script_name
             save_autosave(cfg, state, f"episode_step_started:{episode_name}:{script_name}", inbox_dir)
+            episode_step_reporter.update(
+                len(finished_steps),
+                current_label=step_title,
+                extra_label=f"Laeuft jetzt: {script_name}",
+                force=True,
+                scope_current=len(finished_steps),
+                scope_total=len(EPISODE_STEPS),
+                scope_started_at=step_started_at,
+                scope_label="Schritte aktuelle Folge",
+            )
             run_step(
                 script_name,
-                episode_step_title(script_name, next_video_name, episode_name),
+                step_title,
                 episode_step_args(script_name, next_video_name, episode_name),
             )
             mark_episode_step_completed(state, episode_name, script_name)
+            finished_steps.add(script_name)
+            episode_step_reporter.update(
+                len(finished_steps),
+                current_label=step_title,
+                extra_label=f"Abgeschlossen: {script_name}",
+                scope_current=len(finished_steps),
+                scope_total=len(EPISODE_STEPS),
+                scope_started_at=step_started_at,
+                scope_label="Schritte aktuelle Folge",
+            )
             save_autosave(cfg, state, f"{episode_name}:{script_name}", inbox_dir)
 
         inbox_file = inbox_dir / next_video_name
         if cleanup_processed_inbox_episode(inbox_file):
             info(f"Inbox-Datei entfernt: {next_video_name}")
+        episode_step_reporter.finish(current_label=episode_name, extra_label=f"Schritte gesamt: {len(finished_steps)}")
         mark_episode_completed(state, episode_name)
+        processed_in_this_run += 1
+        episode_batch_reporter.update(
+            processed_in_this_run,
+            current_label=episode_name,
+            extra_label=f"Komplett verarbeitet: {episode_name}",
+        )
         save_autosave(cfg, state, f"episode_completed:{episode_name}", inbox_dir)
 
     review_count = open_review_item_count(cfg)
@@ -448,16 +497,46 @@ def main() -> None:
     state["current_phase"] = "global"
     state["current_step"] = None
     save_autosave(cfg, state, "global_phase_started", inbox_dir)
+    steps_to_run = global_steps_to_run(cfg)
     completed_global_steps = set(state.get("global_steps_completed", []) or [])
-    for script_name in global_steps_to_run(cfg):
+    global_reporter = LiveProgressReporter(
+        script_name="99_process_next_episode.py",
+        total=max(1, len(steps_to_run)),
+        phase_label="Globale Pipeline-Schritte",
+        parent_label="Training bis Render",
+    )
+    for script_name in steps_to_run:
         if script_name in completed_global_steps:
             continue
+        global_step_started_at = time.time()
         state["current_phase"] = "global"
         state["current_step"] = script_name
         save_autosave(cfg, state, f"global_step_started:{script_name}", inbox_dir)
+        global_reporter.update(
+            len(completed_global_steps),
+            current_label=global_step_title(script_name),
+            extra_label=f"Laeuft jetzt: {script_name}",
+            force=True,
+            scope_current=len(completed_global_steps),
+            scope_total=len(steps_to_run),
+            scope_started_at=global_step_started_at,
+            scope_label="Globale Schritte",
+        )
         run_step(script_name, global_step_title(script_name))
         mark_global_step_completed(state, script_name)
+        completed_global_steps.add(script_name)
+        global_reporter.update(
+            len(completed_global_steps),
+            current_label=global_step_title(script_name),
+            extra_label=f"Abgeschlossen: {script_name}",
+            scope_current=len(completed_global_steps),
+            scope_total=len(steps_to_run),
+            scope_started_at=global_step_started_at,
+            scope_label="Globale Schritte",
+        )
         save_autosave(cfg, state, f"global:{script_name}", inbox_dir)
+    global_reporter.finish(current_label="Globalphase", extra_label=f"Globale Schritte gesamt: {len(completed_global_steps)}")
+    episode_batch_reporter.finish(current_label="Inbox-Batch", extra_label=f"Quellfolgen in diesem Lauf: {processed_in_this_run}")
 
     state["status"] = "completed"
     state["current_phase"] = None

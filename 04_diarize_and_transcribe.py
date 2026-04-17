@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import time
 import wave
 from collections import defaultdict
 from pathlib import Path
@@ -9,6 +10,7 @@ from pathlib import Path
 import numpy as np
 
 from pipeline_common import (
+    LiveProgressReporter,
     PROJECT_ROOT,
     completed_step_state,
     coalesce_text,
@@ -825,6 +827,9 @@ def process_episode_dir(
     speaker_backend: str,
     speechbrain_model,
     device: str,
+    live_reporter: LiveProgressReporter | None = None,
+    episode_index: int = 1,
+    episode_total: int = 1,
 ) -> bool:
     autosave_target = episode_dir.name
     if episode_transcription_completed(episode_dir, cfg):
@@ -865,6 +870,7 @@ def process_episode_dir(
     completed_scene_ids: list[str] = []
     try:
         all_rows: list[dict] = []
+        episode_started_at = time.time()
         for index, scene_file in enumerate(scenes, start=1):
             scene_rows = process_scene(
                 model,
@@ -894,7 +900,17 @@ def process_episode_dir(
                     "last_scene_id": scene_file.stem,
                 },
             )
-            progress(index, len(scenes), "Audio wird transkribiert")
+            if live_reporter is not None:
+                live_reporter.update(
+                    (episode_index - 1) + (index / max(1, len(scenes))),
+                    current_label=scene_file.name,
+                    parent_label=episode_dir.name,
+                    extra_label=f"Segmente bisher: {len(all_rows)}",
+                    scope_current=index,
+                    scope_total=len(scenes),
+                    scope_started_at=episode_started_at,
+                    scope_label=f"Folge {episode_index}/{episode_total}",
+                )
 
         threshold_key = "voice_embedding_threshold_speechbrain" if speaker_backend == "speechbrain" else "voice_embedding_threshold"
         threshold_default = 0.58 if speaker_backend == "speechbrain" else 0.84
@@ -977,8 +993,13 @@ def main() -> None:
 
     processed_count = 0
     total = len(episode_dirs)
+    live_reporter = LiveProgressReporter(
+        script_name="04_diarize_and_transcribe.py",
+        total=max(1, total),
+        phase_label="Sprecher segmentieren und transkribieren",
+        parent_label="Batch",
+    )
     for index, episode_dir in enumerate(episode_dirs, start=1):
-        info(f"Bearbeite {index}/{total}: {episode_dir.name}")
         if model is None:
             import whisper
 
@@ -1008,9 +1029,23 @@ def main() -> None:
             speaker_backend,
             speechbrain_model,
             device,
+            live_reporter=live_reporter,
+            episode_index=index,
+            episode_total=total,
         ):
             processed_count += 1
+            live_reporter.update(
+                index,
+                current_label=episode_dir.name,
+                parent_label=episode_dir.name,
+                extra_label=f"Folge abgeschlossen: {episode_dir.name}",
+                scope_current=1,
+                scope_total=1,
+                scope_started_at=time.time(),
+                scope_label=f"Folge {index}/{total}",
+            )
 
+    live_reporter.finish(current_label="Batch", extra_label=f"Folgen verarbeitet: {processed_count}")
     ok(f"Batch abgeschlossen: {processed_count} Folgen in 04 verarbeitet.")
 
 

@@ -6,6 +6,7 @@ import time
 from pathlib import Path
 
 from pipeline_common import (
+    LiveProgressReporter,
     adapter_summary_path,
     coalesce_text,
     error,
@@ -113,7 +114,12 @@ def main() -> None:
         return
 
     summary_rows: list[dict] = []
-    for row in filtered_rows:
+    reporter = LiveProgressReporter(
+        script_name="12_train_fine_tune_models.py",
+        total=len(filtered_rows),
+        phase_label="Fine-Tune-Profile trainieren",
+    )
+    for index, row in enumerate(filtered_rows, start=1):
         character_name = coalesce_text(row.get("character", ""))
         profile_path = Path(str(row.get("profile_path", "") or ""))
         adapter_payload = read_json(profile_path, {}) if profile_path.exists() else {}
@@ -168,6 +174,12 @@ def main() -> None:
                 "autosave": load_step_autosave("12_train_fine_tune_models", autosave_target),
             }
         )
+        reporter.update(
+            index,
+            current_label=character_name,
+            extra_label=f"Fine-Tune-Profile bisher: {len(summary_rows)}",
+        )
+    reporter.finish(current_label="Fine-Tune-Training", extra_label=f"Fine-Tune-Profile gesamt: {len(summary_rows)}")
 
     summary_path = fine_tune_summary_path(cfg)
     write_json(

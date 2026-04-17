@@ -11,6 +11,7 @@ import numpy as np
 from PIL import Image
 
 from pipeline_common import (
+    LiveProgressReporter,
     adapter_summary_path,
     coalesce_text,
     error,
@@ -292,7 +293,12 @@ def main() -> None:
     adapter_root.mkdir(parents=True, exist_ok=True)
 
     summary_rows: list[dict] = []
-    for manifest in manifests:
+    reporter = LiveProgressReporter(
+        script_name="11_train_adapter_models.py",
+        total=len(manifests),
+        phase_label="Adapter-Profile trainieren",
+    )
+    for index, manifest in enumerate(manifests, start=1):
         character_name = coalesce_text(manifest.get("name", ""))
         slug = str(manifest.get("slug", "") or "figur")
         autosave_target = slug
@@ -351,6 +357,12 @@ def main() -> None:
                 "autosave": load_step_autosave("11_train_adapter_models", autosave_target),
             }
         )
+        reporter.update(
+            index,
+            current_label=character_name,
+            extra_label=f"Adapter-Profile bisher: {len(summary_rows)}",
+        )
+    reporter.finish(current_label="Adapter-Training", extra_label=f"Adapter-Profile gesamt: {len(summary_rows)}")
 
     summary_path = adapter_summary_path(cfg)
     write_json(

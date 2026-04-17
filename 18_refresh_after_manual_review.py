@@ -5,6 +5,7 @@ import argparse
 import subprocess
 
 from pipeline_common import (
+    LiveProgressReporter,
     SCRIPT_DIR,
     error,
     headline,
@@ -57,16 +58,43 @@ def main() -> None:
         },
     )
     try:
-        run_step("07_build_dataset.py", "Datensaetze mit aktuellen Figurennamen neu aufbauen", ["--force"])
-        run_step("08_train_series_model.py", "Serienmodell mit aktuellen Namen neu trainieren")
+        planned_steps: list[tuple[str, str, list[str]]] = [
+            ("07_build_dataset.py", "Datensaetze mit aktuellen Figurennamen neu aufbauen", ["--force"]),
+            ("08_train_series_model.py", "Serienmodell mit aktuellen Namen neu trainieren", []),
+        ]
         prepare_args = ["--force"]
         if args.skip_downloads:
             prepare_args.append("--skip-downloads")
-        run_step("09_prepare_foundation_training.py", "Foundation-Training mit aktuellem Figurenstand vorbereiten", prepare_args)
-        run_step("10_train_foundation_models.py", "Foundation-Packs mit aktuellem Figurenstand neu trainieren", ["--force"])
-        run_step("11_train_adapter_models.py", "Lokale Adapter-Profile mit aktuellem Figurenstand neu trainieren", ["--force"])
-        run_step("12_train_fine_tune_models.py", "Lokale Fine-Tune-Profile mit aktuellem Figurenstand neu trainieren", ["--force"])
-        run_step("13_run_backend_finetunes.py", "Konkrete Backend-Fine-Tune-Laeufe mit aktuellem Figurenstand erzeugen", ["--force"])
+        planned_steps.extend(
+            [
+                ("09_prepare_foundation_training.py", "Foundation-Training mit aktuellem Figurenstand vorbereiten", prepare_args),
+                ("10_train_foundation_models.py", "Foundation-Packs mit aktuellem Figurenstand neu trainieren", ["--force"]),
+                ("11_train_adapter_models.py", "Lokale Adapter-Profile mit aktuellem Figurenstand neu trainieren", ["--force"]),
+                ("12_train_fine_tune_models.py", "Lokale Fine-Tune-Profile mit aktuellem Figurenstand neu trainieren", ["--force"]),
+                ("13_run_backend_finetunes.py", "Konkrete Backend-Fine-Tune-Laeufe mit aktuellem Figurenstand erzeugen", ["--force"]),
+            ]
+        )
+        if not args.stop_after_training:
+            planned_steps.extend(
+                [
+                    ("14_generate_episode_from_trained_model.py", "Neue Folge aus aktualisiertem Modell erzeugen", []),
+                    ("15_build_series_bible.py", "Serienbibel mit aktuellem Stand aktualisieren", []),
+                    ("16_render_episode.py", "Aktualisierte Folge rendern", []),
+                ]
+            )
+        reporter = LiveProgressReporter(
+            script_name="18_refresh_after_manual_review.py",
+            total=len(planned_steps),
+            phase_label="Rebuild nach Review",
+            parent_label="global",
+        )
+        completed_count = 0
+        for script_name, title, extra_args in planned_steps:
+            reporter.update(completed_count, current_label=title, extra_label=f"Laeuft jetzt: {script_name}", force=True)
+            run_step(script_name, title, extra_args)
+            completed_count += 1
+            reporter.update(completed_count, current_label=title, extra_label=f"Abgeschlossen: {script_name}")
+        reporter.finish(current_label="Rebuild", extra_label=f"Abgeschlossene Schritte: {completed_count}")
 
         completed_steps = [
             "07_build_dataset.py --force",
@@ -79,9 +107,6 @@ def main() -> None:
         ]
 
         if not args.stop_after_training:
-            run_step("14_generate_episode_from_trained_model.py", "Neue Folge aus aktualisiertem Modell erzeugen")
-            run_step("15_build_series_bible.py", "Serienbibel mit aktuellem Stand aktualisieren")
-            run_step("16_render_episode.py", "Aktualisierte Folge rendern")
             completed_steps.extend(
                 [
                     "14_generate_episode_from_trained_model.py",

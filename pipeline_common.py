@@ -11,6 +11,7 @@ import subprocess
 import sys
 import time
 from copy import deepcopy
+from datetime import datetime, timedelta
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Iterable
@@ -518,9 +519,38 @@ def deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]
     return merged
 
 
-def write_json(path: Path, data: Any) -> None:
+def _atomic_write_text(path: Path, text: str, *, retries: int = 8, delay_seconds: float = 0.2) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+    last_error: Exception | None = None
+    for attempt in range(retries):
+        temp_path = path.with_name(f"{path.name}.tmp_{os.getpid()}_{int(time.time() * 1000)}_{attempt}")
+        try:
+            temp_path.write_text(text, encoding="utf-8")
+            os.replace(str(temp_path), str(path))
+            return
+        except PermissionError as exc:
+            last_error = exc
+            try:
+                if temp_path.exists():
+                    temp_path.unlink()
+            except OSError:
+                pass
+            if attempt >= retries - 1:
+                raise
+            time.sleep(delay_seconds)
+        except Exception:
+            try:
+                if temp_path.exists():
+                    temp_path.unlink()
+            except OSError:
+                pass
+            raise
+    if last_error is not None:
+        raise last_error
+
+
+def write_json(path: Path, data: Any) -> None:
+    _atomic_write_text(path, json.dumps(data, indent=2, ensure_ascii=False))
 
 
 def read_json(path: Path, default: Any) -> Any:
@@ -530,8 +560,7 @@ def read_json(path: Path, default: Any) -> Any:
 
 
 def write_text(path: Path, text: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(text, encoding="utf-8")
+    _atomic_write_text(path, text)
 
 
 def step_autosave_root() -> Path:
@@ -814,6 +843,235 @@ def progress(current: int, total: int, prefix: str = "Fortschritt") -> None:
     done = int(width * current / total)
     percent = int(100 * current / total)
     print(f"{prefix}: [{'#' * done}{'-' * (width - done)}] {percent:3d}% ({current}/{total})")
+
+
+def format_duration_hms(seconds: float | int) -> str:
+    total_seconds = max(0, int(round(float(seconds or 0))))
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes, secs = divmod(remainder, 60)
+    return f"{hours:02d}:{minutes:02d}:{secs:02d}"
+
+
+def format_timestamp_seconds(ts: float | int | None = None) -> str:
+    if ts is None:
+        return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    return datetime.fromtimestamp(float(ts)).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _progress_eta(started_at: float, current: float, total: float) -> tuple[float, float | None]:
+    current_value = max(0.0, float(current or 0.0))
+    total_value = max(1.0, float(total or 1.0))
+    now = time.time()
+    elapsed = max(0.0, now - float(started_at or now))
+    if current_value <= 0:
+        return 0.0, None
+    rate = elapsed / current_value
+    remaining_seconds = rate * max(0.0, total_value - current_value)
+    return remaining_seconds, now + remaining_seconds
+
+
+def format_progress_value(value: float | int) -> str:
+    numeric = float(value or 0.0)
+    if abs(numeric - round(numeric)) < 0.001:
+        return str(int(round(numeric)))
+    return f"{numeric:.2f}"
+
+
+def truncate_display(text: str, max_length: int) -> str:
+    value = coalesce_text(text)
+    if len(value) <= max_length:
+        return value
+    if max_length <= 3:
+        return value[:max_length]
+    head = max(1, (max_length - 3) // 2)
+    tail = max(1, max_length - 3 - head)
+    return f"{value[:head]}...{value[-tail:]}"
+
+
+def dashboard_bar(current: float | int, total: float | int, width: int = 26) -> str:
+    total_value = max(1.0, float(total or 1.0))
+    current_value = max(0.0, min(float(current or 0.0), total_value))
+    filled = int(round((current_value / total_value) * width))
+    filled = max(0, min(width, filled))
+    return f"[{'#' * filled}{'-' * (width - filled)}]"
+
+
+class LiveProgressReporter:
+    def __init__(
+        self,
+        *,
+        script_name: str,
+        total: int,
+        phase_label: str,
+        parent_label: str = "",
+    ) -> None:
+        self.script_name = script_name
+        self.total = max(1, int(total or 1))
+        self.phase_label = coalesce_text(phase_label)
+        self.parent_label = coalesce_text(parent_label)
+        self.started_at = time.time()
+        self.last_print_at = 0.0
+        self.last_rendered_lines = 0
+        self.inline_enabled = os.environ.get("SERIES_DISABLE_INLINE_PROGRESS", "").strip().lower() not in {"1", "true", "yes"}
+
+    def _render_lines(
+        self,
+        current: float | int,
+        *,
+        current_label: str = "",
+        parent_label: str | None = None,
+        extra_label: str = "",
+        scope_current: float | int | None = None,
+        scope_total: float | int | None = None,
+        scope_started_at: float | None = None,
+        scope_label: str = "",
+    ) -> list[str]:
+        current_value = max(0.0, min(float(current or 0.0), float(self.total)))
+        overall_remaining_seconds, overall_eta_timestamp = _progress_eta(self.started_at, current_value, float(self.total))
+        percent = int((100 * current_value) / float(self.total))
+        active_parent = coalesce_text(parent_label) if parent_label is not None else self.parent_label
+        width = 116
+        inner_width = width - 4
+
+        def line(label: str, value: str) -> str:
+            body = f" {label:<11}: {truncate_display(value, inner_width - 15)}"
+            return f"|{body.ljust(inner_width)}|"
+
+        lines = [
+            "+" + ("=" * (width - 2)) + "+",
+            line("LIVE", self.script_name),
+            line("Schritt", self.phase_label),
+        ]
+        if active_parent:
+            lines.append(line("Datei", active_parent))
+        if current_label:
+            lines.append(line("Aktuell", current_label))
+        if scope_current is not None and scope_total is not None:
+            scope_total_value = max(1.0, float(scope_total or 1.0))
+            scope_current_value = max(0.0, min(float(scope_current or 0.0), scope_total_value))
+            scope_percent = int((100 * scope_current_value) / scope_total_value)
+            scope_remaining_seconds, scope_eta_timestamp = _progress_eta(scope_started_at or self.started_at, scope_current_value, scope_total_value)
+            active_scope_label = coalesce_text(scope_label) or "Aktuell"
+            lines.append(
+                line(
+                    active_scope_label,
+                    f"{dashboard_bar(scope_current_value, scope_total_value)} "
+                    f"{format_progress_value(scope_current_value)}/{format_progress_value(scope_total_value)} ({scope_percent}%)",
+                )
+            )
+            lines.append(
+                line(
+                    "Ende aktuell",
+                    format_timestamp_seconds(scope_eta_timestamp) if scope_eta_timestamp else "wird berechnet",
+                )
+            )
+        else:
+            lines.append(
+                line(
+                    "Ende aktuell",
+                    format_timestamp_seconds(overall_eta_timestamp) if overall_eta_timestamp else "wird berechnet",
+                )
+            )
+        lines.append(
+            line(
+                "Gesamt",
+                f"{dashboard_bar(current_value, self.total)} "
+                f"{format_progress_value(current_value)}/{format_progress_value(self.total)} ({percent}%)",
+            )
+        )
+        lines.append(line("Rest gesamt", format_duration_hms(overall_remaining_seconds)))
+        lines.append(
+            line(
+                "Ende gesamt",
+                format_timestamp_seconds(overall_eta_timestamp) if overall_eta_timestamp else "wird berechnet",
+            )
+        )
+        if extra_label:
+            lines.append(line("Info", extra_label))
+        lines.append("+" + ("=" * (width - 2)) + "+")
+        return lines
+
+    def _emit(self, lines: list[str], *, final: bool = False) -> None:
+        if self.inline_enabled:
+            line_count = len(lines)
+            if self.last_rendered_lines > 0:
+                sys.stdout.write("\r")
+                if self.last_rendered_lines > 1:
+                    sys.stdout.write(f"\x1b[{self.last_rendered_lines - 1}A")
+                for index in range(self.last_rendered_lines):
+                    sys.stdout.write("\x1b[2K")
+                    if index < self.last_rendered_lines - 1:
+                        sys.stdout.write("\x1b[1B")
+                if self.last_rendered_lines > 1:
+                    sys.stdout.write(f"\x1b[{self.last_rendered_lines - 1}A")
+                sys.stdout.write("\r")
+            sys.stdout.write("\n".join(lines))
+            if final:
+                sys.stdout.write("\n")
+                self.last_rendered_lines = 0
+            else:
+                self.last_rendered_lines = line_count
+            sys.stdout.flush()
+            return
+        for entry in lines:
+            info(entry)
+
+    def update(
+        self,
+        current: float | int,
+        *,
+        current_label: str = "",
+        parent_label: str | None = None,
+        extra_label: str = "",
+        force: bool = False,
+        scope_current: float | int | None = None,
+        scope_total: float | int | None = None,
+        scope_started_at: float | None = None,
+        scope_label: str = "",
+    ) -> None:
+        now = time.time()
+        if not force and current < self.total and self.last_print_at and (now - self.last_print_at) < 0.15:
+            return
+        self.last_print_at = now
+        self._emit(
+            self._render_lines(
+                current,
+                current_label=current_label,
+                parent_label=parent_label,
+                extra_label=extra_label,
+                scope_current=scope_current,
+                scope_total=scope_total,
+                scope_started_at=scope_started_at,
+                scope_label=scope_label,
+            ),
+            final=False,
+        )
+
+    def finish(
+        self,
+        *,
+        current_label: str = "",
+        parent_label: str | None = None,
+        extra_label: str = "",
+        scope_current: float | int | None = None,
+        scope_total: float | int | None = None,
+        scope_started_at: float | None = None,
+        scope_label: str = "",
+    ) -> None:
+        self.last_print_at = time.time()
+        self._emit(
+            self._render_lines(
+                self.total,
+                current_label=current_label,
+                parent_label=parent_label,
+                extra_label=extra_label,
+                scope_current=scope_current,
+                scope_total=scope_total,
+                scope_started_at=scope_started_at,
+                scope_label=scope_label,
+            ),
+            final=True,
+        )
 
 
 def registry_path() -> Path:

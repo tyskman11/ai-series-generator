@@ -5,6 +5,7 @@ from pipeline_common import (
     error,
     headline,
     info,
+    LiveProgressReporter,
     load_config,
     mark_step_completed,
     mark_step_failed,
@@ -23,12 +24,21 @@ def main() -> None:
     headline("Serienbibel aufbauen")
     cfg = load_config()
     mark_step_started("15_build_series_bible", "global")
+    reporter = LiveProgressReporter(
+        script_name="15_build_series_bible.py",
+        total=3,
+        phase_label="Serienbibel aufbauen",
+        parent_label="global",
+    )
     model_path = resolve_project_path(cfg["paths"]["series_model"])
+    reporter.update(0, current_label="Serienmodell lesen", extra_label="Laeuft jetzt: trainiertes Modell fuer Serienbibel laden", force=True)
     model = read_json(model_path, {})
     if not model:
+        reporter.finish(current_label="Serienmodell", extra_label="Abbruch: kein trainiertes Modell gefunden")
         info("Kein trainiertes Serienmodell gefunden.")
         return
 
+    reporter.update(1, current_label="Bibel-Inhalt erzeugen", extra_label="Laeuft jetzt: Hauptfiguren, Themen und Referenzszenen zusammenstellen")
     top_characters = model.get("characters", [])[:8]
     top_keywords = model.get("keywords", [])[:12]
     scene_library = model.get("scene_library", [])
@@ -67,8 +77,10 @@ def main() -> None:
     try:
         bible_json_path = resolve_project_path(cfg["paths"]["series_bible_json"])
         bible_markdown_path = resolve_project_path(cfg["paths"]["series_bible_markdown"])
+        reporter.update(2, current_label="Dateien schreiben", extra_label="Laeuft jetzt: JSON- und Markdown-Serienbibel speichern")
         write_json(bible_json_path, bible_json)
         write_text(bible_markdown_path, "\n".join(markdown_lines))
+        reporter.finish(current_label="Serienbibel", extra_label=f"Geschrieben: {bible_json_path.name} und {bible_markdown_path.name}")
         mark_step_completed(
             "15_build_series_bible",
             "global",
