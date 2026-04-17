@@ -927,6 +927,7 @@ Dieser Schritt:
 - verwendet fuer neue lokale Commits standardmaessig die E-Mail `baumscarry@gmail.com`
 - legt bei vorhandenem `GITHUB_TOKEN` ein fehlendes GitHub-Repo automatisch an
 - erstellt bei neuen Aenderungen einen Commit und spiegelt den lokalen Stand ueber die GitHub-Git-API nach GitHub
+- wenn es keine erlaubten Datei-Aenderungen gibt, endet der Lauf sauber ohne neuen Commit statt an untracked Hilfsdateien zu scheitern
 
 Wichtig:
 
