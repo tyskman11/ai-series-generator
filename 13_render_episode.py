@@ -14,12 +14,17 @@ from pipeline_common import (
     PROJECT_ROOT,
     coalesce_text,
     detect_tool,
+    ensure_foundation_training_ready,
     error,
     ffmpeg_video_encode_args,
     has_primary_person_name,
     headline,
     info,
+    load_step_autosave,
     load_config,
+    mark_step_completed,
+    mark_step_failed,
+    mark_step_started,
     ok,
     preferred_ffmpeg_video_codec,
     preferred_torch_device,
@@ -27,14 +32,20 @@ from pipeline_common import (
     rerun_in_runtime,
     resolve_project_path,
     run_command,
+    save_step_autosave,
     warn,
     write_json,
+    write_text,
 )
 
 PORTRAIT_PANEL_X = 860
 PORTRAIT_PANEL_Y = 196
 PORTRAIT_PANEL_W = 330
 PORTRAIT_PANEL_H = 230
+
+
+def render_output_ready(path: Path) -> bool:
+    return path.exists() and path.stat().st_size > 0
 
 
 def find_latest_shotlist(shotlist_dir: Path) -> Path | None:
@@ -486,16 +497,61 @@ def list_tts_voices() -> list[str]:
     return [getattr(voice, "id", "") for voice in ordered if getattr(voice, "id", "")]
 
 
+def list_tts_voice_descriptors() -> list[dict]:
+    import pyttsx3
+
+    engine = pyttsx3.init()
+    voices = engine.getProperty("voices") or []
+    engine.stop()
+    descriptors: list[dict] = []
+    for voice in voices:
+        voice_id = str(getattr(voice, "id", "") or "")
+        voice_name = str(getattr(voice, "name", "") or "")
+        languages = [str(language) for language in (getattr(voice, "languages", []) or [])]
+        normalized = " ".join([voice_id.lower(), voice_name.lower(), " ".join(language.lower() for language in languages)])
+        is_german = any(token in normalized for token in ("de-de", "german", "hedda", "deu"))
+        descriptors.append(
+            {
+                "id": voice_id,
+                "name": voice_name,
+                "languages": languages,
+                "is_german": is_german,
+            }
+        )
+    descriptors.sort(key=lambda row: (0 if row.get("is_german") else 1, str(row.get("name", "")).lower(), str(row.get("id", "")).lower()))
+    return descriptors
+
+
+def resolve_system_voice_id(preferred_voice_id: str, voice_descriptors: list[dict], require_german: bool = True) -> str:
+    if not voice_descriptors:
+        return preferred_voice_id
+    descriptor_by_id = {str(row.get("id", "")): row for row in voice_descriptors if row.get("id")}
+    preferred = descriptor_by_id.get(str(preferred_voice_id or ""))
+    if preferred and (not require_german or bool(preferred.get("is_german"))):
+        return str(preferred.get("id", ""))
+    german_candidates = [row for row in voice_descriptors if row.get("is_german")]
+    if german_candidates:
+        return str(german_candidates[0].get("id", ""))
+    if preferred:
+        return str(preferred.get("id", ""))
+    return str(voice_descriptors[0].get("id", ""))
+
+
 def assign_voices(characters: list[str], base_rate: int, voice_profiles: dict[str, dict] | None = None) -> dict[str, dict]:
-    voice_ids = list_tts_voices() or [""]
+    voice_descriptors = list_tts_voice_descriptors()
+    voice_ids = [str(row.get("id", "")) for row in voice_descriptors if row.get("id")] or [""]
     assignments = {}
     for index, character in enumerate(characters):
         profile = (voice_profiles or {}).get(character, {})
+        preferred_voice_id = str(profile.get("voice_id", "") or voice_ids[index % len(voice_ids)])
         assignments[character] = {
-            "voice_id": profile.get("voice_id", voice_ids[index % len(voice_ids)]),
+            "voice_id": resolve_system_voice_id(preferred_voice_id, voice_descriptors, require_german=True),
             "rate": int(profile.get("rate", base_rate + ((index % 3) - 1) * 10)),
         }
-    assignments["erzähler"] = {"voice_id": voice_ids[0], "rate": base_rate}
+    assignments["erzähler"] = {
+        "voice_id": resolve_system_voice_id(voice_ids[0], voice_descriptors, require_german=True),
+        "rate": base_rate,
+    }
     return assignments
 
 
@@ -1128,34 +1184,41 @@ def create_final_render(
     if not rendered_segments:
         raise RuntimeError("Keine Render-Segmente zum Zusammenfügen vorhanden.")
 
-    def command(codec: str) -> list[str]:
-        cmd = [str(ffmpeg), "-hide_banner", "-y"]
-        for segment_path in rendered_segments:
-            cmd.extend(["-i", str(segment_path)])
-        filter_inputs = "".join(f"[{index}:v:0][{index}:a:0]" for index in range(len(rendered_segments)))
-        cmd.extend(
-            [
-                "-filter_complex",
-                f"{filter_inputs}concat=n={len(rendered_segments)}:v=1:a=1[v][a]",
-                "-map",
-                "[v]",
-                "-map",
-                "[a]",
-                *ffmpeg_video_encode_args(codec, quality=20),
-                "-c:a",
-                "aac",
-                "-b:a",
-                "192k",
-                "-ar",
-                "44100",
-                "-ac",
-                "2",
-                str(output_mp4),
-            ]
-        )
-        return cmd
+    concat_list_path = output_mp4.parent / f"{output_mp4.stem}_concat.txt"
+    concat_lines = []
+    for segment_path in rendered_segments:
+        normalized = segment_path.resolve().as_posix().replace("'", r"'\''")
+        concat_lines.append(f"file '{normalized}'")
+    write_text(concat_list_path, "\n".join(concat_lines) + "\n")
 
-    return run_ffmpeg_with_codec_fallback(command, video_codec, output_mp4)
+    def command(codec: str) -> list[str]:
+        return [
+            str(ffmpeg),
+            "-hide_banner",
+            "-y",
+            "-f",
+            "concat",
+            "-safe",
+            "0",
+            "-i",
+            str(concat_list_path),
+            *ffmpeg_video_encode_args(codec, quality=20),
+            "-c:a",
+            "aac",
+            "-b:a",
+            "192k",
+            "-ar",
+            "44100",
+            "-ac",
+            "2",
+            str(output_mp4),
+        ]
+
+    try:
+        return run_ffmpeg_with_codec_fallback(command, video_codec, output_mp4)
+    finally:
+        if concat_list_path.exists():
+            concat_list_path.unlink()
 
 
 def update_shotlist_with_render(
@@ -1187,6 +1250,12 @@ def main() -> None:
 
     shotlist = read_json(shotlist_path, {})
     episode_id = shotlist.get("episode_id", shotlist_path.stem)
+    autosave_target = str(episode_id or "folge")
+    mark_step_started(
+        "13_render_episode",
+        autosave_target,
+        {"shotlist": str(shotlist_path), "episode_id": episode_id},
+    )
     scenes = shotlist.get("scenes", [])
     if not scenes:
         info("Die Shotlist enthält keine Szenen.")
@@ -1215,6 +1284,7 @@ def main() -> None:
         for character in scene.get("characters", []):
             if character not in all_characters:
                 all_characters.append(character)
+    ensure_foundation_training_ready(cfg, characters=all_characters, for_render=True)
     fonts = font_bundle()
     info(
         "Clone-Modi: "
@@ -1233,6 +1303,24 @@ def main() -> None:
     voice_models_dir = resolve_project_path(cfg["paths"].get("voice_models", "characters/voice_models"))
     for directory in (cards_dir, audio_dir, portraits_dir, segments_dir, voice_samples_dir, voice_models_dir, final_root):
         directory.mkdir(parents=True, exist_ok=True)
+
+    draft_manifest_path = draft_root / f"{episode_id}_render_manifest.json"
+    final_manifest_path = final_root / f"{episode_id}_render_manifest.json"
+    final_mp4 = final_root / f"{episode_id}_final.mp4"
+    draft_mp4 = draft_root / f"{episode_id}_draft.mp4"
+    if render_output_ready(final_mp4) and draft_manifest_path.exists() and final_manifest_path.exists():
+        mark_step_completed(
+            "13_render_episode",
+            autosave_target,
+            {
+                "episode_id": episode_id,
+                "final_render": str(final_mp4),
+                "draft_render": str(draft_mp4),
+                "segment_count": len(read_json(draft_manifest_path, {}).get("segments", []) or []),
+            },
+        )
+        ok(f"Render bereits vorhanden: {final_mp4}")
+        return
 
     prepared_voice_references: dict[str, Path | None] = {}
 
@@ -1305,13 +1393,31 @@ def main() -> None:
         "segments": [],
     }
     rendered_segments: list[Path] = []
+    autosave_state = load_step_autosave("13_render_episode", autosave_target)
+    completed_segment_files = {
+        str(path)
+        for path in autosave_state.get("completed_segment_files", []) or []
+        if str(path).strip()
+    }
 
     if include_title_cards:
         title_card = cards_dir / "000_title.png"
         title_segment = segments_dir / "000_title.mp4"
-        create_title_card(episode_id, shotlist, title_card, width, height, fonts)
-        create_silent_segment(ffmpeg, title_card, title_segment, width, height, fps, title_card_seconds, video_codec)
+        if not render_output_ready(title_segment):
+            create_title_card(episode_id, shotlist, title_card, width, height, fonts)
+            create_silent_segment(ffmpeg, title_card, title_segment, width, height, fps, title_card_seconds, video_codec)
         rendered_segments.append(title_segment)
+        completed_segment_files.add(str(title_segment))
+        save_step_autosave(
+            "13_render_episode",
+            autosave_target,
+            {
+                "status": "in_progress",
+                "episode_id": episode_id,
+                "completed_segment_files": sorted(completed_segment_files),
+                "segment_count": len(rendered_segments),
+            },
+        )
         manifest["segments"].append({"type": "title", "file": str(title_segment), "duration_seconds": title_card_seconds})
 
     segment_index = 1
@@ -1350,100 +1456,123 @@ def main() -> None:
             elif allow_original_reuse:
                 retrieved_original = select_retrieval_segment(speaker, spoken_text or line, original_line_library, clone_cfg)
 
-            create_line_card(
-                coalesce_text(shotlist.get("episode_label", "")) or episode_id,
-                scene,
-                line,
-                line_reference_images or reference_images,
-                card_path,
-                width,
-                height,
-                fonts,
-            )
-
             visual_mode = "static_card"
             face_reference_path = ""
             voice_meta: dict
-            if retrieved_original is not None:
-                source_audio_path = Path(str(retrieved_original.get("audio_path", "")))
-                source_scene_clip = Path(str(retrieved_original.get("scene_clip_path", "")))
-                if source_audio_path.exists():
-                    shutil.copy2(source_audio_path, audio_path)
-                create_original_scene_segment(
-                    ffmpeg,
-                    source_scene_clip,
-                    float(retrieved_original.get("start", 0.0) or 0.0),
-                    float(retrieved_original.get("end", 0.0) or 0.0),
-                    segment_path,
+            if render_output_ready(segment_path):
+                voice_meta = {
+                    "engine": "resume_existing_segment",
+                    "speaker_name": speaker,
+                    "reference_wav": str(voice_reference_wav) if voice_reference_wav else "",
+                    "device": preferred_torch_device(cfg),
+                    "voice_cloned": False,
+                    "fallback_reason": "",
+                }
+                visual_mode = "resume_existing_segment"
+            else:
+                create_line_card(
+                    coalesce_text(shotlist.get("episode_label", "")) or episode_id,
+                    scene,
+                    line,
+                    line_reference_images or reference_images,
+                    card_path,
                     width,
                     height,
-                    video_codec,
-                )
-                frames = [Path(path) for path in retrieved_original.get("speaker_reference_frames", []) if Path(path).exists()]
-                face_reference_path = str(frames[0]) if frames else ""
-                visual_mode = "original_scene_reuse"
-                voice_meta = {
-                    "engine": "planned_original_line_reuse" if retrieved_original.get("planned_source") else "original_sample_reuse",
-                    "speaker_name": speaker,
-                    "reference_wav": str(source_audio_path),
-                    "device": preferred_torch_device(cfg),
-                    "voice_cloned": True,
-                    "fallback_reason": "",
-                    "retrieval_score": float(retrieved_original.get("match_score", 0.0) or 0.0),
-                    "retrieval_overlap": float(retrieved_original.get("token_overlap", 0.0) or 0.0),
-                    "reused_scene_clip": str(source_scene_clip),
-                    "reused_segment_id": str(retrieved_original.get("segment_id", "")),
-                }
-            else:
-                voice_meta = synthesize_speech(
-                    spoken_text or line,
-                    audio_path,
-                    speaker,
-                    voice["voice_id"],
-                    int(voice["rate"]),
-                    voice_reference_wav,
-                    clone_cfg,
-                    cfg,
+                    fonts,
                 )
 
-                portrait_source_images = pick_character_preview_paths(speaker, char_map, max_images=4) or line_reference_images or reference_images
-                if (
-                    bool(clone_cfg.get("enable_face_clone", True))
-                    and bool(clone_cfg.get("enable_lipsync", True))
-                    and portrait_source_images
-                ):
-                    try:
-                        face_reference_path = str(portrait_source_images[0])
-                        create_audio_reactive_portrait_video(
-                            ffmpeg,
-                            portrait_source_images,
-                            audio_path,
-                            portrait_path,
-                            fps,
-                            video_codec,
-                            clone_cfg,
-                        )
-                        create_lipsync_segment(
-                            ffmpeg,
-                            card_path,
-                            portrait_path,
-                            audio_path,
-                            segment_path,
-                            width,
-                            height,
-                            fps,
-                            audio_pad_seconds,
-                            video_codec,
-                        )
-                        visual_mode = "animated_reference_portrait"
-                    except Exception as exc:
-                        warn(f"Lip-Sync-Fallback fuer {speaker} fehlgeschlagen, nutze statische Karte: {exc}")
-                        create_line_segment(ffmpeg, card_path, audio_path, segment_path, width, height, fps, audio_pad_seconds, video_codec)
-                        visual_mode = "static_card"
+                if retrieved_original is not None:
+                    source_audio_path = Path(str(retrieved_original.get("audio_path", "")))
+                    source_scene_clip = Path(str(retrieved_original.get("scene_clip_path", "")))
+                    if source_audio_path.exists():
+                        shutil.copy2(source_audio_path, audio_path)
+                    create_original_scene_segment(
+                        ffmpeg,
+                        source_scene_clip,
+                        float(retrieved_original.get("start", 0.0) or 0.0),
+                        float(retrieved_original.get("end", 0.0) or 0.0),
+                        segment_path,
+                        width,
+                        height,
+                        video_codec,
+                    )
+                    frames = [Path(path) for path in retrieved_original.get("speaker_reference_frames", []) if Path(path).exists()]
+                    face_reference_path = str(frames[0]) if frames else ""
+                    visual_mode = "original_scene_reuse"
+                    voice_meta = {
+                        "engine": "planned_original_line_reuse" if retrieved_original.get("planned_source") else "original_sample_reuse",
+                        "speaker_name": speaker,
+                        "reference_wav": str(source_audio_path),
+                        "device": preferred_torch_device(cfg),
+                        "voice_cloned": True,
+                        "fallback_reason": "",
+                        "retrieval_score": float(retrieved_original.get("match_score", 0.0) or 0.0),
+                        "retrieval_overlap": float(retrieved_original.get("token_overlap", 0.0) or 0.0),
+                        "reused_scene_clip": str(source_scene_clip),
+                        "reused_segment_id": str(retrieved_original.get("segment_id", "")),
+                    }
                 else:
-                    create_line_segment(ffmpeg, card_path, audio_path, segment_path, width, height, fps, audio_pad_seconds, video_codec)
+                    voice_meta = synthesize_speech(
+                        spoken_text or line,
+                        audio_path,
+                        speaker,
+                        voice["voice_id"],
+                        int(voice["rate"]),
+                        voice_reference_wav,
+                        clone_cfg,
+                        cfg,
+                    )
+
+                    portrait_source_images = pick_character_preview_paths(speaker, char_map, max_images=4) or line_reference_images or reference_images
+                    if (
+                        bool(clone_cfg.get("enable_face_clone", True))
+                        and bool(clone_cfg.get("enable_lipsync", True))
+                        and portrait_source_images
+                    ):
+                        try:
+                            face_reference_path = str(portrait_source_images[0])
+                            create_audio_reactive_portrait_video(
+                                ffmpeg,
+                                portrait_source_images,
+                                audio_path,
+                                portrait_path,
+                                fps,
+                                video_codec,
+                                clone_cfg,
+                            )
+                            create_lipsync_segment(
+                                ffmpeg,
+                                card_path,
+                                portrait_path,
+                                audio_path,
+                                segment_path,
+                                width,
+                                height,
+                                fps,
+                                audio_pad_seconds,
+                                video_codec,
+                            )
+                            visual_mode = "animated_reference_portrait"
+                        except Exception as exc:
+                            warn(f"Lip-Sync-Fallback fuer {speaker} fehlgeschlagen, nutze statische Karte: {exc}")
+                            create_line_segment(ffmpeg, card_path, audio_path, segment_path, width, height, fps, audio_pad_seconds, video_codec)
+                            visual_mode = "static_card"
+                    else:
+                        create_line_segment(ffmpeg, card_path, audio_path, segment_path, width, height, fps, audio_pad_seconds, video_codec)
 
             rendered_segments.append(segment_path)
+            completed_segment_files.add(str(segment_path))
+            save_step_autosave(
+                "13_render_episode",
+                autosave_target,
+                {
+                    "status": "in_progress",
+                    "episode_id": episode_id,
+                    "completed_segment_files": sorted(completed_segment_files),
+                    "segment_count": len(rendered_segments),
+                    "last_segment": str(segment_path),
+                },
+            )
             manifest["segments"].append(
                 {
                     "type": "dialogue",
@@ -1470,24 +1599,43 @@ def main() -> None:
     if include_title_cards:
         end_card = cards_dir / "999_end.png"
         end_segment = segments_dir / "999_end.mp4"
-        create_end_card(end_card, width, height, fonts)
-        create_silent_segment(ffmpeg, end_card, end_segment, width, height, fps, closing_card_seconds, video_codec)
+        if not render_output_ready(end_segment):
+            create_end_card(end_card, width, height, fonts)
+            create_silent_segment(ffmpeg, end_card, end_segment, width, height, fps, closing_card_seconds, video_codec)
         rendered_segments.append(end_segment)
+        completed_segment_files.add(str(end_segment))
+        save_step_autosave(
+            "13_render_episode",
+            autosave_target,
+            {
+                "status": "in_progress",
+                "episode_id": episode_id,
+                "completed_segment_files": sorted(completed_segment_files),
+                "segment_count": len(rendered_segments),
+            },
+        )
         manifest["segments"].append({"type": "end", "file": str(end_segment), "duration_seconds": closing_card_seconds})
 
-    final_mp4 = final_root / f"{episode_id}_final.mp4"
     final_video_codec = create_final_render(ffmpeg, rendered_segments, final_mp4, video_codec)
-    draft_mp4 = draft_root / f"{episode_id}_draft.mp4"
     shutil.copy2(final_mp4, draft_mp4)
 
-    draft_manifest_path = draft_root / f"{episode_id}_render_manifest.json"
-    final_manifest_path = final_root / f"{episode_id}_render_manifest.json"
     manifest["final_video_codec"] = final_video_codec
     manifest["draft_render"] = str(draft_mp4)
     manifest["final_render"] = str(final_mp4)
     write_json(draft_manifest_path, manifest)
     write_json(final_manifest_path, manifest)
     update_shotlist_with_render(shotlist_path, shotlist, draft_mp4, final_mp4, draft_manifest_path, final_manifest_path)
+    mark_step_completed(
+        "13_render_episode",
+        autosave_target,
+        {
+            "episode_id": episode_id,
+            "final_render": str(final_mp4),
+            "draft_render": str(draft_mp4),
+            "completed_segment_files": sorted(completed_segment_files),
+            "segment_count": len(rendered_segments),
+        },
+    )
     ok(f"Final-Render erstellt: {final_mp4}")
     ok(f"Draft-Render erstellt: {draft_mp4}")
 

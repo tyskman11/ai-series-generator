@@ -15,6 +15,9 @@ from pipeline_common import (
     error,
     headline,
     info,
+    mark_step_completed,
+    mark_step_failed,
+    mark_step_started,
     nvidia_gpu_available,
     ok,
     runtime_settings,
@@ -206,6 +209,7 @@ def install_torch_stack(py: Path, cfg: dict) -> tuple[bool, dict]:
 
 def main() -> None:
     headline("Laufzeit vorbereiten")
+    mark_step_started("00_prepare_runtime", "global")
     cfg = ensure_project_structure(write_config_file=True)
     py = ensure_venv()
     info(f"Verwende Python: {py}")
@@ -273,6 +277,16 @@ def main() -> None:
         ok(f"GPU bereit fuer Torch: {device_names}")
     elif nvidia_gpu_available():
         warn("NVIDIA-GPU gefunden, aber Torch meldet noch kein CUDA. CPU-Fallback bleibt aktiv.")
+    mark_step_completed(
+        "00_prepare_runtime",
+        "global",
+        {
+            "python": str(py),
+            "torch": bool(torch_ok),
+            "cuda_available": bool(torch_info.get("cuda_available", False)),
+            "voice_cloning": bool(voice_clone_ok),
+        },
+    )
     ok("Laufzeit ist bereit.")
 
 
@@ -280,5 +294,6 @@ if __name__ == "__main__":
     try:
         main()
     except Exception as exc:
+        mark_step_failed("00_prepare_runtime", str(exc), "global")
         error(str(exc))
         raise

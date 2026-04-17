@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 import argparse
+import math
 from pathlib import Path
 
 from pipeline_common import (
     canonical_person_name,
+    cosine_similarity,
     current_os,
     display_person_name,
     error,
@@ -47,6 +49,7 @@ REVIEW_QUIT_TOKEN = "__quit__"
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Review, Benennung und Ignorieren von Face-Clustern")
     parser.add_argument("--list-faces", action="store_true", help="Zeigt standardmaessig nur bereits benannte Figuren mit Preview-Pfaden.")
+    parser.add_argument("--created", action="store_true", help="Zeigt nur die Namen bereits angelegter erkannter Figuren.")
     parser.add_argument("--show-queue", action="store_true", help="Zeigt die offene review_queue.json statt der Face-Review.")
     parser.add_argument("--assign-face", help="Face-Cluster-ID wie face_001.")
     parser.add_argument("--name", help="Name fuer --assign-face, z. B. 'Babe Carano'.")
@@ -66,7 +69,8 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Nimmt bei --review-faces auch bereits benannte Cluster mit auf.",
     )
-    parser.add_argument("--limit", type=int, default=25, help="Maximale Anzahl ausgegebener Cluster.")
+    parser.add_argument("--limit", type=int, default=20, help="Maximale Anzahl ausgegebener Cluster pro Start. Standard: 20")
+    parser.add_argument("--all", action="store_true", help="Bearbeitet wirklich alle aktuell offenen Face-Cluster.")
     parser.add_argument("--open-previews", action="store_true", help="Oeffnet die Montage-Datei bei der interaktiven Review.")
     return parser.parse_args()
 
@@ -123,6 +127,53 @@ def resolve_face_reference(char_map: dict, reference: str) -> str:
     return matches[0]
 
 
+def identity_has_priority(char_map: dict, identity_name: str) -> bool:
+    final_name = canonical_person_name(identity_name)
+    if not final_name or is_background_person_name(final_name) or is_ignored_face_name(final_name):
+        return False
+    identities = char_map.get("identities", {}) or {}
+    identity_payload = identities.get(final_name)
+    if identity_payload is not None:
+        return bool(identity_payload.get("priority", False))
+    for _cluster_id, payload in identity_clusters(char_map, final_name):
+        if bool(payload.get("priority", False)):
+            return True
+    return False
+
+
+def known_identity_button_options(char_map: dict, limit: int = 16) -> list[tuple[str, bool, int]]:
+    options: list[tuple[str, bool, int]] = []
+    identities = char_map.get("identities", {}) or {}
+    if identities:
+        for identity_name, payload in identities.items():
+            final_name = canonical_person_name(identity_name)
+            if not final_name or is_background_person_name(final_name) or is_ignored_face_name(final_name):
+                continue
+            if not has_manual_person_name(final_name):
+                continue
+            options.append(
+                (
+                    final_name,
+                    bool(payload.get("priority", False)),
+                    int(payload.get("cluster_count", 0) or 0),
+                )
+            )
+    else:
+        seen: set[str] = set()
+        for cluster_id, payload in char_map.get("clusters", {}).items():
+            if is_ignored_face_payload(payload):
+                continue
+            final_name = canonical_person_name(str(payload.get("name", cluster_id)))
+            if not final_name or final_name in seen:
+                continue
+            if is_background_person_name(final_name) or not has_manual_person_name(final_name):
+                continue
+            seen.add(final_name)
+            options.append((final_name, bool(payload.get("priority", False)), identity_cluster_count(char_map, final_name)))
+    options.sort(key=lambda item: (0 if item[1] else 1, -int(item[2]), item[0]))
+    return options[: max(0, limit)]
+
+
 def assign_character_name(char_map: dict, cluster_id: str, assigned_name: str, priority: bool | None = None) -> dict:
     payload = char_map.setdefault("clusters", {}).setdefault(cluster_id, {})
     remove_cluster_aliases(char_map, cluster_id)
@@ -132,7 +183,16 @@ def assign_character_name(char_map: dict, cluster_id: str, assigned_name: str, p
     if ignored:
         final_name = "noface"
     background_role = is_background_person_name(final_name)
-    effective_priority = False if ignored or background_role else bool(priority) if priority is not None else bool(payload.get("priority", False))
+    inherited_priority = False
+    if not ignored and not background_role and has_manual_person_name(final_name):
+        inherited_priority = identity_has_priority(char_map, final_name)
+    effective_priority = (
+        False
+        if ignored or background_role
+        else inherited_priority or bool(priority)
+        if priority is not None
+        else bool(payload.get("priority", False)) or inherited_priority
+    )
 
     payload["name"] = final_name
     payload["ignored"] = ignored
@@ -309,10 +369,12 @@ def parse_assignment_input(answer: str) -> tuple[str, bool | None]:
     return raw, None
 
 
-def prompt_priority_for_name(name: str) -> bool:
+def prompt_priority_for_name(char_map: dict, name: str) -> bool:
     final_name = canonical_person_name(name)
     if not final_name or is_ignored_face_name(final_name) or is_background_person_name(final_name) or not has_manual_person_name(final_name):
         return False
+    if identity_has_priority(char_map, final_name):
+        return True
     print("Hauptfigur priorisieren? [j/N]")
     try:
         decision = input("> ").strip().lower()
@@ -321,7 +383,13 @@ def prompt_priority_for_name(name: str) -> bool:
     return decision in {"j", "ja", "y", "yes", "1"}
 
 
-def show_preview_assignment_window(image_path: Path, title: str) -> dict[str, object] | None:
+def show_preview_assignment_window(
+    image_path: Path,
+    title: str,
+    status_text: str = "",
+    initial_priority: bool = False,
+    quick_assignments: list[tuple[str, bool, int]] | None = None,
+) -> dict[str, object] | None:
     if not image_path.exists():
         return None
     try:
@@ -333,7 +401,7 @@ def show_preview_assignment_window(image_path: Path, title: str) -> dict[str, ob
     image = Image.open(image_path).convert("RGB")
     image.thumbnail((1200, 900))
 
-    result: dict[str, object] = {"value": None, "priority": False}
+    result: dict[str, object] = {"value": None, "priority": bool(initial_priority)}
     terminal_buffer: list[str] = []
 
     window = tk.Tk()
@@ -360,22 +428,58 @@ def show_preview_assignment_window(image_path: Path, title: str) -> dict[str, ob
     label.image = photo
     label.pack(padx=12, pady=(12, 8))
 
+    if status_text:
+        status_label = tk.Label(
+            window,
+            text=status_text,
+            fg="#d1fae5",
+            bg="#1f2937",
+            justify="left",
+            font=("Segoe UI", 10, "bold"),
+        )
+        status_label.pack(padx=12, pady=(0, 8), anchor="w")
+
     entry_var = tk.StringVar()
     entry = tk.Entry(window, textvariable=entry_var, width=42, font=("Segoe UI", 11))
     entry.pack(padx=12, pady=(0, 8), fill="x")
     entry.focus_set()
-    priority_var = tk.BooleanVar(value=False)
+    priority_var = tk.BooleanVar(value=bool(initial_priority))
     entry.bind("<Return>", lambda _event: finish(entry_var.get(), priority_var.get()))
 
     hint = tk.Label(
         window,
-        text="Name hier eingeben oder im Terminal tippen. Enter uebernimmt sofort. 'noface' ignoriert, 'statist' setzt eine Nebenfigur. '!Name' im Terminal markiert direkt eine Hauptfigur.",
+        text="Name hier eingeben, Schnellwahl-Button klicken oder im Terminal tippen. Enter uebernimmt sofort. 'noface' ignoriert, 'statist' setzt eine Nebenfigur. '!Name' im Terminal markiert direkt eine Hauptfigur.",
         fg="white",
         bg="#1f2937",
         wraplength=900,
         justify="left",
     )
     hint.pack(padx=12, pady=(0, 8))
+
+    if quick_assignments:
+        quick_label = tk.Label(
+            window,
+            text="Bekannte Figuren Schnellwahl",
+            fg="white",
+            bg="#1f2937",
+            justify="left",
+        )
+        quick_label.pack(padx=12, pady=(0, 4), anchor="w")
+        quick_frame = tk.Frame(window, bg="#1f2937")
+        quick_frame.pack(padx=12, pady=(0, 8), fill="x")
+        columns = 4
+        for index, (name, is_priority, cluster_count) in enumerate(quick_assignments):
+            label = name if cluster_count <= 1 else f"{name} ({cluster_count})"
+            if is_priority:
+                label = f"{label} *"
+            button = tk.Button(
+                quick_frame,
+                text=label,
+                command=lambda selected=name, selected_priority=is_priority: finish(selected, selected_priority),
+            )
+            button.grid(row=index // columns, column=index % columns, padx=4, pady=4, sticky="ew")
+        for column_index in range(columns):
+            quick_frame.grid_columnconfigure(column_index, weight=1)
 
     priority_check = tk.Checkbutton(
         window,
@@ -417,8 +521,11 @@ def show_preview_assignment_window(image_path: Path, title: str) -> dict[str, ob
     return result
 
 
-def prompt_terminal_assignment() -> tuple[str, bool | None]:
+def prompt_terminal_assignment(char_map: dict) -> tuple[str, bool | None]:
     print(f"Beispielnamen: {' | '.join(EXAMPLE_FACE_HINTS)}")
+    quick_names = [name for name, _priority, _count in known_identity_button_options(char_map, limit=8)]
+    if quick_names:
+        print(f"Bekannte Figuren: {' | '.join(quick_names)}")
     print("Name eingeben. 'noface' ignoriert den Treffer, 'statist' speichert eine Nebenfigur, '!Name' priorisiert als Hauptfigur. 'q' beendet die Review.")
     raw = input("> ").strip()
     name, explicit_priority = parse_assignment_input(raw)
@@ -426,7 +533,7 @@ def prompt_terminal_assignment() -> tuple[str, bool | None]:
         return "", explicit_priority
     if explicit_priority is not None:
         return name, explicit_priority
-    return name, prompt_priority_for_name(name)
+    return name, prompt_priority_for_name(char_map, name)
 
 
 def cluster_sort_key(item: tuple[str, dict]) -> tuple[int, int, int, str]:
@@ -467,6 +574,564 @@ def hydrate_face_clusters_from_previews(cfg: dict, char_map: dict) -> int:
         payload["aliases"] = []
         added += 1
     return added
+
+
+def known_face_reference_clusters(char_map: dict) -> dict[str, dict]:
+    references: dict[str, dict] = {}
+    for cluster_id, payload in char_map.get("clusters", {}).items():
+        if is_ignored_face_payload(payload):
+            continue
+        final_name = canonical_person_name(str(payload.get("name", cluster_id)))
+        if looks_auto_named(final_name):
+            continue
+        if is_background_person_name(final_name):
+            continue
+        if not payload.get("embedding"):
+            continue
+        references[cluster_id] = payload
+    return references
+
+
+def normalize_embedding(vector: list[float]) -> list[float]:
+    if not vector:
+        return []
+    norm = math.sqrt(sum(float(value) * float(value) for value in vector))
+    if not norm:
+        return []
+    return [round(float(value) / norm, 6) for value in vector]
+
+
+def primary_cluster_for_identity(clusters: list[tuple[str, dict]]) -> str:
+    ranked = sorted(
+        clusters,
+        key=lambda item: (
+            0 if bool(item[1].get("priority", False)) else 1,
+            -int(item[1].get("scene_count", 0)),
+            -int(item[1].get("detection_count", 0)),
+            -int(item[1].get("samples", 0)),
+            item[0],
+        ),
+    )
+    return ranked[0][0]
+
+
+def identity_clusters(char_map: dict, identity_name: str) -> list[tuple[str, dict]]:
+    normalized_identity = canonical_person_name(identity_name)
+    if not normalized_identity:
+        return []
+    clusters: list[tuple[str, dict]] = []
+    for cluster_id, payload in char_map.get("clusters", {}).items():
+        if is_ignored_face_payload(payload):
+            continue
+        payload_name = canonical_person_name(str(payload.get("name", cluster_id)))
+        if payload_name != normalized_identity:
+            continue
+        clusters.append((cluster_id, payload))
+    return clusters
+
+
+def identity_cluster_count(char_map: dict, identity_name: str) -> int:
+    return len(identity_clusters(char_map, identity_name))
+
+
+def rebuild_character_map_identities(char_map: dict) -> None:
+    aliases: dict[str, str] = {}
+    identities: dict[str, dict] = {}
+    grouped: dict[str, list[tuple[str, dict]]] = {}
+
+    for cluster_id, payload in char_map.get("clusters", {}).items():
+        payload.pop("identity_name", None)
+        payload.pop("identity_primary_cluster", None)
+        payload.pop("identity_cluster_ids", None)
+        payload.pop("identity_cluster_count", None)
+        if is_ignored_face_payload(payload):
+            continue
+        final_name = canonical_person_name(str(payload.get("name", cluster_id)))
+        if not has_manual_person_name(final_name):
+            continue
+        grouped.setdefault(final_name, []).append((cluster_id, payload))
+
+    for identity_name, clusters in grouped.items():
+        primary_cluster = primary_cluster_for_identity(clusters)
+        cluster_ids = [cluster_id for cluster_id, _payload in clusters]
+        cluster_count = len(cluster_ids)
+        priority = any(bool(payload.get("priority", False)) for _cluster_id, payload in clusters)
+        background_role = is_background_person_name(identity_name)
+        identities[identity_name] = {
+            "name": identity_name,
+            "primary_cluster": primary_cluster,
+            "cluster_ids": cluster_ids,
+            "cluster_count": cluster_count,
+            "priority": False if background_role else priority,
+            "background_role": background_role,
+        }
+        normalized_alias = normalize_alias_name(identity_name)
+        if normalized_alias and not background_role:
+            aliases[normalized_alias] = primary_cluster
+        for cluster_id, payload in clusters:
+            payload["identity_name"] = identity_name
+            payload["identity_primary_cluster"] = primary_cluster
+            payload["identity_cluster_ids"] = cluster_ids
+            payload["identity_cluster_count"] = cluster_count
+
+    char_map["aliases"] = aliases
+    char_map["identities"] = identities
+
+
+def face_cluster_quality_score(payload: dict) -> float:
+    return (
+        (float(payload.get("scene_count", 0)) * 3.0)
+        + (float(payload.get("samples", 0)) * 2.0)
+        + (float(payload.get("detection_count", 0)) * 0.2)
+        + (20.0 if bool(payload.get("priority", False)) else 0.0)
+    )
+
+
+def identity_embedding(clusters: list[tuple[str, dict]]) -> list[float]:
+    weighted: list[float] = []
+    total_weight = 0
+    for _cluster_id, payload in clusters:
+        embedding = payload.get("embedding") or []
+        if not embedding:
+            continue
+        weight = max(1.0, face_cluster_quality_score(payload))
+        if not weighted:
+            weighted = [0.0] * len(embedding)
+        for index, value in enumerate(embedding):
+            weighted[index] += float(value) * weight
+        total_weight += weight
+    if not total_weight:
+        return []
+    return normalize_embedding([value / total_weight for value in weighted])
+
+
+def select_identity_reference_clusters(
+    clusters: list[tuple[str, dict]],
+    max_references: int,
+    min_quality: float,
+) -> list[tuple[str, dict]]:
+    ranked = sorted(
+        clusters,
+        key=lambda item: (
+            0 if bool(item[1].get("priority", False)) else 1,
+            -face_cluster_quality_score(item[1]),
+            item[0],
+        ),
+    )
+    if not ranked:
+        return []
+
+    selected = [item for item in ranked if face_cluster_quality_score(item[1]) >= min_quality]
+    if not selected:
+        selected = ranked[:1]
+
+    keep_count = min(max_references, max(1, min(len(ranked), max(len(selected), 2))))
+    return ranked[:keep_count]
+
+
+def known_face_reference_identities(char_map: dict, cfg: dict | None = None) -> dict[str, dict]:
+    match_cfg = known_face_match_config(cfg or {})
+    grouped: dict[str, list[tuple[str, dict]]] = {}
+    for cluster_id, payload in known_face_reference_clusters(char_map).items():
+        identity_name = canonical_person_name(str(payload.get("name", cluster_id)))
+        grouped.setdefault(identity_name, []).append((cluster_id, payload))
+
+    identities: dict[str, dict] = {}
+    for identity_name, clusters in grouped.items():
+        reference_clusters = select_identity_reference_clusters(
+            clusters,
+            int(match_cfg.get("reference_count", 8)),
+            float(match_cfg.get("min_reference_quality", 5.0)),
+        )
+        embedding = identity_embedding(reference_clusters)
+        if not embedding:
+            continue
+        identities[identity_name] = {
+            "name": identity_name,
+            "primary_cluster": primary_cluster_for_identity(clusters),
+            "clusters": [cluster_id for cluster_id, _payload in clusters],
+            "references": [
+                {
+                    "cluster_id": cluster_id,
+                    "embedding": payload.get("embedding") or [],
+                    "quality": round(face_cluster_quality_score(payload), 3),
+                }
+                for cluster_id, payload in reference_clusters
+                if payload.get("embedding")
+            ],
+            "cluster_count": len(clusters),
+            "embedding": embedding,
+        }
+    return identities
+
+
+def unknown_face_candidates(char_map: dict) -> list[tuple[str, dict]]:
+    candidates: list[tuple[str, dict]] = []
+    for cluster_id, payload in sorted(char_map.get("clusters", {}).items(), key=cluster_sort_key):
+        if is_ignored_face_payload(payload):
+            continue
+        if not looks_auto_named(str(payload.get("name", cluster_id))):
+            continue
+        if not payload.get("embedding"):
+            continue
+        candidates.append((cluster_id, payload))
+    return candidates
+
+
+def score_known_face_identity(embedding: list[float], payload: dict, cfg: dict | None = None) -> dict | None:
+    match_cfg = known_face_match_config(cfg or {})
+    references = payload.get("references") or []
+    if not references:
+        return None
+
+    reference_scores = []
+    for reference in references:
+        reference_embedding = reference.get("embedding") or []
+        if not reference_embedding:
+            continue
+        reference_scores.append(
+            {
+                "cluster_id": str(reference.get("cluster_id", "")),
+                "score": cosine_similarity(embedding, reference_embedding),
+                "quality": float(reference.get("quality", 0.0)),
+            }
+        )
+    if not reference_scores:
+        return None
+
+    reference_scores.sort(key=lambda item: item["score"], reverse=True)
+    top_k = max(1, int(match_cfg.get("top_k", 3)))
+    top_scores = [float(item["score"]) for item in reference_scores[:top_k]]
+    best_reference_score = top_scores[0]
+    average_top_score = sum(top_scores) / len(top_scores)
+    centroid_score = cosine_similarity(embedding, payload.get("embedding") or [])
+    consensus_threshold = float(match_cfg.get("consensus_threshold", 0.66))
+    consensus_count = sum(1 for item in reference_scores if float(item["score"]) >= consensus_threshold)
+    consensus_bonus = 0.015 * min(consensus_count, max(2, top_k))
+    composite_score = (best_reference_score * 0.50) + (average_top_score * 0.30) + (centroid_score * 0.20) + consensus_bonus
+
+    return {
+        "identity": str(payload.get("name", "")),
+        "primary_cluster": str(payload.get("primary_cluster", "")),
+        "score": composite_score,
+        "best_reference_score": best_reference_score,
+        "average_top_score": average_top_score,
+        "centroid_score": centroid_score,
+        "consensus_count": consensus_count,
+        "best_reference_cluster": str(reference_scores[0].get("cluster_id", "")),
+        "reference_scores": reference_scores,
+    }
+
+
+def rank_known_face_matches(embedding: list[float], references: dict[str, dict], cfg: dict | None = None) -> list[dict]:
+    ranked = []
+    for identity_name, payload in references.items():
+        scored = score_known_face_identity(embedding, payload, cfg)
+        if not scored:
+            continue
+        if not scored.get("identity"):
+            scored["identity"] = identity_name
+        ranked.append(scored)
+    ranked.sort(key=lambda item: item["score"], reverse=True)
+    return ranked
+
+
+def best_known_face_match(embedding: list[float], references: dict[str, dict], cfg: dict | None = None) -> tuple[str | None, float, float]:
+    ranked = rank_known_face_matches(embedding, references, cfg)
+    if not ranked:
+        return None, -1.0, -1.0
+    best = ranked[0]
+    second_score = ranked[1]["score"] if len(ranked) > 1 else -1.0
+    return str(best.get("identity") or ""), float(best.get("score", -1.0)), float(second_score)
+
+
+def known_face_match_config(cfg: dict) -> dict[str, float | int]:
+    face_cfg = cfg.get("character_detection", {})
+    threshold = float(
+        face_cfg.get(
+            "review_known_face_threshold",
+            max(0.74, float(face_cfg.get("embedding_threshold", 0.80)) - 0.06),
+        )
+    )
+    margin = float(face_cfg.get("review_known_face_margin", 0.08))
+    return {
+        "threshold": threshold,
+        "margin": margin,
+        "reference_count": int(face_cfg.get("review_known_face_reference_count", 8)),
+        "top_k": int(face_cfg.get("review_known_face_top_k", 3)),
+        "consensus_threshold": float(face_cfg.get("review_known_face_consensus_threshold", 0.66)),
+        "min_consensus": int(face_cfg.get("review_known_face_min_consensus", 2)),
+        "strong_match_threshold": float(face_cfg.get("review_known_face_strong_match_threshold", 0.84)),
+        "min_reference_quality": float(face_cfg.get("review_known_face_min_reference_quality", 5.0)),
+    }
+
+
+def plan_known_face_matches(cfg: dict, char_map: dict) -> dict[str, dict]:
+    identities = known_face_reference_identities(char_map, cfg)
+    if not identities:
+        return {}
+
+    match_cfg = known_face_match_config(cfg)
+    threshold = float(match_cfg.get("threshold", 0.72))
+    margin = float(match_cfg.get("margin", 0.05))
+    min_consensus = int(match_cfg.get("min_consensus", 2))
+    strong_match_threshold = float(match_cfg.get("strong_match_threshold", 0.84))
+    matches: dict[str, dict] = {}
+    for cluster_id, payload in unknown_face_candidates(char_map):
+        embedding = payload.get("embedding") or []
+        ranked = rank_known_face_matches(embedding, identities, cfg)
+        if not ranked:
+            continue
+        best_match = ranked[0]
+        best_identity = str(best_match.get("identity", "")).strip()
+        best_score = float(best_match.get("score", -1.0))
+        second_score = float(ranked[1]["score"]) if len(ranked) > 1 else -1.0
+        score_margin = best_score - max(second_score, -1.0)
+        has_consensus = int(best_match.get("consensus_count", 0)) >= min_consensus
+        strong_single_match = float(best_match.get("best_reference_score", -1.0)) >= strong_match_threshold
+        if best_score < threshold or score_margin < margin or (not has_consensus and not strong_single_match):
+            continue
+        target_cluster = str(best_match.get("primary_cluster", "")).strip()
+        if not target_cluster:
+            continue
+        matches[cluster_id] = {
+            "target_cluster": target_cluster,
+            "target_identity": best_identity,
+            "score": round(best_score, 4),
+            "margin": round(score_margin, 4),
+            "best_reference_score": round(float(best_match.get("best_reference_score", -1.0)), 4),
+            "average_top_score": round(float(best_match.get("average_top_score", -1.0)), 4),
+            "centroid_score": round(float(best_match.get("centroid_score", -1.0)), 4),
+            "consensus_count": int(best_match.get("consensus_count", 0)),
+            "best_reference_cluster": str(best_match.get("best_reference_cluster", "")),
+        }
+    return matches
+
+
+def merge_cluster_embeddings(target_payload: dict, source_payload: dict) -> None:
+    target_embedding = target_payload.get("embedding") or []
+    source_embedding = source_payload.get("embedding") or []
+    target_samples = max(1, int(target_payload.get("samples", 1)))
+    source_samples = max(1, int(source_payload.get("samples", 1)))
+    if target_embedding and source_embedding and len(target_embedding) == len(source_embedding):
+        total_samples = target_samples + source_samples
+        merged = [
+            round(((target_embedding[index] * target_samples) + (source_embedding[index] * source_samples)) / total_samples, 6)
+            for index in range(len(target_embedding))
+        ]
+        target_payload["embedding"] = merged
+    elif source_embedding and not target_embedding:
+        target_payload["embedding"] = source_embedding
+    target_payload["samples"] = target_samples + source_samples
+
+
+def merge_face_cluster_into_target(char_map: dict, source_cluster_id: str, target_cluster_id: str, match_meta: dict | None = None) -> None:
+    if source_cluster_id == target_cluster_id:
+        return
+
+    clusters = char_map.setdefault("clusters", {})
+    source_payload = clusters.get(source_cluster_id)
+    target_payload = clusters.get(target_cluster_id)
+    if source_payload is None or target_payload is None:
+        return
+
+    merge_cluster_embeddings(target_payload, source_payload)
+    target_payload["scene_count"] = int(target_payload.get("scene_count", 0)) + int(source_payload.get("scene_count", 0))
+    target_payload["detection_count"] = int(target_payload.get("detection_count", 0)) + int(source_payload.get("detection_count", 0))
+
+    preview_dirs = []
+    for payload in (target_payload, source_payload):
+        preview_dir = str(payload.get("preview_dir", "")).strip()
+        if preview_dir and preview_dir not in preview_dirs:
+            preview_dirs.append(preview_dir)
+        for extra_dir in payload.get("merged_preview_dirs", []) or []:
+            extra_value = str(extra_dir).strip()
+            if extra_value and extra_value not in preview_dirs:
+                preview_dirs.append(extra_value)
+    if preview_dirs:
+        target_payload["preview_dir"] = preview_dirs[0]
+        if len(preview_dirs) > 1:
+            target_payload["merged_preview_dirs"] = preview_dirs
+
+    merged_ids = [target_cluster_id]
+    for payload in (target_payload, source_payload):
+        for merged_id in payload.get("merged_cluster_ids", []) or []:
+            merged_id_text = str(merged_id).strip()
+            if merged_id_text and merged_id_text not in merged_ids:
+                merged_ids.append(merged_id_text)
+    if source_cluster_id not in merged_ids:
+        merged_ids.append(source_cluster_id)
+    target_payload["merged_cluster_ids"] = merged_ids
+
+    if match_meta:
+        history = list(target_payload.get("auto_merged_matches", []) or [])
+        history.append(
+            {
+                "source_cluster": source_cluster_id,
+                "score": float(match_meta.get("score", 0.0)),
+                "margin": float(match_meta.get("margin", 0.0)),
+            }
+        )
+        target_payload["auto_merged_matches"] = history
+
+    remove_cluster_aliases(char_map, source_cluster_id)
+    clusters.pop(source_cluster_id, None)
+
+
+def remap_face_cluster_list(cluster_ids: list[str], replacements: dict[str, str]) -> list[str]:
+    remapped: list[str] = []
+    for cluster_id in cluster_ids or []:
+        final_cluster_id = replacements.get(cluster_id, cluster_id)
+        if final_cluster_id not in remapped:
+            remapped.append(final_cluster_id)
+    return remapped
+
+
+def remap_voice_face_links(voice_map: dict, replacements: dict[str, str]) -> int:
+    changed = 0
+    for payload in voice_map.get("clusters", {}).values():
+        linked_face = payload.get("linked_face_cluster")
+        if linked_face in replacements:
+            payload["linked_face_cluster"] = replacements[linked_face]
+            changed += 1
+    return changed
+
+
+def remap_linked_segments_face_clusters(cfg: dict, replacements: dict[str, str]) -> int:
+    if not replacements:
+        return 0
+    linked_root = resolve_project_path(cfg["paths"]["linked_segments"])
+    changed_files = 0
+    for linked_file in sorted(linked_root.glob("*_linked_segments.json")):
+        rows = read_json(linked_file, [])
+        changed = False
+        for row in rows:
+            for field_name in ("visible_face_clusters", "face_clusters"):
+                cluster_ids = row.get(field_name)
+                if isinstance(cluster_ids, list):
+                    remapped = remap_face_cluster_list(cluster_ids, replacements)
+                    if remapped != cluster_ids:
+                        row[field_name] = remapped
+                        changed = True
+            speaker_face_cluster = row.get("speaker_face_cluster")
+            if speaker_face_cluster in replacements:
+                row["speaker_face_cluster"] = replacements[speaker_face_cluster]
+                changed = True
+        if changed:
+            write_json(linked_file, rows)
+            changed_files += 1
+    return changed_files
+
+
+def auto_match_known_faces(cfg: dict, char_map: dict, voice_map: dict) -> dict[str, object]:
+    planned_matches = plan_known_face_matches(cfg, char_map)
+    if not planned_matches:
+        return {"matched": 0, "replacements": {}, "linked_files": 0, "voice_links": 0}
+
+    replacements: dict[str, str] = {}
+    for source_cluster_id, match_meta in planned_matches.items():
+        target_cluster_id = str(match_meta.get("target_cluster", "")).strip()
+        if not target_cluster_id:
+            continue
+        if source_cluster_id not in char_map.get("clusters", {}) or target_cluster_id not in char_map.get("clusters", {}):
+            continue
+        merge_face_cluster_into_target(char_map, source_cluster_id, target_cluster_id, match_meta)
+        replacements[source_cluster_id] = target_cluster_id
+
+    linked_files = remap_linked_segments_face_clusters(cfg, replacements)
+    voice_links = remap_voice_face_links(voice_map, replacements)
+    return {
+        "matched": len(replacements),
+        "replacements": replacements,
+        "linked_files": linked_files,
+        "voice_links": voice_links,
+    }
+
+
+def linked_segment_rows(cfg: dict) -> list[dict]:
+    linked_root = resolve_project_path(cfg["paths"]["linked_segments"])
+    rows: list[dict] = []
+    for linked_file in sorted(linked_root.glob("*_linked_segments.json")):
+        payload = read_json(linked_file, [])
+        if isinstance(payload, list):
+            rows.extend(payload)
+    return rows
+
+
+def auto_link_speakers_from_single_visible_faces(cfg: dict, char_map: dict, voice_map: dict) -> dict[str, int]:
+    speaker_votes: dict[str, dict[str, int]] = {}
+    for row in linked_segment_rows(cfg):
+        speaker_cluster = str(row.get("speaker_cluster", "")).strip()
+        if not speaker_cluster:
+            continue
+        visible_clusters = []
+        for cluster_id in row.get("visible_face_clusters", []) or []:
+            payload = char_map.get("clusters", {}).get(cluster_id, {})
+            name = str(payload.get("name", cluster_id))
+            if is_ignored_face_payload(payload) or not has_manual_person_name(name) or is_background_person_name(name):
+                continue
+            visible_clusters.append(cluster_id)
+        visible_clusters = list(dict.fromkeys(visible_clusters))
+        if len(visible_clusters) != 1:
+            continue
+        speaker_votes.setdefault(speaker_cluster, {})
+        only_cluster = visible_clusters[0]
+        speaker_votes[speaker_cluster][only_cluster] = speaker_votes[speaker_cluster].get(only_cluster, 0) + 1
+
+    linked = 0
+    for speaker_cluster, votes in speaker_votes.items():
+        ranked = sorted(votes.items(), key=lambda item: (-item[1], item[0]))
+        if not ranked:
+            continue
+        best_cluster, best_votes = ranked[0]
+        second_votes = ranked[1][1] if len(ranked) > 1 else 0
+        total_votes = sum(votes.values())
+        vote_share = (best_votes / total_votes) if total_votes else 0.0
+        if best_votes < 3 or vote_share < 0.70 or (best_votes - second_votes) < 2:
+            continue
+        face_payload = char_map.get("clusters", {}).get(best_cluster, {})
+        face_name = str(face_payload.get("name", "")).strip()
+        if not has_manual_person_name(face_name) or is_background_person_name(face_name):
+            continue
+        speaker_payload = voice_map.setdefault("clusters", {}).setdefault(speaker_cluster, {})
+        previous_cluster = str(speaker_payload.get("linked_face_cluster", "")).strip()
+        previous_name = str(speaker_payload.get("name", "")).strip()
+        inferred_name = display_person_name(face_name, speaker_cluster)
+        if previous_cluster == best_cluster and previous_name == inferred_name and bool(speaker_payload.get("auto_named", True)):
+            continue
+        if previous_cluster and previous_cluster != best_cluster and not bool(speaker_payload.get("auto_named", True)):
+            continue
+        speaker_payload["linked_face_cluster"] = best_cluster
+        if speaker_payload.get("auto_named", True) or looks_auto_named(previous_name):
+            speaker_payload["name"] = inferred_name
+            speaker_payload["auto_named"] = True
+        linked += 1
+    return {"matched": linked}
+
+
+def auto_learn_remaining_reviews(cfg: dict, char_map: dict, voice_map: dict, max_rounds: int = 8) -> dict[str, int]:
+    total_face_matches = 0
+    total_voice_links = 0
+    total_linked_files = 0
+    rounds = 0
+    for _ in range(max(1, max_rounds)):
+        rounds += 1
+        face_summary = auto_match_known_faces(cfg, char_map, voice_map)
+        voice_summary = auto_link_speakers_from_single_visible_faces(cfg, char_map, voice_map)
+        matched_faces = int(face_summary.get("matched", 0))
+        matched_speakers = int(voice_summary.get("matched", 0))
+        total_face_matches += matched_faces
+        total_voice_links += matched_speakers
+        total_linked_files += int(face_summary.get("linked_files", 0))
+        if matched_faces <= 0 and matched_speakers <= 0:
+            rounds -= 1
+            break
+    return {
+        "rounds": max(0, rounds),
+        "matched_faces": total_face_matches,
+        "matched_speakers": total_voice_links,
+        "linked_files": total_linked_files,
+    }
 
 
 def normalize_placeholder_maps(char_map: dict, voice_map: dict) -> tuple[int, int]:
@@ -537,6 +1202,7 @@ def normalize_placeholder_maps(char_map: dict, voice_map: dict) -> tuple[int, in
                 payload["aliases"] = []
                 changed_faces += 1
 
+    rebuild_character_map_identities(char_map)
     voice_map["aliases"] = {}
     for speaker_cluster, payload in voice_map.get("clusters", {}).items():
         linked_face = payload.get("linked_face_cluster")
@@ -629,6 +1295,7 @@ def rebuild_review_queue(cfg: dict) -> int:
 
 
 def persist_updates(cfg: dict, char_map: dict, voice_map: dict) -> tuple[int, int]:
+    rebuild_character_map_identities(char_map)
     refresh_voice_map(char_map, voice_map)
     write_json(resolve_project_path(cfg["paths"]["character_map"]), char_map)
     write_json(resolve_project_path(cfg["paths"]["voice_map"]), voice_map)
@@ -637,7 +1304,7 @@ def persist_updates(cfg: dict, char_map: dict, voice_map: dict) -> tuple[int, in
     return changed_linked_files, review_count
 
 
-def print_cluster(cluster_id: str, payload: dict) -> None:
+def print_cluster(char_map: dict, cluster_id: str, payload: dict) -> None:
     status = "ignored" if is_ignored_face_payload(payload) else "aktiv"
     name = payload.get("name", cluster_id)
     preview_dir = payload.get("preview_dir", "-")
@@ -646,11 +1313,13 @@ def print_cluster(cluster_id: str, payload: dict) -> None:
     detection_count = payload.get("detection_count", 0)
     auto_named = payload.get("auto_named", False)
     priority = bool(payload.get("priority", False))
+    identity_count = identity_cluster_count(char_map, str(name)) if has_manual_person_name(str(name)) and not is_background_person_name(str(name)) else 1
     print(f"{cluster_id}: {name}")
     print(f"  Status: {status}")
     print(f"  Samples: {samples}")
     print(f"  Szenen: {scene_count}")
     print(f"  Treffer: {detection_count}")
+    print(f"  Figuren-Faces: {identity_count}")
     print(f"  Auto: {auto_named}")
     print(f"  Priorisiert: {priority}")
     print(f"  Preview: {preview_dir}")
@@ -664,20 +1333,48 @@ def list_faces(char_map: dict, limit: int, include_named: bool) -> None:
             continue
         if looks_auto_named(str(payload.get("name", ""))):
             continue
-        print_cluster(cluster_id, payload)
+        print_cluster(char_map, cluster_id, payload)
         shown += 1
-        if shown >= limit:
+        if limit > 0 and shown >= limit:
             break
     if shown == 0:
         info("Keine benannten Figuren gefunden.")
 
 
-def interactive_face_review(cfg: dict, char_map: dict, voice_map: dict, include_named: bool, limit: int, open_previews: bool) -> None:
-    if not is_interactive_session():
-        raise RuntimeError("--review-faces benoetigt eine interaktive Konsole.")
+def created_face_names(char_map: dict) -> list[str]:
+    names: set[str] = set()
+    for _cluster_id, payload in sorted(char_map.get("clusters", {}).items(), key=cluster_sort_key):
+        if is_ignored_face_payload(payload):
+            continue
+        name = canonical_person_name(str(payload.get("name", "")))
+        if not has_manual_person_name(name):
+            continue
+        if is_background_person_name(name):
+            continue
+        names.add(name)
+    return sorted(names, key=lambda value: value.lower())
 
+
+def print_created_face_names(char_map: dict) -> None:
+    names = created_face_names(char_map)
+    if not names:
+        info("Keine erkannten benannten Figuren gefunden.")
+        return
+    for name in names:
+        print(name)
+
+
+def face_review_candidates(
+    char_map: dict,
+    include_named: bool,
+    limit: int,
+    skipped_clusters: set[str] | None = None,
+) -> list[tuple[str, dict]]:
     candidates = []
+    skipped = skipped_clusters or set()
     for cluster_id, payload in sorted(char_map.get("clusters", {}).items(), key=cluster_sort_key):
+        if cluster_id in skipped:
+            continue
         if is_ignored_face_payload(payload):
             continue
         if not include_named and not looks_auto_named(str(payload.get("name", ""))):
@@ -685,20 +1382,69 @@ def interactive_face_review(cfg: dict, char_map: dict, voice_map: dict, include_
         candidates.append((cluster_id, payload))
     if limit > 0:
         candidates = candidates[:limit]
+    return candidates
 
+
+def session_case_budget_remaining(limit: int, handled_count: int) -> int:
+    if limit <= 0:
+        return 0
+    return max(0, int(limit) - max(0, int(handled_count)))
+
+
+def session_face_review_candidates(
+    char_map: dict,
+    include_named: bool,
+    session_limit: int,
+    handled_count: int,
+    skipped_clusters: set[str] | None = None,
+) -> list[tuple[str, dict]]:
+    if session_limit > 0:
+        remaining_limit = session_case_budget_remaining(session_limit, handled_count)
+        if remaining_limit <= 0:
+            return []
+        effective_limit = remaining_limit
+    else:
+        effective_limit = 0
+    return face_review_candidates(char_map, include_named, effective_limit, skipped_clusters)
+
+
+def interactive_face_review(cfg: dict, char_map: dict, voice_map: dict, include_named: bool, limit: int, open_previews: bool) -> None:
+    if not is_interactive_session():
+        raise RuntimeError("--review-faces benoetigt eine interaktive Konsole.")
+
+    skipped_clusters: set[str] = set()
+    handled_count = 0
+    candidates = session_face_review_candidates(char_map, include_named, limit, handled_count, skipped_clusters)
     if not candidates:
         info("Keine Face-Cluster fuer die Review gefunden.")
         return
 
     changed = 0
     stop_review = False
-    for cluster_id, payload in candidates:
+    while True:
+        auto_matched = auto_learn_remaining_reviews(cfg, char_map, voice_map)
+        if auto_matched.get("matched_faces", 0) or auto_matched.get("matched_speakers", 0):
+            changed_linked_files, review_count = persist_updates(cfg, char_map, voice_map)
+            info(
+                f"Vor der naechsten Eingabe wurden {auto_matched['matched_faces']} bekannte Face-Cluster "
+                f"und {auto_matched['matched_speakers']} Sprecher-Zuordnungen automatisch uebernommen. "
+                f"{changed_linked_files + int(auto_matched.get('linked_files', 0))} Linked-Segment-Dateien aktualisiert, "
+                f"{review_count} offene Review-Faelle."
+            )
+        candidates = session_face_review_candidates(char_map, include_named, limit, handled_count, skipped_clusters)
+        if not candidates:
+            break
+        cluster_id, payload = candidates[0]
+        session_remaining_count = session_case_budget_remaining(limit, handled_count)
+        total_open_count = len(face_review_candidates(char_map, include_named, 0, set()))
         answer = ""
         while True:
             montage = create_face_review_sheet(cluster_id, payload)
             print()
             print("-" * 72)
-            print_cluster(cluster_id, payload)
+            print_cluster(char_map, cluster_id, payload)
+            print(f"Session verbleibend inkl. aktuellem Fall: {session_remaining_count}")
+            print(f"Tatsaechlich offen gesamt: {total_open_count}")
             if montage:
                 print(f"Montage: {montage}")
                 if open_previews:
@@ -711,7 +1457,17 @@ def interactive_face_review(cfg: dict, char_map: dict, voice_map: dict, include_
             preview_name = ""
             preview_priority: bool | None = None
             if open_previews and montage:
-                preview_result = show_preview_assignment_window(montage, f"{cluster_id} Vorschau")
+                quick_assignments = known_identity_button_options(char_map, limit=16)
+                preview_result = show_preview_assignment_window(
+                    montage,
+                    f"{cluster_id} Vorschau | Session: {session_remaining_count} | Offen: {total_open_count}",
+                    status_text=(
+                        f"Session verbleibend inkl. aktuellem Fall: {session_remaining_count} | "
+                        f"Tatsaechlich offen gesamt: {total_open_count}"
+                    ),
+                    initial_priority=identity_has_priority(char_map, str(payload.get("name", cluster_id))),
+                    quick_assignments=quick_assignments,
+                )
                 if preview_result is not None:
                     preview_name = str(preview_result.get("value") or "").strip()
                     preview_priority = bool(preview_result.get("priority", False))
@@ -720,7 +1476,7 @@ def interactive_face_review(cfg: dict, char_map: dict, voice_map: dict, include_
                     answer = preview_name
                     explicit_priority = preview_priority
                 else:
-                    answer, explicit_priority = prompt_terminal_assignment()
+                    answer, explicit_priority = prompt_terminal_assignment(char_map)
                 answer = answer.strip()
             except EOFError:
                 info("Keine weitere Eingabe verfuegbar. Review wird nach der aktuellen Vorschau beendet.")
@@ -733,17 +1489,36 @@ def interactive_face_review(cfg: dict, char_map: dict, voice_map: dict, include_
                 break
             if answer == REVIEW_SKIP_TOKEN:
                 info("Aktueller Face-Cluster wurde nicht veraendert.")
+                skipped_clusters.add(cluster_id)
+                handled_count += 1
                 break
             assign_character_name(char_map, cluster_id, answer, priority=explicit_priority)
             payload = char_map["clusters"][cluster_id]
+            auto_matched = auto_learn_remaining_reviews(cfg, char_map, voice_map)
+            changed_linked_files, review_count = persist_updates(cfg, char_map, voice_map)
             changed += 1
+            handled_count += 1
+            merged_count = int(auto_matched.get("matched_faces", 0))
+            speaker_count = int(auto_matched.get("matched_speakers", 0))
+            sync_count = changed_linked_files + int(auto_matched.get("linked_files", 0))
+            if merged_count or speaker_count:
+                ok(
+                    f"{cluster_id} gespeichert. Danach wurden {merged_count} weitere Face-Cluster und "
+                    f"{speaker_count} Sprecher-Zuordnungen automatisch uebernommen. "
+                    f"{sync_count} Linked-Segment-Dateien synchronisiert, {review_count} offene Review-Faelle."
+                )
+            else:
+                ok(
+                    f"{cluster_id} gespeichert. "
+                    f"{sync_count} Linked-Segment-Dateien synchronisiert, {review_count} offene Review-Faelle."
+                )
             break
         if stop_review or answer.lower() == "q" or answer == REVIEW_QUIT_TOKEN:
             break
 
     if changed:
-        changed_linked_files, review_count = persist_updates(cfg, char_map, voice_map)
-        ok(f"{changed} Face-Cluster aktualisiert, {changed_linked_files} Linked-Segment-Dateien synchronisiert, {review_count} offene Review-Faelle.")
+        remaining_session_count = session_case_budget_remaining(limit, handled_count)
+        ok(f"{changed} Face-Cluster aktualisiert. Noch offene Face-Cluster in dieser Session: {remaining_session_count}.")
     else:
         info("Keine Aenderungen vorgenommen.")
 
@@ -753,22 +1528,28 @@ def assign_single_face(cfg: dict, char_map: dict, voice_map: dict, cluster_id: s
     if payload is None:
         raise FileNotFoundError(f"Face-Cluster nicht gefunden: {cluster_id}")
     assign_character_name(char_map, cluster_id, assigned_name, priority=priority)
+    auto_matched = auto_learn_remaining_reviews(cfg, char_map, voice_map)
     changed_linked_files, review_count = persist_updates(cfg, char_map, voice_map)
     final_name = char_map["clusters"][cluster_id]["name"]
     ok(
         f"{cluster_id} -> {final_name} gespeichert. "
-        f"{changed_linked_files} Linked-Segment-Dateien synchronisiert, {review_count} offene Review-Faelle."
+        f"{changed_linked_files + int(auto_matched.get('linked_files', 0))} Linked-Segment-Dateien synchronisiert, "
+        f"{review_count} offene Review-Faelle. "
+        f"Auto-Lernen: {int(auto_matched.get('matched_faces', 0))} Face-Cluster, {int(auto_matched.get('matched_speakers', 0))} Sprecher."
     )
 
 
 def rename_face(cfg: dict, char_map: dict, voice_map: dict, reference: str, new_name: str, priority: bool = False) -> None:
     cluster_id = resolve_face_reference(char_map, reference)
     assign_character_name(char_map, cluster_id, new_name, priority=priority)
+    auto_matched = auto_learn_remaining_reviews(cfg, char_map, voice_map)
     changed_linked_files, review_count = persist_updates(cfg, char_map, voice_map)
     final_name = char_map["clusters"][cluster_id]["name"]
     ok(
         f"{cluster_id} wurde umbenannt zu {final_name}. "
-        f"{changed_linked_files} Linked-Segment-Dateien synchronisiert, {review_count} offene Review-Faelle."
+        f"{changed_linked_files + int(auto_matched.get('linked_files', 0))} Linked-Segment-Dateien synchronisiert, "
+        f"{review_count} offene Review-Faelle. "
+        f"Auto-Lernen: {int(auto_matched.get('matched_faces', 0))} Face-Cluster, {int(auto_matched.get('matched_speakers', 0))} Sprecher."
     )
 
 
@@ -823,6 +1604,7 @@ def show_review_queue(cfg: dict) -> None:
 def main() -> None:
     rerun_in_runtime()
     args = parse_args()
+    effective_limit = 0 if args.all else max(0, args.limit)
     headline("Review offener Zuordnungen")
     cfg = load_config()
     char_map = read_json(resolve_project_path(cfg["paths"]["character_map"]), {"clusters": {}, "aliases": {}})
@@ -840,10 +1622,16 @@ def main() -> None:
     hydrated = hydrate_face_clusters_from_previews(cfg, char_map)
     if hydrated:
         info(f"{hydrated} Face-Cluster aus vorhandenen Preview-Ordnern ergänzt.")
-    if normalized_faces or normalized_voices or hydrated:
+    auto_matched = auto_learn_remaining_reviews(cfg, char_map, voice_map)
+    if auto_matched.get("matched_faces", 0) or auto_matched.get("matched_speakers", 0):
+        info(
+            f"Vor der Review wurden {auto_matched['matched_faces']} unbekannte Face-Cluster "
+            f"und {auto_matched['matched_speakers']} Sprecher-Zuordnungen automatisch uebernommen."
+        )
+    if normalized_faces or normalized_voices or hydrated or auto_matched.get("matched_faces", 0) or auto_matched.get("matched_speakers", 0):
         changed_linked_files, review_count = persist_updates(cfg, char_map, voice_map)
         info(
-            f"Maps synchronisiert: {changed_linked_files} Linked-Segment-Dateien aktualisiert, "
+            f"Maps synchronisiert: {changed_linked_files + int(auto_matched.get('linked_files', 0))} Linked-Segment-Dateien aktualisiert, "
             f"{review_count} offene Review-Faelle."
         )
 
@@ -875,13 +1663,17 @@ def main() -> None:
             char_map,
             voice_map,
             include_named=args.include_named,
-            limit=max(0, args.limit),
+            limit=effective_limit,
             open_previews=args.open_previews,
         )
         return
 
     if args.list_faces:
-        list_faces(char_map, max(1, args.limit), args.include_named)
+        list_faces(char_map, effective_limit, args.include_named)
+        return
+
+    if args.created:
+        print_created_face_names(char_map)
         return
 
     if args.show_queue:
@@ -890,7 +1682,7 @@ def main() -> None:
 
     if not is_interactive_session():
         info("Keine interaktive Konsole erkannt. Zeige stattdessen unbenannte Face-Cluster mit Preview-Pfaden.")
-        list_faces(char_map, max(1, args.limit), args.include_named)
+        list_faces(char_map, effective_limit, args.include_named)
         return
 
     interactive_face_review(
@@ -898,7 +1690,7 @@ def main() -> None:
         char_map,
         voice_map,
         include_named=args.include_named,
-        limit=max(0, args.limit),
+        limit=effective_limit,
         open_previews=True,
     )
 

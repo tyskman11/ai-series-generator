@@ -22,6 +22,9 @@ from pipeline_common import (
     info,
     is_background_person_name,
     load_config,
+    mark_step_completed,
+    mark_step_failed,
+    mark_step_started,
     ok,
     read_json,
     rerun_in_runtime,
@@ -32,14 +35,15 @@ from pipeline_common import (
 )
 
 PROCESS_VERSION = 1
+DOWNLOAD_METADATA_FILE = ".foundation_download.json"
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Foundation-Training fuer Bild/Video/Stimmen vorbereiten"
     )
-    parser.add_argument("--download-models", action="store_true", help="Lade konfigurierte Basis-Modelle herunter.")
-    parser.add_argument("--skip-downloads", action="store_true", help="Ueberspringe automatische Basis-Downloads fuer diesen Lauf.")
+    parser.add_argument("--download-models", action="store_true", help="Lade konfigurierte Basis-Modelle herunter und pruefe auf Updates.")
+    parser.add_argument("--skip-downloads", action="store_true", help="Ueberspringe automatische Basis-Downloads und Update-Pruefungen fuer diesen Lauf.")
     parser.add_argument("--force", action="store_true", help="Erzeuge vorhandene Exporte und Manifeste neu.")
     parser.add_argument("--episode", help="Optional nur eine bestimmte Quellfolge beruecksichtigen.")
     parser.add_argument("--limit-characters", type=int, default=0, help="Optional Kandidatenzahl begrenzen.")
@@ -74,11 +78,111 @@ def build_download_targets(cfg: dict) -> list[dict]:
     return targets
 
 
+def download_metadata_path(target: dict) -> Path:
+    return Path(str(target.get("target_dir", ""))) / DOWNLOAD_METADATA_FILE
+
+
+def read_download_metadata(target: dict) -> dict:
+    metadata_path = download_metadata_path(target)
+    return read_json(metadata_path, {})
+
+
+def write_download_metadata(target: dict, payload: dict) -> None:
+    metadata_path = download_metadata_path(target)
+    metadata_path.parent.mkdir(parents=True, exist_ok=True)
+    write_json(metadata_path, payload)
+
+
 def model_target_ready(target: dict) -> bool:
     target_dir = Path(str(target.get("target_dir", "")))
     if not target_dir.exists():
         return False
-    return any(target_dir.iterdir())
+    return any(path.name != DOWNLOAD_METADATA_FILE for path in target_dir.iterdir())
+
+
+def incomplete_download_files(target: dict) -> list[Path]:
+    target_dir = Path(str(target.get("target_dir", "")))
+    cache_dir = target_dir / ".cache" / "huggingface" / "download"
+    if not cache_dir.exists():
+        return []
+    return sorted(path for path in cache_dir.rglob("*.incomplete") if path.is_file())
+
+
+def cleanup_incomplete_download_files(target: dict) -> int:
+    removed = 0
+    for path in incomplete_download_files(target):
+        try:
+            path.unlink()
+            removed += 1
+        except Exception:
+            continue
+    return removed
+
+
+def infer_local_revision_from_cache(target: dict) -> str:
+    target_dir = Path(str(target.get("target_dir", "")))
+    cache_dir = target_dir / ".cache" / "huggingface" / "download"
+    if not cache_dir.exists():
+        return ""
+    for metadata_file in sorted(cache_dir.rglob("*.metadata")):
+        try:
+            lines = metadata_file.read_text(encoding="utf-8").splitlines()
+        except Exception:
+            continue
+        if not lines:
+            continue
+        candidate = coalesce_text(lines[0])
+        if len(candidate) >= 12:
+            return candidate
+    return ""
+
+
+def local_download_state(target: dict) -> dict:
+    metadata = read_download_metadata(target)
+    local_revision = coalesce_text(metadata.get("revision", ""))
+    local_model_id = coalesce_text(metadata.get("model_id", ""))
+    inferred_revision = ""
+    if not local_revision and model_target_ready(target):
+        inferred_revision = infer_local_revision_from_cache(target)
+        if inferred_revision:
+            local_revision = inferred_revision
+    return {
+        "metadata": metadata,
+        "local_revision": local_revision,
+        "local_model_id": local_model_id,
+        "inferred_revision": inferred_revision,
+    }
+
+
+def resolve_download_action(target: dict, remote_revision: str) -> str:
+    if not model_target_ready(target):
+        return "download"
+    state = local_download_state(target)
+    local_revision = coalesce_text(state.get("local_revision", ""))
+    local_model_id = coalesce_text(state.get("local_model_id", ""))
+    has_incomplete_files = bool(incomplete_download_files(target))
+    if local_model_id and local_model_id != coalesce_text(target.get("model_id", "")):
+        return "update"
+    if has_incomplete_files and (not remote_revision or local_revision == remote_revision):
+        return "cleanup"
+    if has_incomplete_files:
+        return "repair"
+    if not remote_revision:
+        return "skip"
+    if local_revision != remote_revision:
+        return "update"
+    return "skip"
+
+
+def fetch_remote_revision(api, target: dict, token: str) -> str:
+    info_payload = api.model_info(repo_id=target["model_id"], token=token or None)
+    return coalesce_text(getattr(info_payload, "sha", ""))
+
+
+def refresh_target_dir(target_dir: Path) -> None:
+    if target_dir.exists():
+        shutil.rmtree(target_dir)
+    target_dir.mkdir(parents=True, exist_ok=True)
 
 
 def character_training_candidates(char_map: dict, series_model: dict, cfg: dict) -> list[dict]:
@@ -289,27 +393,119 @@ def ensure_runtime_package(module_name: str, package_name: str) -> None:
 
 def download_models(cfg: dict, targets: list[dict]) -> list[dict]:
     ensure_runtime_package("huggingface_hub", "huggingface_hub")
-    from huggingface_hub import snapshot_download
+    from huggingface_hub import HfApi, snapshot_download
 
     foundation_cfg = cfg.get("foundation_training", {}) if isinstance(cfg.get("foundation_training"), dict) else {}
     token_env = coalesce_text(foundation_cfg.get("huggingface_token_env", "HF_TOKEN")) or "HF_TOKEN"
     token = coalesce_text(os.environ.get(token_env, ""))
+    api = HfApi()
     results: list[dict] = []
     for target in targets:
         target_dir = Path(target["target_dir"])
         target_dir.parent.mkdir(parents=True, exist_ok=True)
-        if model_target_ready(target):
-            results.append({**target, "snapshot_path": str(target_dir), "downloaded": False})
+        state = local_download_state(target)
+        remote_revision = ""
+        try:
+            remote_revision = fetch_remote_revision(api, target, token)
+        except Exception as exc:
+            if model_target_ready(target):
+                info(f"Revision fuer {target['model_id']} konnte nicht geprueft werden. Verwende lokalen Stand weiter: {exc}")
+            else:
+                raise
+
+        action = resolve_download_action(target, remote_revision)
+        if action == "skip":
+            if state.get("inferred_revision") and not read_download_metadata(target):
+                write_download_metadata(
+                    target,
+                    {
+                        "model_id": target["model_id"],
+                        "kind": target["kind"],
+                        "revision": state["local_revision"],
+                        "updated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                        "snapshot_path": str(target_dir),
+                    },
+                )
+            results.append(
+                {
+                    **target,
+                    "snapshot_path": str(target_dir),
+                    "downloaded": False,
+                    "updated": False,
+                    "revision": remote_revision or coalesce_text(state.get("local_revision", "")),
+                }
+            )
             continue
-        info(f"Lade Basis-Modell ({target['kind']}): {target['model_id']}")
+        if action == "cleanup":
+            removed_incomplete = cleanup_incomplete_download_files(target)
+            write_download_metadata(
+                target,
+                {
+                    "model_id": target["model_id"],
+                    "kind": target["kind"],
+                    "revision": remote_revision or coalesce_text(state.get("local_revision", "")),
+                    "updated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                    "snapshot_path": str(target_dir),
+                    "cleaned_incomplete_files": removed_incomplete,
+                },
+            )
+            results.append(
+                {
+                    **target,
+                    "snapshot_path": str(target_dir),
+                    "downloaded": False,
+                    "updated": False,
+                    "cleaned": True,
+                    "revision": remote_revision or coalesce_text(state.get("local_revision", "")),
+                    "cleaned_incomplete_files": removed_incomplete,
+                }
+            )
+            continue
+
+        if action == "repair":
+            info(f"Repariere unvollstaendigen Basis-Download ({target['kind']}): {target['model_id']}")
+        elif action == "update":
+            info(f"Aktualisiere Basis-Modell ({target['kind']}): {target['model_id']}")
+        else:
+            info(f"Lade Basis-Modell ({target['kind']}): {target['model_id']}")
+
         snapshot_path = snapshot_download(
             repo_id=target["model_id"],
             local_dir=str(target_dir),
             local_dir_use_symlinks=False,
             token=token or None,
             resume_download=True,
+            revision=remote_revision or None,
         )
-        results.append({**target, "snapshot_path": str(snapshot_path), "downloaded": True})
+        removed_incomplete = cleanup_incomplete_download_files(target)
+        final_revision = remote_revision
+        if not final_revision:
+            try:
+                final_revision = fetch_remote_revision(api, target, token)
+            except Exception:
+                final_revision = ""
+        write_download_metadata(
+            target,
+            {
+                "model_id": target["model_id"],
+                "kind": target["kind"],
+                "revision": final_revision,
+                "updated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "snapshot_path": str(snapshot_path),
+                "repaired_incomplete_files": removed_incomplete,
+            },
+        )
+        results.append(
+            {
+                **target,
+                "snapshot_path": str(snapshot_path),
+                "downloaded": action == "download",
+                "updated": action in {"update", "repair"},
+                "repaired": action == "repair",
+                "revision": final_revision,
+                "repaired_incomplete_files": removed_incomplete,
+            }
+        )
     return results
 
 
@@ -448,7 +644,13 @@ def write_training_plan(
     if downloads:
         lines.extend(["## Basis-Downloads", ""])
         for target in downloads:
-            lines.append(f"- {target['kind']}: {target['model_id']} -> {target.get('snapshot_path', target.get('target_dir', ''))}")
+            status = "aktualisiert" if target.get("updated") else "heruntergeladen" if target.get("downloaded") else "aktuell"
+            revision = coalesce_text(target.get("revision", ""))
+            revision_text = f" | Revision: {revision}" if revision else ""
+            lines.append(
+                f"- {target['kind']}: {target['model_id']} -> {target.get('snapshot_path', target.get('target_dir', ''))} "
+                f"({status}{revision_text})"
+            )
         lines.append("")
     write_text(markdown_path, "\n".join(lines).strip() + "\n")
     return json_path, markdown_path
@@ -459,6 +661,8 @@ def main() -> None:
     args = parse_args()
     headline("Foundation-Training vorbereiten")
     cfg = load_config()
+    autosave_target = coalesce_text(args.episode or "global") or "global"
+    mark_step_started("09_prepare_foundation_training", autosave_target, {"episode_filter": coalesce_text(args.episode or "")})
     foundation_cfg = cfg.get("foundation_training", {}) if isinstance(cfg.get("foundation_training"), dict) else {}
 
     ffmpeg_bin = resolve_project_path("tools/ffmpeg/bin")
@@ -471,36 +675,46 @@ def main() -> None:
     if args.limit_characters and args.limit_characters > 0:
         candidates = candidates[: args.limit_characters]
 
-    if not candidates:
-        info("Keine benannten Hauptfiguren mit genug Material fuer Foundation-Training gefunden.")
-        return
+    try:
+        if not candidates:
+            info("Keine benannten Hauptfiguren mit genug Material fuer Foundation-Training gefunden.")
+            return
 
-    manifests: list[dict] = []
-    manifest_root = resolve_project_path(cfg["paths"]["foundation_manifests"])
-    manifest_root.mkdir(parents=True, exist_ok=True)
-    for character in candidates:
-        character_rows = collect_character_rows(rows, character["name"], known_clusters)
-        if not character_rows:
-            continue
-        info(f"Bereite Trainingsdaten vor: {character['name']}")
-        manifest = prepare_character_dataset(ffmpeg_path, character, character_rows, cfg, force=args.force)
-        manifests.append(manifest)
-        write_json(manifest_root / f"{character['slug']}_manifest.json", manifest)
+        manifests: list[dict] = []
+        manifest_root = resolve_project_path(cfg["paths"]["foundation_manifests"])
+        manifest_root.mkdir(parents=True, exist_ok=True)
+        for character in candidates:
+            character_rows = collect_character_rows(rows, character["name"], known_clusters)
+            if not character_rows:
+                continue
+            info(f"Bereite Trainingsdaten vor: {character['name']}")
+            manifest = prepare_character_dataset(ffmpeg_path, character, character_rows, cfg, force=args.force)
+            manifests.append(manifest)
+            write_json(manifest_root / f"{character['slug']}_manifest.json", manifest)
 
-    download_targets = build_download_targets(cfg)
-    downloaded: list[dict] = []
-    missing_downloads = any(not model_target_ready(target) for target in download_targets)
-    wants_downloads = not args.skip_downloads and bool(
-        args.download_models or foundation_cfg.get("download_base_models", True) or missing_downloads
-    )
-    if wants_downloads and download_targets:
-        downloaded = download_models(cfg, download_targets)
-    elif wants_downloads:
-        info("Kein Basis-Modell in der Config gesetzt. Es wurden nur Trainingsdaten vorbereitet.")
+        download_targets = build_download_targets(cfg)
+        downloaded: list[dict] = []
+        missing_downloads = any(not model_target_ready(target) for target in download_targets)
+        check_updates = bool(foundation_cfg.get("check_model_updates", True))
+        wants_downloads = not args.skip_downloads and bool(
+            args.download_models or foundation_cfg.get("download_base_models", True) or missing_downloads or check_updates
+        )
+        if wants_downloads and download_targets:
+            downloaded = download_models(cfg, download_targets)
+        elif wants_downloads:
+            info("Kein Basis-Modell in der Config gesetzt. Es wurden nur Trainingsdaten vorbereitet.")
 
-    plan_json, plan_md = write_training_plan(cfg, manifests, downloaded or download_targets, coalesce_text(args.episode or ""))
-    ok(f"Foundation-Training vorbereitet: {plan_json}")
-    ok(f"Trainingsplan geschrieben: {plan_md}")
+        plan_json, plan_md = write_training_plan(cfg, manifests, downloaded or download_targets, coalesce_text(args.episode or ""))
+        mark_step_completed(
+            "09_prepare_foundation_training",
+            autosave_target,
+            {"manifest_count": len(manifests), "plan_json": str(plan_json), "plan_markdown": str(plan_md)},
+        )
+        ok(f"Foundation-Training vorbereitet: {plan_json}")
+        ok(f"Trainingsplan geschrieben: {plan_md}")
+    except Exception as exc:
+        mark_step_failed("09_prepare_foundation_training", str(exc), autosave_target)
+        raise
 
 
 if __name__ == "__main__":

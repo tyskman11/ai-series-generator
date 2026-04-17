@@ -14,6 +14,7 @@ import numpy as np
 from pipeline_common import (
     PROJECT_ROOT,
     canonical_person_name,
+    completed_step_state,
     coalesce_text,
     cosine_similarity,
     display_person_name,
@@ -35,6 +36,10 @@ from pipeline_common import (
     read_json,
     rerun_in_runtime,
     resolve_project_path,
+    save_step_autosave,
+    mark_step_started,
+    mark_step_completed,
+    mark_step_failed,
     write_json,
 )
 
@@ -103,6 +108,55 @@ def resolve_episode_dir(scene_root: Path, episode_name: str | None) -> Path | No
             return candidate
         raise FileNotFoundError(f"Szenenordner nicht gefunden: {candidate}")
     return first_dir(scene_root)
+
+
+def face_linking_marker_path(faces_episode_dir: Path) -> Path:
+    return faces_episode_dir / "_face_linking_success.json"
+
+
+def episode_face_linking_completed(episode_dir: Path, cfg: dict) -> bool:
+    linked_file = resolve_project_path(cfg["paths"]["linked_segments"]) / f"{episode_dir.name}_linked_segments.json"
+    faces_episode_dir = resolve_project_path(cfg["paths"]["faces"]) / episode_dir.name
+    face_summary_file = faces_episode_dir / f"{episode_dir.name}_face_summary.json"
+    marker_file = face_linking_marker_path(faces_episode_dir)
+    if not linked_file.exists() or not face_summary_file.exists():
+        return False
+    try:
+        linked_rows = read_json(linked_file, [])
+        face_summary = read_json(face_summary_file, [])
+    except Exception:
+        return False
+    if not (isinstance(linked_rows, list) and len(linked_rows) > 0 and isinstance(face_summary, list) and len(face_summary) > 0):
+        return False
+    marker = read_json(marker_file, {}) if marker_file.exists() else {}
+    autosave_state = completed_step_state("05_link_faces_and_speakers", episode_dir.name, PROCESS_VERSION)
+    if marker:
+        if int(marker.get("process_version", 0) or 0) != PROCESS_VERSION:
+            return False
+        linked_count = int(marker.get("linked_row_count", 0) or 0)
+        face_scene_count = int(marker.get("face_scene_count", 0) or 0)
+        if linked_count > len(linked_rows) or face_scene_count > len(face_summary):
+            return False
+    if autosave_state:
+        linked_count = int(autosave_state.get("linked_row_count", 0) or 0)
+        if linked_count > len(linked_rows):
+            return False
+    return True
+
+
+def next_unlinked_episode_dir(scene_root: Path, cfg: dict) -> Path | None:
+    for folder in sorted(scene_root.glob("*")):
+        if not folder.is_dir():
+            continue
+        if not episode_face_linking_completed(folder, cfg):
+            return folder
+    return first_dir(scene_root)
+
+
+def resolve_episode_dir_for_processing(scene_root: Path, episode_name: str | None, cfg: dict) -> Path | None:
+    if episode_name:
+        return resolve_episode_dir(scene_root, episode_name)
+    return next_unlinked_episode_dir(scene_root, cfg)
 
 
 def create_contact_sheet(image_paths: list[Path], output_path: Path) -> Path | None:
@@ -824,9 +878,23 @@ def main() -> None:
     headline("Gesichter erkennen und mit Stimmen verknüpfen")
     cfg = load_config()
     scene_root = resolve_project_path(cfg["paths"]["scene_clips"])
-    episode_dir = resolve_episode_dir(scene_root, args.episode)
+    episode_dir = resolve_episode_dir_for_processing(scene_root, args.episode, cfg)
     if episode_dir is None:
         info("Keine Szenenordner gefunden.")
+        return
+    autosave_target = episode_dir.name
+    if not args.fresh and episode_face_linking_completed(episode_dir, cfg):
+        mark_step_completed(
+            "05_link_faces_and_speakers",
+            autosave_target,
+            {
+                "episode_id": episode_dir.name,
+                "process_version": PROCESS_VERSION,
+                "linked_file": str(resolve_project_path(cfg["paths"]["linked_segments"]) / f"{episode_dir.name}_linked_segments.json"),
+                "face_summary_file": str(resolve_project_path(cfg["paths"]["faces"]) / episode_dir.name / f"{episode_dir.name}_face_summary.json"),
+            },
+        )
+        ok(f"Gesichts-/Stimmen-Verknüpfung bereits vorhanden: {episode_dir.name}")
         return
 
     faces_root = resolve_project_path(cfg["paths"]["faces"])
@@ -875,111 +943,180 @@ def main() -> None:
 
     face_by_scene: dict[str, dict] = {}
     scene_files = list(scenes.values())
-    for index, scene_file in enumerate(scene_files, start=1):
-        payload = process_scene_faces(
-            scene_file,
-            engine,
-            char_map,
-            cfg,
-            faces_episode_dir,
-            previews_root,
-            sample_every,
-            max_faces_per_frame,
-            threshold,
-            interactive,
-            auto_open,
-        )
-        face_by_scene[payload["scene_id"]] = payload
-        progress(index, len(scene_files), "Gesichter werden analysiert")
-
-    kept_face_clusters = prune_face_clusters(char_map, face_by_scene, cfg)
-    info(f"Face-Cluster nach Filter: {len(kept_face_clusters)}")
-
-    speaker_votes: dict[str, dict[str, float]] = defaultdict(lambda: defaultdict(float))
-    for row in transcript_rows:
-        scene_payload = face_by_scene.get(row["scene_id"], {})
-        visible_faces = visible_faces_for_segment(
-            row,
-            scene_payload,
-            char_map,
-            segment_padding_seconds,
-            max_visible_faces_per_segment,
-        )
-        if not visible_faces:
-            continue
-        if row.get("speaker_cluster") == "speaker_unknown":
-            continue
-        base_weight = 3.0 if len(visible_faces) == 1 else 2.0 if len(visible_faces) == 2 else 1.0
-        for rank, face_cluster in enumerate(visible_faces, start=1):
-            speaker_votes[row["speaker_cluster"]][face_cluster] += base_weight / rank
-
-    resolve_voice_names(voice_map, speaker_votes, char_map)
-
-    review_items = []
-    linked_rows = []
-    for index, row in enumerate(transcript_rows, start=1):
-        scene_payload = face_by_scene.get(row["scene_id"], {})
-        visible_faces = visible_faces_for_segment(
-            row,
-            scene_payload,
-            char_map,
-            segment_padding_seconds,
-            max_visible_faces_per_segment,
-        )
-        visible_names = [
-            face_display_name(char_map["clusters"].get(face_cluster, {}), face_cluster)
-            for face_cluster in visible_faces
-        ]
-        voice_payload = voice_map.get("clusters", {}).get(row["speaker_cluster"], {})
-        speaker_name = display_person_name(voice_payload.get("name", ""), row["speaker_cluster"])
-        linked_face = voice_payload.get("linked_face_cluster")
-        segment_linked_face = linked_face if linked_face in visible_faces else None
-        needs_preview = looks_auto_named(speaker_name)
-        speaker_reference_frames: list[str] = []
-        if needs_preview:
-            scene_file = scenes.get(row["scene_id"])
-            if scene_file is not None:
-                preview_dir = previews_root / f"speaker_refs_{row['speaker_cluster']}"
-                frames = save_speaker_reference_frames(
-                    scene_file,
-                    float(row.get("start", 0.0)),
-                    float(row.get("end", 0.0)),
-                    preview_dir,
-                )
-                speaker_reference_frames = [str(path) for path in frames]
-
-        linked_row = {
-            "scene_id": row["scene_id"],
-            "segment_id": row["segment_id"],
-            "start": row["start"],
-            "end": row["end"],
-            "speaker_cluster": row["speaker_cluster"],
-            "speaker_name": speaker_name,
-            "speaker_face_cluster": segment_linked_face,
-            "text": coalesce_text(row.get("text", "")),
-            "visible_face_clusters": visible_faces,
-            "visible_character_names": visible_names,
-            "speaker_reference_frames": speaker_reference_frames,
-        }
-        linked_rows.append(linked_row)
-        if looks_auto_named(speaker_name) or any(looks_auto_named(name) for name in visible_names):
-            review_items.append(linked_row)
-        progress(index, len(transcript_rows), "Stimmen werden mit Figuren verknüpft")
-
-    face_summary = [
+    completed_scene_ids: list[str] = []
+    mark_step_started(
+        "05_link_faces_and_speakers",
+        autosave_target,
         {
-            "scene_id": scene_id,
-            "face_clusters": payload.get("face_clusters", []),
-            "detections": payload.get("detections", []),
-        }
-        for scene_id, payload in sorted(face_by_scene.items())
-    ]
-    write_json(faces_episode_dir / f"{episode_dir.name}_face_summary.json", face_summary)
-    write_json(resolve_project_path(cfg["paths"]["character_map"]), char_map)
-    write_json(resolve_project_path(cfg["paths"]["voice_map"]), voice_map)
-    write_json(linked_root / f"{episode_dir.name}_linked_segments.json", linked_rows)
-    write_json(resolve_project_path(cfg["paths"]["review_queue"]), {"items": review_items})
-    ok(f"Verknüpfung abgeschlossen: {len(linked_rows)} Segmente")
+            "episode_id": episode_dir.name,
+            "process_version": PROCESS_VERSION,
+            "scene_count": len(scene_files),
+            "transcript_count": len(transcript_rows),
+            "fresh_run": bool(args.fresh),
+        },
+    )
+    try:
+        for index, scene_file in enumerate(scene_files, start=1):
+            payload = process_scene_faces(
+                scene_file,
+                engine,
+                char_map,
+                cfg,
+                faces_episode_dir,
+                previews_root,
+                sample_every,
+                max_faces_per_frame,
+                threshold,
+                interactive,
+                auto_open,
+            )
+            face_by_scene[payload["scene_id"]] = payload
+            completed_scene_ids.append(payload["scene_id"])
+            save_step_autosave(
+                "05_link_faces_and_speakers",
+                autosave_target,
+                {
+                    "status": "in_progress",
+                    "episode_id": episode_dir.name,
+                    "process_version": PROCESS_VERSION,
+                    "scene_count": len(scene_files),
+                    "transcript_count": len(transcript_rows),
+                    "completed_scene_ids": completed_scene_ids,
+                    "last_scene_id": payload["scene_id"],
+                },
+            )
+            progress(index, len(scene_files), "Gesichter werden analysiert")
+
+        kept_face_clusters = prune_face_clusters(char_map, face_by_scene, cfg)
+        info(f"Face-Cluster nach Filter: {len(kept_face_clusters)}")
+
+        speaker_votes: dict[str, dict[str, float]] = defaultdict(lambda: defaultdict(float))
+        for row in transcript_rows:
+            scene_payload = face_by_scene.get(row["scene_id"], {})
+            visible_faces = visible_faces_for_segment(
+                row,
+                scene_payload,
+                char_map,
+                segment_padding_seconds,
+                max_visible_faces_per_segment,
+            )
+            if not visible_faces:
+                continue
+            if row.get("speaker_cluster") == "speaker_unknown":
+                continue
+            base_weight = 3.0 if len(visible_faces) == 1 else 2.0 if len(visible_faces) == 2 else 1.0
+            for rank, face_cluster in enumerate(visible_faces, start=1):
+                speaker_votes[row["speaker_cluster"]][face_cluster] += base_weight / rank
+
+        resolve_voice_names(voice_map, speaker_votes, char_map)
+
+        review_items = []
+        linked_rows = []
+        for index, row in enumerate(transcript_rows, start=1):
+            scene_payload = face_by_scene.get(row["scene_id"], {})
+            visible_faces = visible_faces_for_segment(
+                row,
+                scene_payload,
+                char_map,
+                segment_padding_seconds,
+                max_visible_faces_per_segment,
+            )
+            visible_names = [
+                face_display_name(char_map["clusters"].get(face_cluster, {}), face_cluster)
+                for face_cluster in visible_faces
+            ]
+            voice_payload = voice_map.get("clusters", {}).get(row["speaker_cluster"], {})
+            speaker_name = display_person_name(voice_payload.get("name", ""), row["speaker_cluster"])
+            linked_face = voice_payload.get("linked_face_cluster")
+            segment_linked_face = linked_face if linked_face in visible_faces else None
+            needs_preview = looks_auto_named(speaker_name)
+            speaker_reference_frames: list[str] = []
+            if needs_preview:
+                scene_file = scenes.get(row["scene_id"])
+                if scene_file is not None:
+                    preview_dir = previews_root / f"speaker_refs_{row['speaker_cluster']}"
+                    frames = save_speaker_reference_frames(
+                        scene_file,
+                        float(row.get("start", 0.0)),
+                        float(row.get("end", 0.0)),
+                        preview_dir,
+                    )
+                    speaker_reference_frames = [str(path) for path in frames]
+
+            linked_row = {
+                "scene_id": row["scene_id"],
+                "segment_id": row["segment_id"],
+                "start": row["start"],
+                "end": row["end"],
+                "speaker_cluster": row["speaker_cluster"],
+                "speaker_name": speaker_name,
+                "speaker_face_cluster": segment_linked_face,
+                "text": coalesce_text(row.get("text", "")),
+                "visible_face_clusters": visible_faces,
+                "visible_character_names": visible_names,
+                "speaker_reference_frames": speaker_reference_frames,
+            }
+            linked_rows.append(linked_row)
+            if looks_auto_named(speaker_name) or any(looks_auto_named(name) for name in visible_names):
+                review_items.append(linked_row)
+            progress(index, len(transcript_rows), "Stimmen werden mit Figuren verknüpft")
+
+        face_summary = [
+            {
+                "scene_id": scene_id,
+                "face_clusters": payload.get("face_clusters", []),
+                "detections": payload.get("detections", []),
+            }
+            for scene_id, payload in sorted(face_by_scene.items())
+        ]
+        face_summary_file = faces_episode_dir / f"{episode_dir.name}_face_summary.json"
+        linked_file = linked_root / f"{episode_dir.name}_linked_segments.json"
+        write_json(face_summary_file, face_summary)
+        write_json(
+            face_linking_marker_path(faces_episode_dir),
+            {
+                "episode_id": episode_dir.name,
+                "process_version": PROCESS_VERSION,
+                "scene_count": len(scene_files),
+                "face_scene_count": len(face_summary),
+                "linked_row_count": len(linked_rows),
+                "review_count": len(review_items),
+            },
+        )
+        write_json(resolve_project_path(cfg["paths"]["character_map"]), char_map)
+        write_json(resolve_project_path(cfg["paths"]["voice_map"]), voice_map)
+        write_json(linked_file, linked_rows)
+        write_json(resolve_project_path(cfg["paths"]["review_queue"]), {"items": review_items})
+        mark_step_completed(
+            "05_link_faces_and_speakers",
+            autosave_target,
+            {
+                "episode_id": episode_dir.name,
+                "process_version": PROCESS_VERSION,
+                "scene_count": len(scene_files),
+                "transcript_count": len(transcript_rows),
+                "completed_scene_ids": completed_scene_ids,
+                "linked_row_count": len(linked_rows),
+                "review_count": len(review_items),
+                "face_summary_file": str(face_summary_file),
+                "linked_file": str(linked_file),
+            },
+        )
+        ok(f"Verknüpfung abgeschlossen: {len(linked_rows)} Segmente")
+    except Exception as exc:
+        mark_step_failed(
+            "05_link_faces_and_speakers",
+            str(exc),
+            autosave_target,
+            {
+                "episode_id": episode_dir.name,
+                "process_version": PROCESS_VERSION,
+                "scene_count": len(scene_files),
+                "transcript_count": len(transcript_rows),
+                "completed_scene_ids": completed_scene_ids,
+            },
+        )
+        raise
 
 
 if __name__ == "__main__":

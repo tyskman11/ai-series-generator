@@ -16,6 +16,10 @@ from pipeline_common import (
     headline,
     info,
     load_config,
+    load_step_autosave,
+    mark_step_completed,
+    mark_step_failed,
+    mark_step_started,
     ok,
     read_json,
     rerun_in_runtime,
@@ -139,6 +143,23 @@ def build_training_pack(manifest: dict, cfg: dict) -> dict:
     }
 
 
+def pack_path_for_manifest(cfg: dict, manifest: dict) -> Path:
+    checkpoint_root = resolve_project_path(cfg["paths"]["foundation_checkpoints"])
+    slug = str(manifest.get("slug", "") or "figur")
+    return checkpoint_root / slug / "foundation_pack.json"
+
+
+def foundation_pack_completed(pack_path: Path) -> bool:
+    if not pack_path.exists():
+        return False
+    payload = read_json(pack_path, {})
+    if not payload:
+        return False
+    if int(payload.get("process_version", 0) or 0) != PROCESS_VERSION:
+        return False
+    return bool(payload.get("training_ready", False))
+
+
 def main() -> None:
     rerun_in_runtime()
     args = parse_args()
@@ -146,7 +167,7 @@ def main() -> None:
     cfg = load_config()
     manifests = load_manifests(cfg, coalesce_text(args.character or ""), int(args.limit_characters or 0))
     if not manifests:
-        info("Keine Foundation-Manifeste gefunden. Fuehre zuerst 13_prepare_foundation_training.py aus.")
+        info("Keine Foundation-Manifeste gefunden. Fuehre zuerst 09_prepare_foundation_training.py aus.")
         return
 
     checkpoint_root = resolve_project_path(cfg["paths"]["foundation_checkpoints"])
@@ -154,19 +175,52 @@ def main() -> None:
     summary: list[dict] = []
     for manifest in manifests:
         character_name = coalesce_text(manifest.get("name", ""))
-        info(f"Trainiere lokalen Foundation-Pack: {character_name}")
-        payload = build_training_pack(manifest, cfg)
-        pack_dir = checkpoint_root / str(payload.get("slug", "figur"))
-        pack_dir.mkdir(parents=True, exist_ok=True)
-        pack_path = pack_dir / "foundation_pack.json"
-        write_json(pack_path, payload)
+        slug = str(manifest.get("slug", "") or "figur")
+        autosave_target = slug
+        pack_path = pack_path_for_manifest(cfg, manifest)
+        if foundation_pack_completed(pack_path):
+            payload = read_json(pack_path, {})
+            info(f"Foundation-Pack bereits vorhanden: {character_name}")
+        else:
+            info(f"Trainiere lokalen Foundation-Pack: {character_name}")
+            mark_step_started(
+                "10_train_foundation_models",
+                autosave_target,
+                {"character": character_name, "pack_path": str(pack_path)},
+            )
+            try:
+                payload = build_training_pack(manifest, cfg)
+                pack_dir = checkpoint_root / str(payload.get("slug", "figur"))
+                pack_dir.mkdir(parents=True, exist_ok=True)
+                write_json(pack_path, payload)
+                mark_step_completed(
+                    "10_train_foundation_models",
+                    autosave_target,
+                    {
+                        "character": character_name,
+                        "pack_path": str(pack_path),
+                        "frame_samples": int(payload.get("image_pack", {}).get("sample_count", 0)),
+                        "video_samples": int(payload.get("video_pack", {}).get("sample_count", 0)),
+                        "voice_samples": int(payload.get("voice_pack", {}).get("sample_count", 0)),
+                    },
+                )
+            except Exception as exc:
+                mark_step_failed(
+                    "10_train_foundation_models",
+                    str(exc),
+                    autosave_target,
+                    {"character": character_name, "pack_path": str(pack_path)},
+                )
+                raise
+
         summary.append(
             {
-                "character": payload.get("character", ""),
+                "character": payload.get("character", character_name),
                 "pack_path": str(pack_path),
                 "frame_samples": int(payload.get("image_pack", {}).get("sample_count", 0)),
                 "video_samples": int(payload.get("video_pack", {}).get("sample_count", 0)),
                 "voice_samples": int(payload.get("voice_pack", {}).get("sample_count", 0)),
+                "autosave": load_step_autosave("10_train_foundation_models", autosave_target),
             }
         )
 

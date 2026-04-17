@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import math
 import random
+import re
 import time
 from collections import Counter, defaultdict
 
@@ -16,7 +17,11 @@ from pipeline_common import (
     is_background_person_name,
     headline,
     info,
+    keyword_token_allowed,
     load_config,
+    mark_step_completed,
+    mark_step_failed,
+    mark_step_started,
     ok,
     read_json,
     rerun_in_runtime,
@@ -44,6 +49,50 @@ TITLE_SUFFIXES = [
     "Trick",
     "Durcheinander",
 ]
+TITLE_WEAK_TERMS = {
+    "alter",
+    "babe",
+    "denn",
+    "echt",
+    "game",
+    "gott",
+    "kinder",
+    "meinem",
+    "meine",
+    "meiner",
+    "meines",
+    "soll",
+    "teil",
+    "weiß",
+    "weiss",
+    "wieder",
+}
+SAFE_SHORT_TITLE_TERMS = {"app", "code", "chat", "deal", "geld", "plan", "song", "spiel", "test", "web"}
+GENERIC_TITLE_FALLBACKS = [
+    "Der große Plan",
+    "Das geheime Projekt",
+    "Die doppelte Verwechslung",
+    "Das totale Durcheinander",
+    "Der falsche Trick",
+    "Alarm im Studio",
+    "Die verrückte Challenge",
+    "Das geheime Update",
+    "Der App-Plan",
+    "Das Missverständnis",
+]
+TITLE_PHRASE_PATTERN = re.compile(
+    r"\b(?P<article>Der|Die|Das)\s+(?P<noun>[A-ZÄÖÜ][A-Za-zÄÖÜäöüß-]{3,})\b"
+)
+TITLE_TOKEN_PATTERN = re.compile(r"\b([A-ZÄÖÜ][A-Za-zÄÖÜäöüß-]{3,})\b")
+TITLE_PHRASE_STOPWORDS = {
+    "Danke",
+    "Dankeschön",
+    "Entschuldigung",
+    "Erstens",
+    "Genau",
+    "Vielen",
+    "Videos",
+}
 
 
 def next_episode_id(story_dir) -> str:
@@ -97,29 +146,169 @@ def build_episode_title(
     keywords: list[str],
     rng: random.Random,
     episode_index: int,
+    model: dict | None = None,
 ) -> str:
-    usable_keywords = [humanize_keyword(keyword) for keyword in keywords if coalesce_text(keyword)]
-    main_keyword = usable_keywords[0] if usable_keywords else "Geheimnis"
-    secondary_keyword = usable_keywords[1] if len(usable_keywords) > 1 else main_keyword
+    def focus_name_tokens() -> set[str]:
+        tokens: set[str] = set()
+        for name in focus_characters:
+            for token in tokens_from_text(name):
+                cleaned = token.lower()
+                if cleaned:
+                    tokens.add(cleaned)
+        return tokens
+
+    def title_keyword_allowed_local(keyword: str, blocked_tokens: set[str]) -> bool:
+        cleaned = coalesce_text(keyword).replace("_", " ").replace("-", " ").strip()
+        if not cleaned:
+            return False
+        tokens = [token.lower() for token in tokens_from_text(cleaned)]
+        if not tokens:
+            return False
+        if any(token in blocked_tokens for token in tokens):
+            return False
+        if any(token in TITLE_WEAK_TERMS for token in tokens):
+            return False
+        if any(not keyword_token_allowed(token) for token in tokens):
+            return False
+        if len(tokens) == 1 and len(tokens[0]) < 4 and tokens[0] not in SAFE_SHORT_TITLE_TERMS:
+            return False
+        return True
+
+    def keyword_root_forms(keyword: str) -> set[str]:
+        cleaned = coalesce_text(keyword).replace("_", " ").replace("-", " ").lower()
+        roots: set[str] = set()
+        for token in tokens_from_text(cleaned):
+            token = token.lower()
+            if len(token) >= 4:
+                roots.add(token)
+            if len(token) >= 6 and token.endswith("en"):
+                roots.add(token[:-2])
+            if len(token) >= 6 and token.endswith("er"):
+                roots.add(token[:-2])
+            if len(token) >= 6 and token.endswith("e"):
+                roots.add(token[:-1])
+        return {root for root in roots if len(root) >= 4}
+
+    def title_word_allowed(word: str, blocked_tokens: set[str]) -> bool:
+        lower = coalesce_text(word).lower()
+        if not lower:
+            return False
+        if lower in blocked_tokens or lower in TITLE_WEAK_TERMS:
+            return False
+        if lower in {token.lower() for token in TITLE_PHRASE_STOPWORDS}:
+            return False
+        if any(not keyword_token_allowed(token) for token in tokens_from_text(lower)):
+            return False
+        return True
+
+    def collect_title_anchor_candidates(
+        model_payload: dict | None,
+        blocked_tokens: set[str],
+        usable_title_keywords: list[str],
+    ) -> list[tuple[float, str]]:
+        if not model_payload or not usable_title_keywords:
+            return []
+        root_map = {keyword: keyword_root_forms(keyword) for keyword in usable_title_keywords}
+        candidates: dict[str, float] = {}
+        source_texts: list[str] = []
+        for entries in (model_payload.get("speaker_line_library", {}) or {}).values():
+            for entry in entries[:60]:
+                text = coalesce_text(str(entry.get("text", "")))
+                if text:
+                    source_texts.append(text)
+        for text in source_texts[:800]:
+            lower_text = text.lower()
+            for keyword, roots in root_map.items():
+                if roots and not any(root in lower_text for root in roots):
+                    continue
+                for match in TITLE_PHRASE_PATTERN.finditer(text):
+                    article = match.group("article")
+                    noun = match.group("noun")
+                    noun_lower = noun.lower()
+                    if not title_word_allowed(noun, blocked_tokens):
+                        continue
+                    if roots and not any(root in noun_lower for root in roots):
+                        continue
+                    score = 2.4
+                    if noun_lower != keyword.lower() and any(root in noun_lower for root in roots):
+                        score += 0.8
+                    if "-" in noun:
+                        score += 0.15
+                    phrase = f"{article} {noun}"
+                    candidates[phrase] = max(candidates.get(phrase, 0.0), score)
+                for noun in TITLE_TOKEN_PATTERN.findall(text):
+                    noun_lower = noun.lower()
+                    if not title_word_allowed(noun, blocked_tokens):
+                        continue
+                    if roots and not any(root in noun_lower for root in roots):
+                        continue
+                    score = 1.6
+                    if noun_lower != keyword.lower() and any(root in noun_lower for root in roots):
+                        score += 1.1
+                    if "-" in noun:
+                        score += 0.1
+                    candidates[noun] = max(candidates.get(noun, 0.0), score)
+        return sorted(candidates.items(), key=lambda item: (-item[1], item[0]))
+
+    blocked_tokens = focus_name_tokens()
+    usable_keywords: list[str] = []
+    seen_keywords: set[str] = set()
+    for keyword in keywords:
+        if not title_keyword_allowed_local(keyword, blocked_tokens):
+            continue
+        humanized = humanize_keyword(keyword)
+        normalized = humanized.lower()
+        if normalized in seen_keywords:
+            continue
+        seen_keywords.add(normalized)
+        usable_keywords.append(humanized)
+
     title_seed = episode_index + len(focus_characters) + len(usable_keywords)
-    prefix = TITLE_PREFIXES[title_seed % len(TITLE_PREFIXES)]
+    if not usable_keywords:
+        return GENERIC_TITLE_FALLBACKS[title_seed % len(GENERIC_TITLE_FALLBACKS)]
+
+    main_keyword = usable_keywords[0]
+    secondary_keyword = usable_keywords[1] if len(usable_keywords) > 1 else ""
     suffix = TITLE_SUFFIXES[(title_seed + len(main_keyword)) % len(TITLE_SUFFIXES)]
+    main_compound = main_keyword.replace(" ", "-")
+    anchor_candidates = collect_title_anchor_candidates(model, blocked_tokens, usable_keywords[:3])
+    if anchor_candidates:
+        best_anchor = anchor_candidates[0][0]
+        if " " in best_anchor:
+            return best_anchor
+        return f"Das Geheimnis um {best_anchor}"
+
+    candidate_titles: list[str] = []
     if " " in main_keyword:
-        base = main_keyword
-    elif prefix in {"Das", "Der", "Die", "Das große"}:
-        base = f"{main_keyword}-{suffix}"
+        candidate_titles.extend(
+            [
+                f"Die Sache mit {main_keyword}",
+                f"Das Geheimnis um {main_keyword}",
+                f"Das Chaos um {main_keyword}",
+            ]
+        )
     else:
-        base = main_keyword
-    candidate_titles = [
-        f"{prefix} {base}",
-        f"{main_keyword} ohne Plan",
-        f"{main_keyword} gegen {secondary_keyword}",
-    ]
-    if focus_characters:
-        lead = focus_characters[0].split()[0]
-        candidate_titles.append(f"{lead} und {base}")
-    title = candidate_titles[title_seed % len(candidate_titles)]
-    return title.strip()
+        candidate_titles.extend(
+            [
+                f"Das {main_compound}-Geheimnis",
+                f"Der {main_compound}-{suffix}",
+                f"Die Sache mit {main_keyword}",
+                f"Die {main_compound}-Challenge",
+            ]
+        )
+
+    if secondary_keyword:
+        if " " not in main_keyword and " " not in secondary_keyword:
+            candidate_titles.append(f"Das {main_compound}-{humanize_keyword(secondary_keyword).replace(' ', '-')}-Problem")
+        else:
+            candidate_titles.append(f"Das Geheimnis um {main_keyword}")
+
+    cleaned_titles = [coalesce_text(title).strip() for title in candidate_titles if coalesce_text(title).strip()]
+    deduped_titles: list[str] = []
+    for title in cleaned_titles:
+        if title not in deduped_titles:
+            deduped_titles.append(title)
+    return deduped_titles[title_seed % len(deduped_titles)]
 
 
 def build_markov_chain(lines: list[str], order: int = 2) -> dict[str, dict[str, int]]:
@@ -159,6 +348,7 @@ def build_character_directory(char_map: dict) -> dict[str, dict]:
         entry["detection_count_hint"] += int(payload.get("detection_count", 0) or 0)
         if cluster_id not in entry["face_clusters"]:
             entry["face_clusters"].append(cluster_id)
+        entry["face_cluster_count"] = len(entry["face_clusters"])
     return directory
 
 
@@ -257,7 +447,9 @@ def build_linked_segment_line_library(cfg: dict) -> tuple[dict[str, list[str]], 
 
 def build_series_model(dataset_files: list, cfg: dict, char_map: dict) -> dict:
     character_directory = build_character_directory(char_map)
-    character_stats: dict[str, dict[str, int | bool]] = defaultdict(lambda: {"scene_count": 0, "line_count": 0, "priority": False})
+    character_stats: dict[str, dict[str, int | bool]] = defaultdict(
+        lambda: {"scene_count": 0, "line_count": 0, "priority": False, "face_cluster_count": 0}
+    )
     speaker_samples: dict[str, list[str]] = defaultdict(list)
     speaker_line_library: dict[str, list[dict]] = defaultdict(list)
     transcripts = []
@@ -272,6 +464,7 @@ def build_series_model(dataset_files: list, cfg: dict, char_map: dict) -> dict:
         if useful_character(name):
             character_stats[name]["scene_count"] += int(payload.get("scene_count_hint", 0))
             character_stats[name]["priority"] = bool(payload.get("priority", False))
+            character_stats[name]["face_cluster_count"] = int(payload.get("face_cluster_count", 0) or 0)
 
     for dataset_file in dataset_files:
         rows = read_json(dataset_file, [])
@@ -290,6 +483,9 @@ def build_series_model(dataset_files: list, cfg: dict, char_map: dict) -> dict:
                 character_stats[character]["scene_count"] += 1
                 if character in character_directory:
                     character_stats[character]["priority"] = bool(character_directory[character].get("priority", False))
+                    character_stats[character]["face_cluster_count"] = int(
+                        character_directory[character].get("face_cluster_count", 0) or 0
+                    )
             for segment in row.get("transcript_segments", []):
                 speaker_name = segment.get("speaker_name", "")
                 line_character_name = resolve_segment_character_name(segment, row)
@@ -664,7 +860,7 @@ def generate_episode_package(model: dict, cfg: dict, episode_index: int = 1) -> 
     if len(beats) > 1:
         beat_offset = episode_index % len(beats)
         beats = beats[beat_offset:] + beats[:beat_offset]
-    episode_title = build_episode_title(focus_characters, keywords, rng, episode_index)
+    episode_title = build_episode_title(focus_characters, keywords, rng, episode_index, model=model)
     episode_label = format_episode_number(episode_index)
     display_title = f"{episode_label}: {episode_title}"
 
@@ -756,18 +952,27 @@ def main() -> None:
     parse_args()
     headline("Serienmodell trainieren")
     cfg = load_config()
+    mark_step_started("07_train_series_model", "global")
     dataset_root = resolve_project_path(cfg["paths"]["datasets_video_training"])
     dataset_files = sorted(dataset_root.glob("*_dataset.json"))
     if not dataset_files:
         info("Keine Datensätze gefunden.")
         return
-
-    char_map = read_json(resolve_project_path(cfg["paths"]["character_map"]), {"clusters": {}, "aliases": {}})
-    model = build_series_model(dataset_files, cfg, char_map)
-    model_path = resolve_project_path(cfg["paths"]["series_model"])
-    model_path.parent.mkdir(parents=True, exist_ok=True)
-    write_json(model_path, model)
-    ok(f"Serienmodell trainiert: {model_path}")
+    try:
+        char_map = read_json(resolve_project_path(cfg["paths"]["character_map"]), {"clusters": {}, "aliases": {}})
+        model = build_series_model(dataset_files, cfg, char_map)
+        model_path = resolve_project_path(cfg["paths"]["series_model"])
+        model_path.parent.mkdir(parents=True, exist_ok=True)
+        write_json(model_path, model)
+        mark_step_completed(
+            "07_train_series_model",
+            "global",
+            {"series_model": str(model_path), "dataset_count": len(dataset_files)},
+        )
+        ok(f"Serienmodell trainiert: {model_path}")
+    except Exception as exc:
+        mark_step_failed("07_train_series_model", str(exc), "global", {"dataset_count": len(dataset_files)})
+        raise
 
 
 if __name__ == "__main__":

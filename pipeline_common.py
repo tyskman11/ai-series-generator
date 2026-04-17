@@ -157,6 +157,14 @@ DEFAULT_CONFIG = {
         "face_cluster_min_scenes": 2,
         "face_cluster_min_detections": 3,
         "voice_face_match_threshold": 0.6,
+        "review_known_face_threshold": 0.72,
+        "review_known_face_margin": 0.05,
+        "review_known_face_reference_count": 8,
+        "review_known_face_top_k": 3,
+        "review_known_face_consensus_threshold": 0.66,
+        "review_known_face_min_consensus": 2,
+        "review_known_face_strong_match_threshold": 0.84,
+        "review_known_face_min_reference_quality": 5.0,
     },
     "generation": {
         "default_scene_count": 6,
@@ -170,9 +178,12 @@ DEFAULT_CONFIG = {
         "prefer_original_dialogue_remix": False,
     },
     "foundation_training": {
-        "prepare_after_batch": False,
-        "auto_train_after_prepare": False,
+        "prepare_after_batch": True,
+        "auto_train_after_prepare": True,
+        "required_before_generate": True,
+        "required_before_render": True,
         "download_base_models": True,
+        "check_model_updates": True,
         "huggingface_token_env": "HF_TOKEN",
         "min_character_scene_count": 3,
         "min_character_line_count": 3,
@@ -190,6 +201,8 @@ DEFAULT_CONFIG = {
         "enable_face_clone": True,
         "enable_lipsync": True,
         "voice_clone_engine": "pyttsx3",
+        "require_trained_voice_models": True,
+        "allow_system_tts_fallback": True,
         "xtts_model_name": "tts_models/multilingual/multi-dataset/xtts_v2",
         "xtts_language": "de",
         "xtts_license_accepted": False,
@@ -468,6 +481,71 @@ def read_json(path: Path, default: Any) -> Any:
 def write_text(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8")
+
+
+def step_autosave_root() -> Path:
+    return resolve_project_path("runtime/autosaves/steps")
+
+
+def step_autosave_path(step_name: str, target_name: str = "global") -> Path:
+    safe_step = "".join(char.lower() if char.isalnum() else "_" for char in coalesce_text(step_name)) or "step"
+    safe_target = "".join(char.lower() if char.isalnum() else "_" for char in coalesce_text(target_name)) or "global"
+    return step_autosave_root() / safe_step / f"{safe_target}.json"
+
+
+def load_step_autosave(step_name: str, target_name: str = "global") -> dict[str, Any]:
+    return read_json(step_autosave_path(step_name, target_name), {})
+
+
+def completed_step_state(
+    step_name: str,
+    target_name: str = "global",
+    process_version: int | None = None,
+) -> dict[str, Any]:
+    state = load_step_autosave(step_name, target_name)
+    if not isinstance(state, dict):
+        return {}
+    if coalesce_text(state.get("status")) != "completed":
+        return {}
+    if process_version is not None and int(state.get("process_version", 0) or 0) != int(process_version):
+        return {}
+    return state
+
+
+def save_step_autosave(step_name: str, target_name: str = "global", payload: dict[str, Any] | None = None) -> Path:
+    state = dict(payload or {})
+    state.setdefault("step", step_name)
+    state.setdefault("target", target_name)
+    state["updated_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+    path = step_autosave_path(step_name, target_name)
+    write_json(path, state)
+    return path
+
+
+def mark_step_started(step_name: str, target_name: str = "global", extra: dict[str, Any] | None = None) -> Path:
+    payload = {"status": "in_progress"}
+    if extra:
+        payload.update(extra)
+    return save_step_autosave(step_name, target_name, payload)
+
+
+def mark_step_completed(step_name: str, target_name: str = "global", extra: dict[str, Any] | None = None) -> Path:
+    payload = {"status": "completed"}
+    if extra:
+        payload.update(extra)
+    return save_step_autosave(step_name, target_name, payload)
+
+
+def mark_step_failed(
+    step_name: str,
+    message: str,
+    target_name: str = "global",
+    extra: dict[str, Any] | None = None,
+) -> Path:
+    payload = {"status": "failed", "error": coalesce_text(message)}
+    if extra:
+        payload.update(extra)
+    return save_step_autosave(step_name, target_name, payload)
 
 
 def resolve_project_path(relative_path: str) -> Path:
@@ -864,3 +942,118 @@ def extract_keywords(texts: Iterable[str], limit: int = 20) -> list[str]:
 
 def coalesce_text(text: str) -> str:
     return re.sub(r"\s+", " ", (text or "").strip())
+
+
+def foundation_summary_path(cfg: dict[str, Any]) -> Path:
+    checkpoint_root = resolve_project_path(cfg["paths"].get("foundation_checkpoints", "training/foundation/checkpoints"))
+    return checkpoint_root / "foundation_training_summary.json"
+
+
+def foundation_training_required(cfg: dict[str, Any]) -> bool:
+    foundation_cfg = cfg.get("foundation_training", {}) if isinstance(cfg.get("foundation_training"), dict) else {}
+    return bool(foundation_cfg.get("required_before_generate", True))
+
+
+def foundation_render_required(cfg: dict[str, Any]) -> bool:
+    foundation_cfg = cfg.get("foundation_training", {}) if isinstance(cfg.get("foundation_training"), dict) else {}
+    clone_cfg = cfg.get("cloning", {}) if isinstance(cfg.get("cloning"), dict) else {}
+    if bool(clone_cfg.get("require_trained_voice_models", True)):
+        return True
+    return bool(foundation_cfg.get("required_before_render", True))
+
+
+def _normalized_training_name(name: str) -> str:
+    return coalesce_text(name).lower()
+
+
+def load_foundation_training_index(cfg: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    summary_path = foundation_summary_path(cfg)
+    summary_payload = read_json(summary_path, {})
+    index: dict[str, dict[str, Any]] = {}
+    for row in summary_payload.get("characters", []) or []:
+        character_name = coalesce_text(row.get("character", ""))
+        if not character_name:
+            continue
+        pack_path = Path(str(row.get("pack_path", "") or ""))
+        pack_payload = read_json(pack_path, {}) if pack_path.exists() else {}
+        voice_pack = pack_payload.get("voice_pack", {}) if isinstance(pack_payload.get("voice_pack"), dict) else {}
+        video_pack = pack_payload.get("video_pack", {}) if isinstance(pack_payload.get("video_pack"), dict) else {}
+        image_pack = pack_payload.get("image_pack", {}) if isinstance(pack_payload.get("image_pack"), dict) else {}
+        index[_normalized_training_name(character_name)] = {
+            "character": character_name,
+            "pack_path": pack_path,
+            "pack_exists": pack_path.exists(),
+            "voice_samples": max(int(row.get("voice_samples", 0) or 0), int(voice_pack.get("sample_count", 0) or 0)),
+            "video_samples": max(int(row.get("video_samples", 0) or 0), int(video_pack.get("sample_count", 0) or 0)),
+            "frame_samples": max(int(row.get("frame_samples", 0) or 0), int(image_pack.get("sample_count", 0) or 0)),
+        }
+    return index
+
+
+def foundation_training_status(
+    cfg: dict[str, Any],
+    characters: Iterable[str] | None = None,
+    model_path: Path | None = None,
+) -> dict[str, Any]:
+    summary_path = foundation_summary_path(cfg)
+    series_model_path = model_path or resolve_project_path(cfg["paths"].get("series_model", "generation/model/series_model.json"))
+    summary_exists = summary_path.exists()
+    model_exists = series_model_path.exists()
+    summary_mtime = summary_path.stat().st_mtime if summary_exists else 0.0
+    model_mtime = series_model_path.stat().st_mtime if model_exists else 0.0
+    index = load_foundation_training_index(cfg) if summary_exists else {}
+    missing_characters: list[str] = []
+    weak_characters: list[str] = []
+    for character in characters or []:
+        display_name = coalesce_text(character)
+        if not has_primary_person_name(display_name):
+            continue
+        row = index.get(_normalized_training_name(display_name))
+        if row is None or not row.get("pack_exists"):
+            missing_characters.append(display_name)
+            continue
+        if int(row.get("voice_samples", 0) or 0) <= 0:
+            weak_characters.append(display_name)
+    summary_new_enough = summary_exists and (not model_exists or summary_mtime >= model_mtime)
+    return {
+        "summary_path": summary_path,
+        "summary_exists": summary_exists,
+        "summary_new_enough": summary_new_enough,
+        "model_path": series_model_path,
+        "model_exists": model_exists,
+        "character_index": index,
+        "missing_characters": missing_characters,
+        "weak_characters": weak_characters,
+    }
+
+
+def ensure_foundation_training_ready(
+    cfg: dict[str, Any],
+    *,
+    characters: Iterable[str] | None = None,
+    model_path: Path | None = None,
+    for_render: bool = False,
+) -> dict[str, Any]:
+    required = foundation_render_required(cfg) if for_render else foundation_training_required(cfg)
+    status = foundation_training_status(cfg, characters=characters, model_path=model_path)
+    if not required:
+        return status
+    if not status["summary_exists"]:
+        raise RuntimeError(
+            "Foundation-Training fehlt. Fuehre vor Generierung/Render zuerst 09_prepare_foundation_training.py und 10_train_foundation_models.py aus."
+        )
+    if not status["summary_new_enough"]:
+        raise RuntimeError(
+            "Foundation-Training ist aelter als das aktuelle Serienmodell. Fuehre nach 07_train_series_model.py erneut 09_prepare_foundation_training.py und 10_train_foundation_models.py aus."
+        )
+    if status["missing_characters"]:
+        missing = ", ".join(status["missing_characters"])
+        raise RuntimeError(
+            f"Fuer diese Figuren fehlen trainierte Foundation-Packs: {missing}. Fuehre 09_prepare_foundation_training.py und 10_train_foundation_models.py erneut aus."
+        )
+    if status["weak_characters"]:
+        weak = ", ".join(status["weak_characters"])
+        raise RuntimeError(
+            f"Fuer diese Figuren fehlen brauchbare Voice-Samples im Training: {weak}. Pruefe 05/08 und trainiere danach 09_prepare_foundation_training.py und 10_train_foundation_models.py erneut."
+        )
+    return status

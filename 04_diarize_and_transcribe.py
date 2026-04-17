@@ -10,6 +10,7 @@ import numpy as np
 
 from pipeline_common import (
     PROJECT_ROOT,
+    completed_step_state,
     coalesce_text,
     cosine_similarity,
     detect_tool,
@@ -27,6 +28,10 @@ from pipeline_common import (
     rerun_in_runtime,
     resolve_project_path,
     run_command,
+    save_step_autosave,
+    mark_step_started,
+    mark_step_completed,
+    mark_step_failed,
     tokens_from_text,
     warn,
     write_json,
@@ -41,7 +46,42 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def resolve_episode_dir(scene_root: Path, episode_name: str | None) -> Path | None:
+def episode_transcription_completed(episode_dir: Path, cfg: dict) -> bool:
+    combined_file = resolve_project_path(cfg["paths"]["speaker_transcripts"]) / f"{episode_dir.name}_segments.json"
+    cluster_file = resolve_project_path(cfg["paths"]["speaker_segments"]) / episode_dir.name / "_speaker_clusters.json"
+    if not combined_file.exists() or not cluster_file.exists():
+        return False
+    try:
+        rows = resolve_rows(combined_file)
+        cluster_payload = resolve_rows(cluster_file)
+    except Exception:
+        return False
+    if not rows or not isinstance(cluster_payload, dict):
+        return False
+    if int(cluster_payload.get("process_version", 0) or 0) != PROCESS_VERSION:
+        return False
+    if not rows[0].get("process_version") == PROCESS_VERSION:
+        return False
+    autosave_state = completed_step_state("04_diarize_and_transcribe", episode_dir.name, PROCESS_VERSION)
+    if autosave_state:
+        expected_scene_count = int(autosave_state.get("scene_count", 0) or 0)
+        if expected_scene_count > 0:
+            available_scene_count = len([path for path in episode_dir.glob("scene_*.mp4") if path.is_file()])
+            if available_scene_count < expected_scene_count:
+                return False
+    return True
+
+
+def next_untranscribed_episode_dir(scene_root: Path, cfg: dict) -> Path | None:
+    for folder in sorted(scene_root.glob("*")):
+        if not folder.is_dir():
+            continue
+        if not episode_transcription_completed(folder, cfg):
+            return folder
+    return first_dir(scene_root)
+
+
+def resolve_episode_dir(scene_root: Path, episode_name: str | None, cfg: dict) -> Path | None:
     if episode_name:
         candidate = scene_root / Path(episode_name).name
         if candidate.is_dir():
@@ -50,7 +90,7 @@ def resolve_episode_dir(scene_root: Path, episode_name: str | None) -> Path | No
             if folder.is_dir() and folder.name == Path(episode_name).stem:
                 return folder
         raise FileNotFoundError(f"Szenenordner nicht gefunden: {episode_name}")
-    return first_dir(scene_root)
+    return next_untranscribed_episode_dir(scene_root, cfg)
 
 
 def wav_duration_seconds(wav_path: Path) -> float:
@@ -575,9 +615,23 @@ def main() -> None:
     cfg = load_config()
     ffmpeg = detect_tool(PROJECT_ROOT / "tools" / "ffmpeg" / "bin", "ffmpeg")
     scene_root = resolve_project_path(cfg["paths"]["scene_clips"])
-    episode_dir = resolve_episode_dir(scene_root, args.episode)
+    episode_dir = resolve_episode_dir(scene_root, args.episode, cfg)
     if episode_dir is None:
         info("Keine Szenenordner gefunden.")
+        return
+    autosave_target = episode_dir.name
+    if episode_transcription_completed(episode_dir, cfg):
+        mark_step_completed(
+            "04_diarize_and_transcribe",
+            autosave_target,
+            {
+                "episode_id": episode_dir.name,
+                "process_version": PROCESS_VERSION,
+                "combined_file": str(resolve_project_path(cfg["paths"]["speaker_transcripts"]) / f"{episode_dir.name}_segments.json"),
+                "cluster_file": str(resolve_project_path(cfg["paths"]["speaker_segments"]) / episode_dir.name / "_speaker_clusters.json"),
+            },
+        )
+        ok(f"Transkription bereits erfolgreich vorhanden: {episode_dir.name}")
         return
 
     scenes = limited_items(sorted(episode_dir.glob("*.mp4")))
@@ -604,60 +658,116 @@ def main() -> None:
     info(f"Whisper-Modell: {model_name}")
     info(f"Ausführungsmodus: {preferred_execution_label(cfg)}")
     info(f"Rechengerät: {preferred_compute_label(cfg)}")
-    model = whisper.load_model(model_name, download_root=str(model_dir), device=device)
-
-    if requested_backend in {"auto", "speechbrain"}:
-        try:
-            speechbrain_model = speechbrain_encoder(
-                PROJECT_ROOT.parent / "runtime" / "models" / "speechbrain" / "ecapa",
-                device=device,
-            )
-            speaker_backend = "speechbrain"
-        except Exception as exc:
-            if requested_backend == "speechbrain":
-                raise
-            warn(f"SpeechBrain-Speaker-Encoder nicht nutzbar, Fallback auf MFCC: {exc}")
-    info(f"Sprecher-Embedding-Backend: {speaker_backend}")
-
-    all_rows: list[dict] = []
-    for index, scene_file in enumerate(scenes, start=1):
-        scene_rows = process_scene(
-            model,
-            ffmpeg,
-            episode_dir.name,
-            scene_file,
-            audio_root,
-            scene_cache_dir,
-            cfg,
-            use_fp16,
-            speaker_backend,
-            speechbrain_model=speechbrain_model,
-            device=device,
-        )
-        all_rows.extend(scene_rows)
-        progress(index, len(scenes), "Audio wird transkribiert")
-
-    threshold_key = "voice_embedding_threshold_speechbrain" if speaker_backend == "speechbrain" else "voice_embedding_threshold"
-    threshold_default = 0.58 if speaker_backend == "speechbrain" else 0.84
-    threshold = float(cfg["transcription"].get(threshold_key, threshold_default))
-    all_rows, clusters = assign_speaker_clusters(all_rows, threshold, cfg)
-    grouped_rows: dict[str, list[dict]] = defaultdict(list)
-    for row in all_rows:
-        grouped_rows[row["scene_id"]].append(row)
-    for scene_id, scene_rows in grouped_rows.items():
-        write_json(scene_cache_dir / f"{scene_id}.json", scene_rows)
-
-    write_json(combined_dir / f"{episode_dir.name}_segments.json", all_rows)
-    write_json(
-        scene_cache_dir / "_speaker_clusters.json",
+    mark_step_started(
+        "04_diarize_and_transcribe",
+        autosave_target,
         {
-            "clusters": clusters,
-            "threshold": threshold,
-            "backend": speaker_backend,
+            "episode_id": episode_dir.name,
             "process_version": PROCESS_VERSION,
+            "scene_count": len(scenes),
+            "device": device,
+            "model_name": model_name,
         },
     )
-    ok(f"Segment-Transkripte gespeichert: {len(all_rows)} Segmente")
+    completed_scene_ids: list[str] = []
+    try:
+        model = whisper.load_model(model_name, download_root=str(model_dir), device=device)
+
+        if requested_backend in {"auto", "speechbrain"}:
+            try:
+                speechbrain_model = speechbrain_encoder(
+                    PROJECT_ROOT.parent / "runtime" / "models" / "speechbrain" / "ecapa",
+                    device=device,
+                )
+                speaker_backend = "speechbrain"
+            except Exception as exc:
+                if requested_backend == "speechbrain":
+                    raise
+                warn(f"SpeechBrain-Speaker-Encoder nicht nutzbar, Fallback auf MFCC: {exc}")
+        info(f"Sprecher-Embedding-Backend: {speaker_backend}")
+
+        all_rows: list[dict] = []
+        for index, scene_file in enumerate(scenes, start=1):
+            scene_rows = process_scene(
+                model,
+                ffmpeg,
+                episode_dir.name,
+                scene_file,
+                audio_root,
+                scene_cache_dir,
+                cfg,
+                use_fp16,
+                speaker_backend,
+                speechbrain_model=speechbrain_model,
+                device=device,
+            )
+            all_rows.extend(scene_rows)
+            completed_scene_ids.append(scene_file.stem)
+            save_step_autosave(
+                "04_diarize_and_transcribe",
+                autosave_target,
+                {
+                    "status": "in_progress",
+                    "episode_id": episode_dir.name,
+                    "process_version": PROCESS_VERSION,
+                    "scene_count": len(scenes),
+                    "completed_scene_ids": completed_scene_ids,
+                    "segment_count": len(all_rows),
+                    "last_scene_id": scene_file.stem,
+                },
+            )
+            progress(index, len(scenes), "Audio wird transkribiert")
+
+        threshold_key = "voice_embedding_threshold_speechbrain" if speaker_backend == "speechbrain" else "voice_embedding_threshold"
+        threshold_default = 0.58 if speaker_backend == "speechbrain" else 0.84
+        threshold = float(cfg["transcription"].get(threshold_key, threshold_default))
+        all_rows, clusters = assign_speaker_clusters(all_rows, threshold, cfg)
+        grouped_rows: dict[str, list[dict]] = defaultdict(list)
+        for row in all_rows:
+            grouped_rows[row["scene_id"]].append(row)
+        for scene_id, scene_rows in grouped_rows.items():
+            write_json(scene_cache_dir / f"{scene_id}.json", scene_rows)
+
+        combined_file = combined_dir / f"{episode_dir.name}_segments.json"
+        cluster_file = scene_cache_dir / "_speaker_clusters.json"
+        write_json(combined_file, all_rows)
+        write_json(
+            cluster_file,
+            {
+                "clusters": clusters,
+                "threshold": threshold,
+                "backend": speaker_backend,
+                "process_version": PROCESS_VERSION,
+            },
+        )
+        mark_step_completed(
+            "04_diarize_and_transcribe",
+            autosave_target,
+            {
+                "episode_id": episode_dir.name,
+                "process_version": PROCESS_VERSION,
+                "scene_count": len(scenes),
+                "segment_count": len(all_rows),
+                "completed_scene_ids": completed_scene_ids,
+                "combined_file": str(combined_file),
+                "cluster_file": str(cluster_file),
+                "backend": speaker_backend,
+            },
+        )
+        ok(f"Segment-Transkripte gespeichert: {len(all_rows)} Segmente")
+    except Exception as exc:
+        mark_step_failed(
+            "04_diarize_and_transcribe",
+            str(exc),
+            autosave_target,
+            {
+                "episode_id": episode_dir.name,
+                "process_version": PROCESS_VERSION,
+                "scene_count": len(scenes),
+                "completed_scene_ids": completed_scene_ids,
+            },
+        )
+        raise
 
 
 if __name__ == "__main__":
