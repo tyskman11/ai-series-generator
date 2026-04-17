@@ -15,6 +15,7 @@ from pipeline_common import (
     info,
     load_config,
     next_unprocessed_video,
+    open_review_item_count,
     ok,
     read_json,
     rerun_in_runtime,
@@ -315,12 +316,6 @@ def mark_episode_completed(state: dict, episode_name: str) -> None:
     state["current_episode_file"] = None
     state["current_episode_name"] = None
     state["current_step"] = None
-
-
-def open_review_item_count(cfg: dict) -> int:
-    queue = read_json(resolve_project_path(cfg["paths"]["review_queue"]), {"items": []})
-    items = queue.get("items", []) if isinstance(queue, dict) else []
-    return len(items) if isinstance(items, list) else 0
 
 
 def global_steps_to_run(cfg: dict) -> list[str]:

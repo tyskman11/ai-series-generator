@@ -97,6 +97,7 @@ Zusatzregel ab jetzt:
 - `04_diarize_and_transcribe.py`, `05_link_faces_and_speakers.py` und `07_build_dataset.py` bewerten einen Schritt jetzt erst dann als wirklich fertig, wenn aktuelle Prozessversion, Erfolgsmarker und Schritt-Autosave zusammenpassen
 - `07_build_dataset.py` und `10_train_foundation_models.py` haben jetzt zusaetzlich `--force`, damit man nach manueller Figurenpflege oder Datenkorrekturen bewusst sauber neu aufbauen kann
 - `18_refresh_after_manual_review.py` fuehrt jetzt den echten Rebuild nach manueller Figurenpflege als festen Kettenlauf aus: `07 --force -> 08 -> 09 --force -> 10 --force -> 11 --force -> 12 --force -> 13 --force -> 14 -> 15 -> 16`
+- `17_generate_preview_episodes.py` und `18_refresh_after_manual_review.py` respektieren jetzt dieselbe Reihenfolge wie `99`: Solange in `06_review_unknowns.py` noch offene Review-Faelle liegen, starten weder Training noch Generierung noch Render; `18` erlaubt nur mit bewusstem `--allow-open-review` einen Override
 - `11_train_adapter_models.py` trainiert jetzt lokale Adapter-Profile fuer Bild, Stimme und Clip-Dynamik und haengt sich standardmaessig zwischen `10` und `14` in die Trainingskette
 - `12_train_fine_tune_models.py` trainiert jetzt darauf aufbauend lokale Fine-Tune-Profile mit Zielschritten pro Modalitaet und haengt sich standardmaessig zwischen `11` und `14` in die Trainingskette
 - `13_run_backend_finetunes.py` erzeugt jetzt daraus konkrete Backend-Fine-Tune-Laeufe pro Modalitaet, materialisiert lokale Backend-Artefakte pro Figur und haengt sich standardmaessig zwischen `12` und `14` in die Trainingskette
@@ -217,7 +218,7 @@ Wichtige Root-Dateien:
 - `15_build_series_bible.py`: Serienbibel aktualisieren
 - `16_render_episode.py`: Storyboard-/TTS-Draft rendern, Final-Export und lokale Stimmprofile schreiben
 - `17_generate_preview_episodes.py`: mehrere neue sichtbare Preview-Episoden am Stueck erzeugen
-- `18_refresh_after_manual_review.py`: Datensaetze, Modell, Trainingspacks und Folge nach manueller Figurenpflege bewusst neu aufbauen
+- `18_refresh_after_manual_review.py`: Datensaetze, Modell, Trainingspacks und Folge nach manueller Figurenpflege bewusst neu aufbauen; blockt standardmaessig bei offenen Review-Faellen
 - `19_sync_to_github.py`: Root-Skripte und README optional nach GitHub spiegeln
 - `99_process_next_episode.py`: komplette Pipeline ausfuehren
 - `pipeline_common.py`: gemeinsame Helfer fuer Pfade, Config, Runtime und Registry
@@ -920,6 +921,7 @@ Dieser Schritt:
 - ignoriert alle Projektordner und deren Inhalte vollstaendig
 - ignoriert den lokalen Sync-Helfer selbst absichtlich, damit er nicht mit hochgeladen wird
 - laedt niemals Inhalte von GitHub herunter und fuehrt bewusst kein `clone`, `fetch` oder `pull` aus
+- aktualisiert bei jedem Lauf auch die GitHub-`About`-Beschreibung
 - prueft vor dem Push, dass bei Script-Aenderungen auch `README.md` mitgeaendert wurde
 - verwendet standardmaessig das Repository `https://github.com/tyskman11/ai-series-generator`
 - verwendet fuer neue lokale Commits standardmaessig die E-Mail `baumscarry@gmail.com`
@@ -929,6 +931,7 @@ Dieser Schritt:
 Wichtig:
 
 - lokal ist immer die Quelle der Wahrheit fuer diesen Helfer
+- die GitHub-`About`-Beschreibung sagt kurz, dass das Projekt aus Serienfolgen neue KI-Preview-Episoden ableiten soll und dass alle Skripte mit `GPT-5 Codex` KI-generiert wurden
 - wenn der Remote-Branch andere Historie oder andere Dateien hat, wird nichts heruntergeladen; stattdessen schreibt die GitHub-API den Ziel-Branch auf den lokalen erlaubten Dateistand um
 
 Wichtige Umgebungsvariablen:

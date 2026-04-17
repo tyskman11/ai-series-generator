@@ -10,9 +10,11 @@ from pipeline_common import (
     error,
     headline,
     info,
+    load_config,
     mark_step_completed,
     mark_step_failed,
     mark_step_started,
+    open_review_item_count,
     ok,
     rerun_in_runtime,
     runtime_python,
@@ -32,6 +34,11 @@ def parse_args() -> argparse.Namespace:
         "--stop-after-training",
         action="store_true",
         help="Beendet nach dem kompletten Trainingsblock bis 13 und erzeugt noch keine neue Folge und keinen Render.",
+    )
+    parser.add_argument(
+        "--allow-open-review",
+        action="store_true",
+        help="Erlaubt den Rebuild auch dann, wenn in 06 noch offene Review-Faelle vorhanden sind.",
     )
     return parser.parse_args()
 
@@ -53,11 +60,20 @@ def main() -> None:
         "18_refresh_after_manual_review",
         autosave_target,
         {
+            "allow_open_review": bool(args.allow_open_review),
             "skip_downloads": bool(args.skip_downloads),
             "stop_after_training": bool(args.stop_after_training),
         },
     )
     try:
+        cfg = load_config()
+        if not args.allow_open_review:
+            review_count = open_review_item_count(cfg)
+            if review_count > 0:
+                raise RuntimeError(
+                    f"Es gibt noch {review_count} offene Review-Faelle. "
+                    "Fuehre zuerst 06_review_unknowns.py aus oder starte bewusst mit --allow-open-review."
+                )
         planned_steps: list[tuple[str, str, list[str]]] = [
             ("07_build_dataset.py", "Datensaetze mit aktuellen Figurennamen neu aufbauen", ["--force"]),
             ("08_train_series_model.py", "Serienmodell mit aktuellen Namen neu trainieren", []),
@@ -119,6 +135,7 @@ def main() -> None:
             "18_refresh_after_manual_review",
             autosave_target,
             {
+                "allow_open_review": bool(args.allow_open_review),
                 "skip_downloads": bool(args.skip_downloads),
                 "stop_after_training": bool(args.stop_after_training),
                 "completed_steps": completed_steps,
@@ -131,6 +148,7 @@ def main() -> None:
             str(exc),
             autosave_target,
             {
+                "allow_open_review": bool(args.allow_open_review),
                 "skip_downloads": bool(args.skip_downloads),
                 "stop_after_training": bool(args.stop_after_training),
             },

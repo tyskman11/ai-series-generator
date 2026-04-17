@@ -657,6 +657,12 @@ def load_config() -> dict[str, Any]:
     return ensure_project_structure(write_config_file=False)
 
 
+def open_review_item_count(cfg: dict[str, Any]) -> int:
+    queue = read_json(resolve_project_path(cfg["paths"]["review_queue"]), {"items": []})
+    items = queue.get("items", []) if isinstance(queue, dict) else []
+    return len(items) if isinstance(items, list) else 0
+
+
 def tool_on_path(tool_name: str) -> Path | None:
     found = shutil.which(tool_name)
     return Path(found).resolve() if found else None

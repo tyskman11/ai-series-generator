@@ -15,6 +15,7 @@ from pipeline_common import (
     mark_step_completed,
     mark_step_failed,
     mark_step_started,
+    open_review_item_count,
     ok,
     rerun_in_runtime,
     runtime_python,
@@ -61,6 +62,12 @@ def main() -> None:
     autosave_target = f"count_{count}"
     mark_step_started("17_generate_preview_episodes", autosave_target, {"requested_count": count})
     try:
+        review_count = open_review_item_count(cfg)
+        if review_count > 0:
+            raise RuntimeError(
+                f"Es gibt noch {review_count} offene Review-Faelle. "
+                "Fuehre zuerst 06_review_unknowns.py aus, bevor Training, Generierung oder Render starten."
+            )
         planned_steps = ["07_build_dataset.py", "08_train_series_model.py"]
         if bool(foundation_cfg.get("required_before_generate", True)) or bool(foundation_cfg.get("required_before_render", True)):
             planned_steps.extend(["09_prepare_foundation_training.py", "10_train_foundation_models.py"])
