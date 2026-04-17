@@ -29,10 +29,10 @@ PROCESS_VERSION = 1
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Lokale Fine-Tune-Profile aus Adapter-Profilen trainieren")
-    parser.add_argument("--limit-characters", type=int, default=0, help="Optional nur die ersten N Figuren trainieren.")
-    parser.add_argument("--character", help="Optional nur eine bestimmte Figur trainieren.")
-    parser.add_argument("--force", action="store_true", help="Trainiert vorhandene Fine-Tune-Profile bewusst neu.")
+    parser = argparse.ArgumentParser(description="Train local fine-tune profiles from adapter profiles")
+    parser.add_argument("--limit-characters", type=int, default=0, help="Optionally train only the first N characters.")
+    parser.add_argument("--character", help="Optionally train only one specific character.")
+    parser.add_argument("--force", action="store_true", help="Intentionally retrain existing fine-tune profiles.")
     return parser.parse_args()
 
 
@@ -94,11 +94,11 @@ def build_fine_tune_profile(adapter_row: dict, adapter_payload: dict, cfg: dict)
 def main() -> None:
     rerun_in_runtime()
     args = parse_args()
-    headline("Lokale Fine-Tune-Profile trainieren")
+    headline("Train Local Fine-Tune Profiles")
     cfg = load_config()
     adapter_rows = load_adapter_summary(cfg)
     if not adapter_rows:
-        info("Keine Adapter-Zusammenfassung gefunden. Fuehre zuerst 11_train_adapter_models.py aus.")
+        info("No adapter summary found. Run 11_train_adapter_models.py first.")
         return
 
     filtered_rows = []
@@ -110,14 +110,14 @@ def main() -> None:
     if int(args.limit_characters or 0) > 0:
         filtered_rows = filtered_rows[: int(args.limit_characters or 0)]
     if not filtered_rows:
-        info("Keine passenden Adapter-Profile fuer den Fine-Tune-Lauf gefunden.")
+        info("No matching adapter profiles found for the fine-tune run.")
         return
 
     summary_rows: list[dict] = []
     reporter = LiveProgressReporter(
         script_name="12_train_fine_tune_models.py",
         total=len(filtered_rows),
-        phase_label="Fine-Tune-Profile trainieren",
+        phase_label="Train Fine-Tune Profiles",
     )
     for index, row in enumerate(filtered_rows, start=1):
         character_name = coalesce_text(row.get("character", ""))
@@ -177,9 +177,9 @@ def main() -> None:
         reporter.update(
             index,
             current_label=character_name,
-            extra_label=f"Fine-Tune-Profile bisher: {len(summary_rows)}",
+            extra_label=f"Fine-tune profiles so far: {len(summary_rows)}",
         )
-    reporter.finish(current_label="Fine-Tune-Training", extra_label=f"Fine-Tune-Profile gesamt: {len(summary_rows)}")
+    reporter.finish(current_label="Fine-Tune Training", extra_label=f"Total fine-tune profiles: {len(summary_rows)}")
 
     summary_path = fine_tune_summary_path(cfg)
     write_json(
@@ -200,3 +200,4 @@ if __name__ == "__main__":
     except Exception as exc:
         error(str(exc))
         raise
+

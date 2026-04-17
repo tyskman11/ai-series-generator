@@ -21,24 +21,24 @@ from pipeline_common import (
 
 def main() -> None:
     rerun_in_runtime()
-    headline("Serienbibel aufbauen")
+    headline("Build Series Bible")
     cfg = load_config()
     mark_step_started("15_build_series_bible", "global")
     reporter = LiveProgressReporter(
         script_name="15_build_series_bible.py",
         total=3,
-        phase_label="Serienbibel aufbauen",
+        phase_label="Build Series Bible",
         parent_label="global",
     )
     model_path = resolve_project_path(cfg["paths"]["series_model"])
-    reporter.update(0, current_label="Serienmodell lesen", extra_label="Laeuft jetzt: trainiertes Modell fuer Serienbibel laden", force=True)
+    reporter.update(0, current_label="Series Model lesen", extra_label="Running now: load trained model for the series bible", force=True)
     model = read_json(model_path, {})
     if not model:
-        reporter.finish(current_label="Serienmodell", extra_label="Abbruch: kein trainiertes Modell gefunden")
-        info("Kein trainiertes Serienmodell gefunden.")
+        reporter.finish(current_label="Series Model", extra_label="Stopped: no trained model found")
+        info("Kein trainiertes Series Model gefunden.")
         return
 
-    reporter.update(1, current_label="Bibel-Inhalt erzeugen", extra_label="Laeuft jetzt: Hauptfiguren, Themen und Referenzszenen zusammenstellen")
+    reporter.update(1, current_label="Generate Bible Content", extra_label="Running now: collect main characters, themes and reference scenes")
     top_characters = model.get("characters", [])[:8]
     top_keywords = model.get("keywords", [])[:12]
     scene_library = model.get("scene_library", [])
@@ -53,9 +53,9 @@ def main() -> None:
     }
 
     markdown_lines = [
-        "# Automatische Serienbibel",
+        "# Automatische Series Bible",
         "",
-        f"- Trainiert am: {model.get('trained_at', 'unbekannt')}",
+        f"- Trainiert am: {model.get('trained_at', 'unknown')}",
         f"- Ausgewertete Szenen: {model.get('scene_count', 0)}",
         "",
         "## Hauptfiguren",
@@ -77,16 +77,16 @@ def main() -> None:
     try:
         bible_json_path = resolve_project_path(cfg["paths"]["series_bible_json"])
         bible_markdown_path = resolve_project_path(cfg["paths"]["series_bible_markdown"])
-        reporter.update(2, current_label="Dateien schreiben", extra_label="Laeuft jetzt: JSON- und Markdown-Serienbibel speichern")
+        reporter.update(2, current_label="Write Files", extra_label="Running now: save JSON and Markdown series bible")
         write_json(bible_json_path, bible_json)
         write_text(bible_markdown_path, "\n".join(markdown_lines))
-        reporter.finish(current_label="Serienbibel", extra_label=f"Geschrieben: {bible_json_path.name} und {bible_markdown_path.name}")
+        reporter.finish(current_label="Series Bible", extra_label=f"Written: {bible_json_path.name} und {bible_markdown_path.name}")
         mark_step_completed(
             "15_build_series_bible",
             "global",
             {"series_bible_json": str(bible_json_path), "series_bible_markdown": str(bible_markdown_path)},
         )
-        ok("Serienbibel wurde aktualisiert.")
+        ok("Series Bible wurde aktualisiert.")
     except Exception as exc:
         mark_step_failed("15_build_series_bible", str(exc), "global")
         raise
@@ -98,3 +98,4 @@ if __name__ == "__main__":
     except Exception as exc:
         error(str(exc))
         raise
+

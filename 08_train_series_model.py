@@ -113,7 +113,7 @@ def parse_episode_index(episode_id: str) -> int:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Serienmodell aus den vorhandenen Datensaetzen trainieren")
+    parser = argparse.ArgumentParser(description="Train the series model from the available datasets")
     return parser.parse_args()
 
 
@@ -868,7 +868,7 @@ def generate_episode_package(model: dict, cfg: dict, episode_index: int = 1) -> 
     markdown_lines = [
         f"# {display_title}",
         "",
-        "## Basis des trainierten Serienmodells",
+        "## Basis des trainierten Series Models",
         "",
         f"- Episodentitel: {episode_title}",
         f"- Ausgewertete Szenen: {model.get('scene_count', 0)}",
@@ -950,13 +950,13 @@ def generate_episode_package(model: dict, cfg: dict, episode_index: int = 1) -> 
 def main() -> None:
     rerun_in_runtime()
     parse_args()
-    headline("Serienmodell trainieren")
+    headline("Train Series Model")
     cfg = load_config()
     mark_step_started("08_train_series_model", "global")
     dataset_root = resolve_project_path(cfg["paths"]["datasets_video_training"])
     dataset_files = sorted(dataset_root.glob("*_dataset.json"))
     if not dataset_files:
-        info("Keine Datensätze gefunden.")
+        info("No datasets found.")
         return
     try:
         char_map = read_json(resolve_project_path(cfg["paths"]["character_map"]), {"clusters": {}, "aliases": {}})
@@ -969,7 +969,7 @@ def main() -> None:
             "global",
             {"series_model": str(model_path), "dataset_count": len(dataset_files)},
         )
-        ok(f"Serienmodell trainiert: {model_path}")
+        ok(f"Series Model trainiert: {model_path}")
     except Exception as exc:
         mark_step_failed("08_train_series_model", str(exc), "global", {"dataset_count": len(dataset_files)})
         raise
@@ -981,3 +981,4 @@ if __name__ == "__main__":
     except Exception as exc:
         error(str(exc))
         raise
+

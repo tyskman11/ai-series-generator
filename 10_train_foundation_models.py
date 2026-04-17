@@ -32,10 +32,10 @@ PROCESS_VERSION = 1
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Lokale Foundation-Packs fuer Bild, Video und Stimme trainieren")
-    parser.add_argument("--limit-characters", type=int, default=0, help="Optional nur die ersten N Figuren trainieren.")
-    parser.add_argument("--character", help="Optional nur eine bestimmte Figur trainieren.")
-    parser.add_argument("--force", action="store_true", help="Trainiert vorhandene Foundation-Packs bewusst neu.")
+    parser = argparse.ArgumentParser(description="Train local foundation packs for image, video and voice")
+    parser.add_argument("--limit-characters", type=int, default=0, help="Optionally train only the first N characters.")
+    parser.add_argument("--character", help="Optionally train only one specific character.")
+    parser.add_argument("--force", action="store_true", help="Intentionally retrain existing foundation packs.")
     return parser.parse_args()
 
 
@@ -176,11 +176,11 @@ def foundation_pack_completed(pack_path: Path) -> bool:
 def main() -> None:
     rerun_in_runtime()
     args = parse_args()
-    headline("Foundation-Modelle trainieren")
+    headline("Train Foundation Models")
     cfg = load_config()
     manifests = load_manifests(cfg, coalesce_text(args.character or ""), int(args.limit_characters or 0))
     if not manifests:
-        info("Keine Foundation-Manifeste gefunden. Fuehre zuerst 09_prepare_foundation_training.py aus.")
+        info("No foundation manifests found. Run 09_prepare_foundation_training.py first.")
         return
 
     checkpoint_root = resolve_project_path(cfg["paths"]["foundation_checkpoints"])
@@ -189,7 +189,7 @@ def main() -> None:
     reporter = LiveProgressReporter(
         script_name="10_train_foundation_models.py",
         total=len(manifests),
-        phase_label="Foundation-Packs trainieren",
+        phase_label="Train Foundation Packs",
     )
     for index, manifest in enumerate(manifests, start=1):
         character_name = coalesce_text(manifest.get("name", ""))
@@ -250,9 +250,9 @@ def main() -> None:
         reporter.update(
             index,
             current_label=character_name,
-            extra_label=f"Trainierte Packs bisher: {len(summary)}",
+            extra_label=f"Trained packs so far: {len(summary)}",
         )
-    reporter.finish(current_label="Foundation-Training", extra_label=f"Trainierte Packs gesamt: {len(summary)}")
+    reporter.finish(current_label="Foundation Training", extra_label=f"Total trained packs: {len(summary)}")
 
     summary_path = checkpoint_root / "foundation_training_summary.json"
     write_json(
@@ -273,3 +273,4 @@ if __name__ == "__main__":
     except Exception as exc:
         error(str(exc))
         raise
+

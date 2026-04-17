@@ -43,19 +43,19 @@ STEP08 = load_step08()
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Neue Episode aus dem trainierten Serienmodell erzeugen")
-    parser.add_argument("--episode-id", help="Zielt auf eine konkrete Folge-ID wie folge_09.")
+    parser = argparse.ArgumentParser(description="Generate a new episode from the trained series model")
+    parser.add_argument("--episode-id", help="Target a specific episode ID such as folge_09.")
     return parser.parse_args()
 
 
 def main() -> None:
     rerun_in_runtime()
     args = parse_args()
-    headline("Neue Episode aus trainiertem Modell erzeugen")
+    headline("Generate New Episode From Trained Model")
     cfg = load_config()
     model_path = resolve_project_path(cfg["paths"]["series_model"])
     if not model_path.exists():
-        info("Kein trainiertes Serienmodell gefunden. Fuehre zuerst 08_train_series_model.py aus.")
+        info("No trained series model found. Run 08_train_series_model.py first.")
         return
 
     autosave_target = (args.episode_id or "").strip() or "auto_next"
@@ -63,17 +63,17 @@ def main() -> None:
     reporter = LiveProgressReporter(
         script_name="14_generate_episode_from_trained_model.py",
         total=4,
-        phase_label="Neue Episode erzeugen",
+        phase_label="Generate New Episode",
         parent_label=autosave_target,
     )
     try:
-        reporter.update(0, current_label="Serienmodell laden", extra_label="Laeuft jetzt: trainiertes Modell und Trainingsstatus pruefen", force=True)
+        reporter.update(0, current_label="Load Series Model", extra_label="Running now: load the trained model and validate training status", force=True)
         model = read_json(model_path, {})
         if not model:
-            reporter.finish(current_label="Serienmodell", extra_label="Abbruch: Modell ist leer")
-            info("Das Serienmodell ist leer. Fuehre zuerst 08_train_series_model.py aus.")
+            reporter.finish(current_label="Series Model", extra_label="Stopped: model is empty")
+            info("Das Series Model ist leer. Fuehre zuerst 08_train_series_model.py aus.")
             return
-        reporter.update(1, current_label="Trainingsstatus pruefen", extra_label="Foundation-, Adapter-, Fine-Tune- und Backend-Status werden geprueft")
+        reporter.update(1, current_label="Validate Training Status", extra_label="Checking foundation, adapter, fine-tune and backend status")
         ensure_foundation_training_ready(cfg, model_path=model_path)
         ensure_adapter_training_ready(cfg)
         adapter_status = adapter_training_status(cfg)
@@ -88,11 +88,11 @@ def main() -> None:
         shotlist_dir.mkdir(parents=True, exist_ok=True)
 
         episode_id = (args.episode_id or "").strip() or STEP08.next_episode_id(story_dir)
-        reporter.update(2, current_label=episode_id, extra_label="Laeuft jetzt: Episodenpaket aus trainiertem Modell erzeugen")
+        reporter.update(2, current_label=episode_id, extra_label="Running now: generate episode package from trained model")
         episode_package, markdown = STEP08.generate_episode_package(model, cfg, STEP08.parse_episode_index(episode_id))
         story_path = story_dir / f"{episode_id}.md"
         shotlist_path = shotlist_dir / f"{episode_id}.json"
-        reporter.update(3, current_label=episode_id, extra_label="Laeuft jetzt: Story und Shotlist schreiben")
+        reporter.update(3, current_label=episode_id, extra_label="Running now: write story and shotlist")
         write_text(story_path, markdown)
         write_json(
             shotlist_path,
@@ -123,3 +123,4 @@ if __name__ == "__main__":
     except Exception as exc:
         error(str(exc))
         raise
+

@@ -819,7 +819,7 @@ def create_audio_reactive_portrait_video(
     crossfade_span = max(6, int(clone_cfg.get("portrait_crossfade_span_frames", 18)))
     usable_images = [path for path in face_image_paths if path.exists()]
     if not usable_images:
-        raise FileNotFoundError("Keine Portrait-Bilder fuer den Lipsync-Fallback gefunden.")
+        raise FileNotFoundError("No portrait images found for the lip-sync fallback.")
 
     frame_dir = output_mp4.parent / f"{output_mp4.stem}_frames"
     shutil.rmtree(frame_dir, ignore_errors=True)
@@ -1190,7 +1190,7 @@ def create_final_render(
     video_codec: str,
 ) -> str:
     if not rendered_segments:
-        raise RuntimeError("Keine Render-Segmente zum Zusammenfügen vorhanden.")
+        raise RuntimeError("No render segments available to merge.")
 
     concat_list_path = output_mp4.parent / f"{output_mp4.stem}_concat.txt"
     concat_lines = []
@@ -1246,14 +1246,14 @@ def update_shotlist_with_render(
 
 def main() -> None:
     rerun_in_runtime()
-    headline("Episode als Storyboard-Video rendern")
+    headline("Render Episode As Storyboard Video")
     cfg = load_config()
     ffmpeg = detect_tool(PROJECT_ROOT / "tools" / "ffmpeg" / "bin", "ffmpeg")
     video_codec = preferred_ffmpeg_video_codec(ffmpeg, cfg)
     shotlist_dir = resolve_project_path("generation/shotlists")
     shotlist_path = find_latest_shotlist(shotlist_dir)
     if shotlist_path is None:
-        info("Keine Shotlist zum Rendern gefunden.")
+        info("No shotlist found for rendering.")
         return
 
     shotlist = read_json(shotlist_path, {})
@@ -1266,7 +1266,7 @@ def main() -> None:
     )
     scenes = shotlist.get("scenes", [])
     if not scenes:
-        info("Die Shotlist enthält keine Szenen.")
+        info("The shotlist contains no scenes.")
         return
 
     render_cfg = cfg.get("render", {})
@@ -1282,7 +1282,7 @@ def main() -> None:
     allow_original_reuse = bool(clone_cfg.get("enable_original_line_reuse", False)) and str(
         shotlist.get("generation_mode", "")
     ).strip().lower() != "synthetic_preview"
-    info(f"FFmpeg-Videoencoder: {video_codec}")
+    info(f"FFmpeg video encoder: {video_codec}")
 
     char_map = read_json(resolve_project_path(cfg["paths"]["character_map"]), {"clusters": {}, "aliases": {}})
     voice_reference_library = build_voice_reference_library(cfg)
@@ -1455,7 +1455,7 @@ def main() -> None:
     dialogue_reporter = LiveProgressReporter(
         script_name="16_render_episode.py",
         total=max(1, total_dialogue_segments),
-        phase_label="Render-Segmente erzeugen",
+        phase_label="Generate Render Segments",
         parent_label=episode_id,
     )
     segment_index = 1
@@ -1644,7 +1644,7 @@ def main() -> None:
             dialogue_reporter.update(
                 rendered_dialogue_segments,
                 current_label=segment_path.name,
-                extra_label=f"Szene: {scene['scene_id']} | Sprecher: {speaker}",
+                extra_label=f"Szene: {scene['scene_id']} | Speaker: {speaker}",
                 scope_current=line_index,
                 scope_total=scene_dialogue_total,
                 scope_started_at=scene_started_at,
@@ -1710,3 +1710,4 @@ if __name__ == "__main__":
     except Exception as exc:
         error(str(exc))
         raise
+

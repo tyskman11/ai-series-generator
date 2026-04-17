@@ -391,7 +391,7 @@ GERMAN_STOPWORDS = {
 PLACEHOLDER_PERSON_NAME_PATTERN = re.compile(r"^(speaker|stimme|figur|face|rolle)_[0-9a-z]+$", re.IGNORECASE)
 NON_MANUAL_PERSON_NAMES = {
     "",
-    "unbekannt",
+    "unknown",
     "unknown",
     "speaker_unknown",
     "noface",
@@ -1444,11 +1444,11 @@ def ensure_foundation_training_ready(
         return status
     if not status["summary_exists"]:
         raise RuntimeError(
-            "Foundation-Training fehlt. Fuehre vor Generierung/Render zuerst 09_prepare_foundation_training.py und 10_train_foundation_models.py aus."
+            "Foundation Training fehlt. Fuehre vor Generierung/Render zuerst 09_prepare_foundation_training.py und 10_train_foundation_models.py aus."
         )
     if not status["summary_new_enough"]:
         raise RuntimeError(
-        "Foundation-Training ist aelter als das aktuelle Serienmodell. Fuehre nach 08_train_series_model.py erneut 09_prepare_foundation_training.py und 10_train_foundation_models.py aus."
+        "Foundation Training ist aelter als das aktuelle Series Model. Fuehre nach 08_train_series_model.py erneut 09_prepare_foundation_training.py und 10_train_foundation_models.py aus."
         )
     if status["missing_characters"]:
         missing = ", ".join(status["missing_characters"])
@@ -1558,11 +1558,11 @@ def ensure_adapter_training_ready(
         return status
     if not status["summary_exists"]:
         raise RuntimeError(
-        "Adapter-Training fehlt. Fuehre vor Generierung/Render zuerst 11_train_adapter_models.py aus."
+        "Adapter Training fehlt. Fuehre vor Generierung/Render zuerst 11_train_adapter_models.py aus."
         )
     if not status["summary_new_enough"]:
         raise RuntimeError(
-        "Adapter-Training ist aelter als das aktuelle Foundation-Training. Fuehre nach 10_train_foundation_models.py erneut 11_train_adapter_models.py aus."
+        "Adapter Training ist aelter als das aktuelle Foundation Training. Fuehre nach 10_train_foundation_models.py erneut 11_train_adapter_models.py aus."
         )
     if status["missing_characters"]:
         missing = ", ".join(status["missing_characters"])
@@ -1660,11 +1660,11 @@ def ensure_fine_tune_training_ready(
         return status
     if not status["summary_exists"]:
         raise RuntimeError(
-        "Fine-Tune-Training fehlt. Fuehre vor Generierung/Render zuerst 12_train_fine_tune_models.py aus."
+        "Fine-Tune Training fehlt. Fuehre vor Generierung/Render zuerst 12_train_fine_tune_models.py aus."
         )
     if not status["summary_new_enough"]:
         raise RuntimeError(
-        "Fine-Tune-Training ist aelter als das aktuelle Adapter-Training. Fuehre nach 11_train_adapter_models.py erneut 12_train_fine_tune_models.py aus."
+        "Fine-Tune Training ist aelter als das aktuelle Adapter Training. Fuehre nach 11_train_adapter_models.py erneut 12_train_fine_tune_models.py aus."
         )
     if status["missing_characters"]:
         missing = ", ".join(status["missing_characters"])
@@ -1782,7 +1782,7 @@ def ensure_backend_fine_tune_ready(
         )
     if not status["summary_new_enough"]:
         raise RuntimeError(
-        "Backend-Fine-Tune-Laeufe sind aelter als das aktuelle Fine-Tune-Training. Fuehre nach 12_train_fine_tune_models.py erneut 13_run_backend_finetunes.py aus."
+        "Backend-Fine-Tune-Laeufe sind aelter als das aktuelle Fine-Tune Training. Fuehre nach 12_train_fine_tune_models.py erneut 13_run_backend_finetunes.py aus."
         )
     if status["missing_characters"]:
         missing = ", ".join(status["missing_characters"])
@@ -1795,3 +1795,4 @@ def ensure_backend_fine_tune_ready(
         f"Fuer diese Figuren sind die Backend-Fine-Tune-Laeufe noch zu schwach: {weak}. Fuehre 13_run_backend_finetunes.py erneut aus."
         )
     return status
+

@@ -31,9 +31,9 @@ PROCESS_VERSION = 1
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Trainingsdatensatz bauen")
-    parser.add_argument("--episode", help="Name des Szenenordners unter data/processed/scene_clips.")
-    parser.add_argument("--force", action="store_true", help="Baut vorhandene Datensaetze bewusst neu auf.")
+    parser = argparse.ArgumentParser(description="Build Training Dataset")
+    parser.add_argument("--episode", help="Name of the scene folder under data/processed/scene_clips.")
+    parser.add_argument("--force", action="store_true", help="Rebuild existing datasets intentionally.")
     return parser.parse_args()
 
 
@@ -88,7 +88,7 @@ def resolve_episode_dir(scene_root: Path, episode_name: str | None, cfg: dict) -
         for folder in sorted(scene_root.glob("*")):
             if folder.is_dir() and folder.name == Path(episode_name).stem:
                 return folder
-        raise FileNotFoundError(f"Szenenordner nicht gefunden: {episode_name}")
+        raise FileNotFoundError(f"Scene folder not found: {episode_name}")
     return next_undataseted_episode_dir(scene_root, cfg)
 
 
@@ -140,7 +140,7 @@ def process_episode_dir(
         [],
     )
     if not linked_rows:
-        info("Keine verknüpften Segmente gefunden.")
+        info("No linked segments found.")
         return False
 
     faces_summary = {
@@ -276,15 +276,15 @@ def process_episode_dir(
 def main() -> None:
     rerun_in_runtime()
     args = parse_args()
-    headline("Trainingsdatensatz bauen")
+    headline("Build Training Dataset")
     cfg = load_config()
     scene_root = resolve_project_path(cfg["paths"]["scene_clips"])
     episode_dirs = resolve_episode_dirs_for_processing(scene_root, args.episode, cfg, args.force)
     if not episode_dirs:
         if args.episode:
-            info("Keine passenden Szenenordner gefunden.")
+            info("No matching scene folders found.")
         else:
-            info("Keine offenen Folgen für Schritt 07 gefunden.")
+            info("No pending episodes found for step 07.")
         return
 
     processed_count = 0
@@ -292,7 +292,7 @@ def main() -> None:
     live_reporter = LiveProgressReporter(
         script_name="07_build_dataset.py",
         total=max(1, total),
-        phase_label="Datensaetze bauen",
+        phase_label="Build Datasets",
         parent_label="Batch",
     )
     for index, episode_dir in enumerate(episode_dirs, start=1):
@@ -309,15 +309,15 @@ def main() -> None:
                 index,
                 current_label=episode_dir.name,
                 parent_label=episode_dir.name,
-                extra_label=f"Folge abgeschlossen: {episode_dir.name}",
+                extra_label=f"Episode completed: {episode_dir.name}",
                 scope_current=1,
                 scope_total=1,
                 scope_started_at=time.time(),
                 scope_label=f"Folge {index}/{total}",
             )
 
-    live_reporter.finish(current_label="Batch", extra_label=f"Folgen verarbeitet: {processed_count}")
-    ok(f"Batch abgeschlossen: {processed_count} Folgen in 07 verarbeitet.")
+    live_reporter.finish(current_label="Batch", extra_label=f"Episodes processed: {processed_count}")
+    ok(f"Batch completed: {processed_count} episodes processed in 07.")
 
 
 if __name__ == "__main__":
@@ -326,3 +326,4 @@ if __name__ == "__main__":
     except Exception as exc:
         error(str(exc))
         raise
+

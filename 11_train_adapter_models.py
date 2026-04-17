@@ -33,10 +33,10 @@ PROCESS_VERSION = 1
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Lokale Adapter-Profile fuer Bild, Stimme und Clip-Dynamik trainieren")
-    parser.add_argument("--limit-characters", type=int, default=0, help="Optional nur die ersten N Figuren trainieren.")
-    parser.add_argument("--character", help="Optional nur eine bestimmte Figur trainieren.")
-    parser.add_argument("--force", action="store_true", help="Trainiert vorhandene Adapter-Profile bewusst neu.")
+    parser = argparse.ArgumentParser(description="Train local adapter profiles for image, voice and clip dynamics")
+    parser.add_argument("--limit-characters", type=int, default=0, help="Optionally train only the first N characters.")
+    parser.add_argument("--character", help="Optionally train only one specific character.")
+    parser.add_argument("--force", action="store_true", help="Intentionally retrain existing adapter profiles.")
     return parser.parse_args()
 
 
@@ -281,11 +281,11 @@ def build_adapter_profile(manifest: dict, pack_payload: dict, cfg: dict) -> dict
 def main() -> None:
     rerun_in_runtime()
     args = parse_args()
-    headline("Lokale Adapter-Profile trainieren")
+    headline("Train Local Adapter Profiles")
     cfg = load_config()
     manifests = load_manifests(cfg, coalesce_text(args.character or ""), int(args.limit_characters or 0))
     if not manifests:
-        info("Keine Foundation-Manifeste gefunden. Fuehre zuerst 09_prepare_foundation_training.py aus.")
+        info("No foundation manifests found. Run 09_prepare_foundation_training.py first.")
         return
 
     adapter_root = resolve_project_path(cfg["paths"]["foundation_adapters"])
@@ -296,7 +296,7 @@ def main() -> None:
     reporter = LiveProgressReporter(
         script_name="11_train_adapter_models.py",
         total=len(manifests),
-        phase_label="Adapter-Profile trainieren",
+        phase_label="Train Adapter Profiles",
     )
     for index, manifest in enumerate(manifests, start=1):
         character_name = coalesce_text(manifest.get("name", ""))
@@ -360,9 +360,9 @@ def main() -> None:
         reporter.update(
             index,
             current_label=character_name,
-            extra_label=f"Adapter-Profile bisher: {len(summary_rows)}",
+            extra_label=f"Adapter profiles so far: {len(summary_rows)}",
         )
-    reporter.finish(current_label="Adapter-Training", extra_label=f"Adapter-Profile gesamt: {len(summary_rows)}")
+    reporter.finish(current_label="Adapter Training", extra_label=f"Total adapter profiles: {len(summary_rows)}")
 
     summary_path = adapter_summary_path(cfg)
     write_json(
@@ -383,3 +383,4 @@ if __name__ == "__main__":
     except Exception as exc:
         error(str(exc))
         raise
+

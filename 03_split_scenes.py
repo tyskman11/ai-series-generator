@@ -31,8 +31,8 @@ from pipeline_common import (
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Folge in Szenen zerlegen")
-    parser.add_argument("--episode-file", help="Dateiname oder Pfad der importierten Arbeitsdatei unter data/raw/episodes.")
+    parser = argparse.ArgumentParser(description="Split Episode Into Scenes")
+    parser.add_argument("--episode-file", help="Filename or path of the imported working file under data/raw/episodes.")
     return parser.parse_args()
 
 
@@ -53,7 +53,7 @@ def resolve_episode_file(episodes_dir: Path, scene_root: Path, episode_file: str
                 continue
             if requested_name in {video.name, video.stem}:
                 return video
-        raise FileNotFoundError(f"Importierte Arbeitsdatei nicht gefunden: {episode_file}")
+        raise FileNotFoundError(f"Imported working file not found: {episode_file}")
     pending = pending_episode_files(episodes_dir)
     return pending[0] if pending else None
 
@@ -203,12 +203,12 @@ def split_single_episode(
                 "completion_source": completion_source,
             },
         )
-        ok(f"Szenenschnitt bereits erfolgreich vorhanden: {existing_count} Clips ({completion_source})")
+        ok(f"Scene split already completed successfully: {existing_count} Clips ({completion_source})")
         return True
 
     out_dir.mkdir(parents=True, exist_ok=True)
     scene_index_root.mkdir(parents=True, exist_ok=True)
-    info(f"FFmpeg-Videoencoder: {video_codec}")
+    info(f"FFmpeg video encoder: {video_codec}")
     mark_step_started(
         "03_split_scenes",
         autosave_target,
@@ -229,7 +229,7 @@ def split_single_episode(
                         (episode_index - 1) + (index / max(1, len(scenes))),
                         current_label=f"scene_{index:04d}.mp4",
                         parent_label=episode.name,
-                        extra_label=f"Zeitfenster: {start_sec:.3f}s bis {end_sec:.3f}s",
+                        extra_label=f"Time window: {start_sec:.3f}s to {end_sec:.3f}s",
                         scope_current=index,
                         scope_total=len(scenes),
                         scope_started_at=episode_started_at,
@@ -281,7 +281,7 @@ def split_single_episode(
                 "completion_source": completion_mode,
             },
         )
-        ok(f"Szenen erstellt: {created}")
+        ok(f"Scenes created: {created}")
         return True
     except Exception as exc:
         mark_step_failed(
@@ -296,7 +296,7 @@ def split_single_episode(
 def main() -> None:
     rerun_in_runtime()
     args = parse_args()
-    headline("Folge in Szenen zerlegen")
+    headline("Split Episode Into Scenes")
     cfg = load_config()
     ffmpeg = detect_tool(PROJECT_ROOT / "tools" / "ffmpeg" / "bin", "ffmpeg")
     video_codec = preferred_ffmpeg_video_codec(ffmpeg, cfg)
@@ -326,26 +326,26 @@ def main() -> None:
                     "completion_source": completion_source,
                 },
             )
-            ok(f"Szenenschnitt bereits erfolgreich vorhanden: {existing_count} Clips ({completion_source})")
+            ok(f"Scene split already completed successfully: {existing_count} Clips ({completion_source})")
             return
         raise
     if args.episode_file:
         if episode is None:
-            info("Keine importierte Arbeitsdatei gefunden.")
+            info("No imported working file found.")
             return
         split_single_episode(episode, cfg, ffmpeg, video_codec, scene_root, scene_index_root)
         return
 
     pending = pending_episode_files(episodes_dir)
     if not pending:
-        info("Keine importierte Arbeitsdatei gefunden.")
+        info("No imported working file found.")
         return
 
     processed = 0
     live_reporter = LiveProgressReporter(
         script_name="03_split_scenes.py",
         total=max(1, len(pending)),
-        phase_label="Folgen in Szenen zerlegen",
+        phase_label="Split Episodes Into Scenes",
         parent_label="Batch",
     )
     for index, current_episode in enumerate(pending, start=1):
@@ -365,14 +365,14 @@ def main() -> None:
             index,
             current_label=current_episode.name,
             parent_label=current_episode.name,
-            extra_label=f"Folge abgeschlossen: {current_episode.name}",
+            extra_label=f"Episode completed: {current_episode.name}",
             scope_current=1,
             scope_total=1,
             scope_started_at=time.time(),
             scope_label=f"Folge {index}/{len(pending)}",
         )
-    live_reporter.finish(current_label="Batch", extra_label=f"Folgen verarbeitet: {processed}")
-    ok(f"Batch abgeschlossen: {processed} Folgen in 03 verarbeitet.")
+    live_reporter.finish(current_label="Batch", extra_label=f"Episodes processed: {processed}")
+    ok(f"Batch completed: {processed} episodes processed in 03.")
 
 
 if __name__ == "__main__":
@@ -381,3 +381,4 @@ if __name__ == "__main__":
     except Exception as exc:
         error(str(exc))
         raise
+

@@ -1543,7 +1543,7 @@ def interactive_face_review(cfg: dict, char_map: dict, voice_map: dict, include_
             print(f"Automatischer Rollenhinweis: {role_hint}")
             print(f"Automatischer Review-Tipp: {action_hint}")
             if montage:
-                print(f"Montage: {montage}")
+                print(f"Contact sheet: {montage}")
                 if open_previews:
                     info("Vorschau ist offen. Name kann direkt im Fenster oder parallel im Terminal eingegeben werden.")
             for context_path, crop_path in preview_pairs(payload):
@@ -1691,7 +1691,7 @@ def show_review_queue(cfg: dict) -> None:
         print("-" * 72)
         print(f"Fall {index}")
         print(f"Szene: {item.get('scene_id')}")
-        print(f"Sprecher: {item.get('speaker_name')}")
+        print(f"Speaker: {item.get('speaker_name')}")
         print(f"Text: {str(item.get('text', ''))[:220]}")
         print(f"Sichtbare Figuren: {', '.join(item.get('visible_character_names', []))}")
         frames = item.get("speaker_reference_frames", [])
@@ -1714,8 +1714,8 @@ def main() -> None:
     normalized_faces, normalized_voices = normalize_placeholder_maps(char_map, voice_map)
     if normalized_faces or normalized_voices:
         info(
-            f"Bestehende Maps normalisiert: {normalized_faces} Face-Eintraege, "
-            f"{normalized_voices} Sprecher-Eintraege."
+            f"Normalized existing maps: {normalized_faces} face entries, "
+            f"{normalized_voices} speaker entries."
         )
     hydrated = hydrate_face_clusters_from_previews(cfg, char_map)
     if hydrated:
@@ -1723,7 +1723,7 @@ def main() -> None:
     auto_matched = auto_learn_remaining_reviews(cfg, char_map, voice_map)
     if auto_matched.get("matched_faces", 0) or auto_matched.get("matched_speakers", 0):
         info(
-            f"Vor der Review wurden {auto_matched['matched_faces']} unbekannte Face-Cluster "
+            f"Vor der Review wurden {auto_matched['matched_faces']} unknowne Face-Cluster "
             f"und {auto_matched['matched_speakers']} Sprecher-Zuordnungen automatisch uebernommen."
         )
     if normalized_faces or normalized_voices or hydrated or auto_matched.get("matched_faces", 0) or auto_matched.get("matched_speakers", 0):
@@ -1799,3 +1799,4 @@ if __name__ == "__main__":
     except Exception as exc:
         error(str(exc))
         raise
+

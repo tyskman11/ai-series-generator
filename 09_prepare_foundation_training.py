@@ -41,13 +41,13 @@ DOWNLOAD_METADATA_FILE = ".foundation_download.json"
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Foundation-Training fuer Bild/Video/Stimmen vorbereiten"
+        description="Prepare foundation training for image/video/voice"
     )
-    parser.add_argument("--download-models", action="store_true", help="Lade konfigurierte Basis-Modelle herunter und pruefe auf Updates.")
-    parser.add_argument("--skip-downloads", action="store_true", help="Ueberspringe automatische Basis-Downloads und Update-Pruefungen fuer diesen Lauf.")
-    parser.add_argument("--force", action="store_true", help="Erzeuge vorhandene Exporte und Manifeste neu.")
-    parser.add_argument("--episode", help="Optional nur eine bestimmte Quellfolge beruecksichtigen.")
-    parser.add_argument("--limit-characters", type=int, default=0, help="Optional Kandidatenzahl begrenzen.")
+    parser.add_argument("--download-models", action="store_true", help="Download configured base models and check for updates.")
+    parser.add_argument("--skip-downloads", action="store_true", help="Skip automatic base downloads and update checks for this run.")
+    parser.add_argument("--force", action="store_true", help="Recreate existing exports and manifests.")
+    parser.add_argument("--episode", help="Optionally include only one specific source episode.")
+    parser.add_argument("--limit-characters", type=int, default=0, help="Optionally limit the number of candidates.")
     return parser.parse_args()
 
 
@@ -619,7 +619,7 @@ def write_training_plan(
     write_json(json_path, summary)
 
     lines = [
-        "# Foundation-Training Plan",
+        "# Foundation Training Plan",
         "",
         f"- Generiert am: {summary['generated_at']}",
         f"- Figuren mit Trainingsmaterial: {len(manifests)}",
@@ -660,7 +660,7 @@ def write_training_plan(
 def main() -> None:
     rerun_in_runtime()
     args = parse_args()
-    headline("Foundation-Training vorbereiten")
+    headline("Prepare Foundation Training")
     cfg = load_config()
     autosave_target = coalesce_text(args.episode or "global") or "global"
     mark_step_started("09_prepare_foundation_training", autosave_target, {"episode_filter": coalesce_text(args.episode or "")})
@@ -678,7 +678,7 @@ def main() -> None:
 
     try:
         if not candidates:
-            info("Keine benannten Hauptfiguren mit genug Material fuer Foundation-Training gefunden.")
+            info("No named main characters with enough material found for foundation training.")
             return
 
         manifests: list[dict] = []
@@ -687,7 +687,7 @@ def main() -> None:
         reporter = LiveProgressReporter(
             script_name="09_prepare_foundation_training.py",
             total=len(candidates),
-            phase_label="Foundation-Daten vorbereiten",
+            phase_label="Prepare Foundation Data",
         )
         for index, character in enumerate(candidates, start=1):
             character_rows = collect_character_rows(rows, character["name"], known_clusters)
@@ -700,9 +700,9 @@ def main() -> None:
             reporter.update(
                 index,
                 current_label=str(character.get("name", "")),
-                extra_label=f"Manifeste bisher: {len(manifests)}",
+                extra_label=f"Manifests so far: {len(manifests)}",
             )
-        reporter.finish(current_label="Foundation-Training", extra_label=f"Manifeste gesamt: {len(manifests)}")
+        reporter.finish(current_label="Foundation Training", extra_label=f"Total manifests: {len(manifests)}")
 
         download_targets = build_download_targets(cfg)
         downloaded: list[dict] = []
@@ -714,7 +714,7 @@ def main() -> None:
         if wants_downloads and download_targets:
             downloaded = download_models(cfg, download_targets)
         elif wants_downloads:
-            info("Kein Basis-Modell in der Config gesetzt. Es wurden nur Trainingsdaten vorbereitet.")
+            info("No base model configured. Only training data was prepared.")
 
         plan_json, plan_md = write_training_plan(cfg, manifests, downloaded or download_targets, coalesce_text(args.episode or ""))
         mark_step_completed(
@@ -722,7 +722,7 @@ def main() -> None:
             autosave_target,
             {"manifest_count": len(manifests), "plan_json": str(plan_json), "plan_markdown": str(plan_md)},
         )
-        ok(f"Foundation-Training vorbereitet: {plan_json}")
+        ok(f"Foundation Training vorbereitet: {plan_json}")
         ok(f"Trainingsplan geschrieben: {plan_md}")
     except Exception as exc:
         mark_step_failed("09_prepare_foundation_training", str(exc), autosave_target)
@@ -735,3 +735,4 @@ if __name__ == "__main__":
     except Exception as exc:
         error(str(exc))
         raise
+

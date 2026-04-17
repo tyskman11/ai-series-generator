@@ -29,10 +29,10 @@ PROCESS_VERSION = 1
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Konkrete Backend-Fine-Tune-Laeufe aus lokalen Fine-Tune-Profilen ableiten")
-    parser.add_argument("--limit-characters", type=int, default=0, help="Optional nur die ersten N Figuren trainieren.")
-    parser.add_argument("--character", help="Optional nur eine bestimmte Figur trainieren.")
-    parser.add_argument("--force", action="store_true", help="Erzeugt vorhandene Backend-Laufprofile bewusst neu.")
+    parser = argparse.ArgumentParser(description="Create concrete backend fine-tune runs from local fine-tune profiles")
+    parser.add_argument("--limit-characters", type=int, default=0, help="Optionally train only the first N characters.")
+    parser.add_argument("--character", help="Optionally train only one specific character.")
+    parser.add_argument("--force", action="store_true", help="Intentionally recreate existing backend run profiles.")
     return parser.parse_args()
 
 
@@ -197,11 +197,11 @@ def build_backend_run_profile(row: dict, fine_tune_payload: dict, cfg: dict) -> 
 def main() -> None:
     rerun_in_runtime()
     args = parse_args()
-    headline("Backend-Fine-Tune-Laeufe vorbereiten")
+    headline("Prepare Backend Fine-Tune Runs")
     cfg = load_config()
     fine_rows = load_fine_tune_summary(cfg)
     if not fine_rows:
-        info("Keine Fine-Tune-Zusammenfassung gefunden. Fuehre zuerst 12_train_fine_tune_models.py aus.")
+        info("No fine-tune summary found. Run 12_train_fine_tune_models.py first.")
         return
 
     filtered_rows = []
@@ -213,14 +213,14 @@ def main() -> None:
     if int(args.limit_characters or 0) > 0:
         filtered_rows = filtered_rows[: int(args.limit_characters or 0)]
     if not filtered_rows:
-        info("Keine passenden Fine-Tune-Profile fuer den Backend-Lauf gefunden.")
+        info("No matching fine-tune profiles found for the backend run.")
         return
 
     summary_rows: list[dict] = []
     reporter = LiveProgressReporter(
         script_name="13_run_backend_finetunes.py",
         total=len(filtered_rows),
-        phase_label="Backend-Fine-Tunes vorbereiten",
+        phase_label="Prepare Backend Fine-Tunes",
     )
     for index, row in enumerate(filtered_rows, start=1):
         character_name = coalesce_text(row.get("character", ""))
@@ -282,9 +282,9 @@ def main() -> None:
         reporter.update(
             index,
             current_label=character_name,
-            extra_label=f"Backend-Laeufe bisher: {len(summary_rows)}",
+            extra_label=f"Backend runs so far: {len(summary_rows)}",
         )
-    reporter.finish(current_label="Backend-Fine-Tunes", extra_label=f"Backend-Laeufe gesamt: {len(summary_rows)}")
+    reporter.finish(current_label="Backend-Fine-Tunes", extra_label=f"Total backend runs: {len(summary_rows)}")
 
     summary_path = backend_run_summary_path(cfg)
     write_json(
@@ -305,3 +305,4 @@ if __name__ == "__main__":
     except Exception as exc:
         error(str(exc))
         raise
+

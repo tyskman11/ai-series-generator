@@ -23,22 +23,22 @@ from pipeline_common import (
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Pipeline nach manueller Figuren-Review mit echtem Rebuild neu aufbauen"
+        description="Rebuild the pipeline after manual character review"
     )
     parser.add_argument(
         "--skip-downloads",
         action="store_true",
-        help="Ueberspringt in 09 die Modell-Downloads und nutzt nur vorhandene Downloads/Updates.",
+        help="Skip model downloads in 09 and use only existing downloads/updates.",
     )
     parser.add_argument(
         "--stop-after-training",
         action="store_true",
-        help="Beendet nach dem kompletten Trainingsblock bis 13 und erzeugt noch keine neue Folge und keinen Render.",
+        help="Beendet nach dem kompletten Trainingsblock to 13 und erzeugt noch keine neue Folge und keinen Render.",
     )
     parser.add_argument(
         "--allow-open-review",
         action="store_true",
-        help="Erlaubt den Rebuild auch dann, wenn in 06 noch offene Review-Faelle vorhanden sind.",
+        help="Allow the rebuild even if step 06 still has open review cases.",
     )
     return parser.parse_args()
 
@@ -54,7 +54,7 @@ def run_step(script_name: str, title: str, extra_args: list[str] | None = None) 
 def main() -> None:
     rerun_in_runtime()
     args = parse_args()
-    headline("Rebuild nach manueller Figuren-Review")
+    headline("Rebuild After Manual Character Review")
     autosave_target = "global"
     mark_step_started(
         "18_refresh_after_manual_review",
@@ -72,18 +72,18 @@ def main() -> None:
             if review_count > 0:
                 raise RuntimeError(
                     f"Es gibt noch {review_count} offene Review-Faelle. "
-                    "Fuehre zuerst 06_review_unknowns.py aus oder starte bewusst mit --allow-open-review."
+                    "Run 06_review_unknowns.py first or intentionally start with --allow-open-review."
                 )
         planned_steps: list[tuple[str, str, list[str]]] = [
             ("07_build_dataset.py", "Datensaetze mit aktuellen Figurennamen neu aufbauen", ["--force"]),
-            ("08_train_series_model.py", "Serienmodell mit aktuellen Namen neu trainieren", []),
+            ("08_train_series_model.py", "Series Model mit aktuellen Namen neu trainieren", []),
         ]
         prepare_args = ["--force"]
         if args.skip_downloads:
             prepare_args.append("--skip-downloads")
         planned_steps.extend(
             [
-                ("09_prepare_foundation_training.py", "Foundation-Training mit aktuellem Figurenstand vorbereiten", prepare_args),
+                ("09_prepare_foundation_training.py", "Foundation Training mit aktuellem Figurenstand vorbereiten", prepare_args),
                 ("10_train_foundation_models.py", "Foundation-Packs mit aktuellem Figurenstand neu trainieren", ["--force"]),
                 ("11_train_adapter_models.py", "Lokale Adapter-Profile mit aktuellem Figurenstand neu trainieren", ["--force"]),
                 ("12_train_fine_tune_models.py", "Lokale Fine-Tune-Profile mit aktuellem Figurenstand neu trainieren", ["--force"]),
@@ -94,23 +94,23 @@ def main() -> None:
             planned_steps.extend(
                 [
                     ("14_generate_episode_from_trained_model.py", "Neue Folge aus aktualisiertem Modell erzeugen", []),
-                    ("15_build_series_bible.py", "Serienbibel mit aktuellem Stand aktualisieren", []),
-                    ("16_render_episode.py", "Aktualisierte Folge rendern", []),
+                    ("15_build_series_bible.py", "Series Bible mit aktuellem Stand aktualisieren", []),
+                    ("16_render_episode.py", "Aktualisierte Folge render", []),
                 ]
             )
         reporter = LiveProgressReporter(
             script_name="18_refresh_after_manual_review.py",
             total=len(planned_steps),
-            phase_label="Rebuild nach Review",
+            phase_label="Rebuild After Review",
             parent_label="global",
         )
         completed_count = 0
         for script_name, title, extra_args in planned_steps:
-            reporter.update(completed_count, current_label=title, extra_label=f"Laeuft jetzt: {script_name}", force=True)
+            reporter.update(completed_count, current_label=title, extra_label=f"Running now: {script_name}", force=True)
             run_step(script_name, title, extra_args)
             completed_count += 1
-            reporter.update(completed_count, current_label=title, extra_label=f"Abgeschlossen: {script_name}")
-        reporter.finish(current_label="Rebuild", extra_label=f"Abgeschlossene Schritte: {completed_count}")
+            reporter.update(completed_count, current_label=title, extra_label=f"Completed: {script_name}")
+        reporter.finish(current_label="Rebuild", extra_label=f"Completed steps: {completed_count}")
 
         completed_steps = [
             "07_build_dataset.py --force",
@@ -141,7 +141,7 @@ def main() -> None:
                 "completed_steps": completed_steps,
             },
         )
-        ok("Rebuild nach manueller Figuren-Review abgeschlossen.")
+        ok("Rebuild After Manual Character Review abgeschlossen.")
     except Exception as exc:
         mark_step_failed(
             "18_refresh_after_manual_review",
@@ -162,3 +162,4 @@ if __name__ == "__main__":
     except Exception as exc:
         error(str(exc))
         raise
+

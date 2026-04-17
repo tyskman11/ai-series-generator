@@ -59,15 +59,15 @@ IGNORED_FACE_NAMES = {
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Gesichter erkennen und mit Stimmen verknüpfen")
+    parser = argparse.ArgumentParser(description="Detect Faces And Link Speakers")
     parser.add_argument(
         "--fresh",
         action="store_true",
-        help="Loescht Cache, Previews, Maps und Linked-Segments von Schritt 05 vor dem Lauf.",
+        help="Deletes cache, previews, maps and linked segments from step 05 before running.",
     )
     parser.add_argument(
         "--episode",
-        help="Name des Szenenordners unter data/processed/scene_clips. Standard: erster verfuegbarer Ordner.",
+        help="Name of the scene folder under data/processed/scene_clips. Standard: erster verfuegbarer Ordner.",
     )
     return parser.parse_args()
 
@@ -100,7 +100,7 @@ def reset_step_outputs(cfg: dict, episode_dir: Path, faces_episode_dir: Path, pr
                 preview_dir.name.startswith("face_") or preview_dir.name.startswith("speaker_refs_")
             ):
                 removed += int(remove_output_path(preview_dir))
-    info(f"Fresh-Reset abgeschlossen: {removed} Artefakte entfernt.")
+    info(f"Fresh reset completed: {removed} artifacts removed.")
 
 
 def resolve_episode_dir(scene_root: Path, episode_name: str | None) -> Path | None:
@@ -108,7 +108,7 @@ def resolve_episode_dir(scene_root: Path, episode_name: str | None) -> Path | No
         candidate = scene_root / episode_name
         if candidate.is_dir():
             return candidate
-        raise FileNotFoundError(f"Szenenordner nicht gefunden: {candidate}")
+        raise FileNotFoundError(f"Scene folder not found: {candidate}")
     return first_dir(scene_root)
 
 
@@ -206,12 +206,12 @@ def ask_name(kind: str, cluster_id: str, preview_files: list[Path], auto_open: b
     montage = create_contact_sheet(preview_files, preview_files[0].parent / f"{cluster_id}_montage.jpg") if preview_files else None
     print()
     print("-" * 72)
-    print(f"Neue Zuordnung für {kind}: {cluster_id}")
+    print(f"New assignment for {kind}: {cluster_id}")
     if montage:
-        print(f"Montage: {montage}")
+        print(f"Contact sheet: {montage}")
         if auto_open:
             open_file_default(montage)
-    print("Name eingeben, 'noface' zum Ignorieren, leer = automatische Bezeichnung")
+    print("Enter a name, 'noface' to ignore, empty = automatic label")
     return input("> Name: ").strip()
 
 
@@ -925,7 +925,7 @@ def process_episode_dir(
                 "face_summary_file": str(resolve_project_path(cfg["paths"]["faces"]) / episode_dir.name / f"{episode_dir.name}_face_summary.json"),
             },
         )
-        ok(f"Gesichts-/Stimmen-Verknüpfung bereits vorhanden: {episode_dir.name}")
+        ok(f"Face/speaker linking already exists: {episode_dir.name}")
         return False
 
     faces_episode_dir = faces_root / episode_dir.name
@@ -937,7 +937,7 @@ def process_episode_dir(
         [],
     )
     if not transcript_rows:
-        info("Keine Sprecher-Transkripte gefunden.")
+        info("No speaker transcripts found.")
         return False
 
     scenes = {scene.stem: scene for scene in limited_items(sorted(episode_dir.glob("*.mp4")))}
@@ -1004,7 +1004,7 @@ def process_episode_dir(
                 )
 
         kept_face_clusters = prune_face_clusters(char_map, face_by_scene, cfg)
-        info(f"Face-Cluster nach Filter: {len(kept_face_clusters)}")
+        info(f"Face clusters after filtering: {len(kept_face_clusters)}")
 
         speaker_votes: dict[str, dict[str, float]] = defaultdict(lambda: defaultdict(float))
         for row in transcript_rows:
@@ -1031,7 +1031,7 @@ def process_episode_dir(
         link_reporter = LiveProgressReporter(
             script_name="05_link_faces_and_speakers.py",
             total=len(transcript_rows),
-            phase_label="Stimmen mit Figuren verknuepfen",
+            phase_label="Link Voices To Characters",
             parent_label=episode_dir.name,
         )
         for index, row in enumerate(transcript_rows, start=1):
@@ -1086,7 +1086,7 @@ def process_episode_dir(
                     (episode_index - 1) + ((len(scene_files) + index) / episode_total_units),
                     current_label=str(row.get("segment_id", "")),
                     parent_label=episode_dir.name,
-                    extra_label=f"Sprecher: {str(row.get('speaker_cluster', '')) or 'unbekannt'}",
+                    extra_label=f"Speaker: {str(row.get('speaker_cluster', '')) or 'unknown'}",
                     scope_current=len(scene_files) + index,
                     scope_total=episode_total_units,
                     scope_started_at=episode_started_at,
@@ -1134,7 +1134,7 @@ def process_episode_dir(
                 "linked_file": str(linked_file),
             },
         )
-        ok(f"Verknüpfung abgeschlossen: {len(linked_rows)} Segmente")
+        ok(f"Linking completed: {len(linked_rows)} Segmente")
         return True
     except Exception as exc:
         mark_step_failed(
@@ -1155,18 +1155,18 @@ def process_episode_dir(
 def main() -> None:
     rerun_in_runtime()
     args = parse_args()
-    headline("Gesichter erkennen und mit Stimmen verknüpfen")
+    headline("Detect Faces And Link Speakers")
     cfg = load_config()
     scene_root = resolve_project_path(cfg["paths"]["scene_clips"])
     episode_dirs = resolve_episode_dirs_for_processing(scene_root, args.episode, cfg)
     if not episode_dirs:
         if args.episode:
-            info("Keine passenden Szenenordner gefunden.")
+            info("No matching scene folders found.")
         else:
-            info("Keine offenen Folgen für Schritt 05 gefunden.")
+            info("No pending episodes found for step 05.")
         return
     if args.fresh and not args.episode:
-        raise ValueError("--fresh erfordert --episode, damit bestehende globale Maps nicht versehentlich für einen Batchlauf geleert werden.")
+        raise ValueError("--fresh requires --episode so existing global maps are not accidentally cleared for a batch run.")
 
     faces_root = resolve_project_path(cfg["paths"]["faces"])
     linked_root = resolve_project_path(cfg["paths"]["linked_segments"])
@@ -1184,8 +1184,8 @@ def main() -> None:
     normalized_faces, normalized_voices = normalize_loaded_maps(char_map, voice_map)
     if normalized_faces or normalized_voices:
         info(
-            f"Bestehende Maps normalisiert: {normalized_faces} Face-Eintraege, "
-            f"{normalized_voices} Sprecher-Eintraege."
+            f"Normalized existing maps: {normalized_faces} face entries, "
+            f"{normalized_voices} speaker entries."
         )
 
     interactive = bool(cfg["character_detection"].get("interactive_assignment", False)) and is_interactive_session()
@@ -1196,16 +1196,16 @@ def main() -> None:
     segment_padding_seconds = float(cfg["character_detection"].get("segment_visibility_padding_seconds", 0.35))
     threshold = float(cfg["character_detection"].get("embedding_threshold", 0.72))
     engine = create_face_engine(cfg)
-    info(f"Ausführungsmodus: {preferred_execution_label(cfg)}")
-    info(f"Rechengerät: {preferred_compute_label(cfg)}")
-    info(f"Gesichtserkennung: {engine['mode']}")
+    info(f"Execution mode: {preferred_execution_label(cfg)}")
+    info(f"Compute device: {preferred_compute_label(cfg)}")
+    info(f"Face detection: {engine['mode']}")
 
     processed_count = 0
     total = len(episode_dirs)
     live_reporter = LiveProgressReporter(
         script_name="05_link_faces_and_speakers.py",
         total=max(1, total),
-        phase_label="Gesichter und Stimmen verknuepfen",
+        phase_label="Link Faces And Voices",
         parent_label="Batch",
     )
     for index, episode_dir in enumerate(episode_dirs, start=1):
@@ -1235,15 +1235,15 @@ def main() -> None:
                 index,
                 current_label=episode_dir.name,
                 parent_label=episode_dir.name,
-                extra_label=f"Folge abgeschlossen: {episode_dir.name}",
+                extra_label=f"Episode completed: {episode_dir.name}",
                 scope_current=1,
                 scope_total=1,
                 scope_started_at=time.time(),
                 scope_label=f"Folge {index}/{total}",
             )
-    live_reporter.finish(current_label="Batch", extra_label=f"Folgen verarbeitet: {processed_count}")
+    live_reporter.finish(current_label="Batch", extra_label=f"Episodes processed: {processed_count}")
 
-    ok(f"Batch abgeschlossen: {processed_count} Folgen in 05 verarbeitet.")
+    ok(f"Batch completed: {processed_count} episodes processed in 05.")
 
 
 if __name__ == "__main__":
@@ -1252,3 +1252,4 @@ if __name__ == "__main__":
     except Exception as exc:
         error(str(exc))
         raise
+

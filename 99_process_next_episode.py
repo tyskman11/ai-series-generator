@@ -278,11 +278,11 @@ def episode_step_args(script_name: str, episode_file: str, episode_name: str) ->
 def episode_step_title(script_name: str, episode_file: str, episode_name: str) -> str:
     titles = {
         "02_import_episode.py": f"Import: {episode_file}",
-        "03_split_scenes.py": f"Szenenerkennung: {episode_name}",
-        "04_diarize_and_transcribe.py": f"Audiosegmentierung und Transkription: {episode_name}",
-        "05_link_faces_and_speakers.py": f"Gesichter und Stimmen verknüpfen: {episode_name}",
-        "07_build_dataset.py": "Trainingsdatensatz aus reviewtem Bestand aufbauen",
-        "08_train_series_model.py": "Serienmodell aus reviewtem Datensatz trainieren",
+        "03_split_scenes.py": f"Scene Detection: {episode_name}",
+        "04_diarize_and_transcribe.py": f"Audio Segmentation And Transcription: {episode_name}",
+        "05_link_faces_and_speakers.py": f"Link Faces And Voices: {episode_name}",
+        "07_build_dataset.py": "Build training dataset from reviewed data",
+        "08_train_series_model.py": "Series Model aus reviewtem Datensatz trainieren",
     }
     return titles.get(script_name, episode_name)
 
@@ -349,23 +349,23 @@ def global_steps_to_run(cfg: dict) -> list[str]:
 
 def global_step_title(script_name: str) -> str:
     titles = {
-        "07_build_dataset.py": "Trainingsdatensatz aus reviewtem Bestand bauen",
-        "08_train_series_model.py": "Serienmodell trainieren",
-        "09_prepare_foundation_training.py": "Foundation-Training vorbereiten",
-        "10_train_foundation_models.py": "Foundation-Modelle trainieren",
-        "11_train_adapter_models.py": "Lokale Adapter-Profile trainieren",
-        "12_train_fine_tune_models.py": "Lokale Fine-Tune-Profile trainieren",
-        "13_run_backend_finetunes.py": "Konkrete Backend-Fine-Tune-Laeufe erzeugen",
-        "14_generate_episode_from_trained_model.py": "Neue Folge aus trainiertem Modell erzeugen",
-        "15_build_series_bible.py": "Serienbibel aktualisieren",
-        "16_render_episode.py": "Storyboard-Video rendern",
+        "07_build_dataset.py": "Build training dataset from reviewed data",
+        "08_train_series_model.py": "Train Series Model",
+        "09_prepare_foundation_training.py": "Prepare Foundation Training",
+        "10_train_foundation_models.py": "Train Foundation Models",
+        "11_train_adapter_models.py": "Train Local Adapter Profiles",
+        "12_train_fine_tune_models.py": "Train Local Fine-Tune Profiles",
+        "13_run_backend_finetunes.py": "Create Concrete Backend Fine-Tune Runs",
+        "14_generate_episode_from_trained_model.py": "Generate New Episode From Trained Model",
+        "15_build_series_bible.py": "Series Bible aktualisieren",
+        "16_render_episode.py": "Storyboard-Video render",
     }
     return titles[script_name]
 
 
 def main() -> None:
     rerun_in_runtime()
-    headline("Komplette Serien-Pipeline ausführen")
+    headline("Run Full Series Pipeline")
     cfg = load_config()
     inbox_dir = resolve_project_path(cfg["paths"]["inbox_episodes"])
     state = load_latest_autosave(cfg) or default_state()
@@ -377,13 +377,13 @@ def main() -> None:
     episode_batch_reporter = LiveProgressReporter(
         script_name="99_process_next_episode.py",
         total=max(1, initial_episode_total),
-        phase_label="Quellfolgen verarbeiten",
-        parent_label="Inbox-Batch",
+        phase_label="Process Source Episodes",
+        parent_label="Inbox Batch",
     )
     processed_in_this_run = 0
 
     if load_latest_autosave(cfg):
-        info("Vorhandenen Autosave gefunden. Pipeline setzt am letzten erfolgreich abgeschlossenen Schritt fort.")
+        info("Found an existing autosave. The pipeline will resume from the last successfully completed step.")
 
     if not bool(state.get("setup_completed", False)):
         state["current_phase"] = "setup"
@@ -414,12 +414,12 @@ def main() -> None:
             state.setdefault("episode_steps_completed", {}).setdefault(episode_name, [])
             save_autosave(cfg, state, f"episode_selected:{episode_name}", inbox_dir)
 
-        info(f"Starte Batch-Folge: {next_video_name}")
+        info(f"Starting batch episode: {next_video_name}")
         finished_steps = set(completed_episode_steps(state, episode_name))
         episode_step_reporter = LiveProgressReporter(
             script_name="99_process_next_episode.py",
             total=len(EPISODE_STEPS),
-            phase_label="Schritte je Quellfolge",
+            phase_label="Steps Per Source Episode",
             parent_label=episode_name,
         )
         for script_name in EPISODE_STEPS:
@@ -435,7 +435,7 @@ def main() -> None:
             episode_step_reporter.update(
                 len(finished_steps),
                 current_label=step_title,
-                extra_label=f"Laeuft jetzt: {script_name}",
+                extra_label=f"Running now: {script_name}",
                 force=True,
                 scope_current=len(finished_steps),
                 scope_total=len(EPISODE_STEPS),
@@ -452,7 +452,7 @@ def main() -> None:
             episode_step_reporter.update(
                 len(finished_steps),
                 current_label=step_title,
-                extra_label=f"Abgeschlossen: {script_name}",
+                extra_label=f"Completed: {script_name}",
                 scope_current=len(finished_steps),
                 scope_total=len(EPISODE_STEPS),
                 scope_started_at=step_started_at,
@@ -486,7 +486,7 @@ def main() -> None:
 
     if int(state.get("processed_count", 0) or 0) == 0:
         write_status_files(cfg, build_status_snapshot(cfg, state, inbox_dir))
-        info("Keine neuen Folgen im Inbox-Ordner gefunden.")
+        info("No new episodes found in the inbox folder.")
         return
 
     state["current_phase"] = "global"
@@ -497,8 +497,8 @@ def main() -> None:
     global_reporter = LiveProgressReporter(
         script_name="99_process_next_episode.py",
         total=max(1, len(steps_to_run)),
-        phase_label="Globale Pipeline-Schritte",
-        parent_label="Training bis Render",
+        phase_label="Global Pipeline Steps",
+        parent_label="Training to Render",
     )
     for script_name in steps_to_run:
         if script_name in completed_global_steps:
@@ -510,7 +510,7 @@ def main() -> None:
         global_reporter.update(
             len(completed_global_steps),
             current_label=global_step_title(script_name),
-            extra_label=f"Laeuft jetzt: {script_name}",
+            extra_label=f"Running now: {script_name}",
             force=True,
             scope_current=len(completed_global_steps),
             scope_total=len(steps_to_run),
@@ -523,21 +523,21 @@ def main() -> None:
         global_reporter.update(
             len(completed_global_steps),
             current_label=global_step_title(script_name),
-            extra_label=f"Abgeschlossen: {script_name}",
+            extra_label=f"Completed: {script_name}",
             scope_current=len(completed_global_steps),
             scope_total=len(steps_to_run),
             scope_started_at=global_step_started_at,
             scope_label="Globale Schritte",
         )
         save_autosave(cfg, state, f"global:{script_name}", inbox_dir)
-    global_reporter.finish(current_label="Globalphase", extra_label=f"Globale Schritte gesamt: {len(completed_global_steps)}")
-    episode_batch_reporter.finish(current_label="Inbox-Batch", extra_label=f"Quellfolgen in diesem Lauf: {processed_in_this_run}")
+    global_reporter.finish(current_label="Global Phase", extra_label=f"Total global steps: {len(completed_global_steps)}")
+    episode_batch_reporter.finish(current_label="Inbox Batch", extra_label=f"Source episodes in this run: {processed_in_this_run}")
 
     state["status"] = "completed"
     state["current_phase"] = None
     state["current_step"] = None
     save_autosave(cfg, state, "pipeline_completed", inbox_dir)
-    ok(f"Die Pipeline ist komplett durchgelaufen. Neue Quellfolgen verarbeitet: {state['processed_count']}")
+    ok(f"The pipeline completed successfully. New source episodes processed: {state['processed_count']}")
 
 
 if __name__ == "__main__":
@@ -546,3 +546,4 @@ if __name__ == "__main__":
     except Exception as exc:
         error(str(exc))
         raise
+

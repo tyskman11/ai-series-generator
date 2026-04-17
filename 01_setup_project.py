@@ -15,12 +15,12 @@ from pipeline_common import (
 
 def main() -> None:
     rerun_in_runtime()
-    headline("Projektstruktur erstellen")
+    headline("Create Project Structure")
     mark_step_started("01_setup_project", "global")
     try:
         ensure_project_structure(write_config_file=True)
         mark_step_completed("01_setup_project", "global")
-        ok("Projektstruktur und Konfiguration sind bereit.")
+        ok("Project structure and configuration are ready.")
     except Exception as exc:
         mark_step_failed("01_setup_project", str(exc), "global")
         raise
@@ -32,3 +32,4 @@ if __name__ == "__main__":
     except Exception as exc:
         error(str(exc))
         raise
+

@@ -23,8 +23,8 @@ from pipeline_common import (
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Erzeugt mehrere neue sichtbare Preview-Episoden am Stück.")
-    parser.add_argument("--count", type=int, default=2, help="Anzahl neuer Episoden. Standard: 2")
+    parser = argparse.ArgumentParser(description="Generate multiple visible preview episodes in one run.")
+    parser.add_argument("--count", type=int, default=2, help="Number of new episodes. Default: 2")
     return parser.parse_args()
 
 
@@ -57,7 +57,7 @@ def main() -> None:
     fine_tune_cfg = cfg.get("fine_tune_training", {}) if isinstance(cfg.get("fine_tune_training"), dict) else {}
     backend_cfg = cfg.get("backend_fine_tune", {}) if isinstance(cfg.get("backend_fine_tune"), dict) else {}
 
-    headline("Mehrere sichtbare Preview-Episoden erzeugen")
+    headline("Generate Multiple Visible Preview Episodes")
     generated: list[str] = []
     autosave_target = f"count_{count}"
     mark_step_started("17_generate_preview_episodes", autosave_target, {"requested_count": count})
@@ -82,76 +82,76 @@ def main() -> None:
         reporter = LiveProgressReporter(
             script_name="17_generate_preview_episodes.py",
             total=len(planned_steps),
-            phase_label="Preview-Episoden erzeugen",
+            phase_label="Generate Preview Episodes",
             parent_label=f"Anzahl: {count}",
         )
         completed_steps = 0
 
-        reporter.update(completed_steps, current_label="Datensaetze aufbauen", extra_label="Laeuft jetzt: 07_build_dataset.py", force=True)
+        reporter.update(completed_steps, current_label="Build Datasets", extra_label="Running now: 07_build_dataset.py", force=True)
         run_step("07_build_dataset.py")
         completed_steps += 1
-        reporter.update(completed_steps, current_label="Datensaetze aufbauen", extra_label="Abgeschlossen: 07_build_dataset.py")
+        reporter.update(completed_steps, current_label="Build Datasets", extra_label="Completed: 07_build_dataset.py")
 
-        reporter.update(completed_steps, current_label="Serienmodell trainieren", extra_label="Laeuft jetzt: 08_train_series_model.py", force=True)
+        reporter.update(completed_steps, current_label="Train Series Model", extra_label="Running now: 08_train_series_model.py", force=True)
         run_step("08_train_series_model.py")
         completed_steps += 1
-        reporter.update(completed_steps, current_label="Serienmodell trainieren", extra_label="Abgeschlossen: 08_train_series_model.py")
+        reporter.update(completed_steps, current_label="Train Series Model", extra_label="Completed: 08_train_series_model.py")
 
         if bool(foundation_cfg.get("required_before_generate", True)) or bool(foundation_cfg.get("required_before_render", True)):
-            reporter.update(completed_steps, current_label="Foundation-Daten vorbereiten", extra_label="Laeuft jetzt: 09_prepare_foundation_training.py", force=True)
+            reporter.update(completed_steps, current_label="Prepare Foundation Data", extra_label="Running now: 09_prepare_foundation_training.py", force=True)
             run_step("09_prepare_foundation_training.py")
             completed_steps += 1
-            reporter.update(completed_steps, current_label="Foundation-Daten vorbereiten", extra_label="Abgeschlossen: 09_prepare_foundation_training.py")
+            reporter.update(completed_steps, current_label="Prepare Foundation Data", extra_label="Completed: 09_prepare_foundation_training.py")
 
-            reporter.update(completed_steps, current_label="Foundation-Packs trainieren", extra_label="Laeuft jetzt: 10_train_foundation_models.py", force=True)
+            reporter.update(completed_steps, current_label="Train Foundation Packs", extra_label="Running now: 10_train_foundation_models.py", force=True)
             run_step("10_train_foundation_models.py")
             completed_steps += 1
-            reporter.update(completed_steps, current_label="Foundation-Packs trainieren", extra_label="Abgeschlossen: 10_train_foundation_models.py")
+            reporter.update(completed_steps, current_label="Train Foundation Packs", extra_label="Completed: 10_train_foundation_models.py")
 
             if bool(adapter_cfg.get("auto_train_after_foundation", True)):
-                reporter.update(completed_steps, current_label="Adapter-Profile trainieren", extra_label="Laeuft jetzt: 11_train_adapter_models.py", force=True)
+                reporter.update(completed_steps, current_label="Train Adapter Profiles", extra_label="Running now: 11_train_adapter_models.py", force=True)
                 run_step("11_train_adapter_models.py")
                 completed_steps += 1
-                reporter.update(completed_steps, current_label="Adapter-Profile trainieren", extra_label="Abgeschlossen: 11_train_adapter_models.py")
+                reporter.update(completed_steps, current_label="Train Adapter Profiles", extra_label="Completed: 11_train_adapter_models.py")
                 if bool(fine_tune_cfg.get("auto_train_after_adapter", True)):
-                    reporter.update(completed_steps, current_label="Fine-Tune-Profile trainieren", extra_label="Laeuft jetzt: 12_train_fine_tune_models.py", force=True)
+                    reporter.update(completed_steps, current_label="Train Fine-Tune Profiles", extra_label="Running now: 12_train_fine_tune_models.py", force=True)
                     run_step("12_train_fine_tune_models.py")
                     completed_steps += 1
-                    reporter.update(completed_steps, current_label="Fine-Tune-Profile trainieren", extra_label="Abgeschlossen: 12_train_fine_tune_models.py")
+                    reporter.update(completed_steps, current_label="Train Fine-Tune Profiles", extra_label="Completed: 12_train_fine_tune_models.py")
                     if bool(backend_cfg.get("auto_run_after_fine_tune", True)):
-                        reporter.update(completed_steps, current_label="Backend-Fine-Tunes vorbereiten", extra_label="Laeuft jetzt: 13_run_backend_finetunes.py", force=True)
+                        reporter.update(completed_steps, current_label="Prepare Backend Fine-Tunes", extra_label="Running now: 13_run_backend_finetunes.py", force=True)
                         run_step("13_run_backend_finetunes.py")
                         completed_steps += 1
-                        reporter.update(completed_steps, current_label="Backend-Fine-Tunes vorbereiten", extra_label="Abgeschlossen: 13_run_backend_finetunes.py")
+                        reporter.update(completed_steps, current_label="Prepare Backend Fine-Tunes", extra_label="Completed: 13_run_backend_finetunes.py")
         for index in range(count):
             before = latest_episode_id()
-            reporter.update(completed_steps, current_label=f"Episode {index + 1} generieren", extra_label="Laeuft jetzt: 14_generate_episode_from_trained_model.py", force=True)
+            reporter.update(completed_steps, current_label=f"Episode {index + 1} generieren", extra_label="Running now: 14_generate_episode_from_trained_model.py", force=True)
             run_step("14_generate_episode_from_trained_model.py")
             completed_steps += 1
             episode_id = latest_episode_id()
             if not episode_id or episode_id == before:
-                raise RuntimeError("Neue Episode konnte nicht ermittelt werden.")
-            reporter.update(completed_steps, current_label=episode_id, extra_label=f"Episode erzeugt: {episode_id}")
+                raise RuntimeError("Could not determine the new episode.")
+            reporter.update(completed_steps, current_label=episode_id, extra_label=f"Episode generated: {episode_id}")
             env = os.environ.copy()
             env["SERIES_RENDER_EPISODE"] = episode_id
-            reporter.update(completed_steps, current_label=f"{episode_id} rendern", extra_label="Laeuft jetzt: 16_render_episode.py", force=True)
+            reporter.update(completed_steps, current_label=f"{episode_id} render", extra_label="Running now: 16_render_episode.py", force=True)
             run_step("16_render_episode.py", env=env)
             completed_steps += 1
             generated.append(episode_id)
-            reporter.update(completed_steps, current_label=episode_id, extra_label=f"Episoden-Render fertig: {episode_id}")
+            reporter.update(completed_steps, current_label=episode_id, extra_label=f"Episode render complete: {episode_id}")
             ok(f"{index + 1}/{count}: {episode_id} erzeugt und gerendert.")
 
-        reporter.update(completed_steps, current_label="Serienbibel aktualisieren", extra_label="Laeuft jetzt: 15_build_series_bible.py", force=True)
+        reporter.update(completed_steps, current_label="Series Bible aktualisieren", extra_label="Running now: 15_build_series_bible.py", force=True)
         run_step("15_build_series_bible.py")
         completed_steps += 1
-        reporter.update(completed_steps, current_label="Serienbibel aktualisieren", extra_label="Abgeschlossen: 15_build_series_bible.py")
-        reporter.finish(current_label="Preview-Episoden", extra_label=f"Episoden gesamt: {len(generated)}")
+        reporter.update(completed_steps, current_label="Series Bible aktualisieren", extra_label="Completed: 15_build_series_bible.py")
+        reporter.finish(current_label="Preview Episodes", extra_label=f"Total episodes: {len(generated)}")
         mark_step_completed(
             "17_generate_preview_episodes",
             autosave_target,
             {"requested_count": count, "generated_episodes": generated, "generated_count": len(generated)},
         )
-        ok(f"Fertig. Neue sichtbare Episoden: {', '.join(generated)}")
+        ok(f"Done. New visible episodes: {', '.join(generated)}")
     except Exception as exc:
         mark_step_failed(
             "17_generate_preview_episodes",
@@ -168,3 +168,4 @@ if __name__ == "__main__":
     except Exception as exc:
         error(str(exc))
         raise
+

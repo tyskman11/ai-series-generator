@@ -25,11 +25,11 @@ from pipeline_common import (
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Neue Folgen aus dem Inbox-Ordner importieren")
+    parser = argparse.ArgumentParser(description="Import new episodes from the inbox folder")
     parser.add_argument(
         "--all",
         action="store_true",
-        help="Importiert alle aktuell im Inbox-Ordner liegenden Folgen statt nur der naechsten.",
+        help="Import all episodes currently present in the inbox folder instead of only the next one.",
     )
     return parser.parse_args()
 
@@ -38,7 +38,7 @@ def delete_inbox_after_verified_copy(source: Path, destination: Path) -> bool:
     if not source.exists() or not destination.exists():
         return False
     if source.stat().st_size != destination.stat().st_size:
-        raise RuntimeError(f"Kopie unvollstaendig, Inbox-Datei bleibt erhalten: {source.name}")
+        raise RuntimeError(f"Copy incomplete, inbox file will be kept: {source.name}")
     source.unlink()
     return True
 
@@ -112,9 +112,9 @@ def import_single_episode(video: Path, episodes_dir: Path, metadata_dir: Path) -
                 "inbox_deleted": bool(removed_inbox),
             },
         )
-        ok(f"Episode importiert: {video.name}")
+        ok(f"Episode imported: {video.name}")
         if removed_inbox:
-            info(f"Inbox-Datei geloescht: {video.name}")
+            info(f"Inbox file deleted: {video.name}")
         return True
     except Exception as exc:
         mark_step_failed(
@@ -129,7 +129,7 @@ def import_single_episode(video: Path, episodes_dir: Path, metadata_dir: Path) -
 def main() -> None:
     rerun_in_runtime()
     args = parse_args()
-    headline("Neue Folge importieren")
+    headline("Import New Episode")
     cfg = load_config()
     inbox_dir = resolve_project_path(cfg["paths"]["inbox_episodes"])
     episodes_dir = resolve_project_path(cfg["paths"]["episodes"])
@@ -142,25 +142,25 @@ def main() -> None:
 
     removed_duplicates = purge_already_processed_inbox_videos(inbox_dir, episodes_dir, scene_root, metadata_dir)
     if removed_duplicates:
-        info(f"{removed_duplicates} bereits bearbeitete Inbox-Dateien entfernt.")
+        info(f"{removed_duplicates} already processed inbox files removed.")
 
     imported = 0
     if args.all:
         pending_videos = list_videos(inbox_dir)
         if not pending_videos:
-            info("Keine neue Folge im Inbox-Ordner gefunden.")
+            info("No new episode found in the inbox folder.")
             return
         for video in pending_videos:
             if not video.exists():
                 continue
             import_single_episode(video, episodes_dir, metadata_dir)
             imported += 1
-        ok(f"Import abgeschlossen: {imported} Folgen importiert.")
+        ok(f"Import finished: {imported} episodes imported.")
         return
 
     video = next_unprocessed_video(inbox_dir)
     if video is None:
-        info("Keine neue Folge im Inbox-Ordner gefunden.")
+        info("No new episode found in the inbox folder.")
         return
     import_single_episode(video, episodes_dir, metadata_dir)
 
@@ -171,3 +171,4 @@ if __name__ == "__main__":
     except Exception as exc:
         error(str(exc))
         raise
+

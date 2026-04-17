@@ -39,14 +39,14 @@ def run(cmd: list[str], check: bool = True) -> subprocess.CompletedProcess[str]:
 
 def ensure_venv() -> Path:
     py = venv_python()
-    headline("Python-Umgebung erstellen")
+    headline("Create Python Environment")
     venv_dir = runtime_venv_dir()
     cfg_file = venv_dir / "pyvenv.cfg"
     if py.exists() and cfg_file.exists():
         cfg_text = cfg_file.read_text(encoding="utf-8", errors="ignore").lower()
         if "include-system-site-packages = true" not in cfg_text:
             return py
-        warn("Vorhandene venv nutzt systemweite Site-Packages und wird fuer einen sauberen GPU-Stack neu erstellt.")
+        warn("Existing venv uses system site-packages and will be recreated for a clean GPU stack.")
         shutil.rmtree(venv_dir, ignore_errors=True)
     venv_dir.parent.mkdir(parents=True, exist_ok=True)
     subprocess.run(
@@ -142,13 +142,13 @@ def install_torch_stack(py: Path, cfg: dict) -> tuple[bool, dict]:
     cuda_index_url = str(runtime_cfg.get("torch_cuda_index_url", "") or "").strip()
     current_status = torch_status(py)
     if current_status.get("available") and (not wants_gpu or current_status.get("cuda_available")):
-        ok("torch bereits vorhanden.")
+        ok("torch is already installed.")
         return True, current_status
 
     if wants_gpu and not current_status.get("cuda_available"):
-        info("NVIDIA-GPU erkannt. Versuche CUDA-faehigen Torch-Stack zu installieren ...")
+        info("NVIDIA GPU detected. Trying to install a CUDA-enabled torch stack ...")
     else:
-        info("Installiere torch ...")
+        info("Installing torch ...")
 
     log_dir = SCRIPT_DIR / "runtime" / "install_logs"
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -200,18 +200,18 @@ def install_torch_stack(py: Path, cfg: dict) -> tuple[bool, dict]:
         log_file.write_text(last_output, encoding="utf-8")
         current_status = torch_status(py)
         if current_status.get("available") and (not wants_gpu or current_status.get("cuda_available")):
-            ok("torch erfolgreich installiert.")
+            ok("torch installed successfully.")
             return True, current_status
         if result.returncode == 0 and current_status.get("available") and not wants_gpu:
-            ok("torch erfolgreich installiert.")
+            ok("torch installed successfully.")
             return True, current_status
 
-    warn("CUDA-Torch konnte nicht bestaetigt werden. Nutze notfalls CPU-Fallback.")
+    warn("CUDA torch could not be confirmed. Falling back to CPU if needed.")
     return bool(current_status.get("available")), current_status
 
 
 def main() -> None:
-    headline("Laufzeit vorbereiten")
+    headline("Prepare Runtime")
     mark_step_started("00_prepare_runtime", "global")
     cfg = ensure_project_structure(write_config_file=True)
     py = ensure_venv()
@@ -257,7 +257,7 @@ def main() -> None:
             required=False,
         )
     else:
-        info("Optionales XTTS/Coqui-Paket wird im lizenzfreien Standardpfad nicht automatisch installiert.")
+        info("Optional XTTS/Coqui packages are not installed automatically in the license-free default path.")
     torch_ok, torch_info = install_torch_stack(py, cfg)
 
     write_json(
@@ -280,9 +280,9 @@ def main() -> None:
     )
     if torch_info.get("cuda_available"):
         device_names = ", ".join(torch_info.get("device_names") or [])
-        ok(f"GPU bereit fuer Torch: {device_names}")
+        ok(f"GPU ready for torch: {device_names}")
     elif nvidia_gpu_available():
-        warn("NVIDIA-GPU gefunden, aber Torch meldet noch kein CUDA. CPU-Fallback bleibt aktiv.")
+        warn("NVIDIA GPU detected, but torch does not report CUDA yet. CPU fallback remains active.")
     mark_step_completed(
         "00_prepare_runtime",
         "global",
@@ -295,7 +295,7 @@ def main() -> None:
             "voice_cloning": bool(voice_clone_ok),
         },
     )
-    ok("Laufzeit ist bereit.")
+    ok("Runtime is ready.")
 
 
 if __name__ == "__main__":
@@ -305,3 +305,4 @@ if __name__ == "__main__":
         mark_step_failed("00_prepare_runtime", str(exc), "global")
         error(str(exc))
         raise
+

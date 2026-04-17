@@ -15,3 +15,4 @@ def warn(text): print(f"{YELLOW}[WARN]{RESET} {text}")
 def error(text): print(f"{RED}[ERROR]{RESET} {text}")
 def headline(text):
     print(); print(f"{BOLD}{'='*72}{RESET}"); print(f"{BOLD}{text}{RESET}"); print(f"{BOLD}{'='*72}{RESET}")
+
