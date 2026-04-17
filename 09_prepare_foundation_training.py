@@ -27,6 +27,7 @@ from pipeline_common import (
     mark_step_failed,
     mark_step_started,
     ok,
+    pip_install_command,
     read_json,
     rerun_in_runtime,
     resolve_project_path,
@@ -387,7 +388,7 @@ def ensure_runtime_package(module_name: str, package_name: str) -> None:
     if importlib.util.find_spec(module_name) is not None:
         return
     subprocess.run(
-        [str(runtime_python()), "-m", "pip", "install", "--upgrade", package_name],
+        pip_install_command(runtime_python(), "--upgrade", package_name),
         check=True,
     )
 

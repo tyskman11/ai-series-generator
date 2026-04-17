@@ -20,6 +20,7 @@ from pipeline_common import (
     mark_step_started,
     nvidia_gpu_available,
     ok,
+    pip_install_command,
     runtime_environment_tag,
     runtime_python,
     runtime_settings,
@@ -74,7 +75,7 @@ def install_group(
         return True
     info(f"Installiere {name} ...")
     result = run(
-        [str(py), "-m", "pip", "install", "--upgrade", *(pip_extra_args or []), *packages],
+        pip_install_command(py, "--upgrade", *(pip_extra_args or []), *packages),
         check=False,
     )
     log_dir = SCRIPT_DIR / "runtime" / "install_logs"
@@ -159,18 +160,17 @@ def install_torch_stack(py: Path, cfg: dict) -> tuple[bool, dict]:
             (
                 "torch_cuda",
                 [
-                    str(py),
-                    "-m",
-                    "pip",
-                    "install",
-                    "--upgrade",
-                    "--force-reinstall",
-                    "--no-cache-dir",
-                    "--index-url",
-                    cuda_index_url,
-                    "torch",
-                    "torchvision",
-                    "torchaudio",
+                    *pip_install_command(
+                        py,
+                        "--upgrade",
+                        "--force-reinstall",
+                        "--no-cache-dir",
+                        "--index-url",
+                        cuda_index_url,
+                        "torch",
+                        "torchvision",
+                        "torchaudio",
+                    ),
                 ],
             )
         )
@@ -178,16 +178,15 @@ def install_torch_stack(py: Path, cfg: dict) -> tuple[bool, dict]:
         (
             "torch_default",
             [
-                str(py),
-                "-m",
-                "pip",
-                "install",
-                "--upgrade",
-                "--force-reinstall",
-                "--no-cache-dir",
-                "torch",
-                "torchvision",
-                "torchaudio",
+                *pip_install_command(
+                    py,
+                    "--upgrade",
+                    "--force-reinstall",
+                    "--no-cache-dir",
+                    "torch",
+                    "torchvision",
+                    "torchaudio",
+                ),
             ],
         )
     )
@@ -217,7 +216,7 @@ def main() -> None:
     py = ensure_venv()
     info(f"Runtime-Tag: {runtime_environment_tag()}")
     info(f"Verwende Python: {py}")
-    run([str(py), "-m", "pip", "install", "--upgrade", "pip", "setuptools<81", "wheel"], check=False)
+    run(pip_install_command(py, "--upgrade", "pip", "setuptools<81", "wheel"), check=False)
     clone_cfg = cfg.get("cloning", {}) if isinstance(cfg.get("cloning"), dict) else {}
     requested_voice_engine = str(clone_cfg.get("voice_clone_engine", "pyttsx3") or "pyttsx3").strip().lower()
     optional_tts_requested = requested_voice_engine in {"auto", "xtts"} or str(

@@ -501,6 +501,31 @@ def runtime_python() -> Path:
     return Path(sys.executable).resolve()
 
 
+@lru_cache(maxsize=8)
+def pip_supports_break_system_packages(py: str | Path) -> bool:
+    python_path = Path(py).resolve()
+    result = subprocess.run(
+        [str(python_path), "-m", "pip", "install", "--help"],
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    if result.returncode != 0:
+        return False
+    output = (result.stdout or "").lower()
+    return "--break-system-packages" in output
+
+
+def pip_install_command(py: str | Path, *args: str) -> list[str]:
+    python_path = Path(py).resolve()
+    command = [str(python_path), "-m", "pip", "install"]
+    if pip_supports_break_system_packages(python_path):
+        command.append("--break-system-packages")
+    command.extend(args)
+    return command
+
+
 def rerun_in_runtime(script_path: str | Path | None = None) -> None:
     target = runtime_python().resolve()
     current = Path(sys.executable).resolve()
