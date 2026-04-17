@@ -931,7 +931,7 @@ Dieser Schritt:
 Wichtig:
 
 - lokal ist immer die Quelle der Wahrheit fuer diesen Helfer
-- die GitHub-`About`-Beschreibung sagt kurz, dass das Projekt aus Serienfolgen neue KI-Preview-Episoden ableiten soll und dass alle Skripte mit `gpt-5.4` KI-generiert wurden
+- die GitHub-`About`-Beschreibung sagt kurz, dass das Projekt aus Serienfolgen neue KI-Preview-Episoden ableiten soll und dass alle Skripte mit `GPT-5.4` KI-generiert wurden
 - wenn der Remote-Branch andere Historie oder andere Dateien hat, wird nichts heruntergeladen; stattdessen schreibt die GitHub-API den Ziel-Branch auf den lokalen erlaubten Dateistand um
 
 Wichtige Umgebungsvariablen:
