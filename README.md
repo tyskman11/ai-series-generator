@@ -2,7 +2,7 @@
 
 ## Purpose
 
-This project turns existing TV episodes into a local AI training and preview-generation pipeline.
+This project turns existing TV episodes into a local AI training and episode-generation pipeline.
 
 Starting from real episode files, the pipeline can:
 
@@ -11,10 +11,10 @@ Starting from real episode files, the pipeline can:
 - detect faces and link recurring characters to speakers
 - build a local series dataset and heuristic series model
 - train local foundation, adapter, fine-tune, and backend preparation artifacts
-- generate new synthetic preview episodes as markdown and shotlists
-- render draft and final storyboard preview videos
+- generate new synthetic episodes as markdown and shotlists
+- render draft previews and final voiced storyboard episodes
 
-The default path stays local-first and license-light. Voice cloning and stronger TTS backends remain optional follow-up paths rather than the default preview flow.
+The default path stays local-first and license-light. Stronger voice cloning backends remain optional follow-up paths, but the final render path now aims to produce a complete voiced storyboard episode instead of only a silent preview.
 
 All scripts in this repository are AI-generated and maintained with `GPT-5.4`.
 
@@ -28,7 +28,7 @@ All scripts in this repository are AI-generated and maintained with `GPT-5.4`.
 | Review workflow | active | Manual review is still important, but the tooling now reduces the open unknowns much more aggressively. |
 | Dataset / model | usable | A local series dataset and heuristic series model can be rebuilt from reviewed material. |
 | Training stack | expanding | Foundation, adapter, fine-tune, and backend-prep stages now exist as explicit steps. |
-| Generation / render | preview-ready | New episodes, shotlists, draft videos, and final preview videos can be produced. |
+| Generation / render | voiced-storyboard-ready | New episodes, shotlists, draft videos, and final voiced storyboard episodes can be produced. |
 
 ## What Already Works Well
 
@@ -39,7 +39,7 @@ All scripts in this repository are AI-generated and maintained with `GPT-5.4`.
 - storyboard scene asset generation now writes backend-ready per-scene seed packages and can reuse moved training artifacts after workspace path changes
 - local storyboard backend materialization can turn those seed packages into reusable per-scene backend frames before render
 - real episode titles for generated outputs instead of raw `folge_0x` placeholders
-- draft and final silent storyboard preview rendering
+- draft previews and final voiced storyboard episode rendering
 - autosaves and live progress dashboards for long-running pipelines
 - local voice fallback with German Windows voices instead of old English default fallbacks
 
@@ -80,7 +80,7 @@ All scripts in this repository are AI-generated and maintained with `GPT-5.4`.
 - `00_prepare_runtime.py` now also uses English-first install-failure and runtime-Python status lines so startup diagnostics match the rest of the numbered pipeline
 - `00_prepare_runtime.py` now installs the torch stack before torch-dependent packages like Whisper, SpeechBrain, facenet-pytorch, and optional XTTS, which avoids Linux install failures caused by dependency resolution in the wrong order
 - `03_split_scenes.py`, `04_diarize_and_transcribe.py`, `05_link_faces_and_speakers.py`, and `07_build_dataset.py` now also use English-first live progress scope labels and segment/cluster counters so long batch runs read consistently across the early numbered pipeline
-- `17_render_episode.py` now also writes a timed dialogue voice-plan JSON and SRT subtitle preview beside the silent render outputs, so later voiced render backends can reuse speaker timing and optional original-line retrieval hints without changing the default silent preview flow
+- `17_render_episode.py` now also turns the timed dialogue voice-plan into a final dialogue audio track and muxes it into the final storyboard episode, while keeping the draft render as a lighter silent check
 - the numbered order now keeps all training in `07-13`, then generation/render in `14-17`, and only then rebuilds the series bible in `18`, so the pipeline follows the requested train-before-generate/render sequence more clearly
 - `19_generate_preview_episodes.py` now rebuilds the series bible once after the full generated/rendered batch instead of after every single episode, so multi-episode runs stay closer to the intended train-then-generate/render flow
 - `20_refresh_after_manual_review.py` now derives its rebuild order from one explicit planned-step list, keeps the same train-then-generate/render-then-bible sequence, and now also respects the configured optional foundation/adapter/fine-tune/backend stages instead of always forcing `09` through `13`
@@ -99,7 +99,7 @@ All scripts in this repository are AI-generated and maintained with `GPT-5.4`.
 - expand the fine-tune and backend stages from local preparation artifacts into real model-weight training later on
 - connect the new backend-ready storyboard seed packages from `15_generate_storyboard_assets.py` to an actual local image/video model runner later on
 - improve render quality, character consistency, and synthetic episode quality after the review and training loop stabilizes
-- add an optional voiced render path on top of the current silent storyboard preview video flow
+- improve the new voiced storyboard episode path so it sounds more natural and character-specific
 - only re-enable stronger lip-sync paths when they actually look series-quality
 
 ## Documentation Rule
@@ -141,7 +141,7 @@ Also keep the `In Progress` and `Planned` sections current. If priorities change
 - `14_generate_episode_from_trained_model.py`: generate a new synthetic preview episode
 - `15_generate_storyboard_assets.py`: build scene-level storyboard seed assets and backend-ready per-scene input payloads from exported storyboard requests
 - `16_run_storyboard_backend.py`: materialize local backend-style storyboard scene frames from the per-scene backend input payloads
-- `17_render_episode.py`: render draft and final storyboard preview videos from seed assets, backend frames, or placeholder scene cards
+- `17_render_episode.py`: render a draft preview plus a final voiced storyboard episode from seed assets, backend frames, or placeholder scene cards
 - `18_build_series_bible.py`: rebuild the series bible
 - `19_generate_preview_episodes.py`: generate multiple visible preview episodes in one run
 - `20_refresh_after_manual_review.py`: rebuild the pipeline after manual character review
@@ -171,7 +171,8 @@ Also keep the `In Progress` and `Planned` sections current. If priorities change
 - `ai_series_project/generation/storyboard_assets`: optional generated scene frames that the render step can reuse
 - `ai_series_project/generation/storyboard_assets/<episode>/*_backend_input.json`: per-scene backend-ready seed payloads for later local image/video model runners
 - `ai_series_project/generation/renders/drafts`: draft renders
-- `ai_series_project/generation/renders/final`: final preview renders
+- `ai_series_project/generation/renders/final`: final voiced storyboard episode renders
+- `ai_series_project/generation/renders/final/*_dialogue_audio.wav`: assembled dialogue audio track for the voiced final episode
 - `ai_series_project/generation/renders/final/*_voice_plan.json`: timed dialogue and speaker plan for later voiced render backends
 - `ai_series_project/generation/renders/final/*_dialogue_preview.srt`: subtitle-style dialogue preview aligned to the silent storyboard render timeline
 - `ai_series_project/series_bible/episode_summaries`: generated series bible files
@@ -299,15 +300,18 @@ Materializes local backend-style scene frames from the per-scene backend input p
 
 ### 17 - Render Episode
 
-Renders a draft and final local storyboard preview video. The current default path:
+Renders a draft local preview plus a final voiced storyboard episode. The current default path:
 
 - reuses materialized backend frames from `16_run_storyboard_backend.py` when they exist
 - otherwise reuses generated storyboard seed assets from `generation/storyboard_assets/<episode>`
 - generates readable placeholder scene cards when no visual asset exists yet
 - preserves the per-scene storyboard plan in the render manifest for future model backends
 - uses FFmpeg concat lists to avoid long Windows command line failures
-- currently renders a silent storyboard preview rather than a voiced final mix
-- now also writes a timed dialogue voice-plan JSON plus an `.srt` subtitle preview so later voiced render steps can reuse scene timing, speaker assignments, and optional original-line retrieval matches
+- keeps the draft render as a fast silent preview
+- builds a dialogue audio track from the timed voice plan with local `pyttsx3` speech synthesis
+- muxes that dialogue track into the final episode render when local TTS succeeds
+- falls back to a silent final video only if local audio synthesis fails
+- also writes a timed dialogue voice-plan JSON plus an `.srt` subtitle preview beside the final outputs
 
 ### 18 - Build Series Bible
 
@@ -385,7 +389,7 @@ python 20_refresh_after_manual_review.py --skip-downloads
 - `character_map.json` and `voice_map.json` are still global, not per episode
 - speaker linking remains heuristic rather than production-grade diarization
 - the local series model is not comparable to a large multimodal frontier model
-- even the `final` video is still a local preview output, not a true TV-grade final production
+- even the voiced `final` episode is still a local storyboard production, not a true TV-grade final production
 - voice similarity is strongest when original segment retrieval can be reused; fully new lines still fall back to generated speech
 - lip-sync remains a local fallback path, not production-quality facial performance generation
 - XTTS requires explicit installation, explicit license acceptance, and sufficient voice reference quality

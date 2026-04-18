@@ -5,6 +5,7 @@ import argparse
 import difflib
 import os
 import re
+import shutil
 import subprocess
 import tempfile
 import textwrap
@@ -34,7 +35,7 @@ from pipeline_common import (
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Render a draft and final storyboard preview video.")
+    parser = argparse.ArgumentParser(description="Render a draft preview and a final voiced storyboard episode.")
     parser.add_argument("--episode-id", help="Target a specific episode ID such as episode_09 or folge_09.")
     parser.add_argument("--force", action="store_true", help="Recreate existing draft and final renders.")
     return parser.parse_args()
@@ -537,6 +538,253 @@ def resolve_system_voice_id(default_voice_id: str, voices: list[dict], require_g
     return default_voice_id
 
 
+def describe_system_voices(engine) -> list[dict]:
+    payloads: list[dict] = []
+    for voice in engine.getProperty("voices") or []:
+        languages = []
+        for language in getattr(voice, "languages", []) or []:
+            text = str(language)
+            text = text.replace("b'\\x05", "").replace("b'\\x02", "").replace("'", "")
+            languages.append(text)
+        lowered_languages = [value.lower() for value in languages]
+        voice_name = str(getattr(voice, "name", "") or "")
+        payloads.append(
+            {
+                "id": str(getattr(voice, "id", "") or ""),
+                "name": voice_name,
+                "languages": languages,
+                "is_german": "german" in voice_name.lower() or any(language.startswith("de") for language in lowered_languages),
+            }
+        )
+    return payloads
+
+
+def build_audio_segment_plan(voice_plan_lines: list[dict], total_duration: float) -> list[dict]:
+    duration_limit = max(0.0, float(total_duration or 0.0))
+    segments: list[dict] = []
+    cursor = 0.0
+    for line in sorted(voice_plan_lines, key=lambda item: float(item.get("start_seconds", 0.0) or 0.0)):
+        start_seconds = max(0.0, min(duration_limit, float(line.get("start_seconds", 0.0) or 0.0)))
+        end_seconds = max(start_seconds, min(duration_limit, float(line.get("end_seconds", start_seconds) or start_seconds)))
+        line_duration = max(0.0, end_seconds - start_seconds)
+        gap_duration = max(0.0, start_seconds - cursor)
+        if gap_duration > 0.01:
+            segments.append({"kind": "silence", "duration_seconds": round(gap_duration, 3)})
+        if line_duration > 0.01:
+            segments.append(
+                {
+                    "kind": "line",
+                    "line_index": int(line.get("line_index", 0) or 0),
+                    "duration_seconds": round(line_duration, 3),
+                }
+            )
+        cursor = max(cursor, end_seconds)
+    tail_duration = max(0.0, duration_limit - cursor)
+    if tail_duration > 0.01 or not segments:
+        segments.append({"kind": "silence", "duration_seconds": round(tail_duration if segments else duration_limit, 3)})
+    return segments
+
+
+def synthesize_voice_lines(temp_root: Path, voice_plan_lines: list[dict], render_cfg: dict) -> tuple[dict[int, Path], dict]:
+    try:
+        import pyttsx3
+    except Exception as exc:
+        raise RuntimeError("pyttsx3 is not available for voiced final episode rendering.") from exc
+
+    sample_rate = int(render_cfg.get("audio_sample_rate", 22050) or 22050)
+    engine = pyttsx3.init()
+    voices = describe_system_voices(engine)
+    configured_voice_id = clean_text(render_cfg.get("voice_id", ""))
+    default_voice_id = configured_voice_id or clean_text(engine.getProperty("voice"))
+    voice_id = resolve_system_voice_id(default_voice_id, voices, require_german=bool(render_cfg.get("prefer_german_voice", True)))
+    voice_rate = int(render_cfg.get("voice_rate", 175) or 175)
+    voice_volume = float(render_cfg.get("voice_volume", 1.0) or 1.0)
+    output_map: dict[int, Path] = {}
+    try:
+        if voice_id:
+            engine.setProperty("voice", voice_id)
+        engine.setProperty("rate", voice_rate)
+        engine.setProperty("volume", max(0.0, min(1.0, voice_volume)))
+        for line in voice_plan_lines:
+            line_index = int(line.get("line_index", 0) or 0)
+            text = clean_text(line.get("text", ""))
+            if not text:
+                continue
+            target = temp_root / f"line_{line_index:04d}_raw.wav"
+            engine.save_to_file(text, str(target))
+            output_map[line_index] = target
+        engine.runAndWait()
+    finally:
+        try:
+            engine.stop()
+        except Exception:
+            pass
+
+    missing = [index for index, path in output_map.items() if not path.exists() or path.stat().st_size <= 0]
+    if missing:
+        raise RuntimeError(f"Voice synthesis failed for {len(missing)} dialogue lines.")
+    return output_map, {"backend": "pyttsx3", "voice_id": voice_id, "sample_rate": sample_rate, "voices": voices}
+
+
+def create_silence_audio(ffmpeg: Path, duration_seconds: float, output_path: Path, sample_rate: int) -> None:
+    command = [
+        str(ffmpeg),
+        "-hide_banner",
+        "-y",
+        "-f",
+        "lavfi",
+        "-i",
+        f"anullsrc=r={sample_rate}:cl=mono",
+        "-t",
+        f"{max(0.01, float(duration_seconds or 0.0)):.3f}",
+        "-ac",
+        "1",
+        "-ar",
+        str(sample_rate),
+        str(output_path),
+    ]
+    result = subprocess.run(command, check=False, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    if result.returncode != 0 or not render_output_ready(output_path):
+        raise RuntimeError(f"Could not create silence audio segment {output_path.name}.")
+
+
+def normalize_line_audio(ffmpeg: Path, input_path: Path, duration_seconds: float, output_path: Path, sample_rate: int) -> None:
+    command = [
+        str(ffmpeg),
+        "-hide_banner",
+        "-y",
+        "-i",
+        str(input_path),
+        "-af",
+        "apad",
+        "-t",
+        f"{max(0.01, float(duration_seconds or 0.0)):.3f}",
+        "-ac",
+        "1",
+        "-ar",
+        str(sample_rate),
+        str(output_path),
+    ]
+    result = subprocess.run(command, check=False, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    if result.returncode != 0 or not render_output_ready(output_path):
+        raise RuntimeError(f"Could not normalize dialogue audio {input_path.name}.")
+
+
+def concat_audio_segments(ffmpeg: Path, segment_paths: list[Path], output_path: Path) -> None:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".txt", delete=False) as handle:
+        concat_path = Path(handle.name)
+        for segment_path in segment_paths:
+            escaped = str(segment_path).replace("'", "''")
+            handle.write(f"file '{escaped}'\n")
+    command = [
+        str(ffmpeg),
+        "-hide_banner",
+        "-y",
+        "-f",
+        "concat",
+        "-safe",
+        "0",
+        "-i",
+        str(concat_path),
+        "-c",
+        "copy",
+        str(output_path),
+    ]
+    try:
+        result = subprocess.run(command, check=False, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        if result.returncode != 0 or not render_output_ready(output_path):
+            raise RuntimeError(f"Could not assemble final episode audio {output_path.name}.")
+    finally:
+        try:
+            concat_path.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def mux_episode_audio(ffmpeg: Path, video_path: Path, audio_path: Path, output_path: Path) -> None:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    command = [
+        str(ffmpeg),
+        "-hide_banner",
+        "-y",
+        "-i",
+        str(video_path),
+        "-i",
+        str(audio_path),
+        "-c:v",
+        "copy",
+        "-c:a",
+        "aac",
+        "-b:a",
+        "192k",
+        "-map",
+        "0:v:0",
+        "-map",
+        "1:a:0",
+        "-shortest",
+        str(output_path),
+    ]
+    result = subprocess.run(command, check=False, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    if result.returncode != 0 or not render_output_ready(output_path):
+        raise RuntimeError(f"Could not mux final voiced episode {output_path.name}.")
+
+
+def render_episode_audio_track(
+    ffmpeg: Path,
+    voice_plan_lines: list[dict],
+    total_duration: float,
+    render_cfg: dict,
+    temp_root: Path,
+    output_path: Path,
+) -> dict:
+    audio_root = temp_root / "audio"
+    audio_root.mkdir(parents=True, exist_ok=True)
+    sample_rate = int(render_cfg.get("audio_sample_rate", 22050) or 22050)
+    synthesized_map, voice_meta = synthesize_voice_lines(audio_root, voice_plan_lines, render_cfg)
+    segment_plan = build_audio_segment_plan(voice_plan_lines, total_duration)
+    normalized_map: dict[int, Path] = {}
+    for line in voice_plan_lines:
+        line_index = int(line.get("line_index", 0) or 0)
+        if line_index in normalized_map:
+            continue
+        normalized_path = audio_root / f"line_{line_index:04d}.wav"
+        normalize_line_audio(
+            ffmpeg,
+            synthesized_map[line_index],
+            float(line.get("estimated_duration_seconds", 0.0) or 0.0),
+            normalized_path,
+            sample_rate,
+        )
+        normalized_map[line_index] = normalized_path
+    concat_segments: list[Path] = []
+    silence_index = 0
+    for segment in segment_plan:
+        if segment.get("kind") == "silence":
+            duration_seconds = float(segment.get("duration_seconds", 0.0) or 0.0)
+            if duration_seconds <= 0.01:
+                continue
+            silence_path = audio_root / f"silence_{silence_index:04d}.wav"
+            create_silence_audio(ffmpeg, duration_seconds, silence_path, sample_rate)
+            concat_segments.append(silence_path)
+            silence_index += 1
+            continue
+        line_index = int(segment.get("line_index", 0) or 0)
+        concat_segments.append(normalized_map[line_index])
+    if not concat_segments:
+        silence_path = audio_root / "silence_full.wav"
+        create_silence_audio(ffmpeg, total_duration, silence_path, sample_rate)
+        concat_segments.append(silence_path)
+    concat_audio_segments(ffmpeg, concat_segments, output_path)
+    return {
+        "audio_track": str(output_path),
+        "audio_backend": voice_meta.get("backend", "pyttsx3"),
+        "voice_id": voice_meta.get("voice_id", ""),
+        "sample_rate": sample_rate,
+        "segment_count": len(concat_segments),
+    }
+
+
 def run_ffmpeg_with_codec_fallback(command_factory, video_codec: str, output_path: Path) -> str:
     attempted: list[str] = []
     for codec in [video_codec, "libx264", "mpeg4"]:
@@ -656,12 +904,14 @@ def main() -> None:
     ffmpeg = detect_tool(PROJECT_ROOT / "tools" / "ffmpeg" / "bin", "ffmpeg")
     assets_root = Path(str(shotlist.get("storyboard_assets_root", ""))).resolve() if shotlist.get("storyboard_assets_root") else storyboard_assets_root(cfg, episode_id)
     render_root = resolve_project_path("generation/renders")
+    temp_frame_root = render_root / "tmp" / episode_id
     draft_path = render_root / "drafts" / f"{episode_id}.mp4"
     final_path = render_root / "final" / f"{episode_id}.mp4"
+    final_video_only_path = temp_frame_root / f"{episode_id}_video_only.mp4"
     manifest_path = render_root / "final" / f"{episode_id}_render_manifest.json"
     voice_plan_path = render_root / "final" / f"{episode_id}_voice_plan.json"
     subtitle_preview_path = render_root / "final" / f"{episode_id}_dialogue_preview.srt"
-    temp_frame_root = render_root / "tmp" / episode_id
+    dialogue_audio_path = render_root / "final" / f"{episode_id}_dialogue_audio.wav"
     concat_path = temp_frame_root / "frames.txt"
 
     autosave_target = episode_id
@@ -691,6 +941,9 @@ def main() -> None:
         original_line_library = build_original_line_library(cfg)
         voice_lookup = build_voice_lookup(cfg)
         timeline_cursor = 0.0
+        render_mode = "voiced_storyboard_episode"
+        audio_track_meta: dict[str, object] = {}
+        audio_render_error = ""
 
         if include_title_cards and title_card_seconds > 0.0:
             reporter.update(0, current_label="Title Card", extra_label="Running now: render opening title card", force=True)
@@ -763,13 +1016,32 @@ def main() -> None:
 
         reporter.update(len(scenes) + 2, current_label="Draft Render", extra_label="Running now: encode draft and final video", force=True)
         encode_video(ffmpeg, concat_path, draft_path, fps, min(width, 960), min(height, 540), crf=28)
-        encode_video(ffmpeg, concat_path, final_path, fps, width, height, crf=20)
+        encode_video(ffmpeg, concat_path, final_video_only_path, fps, width, height, crf=20)
+
+        try:
+            audio_track_meta = render_episode_audio_track(
+                ffmpeg,
+                voice_plan_lines,
+                timeline_cursor,
+                render_cfg,
+                temp_frame_root,
+                dialogue_audio_path,
+            )
+            mux_episode_audio(ffmpeg, final_video_only_path, dialogue_audio_path, final_path)
+        except Exception as audio_exc:
+            render_mode = "silent_storyboard_preview_fallback"
+            audio_render_error = str(audio_exc)
+            shutil.copyfile(final_video_only_path, final_path)
+            info(f"Audio render fallback active for {episode_id}: {audio_render_error}")
 
         voice_plan_payload = {
             "episode_id": episode_id,
-            "render_mode": "silent_storyboard_preview",
+            "render_mode": render_mode,
             "voice_plan_mode": "timed_dialogue_preview",
             "subtitle_preview": str(subtitle_preview_path),
+            "audio_track": str(dialogue_audio_path) if audio_track_meta else "",
+            "audio_track_available": bool(audio_track_meta),
+            "audio_render_error": audio_render_error,
             "scene_count": len(voice_plan_scenes),
             "line_count": len(voice_plan_lines),
             "scenes": voice_plan_scenes,
@@ -783,12 +1055,17 @@ def main() -> None:
             "episode_title": shotlist.get("episode_title", ""),
             "shotlist_path": str(shotlist_path),
             "storyboard_assets_root": str(assets_root),
-            "render_mode": "silent_storyboard_preview",
+            "render_mode": render_mode,
             "voice_plan_mode": "timed_dialogue_preview",
             "draft_render": str(draft_path),
             "final_render": str(final_path),
+            "final_video_only_render": str(final_video_only_path),
             "voice_plan": str(voice_plan_path),
             "subtitle_preview": str(subtitle_preview_path),
+            "dialogue_audio": str(dialogue_audio_path) if audio_track_meta else "",
+            "audio_track_available": bool(audio_track_meta),
+            "audio_render_error": audio_render_error,
+            "audio_track_meta": audio_track_meta,
             "ffmpeg": str(ffmpeg),
             "fps": fps,
             "width": width,
@@ -801,15 +1078,23 @@ def main() -> None:
         shotlist["render_manifest"] = str(manifest_path)
         shotlist["draft_render"] = str(draft_path)
         shotlist["final_render"] = str(final_path)
+        shotlist["dialogue_audio"] = str(dialogue_audio_path) if audio_track_meta else ""
         shotlist["voice_plan"] = str(voice_plan_path)
         shotlist["subtitle_preview"] = str(subtitle_preview_path)
         write_json(shotlist_path, shotlist)
 
-        reporter.finish(current_label=episode_id, extra_label=f"Rendered {len(scenes)} storyboard scenes to draft and final video")
+        reporter.finish(current_label=episode_id, extra_label=f"Rendered {len(scenes)} scenes to draft preview and final episode")
         mark_step_completed(
             "18_render_episode",
             autosave_target,
-            {"episode_id": episode_id, "draft_render": str(draft_path), "final_render": str(final_path), "manifest": str(manifest_path)},
+            {
+                "episode_id": episode_id,
+                "draft_render": str(draft_path),
+                "final_render": str(final_path),
+                "dialogue_audio": str(dialogue_audio_path) if audio_track_meta else "",
+                "render_mode": render_mode,
+                "manifest": str(manifest_path),
+            },
         )
         ok(f"Episode rendered: {episode_id}")
     except Exception as exc:
