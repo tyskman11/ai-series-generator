@@ -81,6 +81,7 @@ All scripts in this repository are AI-generated and maintained with `GPT-5.4`.
 - `04_diarize_and_transcribe.py` and `09_prepare_foundation_training.py` now also use English-first completion and remote-revision fallback messages so transcription and model-prep logs stay consistent with the rest of the numbered pipeline
 - `00_prepare_runtime.py` now also uses English-first install-failure and runtime-Python status lines so startup diagnostics match the rest of the numbered pipeline
 - `03_split_scenes.py`, `04_diarize_and_transcribe.py`, `05_link_faces_and_speakers.py`, and `07_build_dataset.py` now also use English-first live progress scope labels and segment/cluster counters so long batch runs read consistently across the early numbered pipeline
+- `18_render_episode.py` now also writes a timed dialogue voice-plan JSON and SRT subtitle preview beside the silent render outputs, so later voiced render backends can reuse speaker timing and optional original-line retrieval hints without changing the default silent preview flow
 
 ## Planned
 
@@ -165,6 +166,8 @@ Also keep the `In Progress` and `Planned` sections current. If priorities change
 - `ai_series_project/generation/storyboard_assets/<episode>/*_backend_input.json`: per-scene backend-ready seed payloads for later local image/video model runners
 - `ai_series_project/generation/renders/drafts`: draft renders
 - `ai_series_project/generation/renders/final`: final preview renders
+- `ai_series_project/generation/renders/final/*_voice_plan.json`: timed dialogue and speaker plan for later voiced render backends
+- `ai_series_project/generation/renders/final/*_dialogue_preview.srt`: subtitle-style dialogue preview aligned to the silent storyboard render timeline
 - `ai_series_project/series_bible/episode_summaries`: generated series bible files
 - `ai_series_project/runtime/autosaves`: autosaves and resumable run state
 - `runtime/venv_<os>_<arch>_<bitness>`: local Python environment for the current machine and runtime architecture
@@ -308,6 +311,7 @@ Renders a draft and final local storyboard preview video. The current default pa
 - preserves the per-scene storyboard plan in the render manifest for future model backends
 - uses FFmpeg concat lists to avoid long Windows command line failures
 - currently renders a silent storyboard preview rather than a voiced final mix
+- now also writes a timed dialogue voice-plan JSON plus an `.srt` subtitle preview so later voiced render steps can reuse scene timing, speaker assignments, and optional original-line retrieval matches
 
 ### 19 - Generate Preview Episodes
 

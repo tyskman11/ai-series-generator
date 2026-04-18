@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import difflib
 import os
+import re
 import subprocess
 import tempfile
 import textwrap
@@ -296,6 +297,233 @@ def select_retrieval_segment(character_name: str, line_text: str, library: dict,
     return best_match
 
 
+def clean_text(value: object) -> str:
+    return str(value or "").strip()
+
+
+def usable_library_speaker_name(name: str) -> bool:
+    lowered = clean_text(name).lower()
+    if not lowered:
+        return False
+    if lowered in {"unknown", "speaker_unknown", "no face", "noface", "ignore", "ignored"}:
+        return False
+    if lowered.startswith("speaker_"):
+        return False
+    return True
+
+
+def transcript_episode_id(path: Path) -> str:
+    suffix = "_segments"
+    stem = path.stem
+    return stem[: -len(suffix)] if stem.endswith(suffix) else stem
+
+
+def linked_segment_index(cfg: dict) -> dict[str, dict[str, dict]]:
+    linked_root = resolve_project_path(cfg["paths"]["linked_segments"])
+    index: dict[str, dict[str, dict]] = {}
+    for linked_path in sorted(linked_root.glob("*_linked_segments.json")):
+        episode_id = linked_path.stem.replace("_linked_segments", "")
+        rows = read_json(linked_path, [])
+        episode_index: dict[str, dict] = {}
+        for row in rows if isinstance(rows, list) else []:
+            if not isinstance(row, dict):
+                continue
+            segment_id = clean_text(row.get("segment_id", ""))
+            if segment_id:
+                episode_index[segment_id] = row
+        if episode_index:
+            index[episode_id] = episode_index
+    return index
+
+
+def build_original_line_library(cfg: dict) -> dict[str, list[dict]]:
+    transcript_root = resolve_project_path(cfg["paths"]["speaker_transcripts"])
+    scene_root = resolve_project_path(cfg["paths"]["scene_clips"])
+    linked_rows = linked_segment_index(cfg)
+    library: dict[str, list[dict]] = {}
+    for transcript_path in sorted(transcript_root.glob("*_segments.json")):
+        episode_id = transcript_episode_id(transcript_path)
+        episode_linked = linked_rows.get(episode_id, {})
+        rows = read_json(transcript_path, [])
+        for row in rows if isinstance(rows, list) else []:
+            if not isinstance(row, dict):
+                continue
+            segment_id = clean_text(row.get("segment_id", ""))
+            linked = episode_linked.get(segment_id, {})
+            speaker_name = clean_text(linked.get("speaker_name", ""))
+            text = clean_text(linked.get("text", "") or row.get("text", ""))
+            if not usable_library_speaker_name(speaker_name) or not text:
+                continue
+            scene_id = clean_text(row.get("scene_id", "") or linked.get("scene_id", ""))
+            scene_clip_path = scene_root / episode_id / f"{scene_id}.mp4" if scene_id else Path()
+            library.setdefault(speaker_name, []).append(
+                {
+                    "episode_id": episode_id,
+                    "scene_id": scene_id,
+                    "segment_id": segment_id,
+                    "text": text,
+                    "audio_path": clean_text(row.get("audio_file", "")),
+                    "scene_clip_path": str(scene_clip_path) if scene_id else "",
+                    "start": float(row.get("start", 0.0) or 0.0),
+                    "end": float(row.get("end", 0.0) or 0.0),
+                }
+            )
+    return library
+
+
+def build_voice_lookup(cfg: dict) -> dict[str, dict]:
+    voice_map = read_json(resolve_project_path(cfg["paths"]["voice_map"]), {"clusters": {}, "aliases": {}})
+    lookup: dict[str, dict] = {}
+    for cluster_id, payload in (voice_map.get("clusters", {}) or {}).items():
+        if not isinstance(payload, dict):
+            continue
+        speaker_name = clean_text(payload.get("name", ""))
+        if not speaker_name:
+            continue
+        lookup.setdefault(
+            speaker_name,
+            {
+                "cluster_id": cluster_id,
+                "name": speaker_name,
+                "linked_face_cluster": clean_text(payload.get("linked_face_cluster", "")),
+                "auto_named": bool(payload.get("auto_named", False)),
+            },
+        )
+    return lookup
+
+
+def parse_dialogue_line(raw_line: str, source: dict) -> tuple[str, str]:
+    line = clean_text(raw_line)
+    fallback_speaker = clean_text(source.get("speaker", ""))
+    if ":" in line:
+        speaker, text = line.split(":", 1)
+        return clean_text(speaker) or fallback_speaker or "Narrator", clean_text(text)
+    return fallback_speaker or "Narrator", line
+
+
+def estimate_dialogue_duration_seconds(text: str, voice_rate: int, audio_pad_seconds: float) -> float:
+    tokens = re.findall(r"\w+", clean_text(text), flags=re.UNICODE)
+    word_count = max(1, len(tokens))
+    punctuation_pauses = sum(clean_text(text).count(mark) for mark in ".!?;:")
+    words_per_minute = max(90, int(voice_rate or 175))
+    spoken_seconds = (word_count / words_per_minute) * 60.0
+    pause_seconds = min(1.6, punctuation_pauses * 0.12)
+    return max(0.9, spoken_seconds + pause_seconds + max(0.12, float(audio_pad_seconds or 0.0) * 0.5))
+
+
+def build_scene_voice_plan(
+    scene: dict,
+    scene_duration_seconds: float,
+    scene_start_seconds: float,
+    original_line_library: dict[str, list[dict]],
+    voice_lookup: dict[str, dict],
+    cloning_cfg: dict,
+    render_cfg: dict,
+) -> list[dict]:
+    dialogue_lines = scene.get("dialogue_lines", []) if isinstance(scene.get("dialogue_lines", []), list) else []
+    if not dialogue_lines:
+        return []
+    voice_rate = int(render_cfg.get("voice_rate", 175) or 175)
+    audio_pad_seconds = float(render_cfg.get("audio_pad_seconds", 0.35) or 0.35)
+    prepared: list[dict] = []
+    for line_index, raw_line in enumerate(dialogue_lines):
+        source = scene_dialogue_source(scene, line_index)
+        speaker_name, line_text = parse_dialogue_line(str(raw_line), source)
+        if not line_text:
+            continue
+        retrieval_segment: dict | None = None
+        if clean_text(source.get("type", "")) == "original_line" and clean_text(source.get("segment_id", "")):
+            retrieval_segment = {
+                "segment_id": clean_text(source.get("segment_id", "")),
+                "text": clean_text(source.get("text", "") or line_text),
+                "audio_path": clean_text(source.get("audio_file", "")),
+                "scene_clip_path": clean_text(source.get("video_file", "")),
+                "start": float(source.get("start", 0.0) or 0.0),
+                "end": float(source.get("end", 0.0) or 0.0),
+                "match_score": 1.0,
+                "token_overlap": 1.0,
+            }
+        elif usable_library_speaker_name(speaker_name):
+            retrieval_segment = select_retrieval_segment(speaker_name, line_text, original_line_library, cloning_cfg)
+        prepared.append(
+            {
+                "line_index": line_index,
+                "speaker_name": speaker_name,
+                "text": line_text,
+                "source": source,
+                "retrieval_segment": retrieval_segment or {},
+                "voice_profile": voice_lookup.get(speaker_name, {}),
+                "raw_duration_seconds": estimate_dialogue_duration_seconds(line_text, voice_rate, audio_pad_seconds),
+            }
+        )
+
+    raw_total = sum(float(row.get("raw_duration_seconds", 0.0) or 0.0) for row in prepared)
+    scale = 1.0
+    if raw_total > max(0.0, scene_duration_seconds):
+        scale = max(0.35, scene_duration_seconds / max(raw_total, 0.001))
+
+    cursor = float(scene_start_seconds)
+    scene_end = float(scene_start_seconds) + max(0.0, float(scene_duration_seconds))
+    plan: list[dict] = []
+    for row in prepared:
+        duration = round(float(row["raw_duration_seconds"]) * scale, 3)
+        start_seconds = round(cursor, 3)
+        end_seconds = round(min(scene_end, cursor + duration), 3)
+        retrieval_segment = row["retrieval_segment"] if isinstance(row["retrieval_segment"], dict) else {}
+        voice_profile = row["voice_profile"] if isinstance(row["voice_profile"], dict) else {}
+        plan.append(
+            {
+                "line_index": int(row["line_index"]),
+                "speaker_name": row["speaker_name"],
+                "text": row["text"],
+                "start_seconds": start_seconds,
+                "end_seconds": end_seconds,
+                "estimated_duration_seconds": round(max(0.0, end_seconds - start_seconds), 3),
+                "audio_strategy": "reuse_original_segment" if retrieval_segment else "synthesize_preview_tts",
+                "source_type": clean_text((row["source"] or {}).get("type", "")) or "generated",
+                "source_segment_id": clean_text((row["source"] or {}).get("segment_id", "")),
+                "voice_profile": {
+                    "cluster_id": clean_text(voice_profile.get("cluster_id", "")),
+                    "name": clean_text(voice_profile.get("name", "")),
+                    "linked_face_cluster": clean_text(voice_profile.get("linked_face_cluster", "")),
+                    "auto_named": bool(voice_profile.get("auto_named", False)),
+                },
+                "retrieval_segment": retrieval_segment,
+            }
+        )
+        cursor += duration
+    return plan
+
+
+def format_srt_timestamp(seconds: float) -> str:
+    total_milliseconds = max(0, int(round(float(seconds or 0.0) * 1000.0)))
+    hours, remainder = divmod(total_milliseconds, 3_600_000)
+    minutes, remainder = divmod(remainder, 60_000)
+    whole_seconds, milliseconds = divmod(remainder, 1000)
+    return f"{hours:02d}:{minutes:02d}:{whole_seconds:02d},{milliseconds:03d}"
+
+
+def render_subtitle_preview_srt(voice_plan_lines: list[dict]) -> str:
+    blocks: list[str] = []
+    for index, line in enumerate(voice_plan_lines, start=1):
+        speaker_name = clean_text(line.get("speaker_name", "")) or "Narrator"
+        text = clean_text(line.get("text", ""))
+        if not text:
+            continue
+        start_seconds = float(line.get("start_seconds", 0.0) or 0.0)
+        end_seconds = max(start_seconds + 0.4, float(line.get("end_seconds", start_seconds + 0.4) or (start_seconds + 0.4)))
+        blocks.append(
+            "\n".join(
+                [
+                    str(index),
+                    f"{format_srt_timestamp(start_seconds)} --> {format_srt_timestamp(end_seconds)}",
+                    f"{speaker_name}: {text}",
+                ]
+            )
+        )
+    return "\n\n".join(blocks) + ("\n" if blocks else "")
+
+
 def resolve_system_voice_id(default_voice_id: str, voices: list[dict], require_german: bool = True) -> str:
     if not require_german:
         return default_voice_id
@@ -417,6 +645,7 @@ def main() -> None:
         return
 
     render_cfg = cfg.get("render", {}) if isinstance(cfg.get("render"), dict) else {}
+    cloning_cfg = cfg.get("cloning", {}) if isinstance(cfg.get("cloning"), dict) else {}
     width = int(render_cfg.get("width", 1280))
     height = int(render_cfg.get("height", 720))
     fps = max(12, int(render_cfg.get("fps", 30)))
@@ -430,6 +659,8 @@ def main() -> None:
     draft_path = render_root / "drafts" / f"{episode_id}.mp4"
     final_path = render_root / "final" / f"{episode_id}.mp4"
     manifest_path = render_root / "final" / f"{episode_id}_render_manifest.json"
+    voice_plan_path = render_root / "final" / f"{episode_id}_voice_plan.json"
+    subtitle_preview_path = render_root / "final" / f"{episode_id}_dialogue_preview.srt"
     temp_frame_root = render_root / "tmp" / episode_id
     concat_path = temp_frame_root / "frames.txt"
 
@@ -455,6 +686,11 @@ def main() -> None:
         temp_frame_root.mkdir(parents=True, exist_ok=True)
         entries: list[tuple[Path, float]] = []
         manifest_scenes: list[dict] = []
+        voice_plan_scenes: list[dict] = []
+        voice_plan_lines: list[dict] = []
+        original_line_library = build_original_line_library(cfg)
+        voice_lookup = build_voice_lookup(cfg)
+        timeline_cursor = 0.0
 
         if include_title_cards and title_card_seconds > 0.0:
             reporter.update(0, current_label="Title Card", extra_label="Running now: render opening title card", force=True)
@@ -468,6 +704,7 @@ def main() -> None:
             )
             title_image.save(title_path, quality=95)
             entries.append((title_path, title_card_seconds))
+            timeline_cursor += title_card_seconds
 
         for index, scene in enumerate(scenes, start=1):
             scene_id = str(scene.get("scene_id", "")).strip() or f"scene_{index:04d}"
@@ -477,6 +714,24 @@ def main() -> None:
             scene_image.save(frame_path, quality=95)
             duration = safe_duration_seconds(scene)
             entries.append((frame_path, duration))
+            scene_voice_plan = build_scene_voice_plan(
+                scene,
+                duration,
+                timeline_cursor,
+                original_line_library,
+                voice_lookup,
+                cloning_cfg,
+                render_cfg,
+            )
+            voice_plan_scenes.append(
+                {
+                    "scene_id": scene_id,
+                    "duration_seconds": duration,
+                    "line_count": len(scene_voice_plan),
+                    "lines": scene_voice_plan,
+                }
+            )
+            voice_plan_lines.extend(scene_voice_plan)
             manifest_scenes.append(
                 {
                     "scene_id": scene_id,
@@ -488,9 +743,11 @@ def main() -> None:
                     "characters": scene.get("characters", []) if isinstance(scene.get("characters", []), list) else [],
                     "summary": scene.get("summary", ""),
                     "generation_plan": scene.get("generation_plan", {}) if isinstance(scene.get("generation_plan", {}), dict) else {},
+                    "voice_line_count": len(scene_voice_plan),
                 }
             )
             reporter.update(index, current_label=scene_id, extra_label=f"Frame source: {scene_meta.get('asset_source_type', 'placeholder')}")
+            timeline_cursor += duration
 
         if closing_card_seconds > 0.0:
             closing_index = len(entries) + 1
@@ -499,6 +756,7 @@ def main() -> None:
             closing_image = closing_card(width, height, str(shotlist.get("display_title", episode_id)), len(scenes))
             closing_image.save(closing_path, quality=95)
             entries.append((closing_path, closing_card_seconds))
+            timeline_cursor += closing_card_seconds
 
         reporter.update(len(scenes) + 1, current_label="Concat List", extra_label="Running now: assemble FFmpeg concat list")
         build_concat_file(entries, concat_path)
@@ -507,6 +765,18 @@ def main() -> None:
         encode_video(ffmpeg, concat_path, draft_path, fps, min(width, 960), min(height, 540), crf=28)
         encode_video(ffmpeg, concat_path, final_path, fps, width, height, crf=20)
 
+        voice_plan_payload = {
+            "episode_id": episode_id,
+            "render_mode": "silent_storyboard_preview",
+            "voice_plan_mode": "timed_dialogue_preview",
+            "subtitle_preview": str(subtitle_preview_path),
+            "scene_count": len(voice_plan_scenes),
+            "line_count": len(voice_plan_lines),
+            "scenes": voice_plan_scenes,
+        }
+        write_json(voice_plan_path, voice_plan_payload)
+        write_text(subtitle_preview_path, render_subtitle_preview_srt(voice_plan_lines))
+
         manifest = {
             "episode_id": episode_id,
             "display_title": shotlist.get("display_title", episode_id),
@@ -514,8 +784,11 @@ def main() -> None:
             "shotlist_path": str(shotlist_path),
             "storyboard_assets_root": str(assets_root),
             "render_mode": "silent_storyboard_preview",
+            "voice_plan_mode": "timed_dialogue_preview",
             "draft_render": str(draft_path),
             "final_render": str(final_path),
+            "voice_plan": str(voice_plan_path),
+            "subtitle_preview": str(subtitle_preview_path),
             "ffmpeg": str(ffmpeg),
             "fps": fps,
             "width": width,
@@ -528,6 +801,8 @@ def main() -> None:
         shotlist["render_manifest"] = str(manifest_path)
         shotlist["draft_render"] = str(draft_path)
         shotlist["final_render"] = str(final_path)
+        shotlist["voice_plan"] = str(voice_plan_path)
+        shotlist["subtitle_preview"] = str(subtitle_preview_path)
         write_json(shotlist_path, shotlist)
 
         reporter.finish(current_label=episode_id, extra_label=f"Rendered {len(scenes)} storyboard scenes to draft and final video")
