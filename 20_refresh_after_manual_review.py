@@ -51,6 +51,44 @@ def run_step(script_name: str, title: str, extra_args: list[str] | None = None) 
         raise SystemExit(result.returncode)
 
 
+def planned_refresh_steps(skip_downloads: bool = False, stop_after_training: bool = False) -> list[tuple[str, str, list[str]]]:
+    planned_steps: list[tuple[str, str, list[str]]] = [
+        ("07_build_dataset.py", "Rebuild datasets with the latest reviewed character names", ["--force"]),
+        ("08_train_series_model.py", "Retrain the series model with the latest reviewed names", []),
+    ]
+    prepare_args = ["--force"]
+    if skip_downloads:
+        prepare_args.append("--skip-downloads")
+    planned_steps.extend(
+        [
+            ("09_prepare_foundation_training.py", "Prepare foundation training with the latest reviewed character state", prepare_args),
+            ("10_train_foundation_models.py", "Retrain foundation packs with the latest reviewed character state", ["--force"]),
+            ("11_train_adapter_models.py", "Retrain local adapter profiles with the latest reviewed character state", ["--force"]),
+            ("12_train_fine_tune_models.py", "Retrain local fine-tune profiles with the latest reviewed character state", ["--force"]),
+            ("13_run_backend_finetunes.py", "Create backend fine-tune runs with the latest reviewed character state", ["--force"]),
+        ]
+    )
+    if not stop_after_training:
+        planned_steps.extend(
+            [
+                ("14_generate_episode_from_trained_model.py", "Generate a new episode from the refreshed model", []),
+                ("15_generate_storyboard_assets.py", "Generate storyboard assets for the refreshed episode", []),
+                ("16_run_storyboard_backend.py", "Materialize local storyboard backend frames for the refreshed episode", []),
+                ("17_render_episode.py", "Render the refreshed episode", []),
+                ("18_build_series_bible.py", "Update the series bible with the refreshed state", []),
+            ]
+        )
+    return planned_steps
+
+
+def completed_step_labels(planned_steps: list[tuple[str, str, list[str]]]) -> list[str]:
+    labels: list[str] = []
+    for script_name, _title, extra_args in planned_steps:
+        suffix = " ".join(str(arg) for arg in extra_args if str(arg).strip())
+        labels.append(f"{script_name} {suffix}".strip())
+    return labels
+
+
 def main() -> None:
     rerun_in_runtime()
     args = parse_args()
@@ -74,32 +112,10 @@ def main() -> None:
                     f"There are still {review_count} open review cases. "
                     "Run 06_review_unknowns.py first or intentionally continue with --allow-open-review."
                 )
-        planned_steps: list[tuple[str, str, list[str]]] = [
-            ("07_build_dataset.py", "Rebuild datasets with the latest reviewed character names", ["--force"]),
-            ("08_train_series_model.py", "Retrain the series model with the latest reviewed names", []),
-        ]
-        prepare_args = ["--force"]
-        if args.skip_downloads:
-            prepare_args.append("--skip-downloads")
-        planned_steps.extend(
-            [
-                ("09_prepare_foundation_training.py", "Prepare foundation training with the latest reviewed character state", prepare_args),
-                ("10_train_foundation_models.py", "Retrain foundation packs with the latest reviewed character state", ["--force"]),
-                ("11_train_adapter_models.py", "Retrain local adapter profiles with the latest reviewed character state", ["--force"]),
-                ("12_train_fine_tune_models.py", "Retrain local fine-tune profiles with the latest reviewed character state", ["--force"]),
-                ("13_run_backend_finetunes.py", "Create backend fine-tune runs with the latest reviewed character state", ["--force"]),
-            ]
+        planned_steps = planned_refresh_steps(
+            skip_downloads=bool(args.skip_downloads),
+            stop_after_training=bool(args.stop_after_training),
         )
-        if not args.stop_after_training:
-            planned_steps.extend(
-                [
-                    ("14_generate_episode_from_trained_model.py", "Generate a new episode from the refreshed model", []),
-                    ("15_generate_storyboard_assets.py", "Generate storyboard assets for the refreshed episode", []),
-                    ("16_run_storyboard_backend.py", "Materialize local storyboard backend frames for the refreshed episode", []),
-                    ("17_render_episode.py", "Render the refreshed episode", []),
-                    ("18_build_series_bible.py", "Update the series bible with the refreshed state", []),
-                ]
-            )
         reporter = LiveProgressReporter(
             script_name="20_refresh_after_manual_review.py",
             total=len(planned_steps),
@@ -114,27 +130,6 @@ def main() -> None:
             reporter.update(completed_count, current_label=title, extra_label=f"Completed: {script_name}")
         reporter.finish(current_label="Rebuild", extra_label=f"Completed steps: {completed_count}")
 
-        completed_steps = [
-            "07_build_dataset.py --force",
-            "08_train_series_model.py",
-            "09_prepare_foundation_training.py",
-            "10_train_foundation_models.py --force",
-            "11_train_adapter_models.py --force",
-            "12_train_fine_tune_models.py --force",
-            "13_run_backend_finetunes.py --force",
-        ]
-
-        if not args.stop_after_training:
-            completed_steps.extend(
-                [
-                    "14_generate_episode_from_trained_model.py",
-                    "15_generate_storyboard_assets.py",
-                    "16_run_storyboard_backend.py",
-                    "17_render_episode.py",
-                    "18_build_series_bible.py",
-                ]
-            )
-
         mark_step_completed(
             "20_refresh_after_manual_review",
             autosave_target,
@@ -142,7 +137,7 @@ def main() -> None:
                 "allow_open_review": bool(args.allow_open_review),
                 "skip_downloads": bool(args.skip_downloads),
                 "stop_after_training": bool(args.stop_after_training),
-                "completed_steps": completed_steps,
+                "completed_steps": completed_step_labels(planned_steps),
             },
         )
         ok("Rebuild after manual character review completed.")

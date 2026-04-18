@@ -84,6 +84,7 @@ All scripts in this repository are AI-generated and maintained with `GPT-5.4`.
 - `17_render_episode.py` now also writes a timed dialogue voice-plan JSON and SRT subtitle preview beside the silent render outputs, so later voiced render backends can reuse speaker timing and optional original-line retrieval hints without changing the default silent preview flow
 - the numbered order now keeps all training in `07-13`, then generation/render in `14-17`, and only then rebuilds the series bible in `18`, so the pipeline follows the requested train-before-generate/render sequence more clearly
 - `19_generate_preview_episodes.py` now rebuilds the series bible once after the full generated/rendered batch instead of after every single episode, so multi-episode runs stay closer to the intended train-then-generate/render flow
+- `20_refresh_after_manual_review.py` now derives its rebuild order from one explicit planned-step list, keeping the same train-then-generate/render-then-bible sequence and making `--stop-after-training` behavior easier to keep consistent
 
 ## Planned
 
@@ -321,7 +322,7 @@ Runs a full visible multi-episode generation flow, including rebuild, training, 
 
 ### 20 - Refresh After Manual Review
 
-One-command rebuild path after manual character cleanup. This is the preferred way to rebuild dependent outputs after heavy review work, including refreshed storyboard assets, backend frames, bible output, and render output.
+One-command rebuild path after manual character cleanup. This is the preferred way to rebuild dependent outputs after heavy review work, including refreshed storyboard assets, backend frames, render output, and the final series bible update. Its planned-step list now keeps the same train-then-generate/render ordering as the other orchestration scripts, and `--stop-after-training` cuts the run cleanly after step `13`.
 
 ### 21 - Sync To GitHub
 
