@@ -233,7 +233,7 @@ def split_single_episode(
                         scope_current=index,
                         scope_total=len(scenes),
                         scope_started_at=episode_started_at,
-                        scope_label=f"Folge {episode_index}/{episode_total}",
+                        scope_label=f"Episode {episode_index}/{episode_total}",
                     )
             scene_csv.write_text("\n".join(lines) + "\n", encoding="utf-8")
             created = len(scenes)
@@ -369,7 +369,7 @@ def main() -> None:
             scope_current=1,
             scope_total=1,
             scope_started_at=time.time(),
-            scope_label=f"Folge {index}/{len(pending)}",
+            scope_label=f"Episode {index}/{len(pending)}",
         )
     live_reporter.finish(current_label="Batch", extra_label=f"Episodes processed: {processed}")
     ok(f"Batch completed: {processed} episodes processed in 03.")

@@ -313,7 +313,7 @@ def main() -> None:
                 scope_current=1,
                 scope_total=1,
                 scope_started_at=time.time(),
-                scope_label=f"Folge {index}/{total}",
+                scope_label=f"Episode {index}/{total}",
             )
 
     live_reporter.finish(current_label="Batch", extra_label=f"Episodes processed: {processed_count}")

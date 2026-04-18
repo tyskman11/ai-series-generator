@@ -80,6 +80,7 @@ All scripts in this repository are AI-generated and maintained with `GPT-5.4`.
 - `00_prepare_runtime.py` now also uses English-first package-install and already-present status messages so the numbered pipeline starts with the same console tone as the later steps
 - `04_diarize_and_transcribe.py` and `09_prepare_foundation_training.py` now also use English-first completion and remote-revision fallback messages so transcription and model-prep logs stay consistent with the rest of the numbered pipeline
 - `00_prepare_runtime.py` now also uses English-first install-failure and runtime-Python status lines so startup diagnostics match the rest of the numbered pipeline
+- `03_split_scenes.py`, `04_diarize_and_transcribe.py`, `05_link_faces_and_speakers.py`, and `07_build_dataset.py` now also use English-first live progress scope labels and segment/cluster counters so long batch runs read consistently across the early numbered pipeline
 
 ## Planned
 

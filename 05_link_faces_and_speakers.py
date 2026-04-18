@@ -996,11 +996,11 @@ def process_episode_dir(
                     (episode_index - 1) + (index / episode_total_units),
                     current_label=scene_file.name,
                     parent_label=episode_dir.name,
-                    extra_label=f"Face-Cluster bisher: {len(face_clusters)}",
+                    extra_label=f"Face clusters so far: {len(face_clusters)}",
                     scope_current=index,
                     scope_total=episode_total_units,
                     scope_started_at=episode_started_at,
-                    scope_label=f"Folge {episode_index}/{episode_total}",
+                    scope_label=f"Episode {episode_index}/{episode_total}",
                 )
 
         kept_face_clusters = prune_face_clusters(char_map, face_by_scene, cfg)
@@ -1090,7 +1090,7 @@ def process_episode_dir(
                     scope_current=len(scene_files) + index,
                     scope_total=episode_total_units,
                     scope_started_at=episode_started_at,
-                    scope_label=f"Folge {episode_index}/{episode_total}",
+                    scope_label=f"Episode {episode_index}/{episode_total}",
                 )
 
         face_summary = [
@@ -1134,7 +1134,7 @@ def process_episode_dir(
                 "linked_file": str(linked_file),
             },
         )
-        ok(f"Linking completed: {len(linked_rows)} Segmente")
+        ok(f"Linking completed: {len(linked_rows)} segments")
         return True
     except Exception as exc:
         mark_step_failed(
@@ -1239,7 +1239,7 @@ def main() -> None:
                 scope_current=1,
                 scope_total=1,
                 scope_started_at=time.time(),
-                scope_label=f"Folge {index}/{total}",
+                scope_label=f"Episode {index}/{total}",
             )
     live_reporter.finish(current_label="Batch", extra_label=f"Episodes processed: {processed_count}")
 
