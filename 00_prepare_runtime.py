@@ -71,9 +71,9 @@ def install_group(
     pip_extra_args: list[str] | None = None,
 ) -> bool:
     if all(module_available(py, module) for module in modules):
-        ok(f"{name} bereits vorhanden.")
+        ok(f"{name} already present.")
         return True
-    info(f"Installiere {name} ...")
+    info(f"Installing {name} ...")
     result = run(
         pip_install_command(py, "--upgrade", *(pip_extra_args or []), *packages),
         check=False,
