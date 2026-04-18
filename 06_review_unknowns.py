@@ -39,8 +39,8 @@ EXAMPLE_FACE_HINTS = [
     "Teague/Busboy",
     "Hudson",
     "Triple G",
-    "noface = ignorieren",
-    "statist = statist",
+    "noface = ignore",
+    "statist = minor character",
 ]
 REVIEW_SKIP_TOKEN = "__skip__"
 REVIEW_QUIT_TOKEN = "__quit__"
@@ -1431,7 +1431,7 @@ def list_faces(char_map: dict, limit: int, include_named: bool) -> None:
         if limit > 0 and shown >= limit:
             break
     if shown == 0:
-        info("Keine benannten Figuren gefunden.")
+        info("No named characters were found.")
 
 
 def created_face_names(char_map: dict) -> list[str]:
@@ -1451,7 +1451,7 @@ def created_face_names(char_map: dict) -> list[str]:
 def print_created_face_names(char_map: dict) -> None:
     names = created_face_names(char_map)
     if not names:
-        info("Keine erkannten benannten Figuren gefunden.")
+        info("No recognized named characters were found.")
         return
     for name in names:
         print(name)

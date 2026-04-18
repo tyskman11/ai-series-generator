@@ -211,7 +211,7 @@ def ask_name(kind: str, cluster_id: str, preview_files: list[Path], auto_open: b
         print(f"Contact sheet: {montage}")
         if auto_open:
             open_file_default(montage)
-    print("Enter a name, 'noface' to ignore, empty = automatic label")
+    print("Enter a name, use 'noface' to ignore, or leave it empty for an automatic label.")
     return input("> Name: ").strip()
 
 
@@ -561,7 +561,7 @@ def register_new_face(
     default_name = cluster_id
     assigned_name = default_name
     if interactive:
-        user_name = ask_name("Figur", cluster_id, preview_files, auto_open)
+        user_name = ask_name("character", cluster_id, preview_files, auto_open)
         if user_name:
             assigned_name = user_name
     payload = assign_character_name(

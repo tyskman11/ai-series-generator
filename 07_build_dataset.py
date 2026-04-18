@@ -255,7 +255,7 @@ def process_episode_dir(
                 "dataset_manifest": str(manifest_file),
             },
         )
-        ok(f"Datensatz erstellt: {len(dataset_rows)} Szenen")
+        ok(f"Dataset created: {len(dataset_rows)} scenes")
         return True
     except Exception as exc:
         mark_step_failed(
