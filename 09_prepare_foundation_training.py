@@ -411,7 +411,9 @@ def download_models(cfg: dict, targets: list[dict]) -> list[dict]:
             remote_revision = fetch_remote_revision(api, target, token)
         except Exception as exc:
             if model_target_ready(target):
-                info(f"Revision fuer {target['model_id']} konnte nicht geprueft werden. Verwende lokalen Stand weiter: {exc}")
+                info(
+                    f"Could not check the revision for {target['model_id']}. Continuing with the local copy: {exc}"
+                )
             else:
                 raise
 

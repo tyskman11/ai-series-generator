@@ -843,7 +843,7 @@ def process_episode_dir(
                 "cluster_file": str(resolve_project_path(cfg["paths"]["speaker_segments"]) / episode_dir.name / "_speaker_clusters.json"),
             },
         )
-        ok(f"Transkription bereits erfolgreich vorhanden: {episode_dir.name}")
+        ok(f"Transcription already completed successfully: {episode_dir.name}")
         return False
 
     scenes = limited_items(sorted(episode_dir.glob("*.mp4")))
