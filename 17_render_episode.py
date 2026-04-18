@@ -711,6 +711,16 @@ def build_scene_production_package(
             "asset_source_path": clean_text(scene_manifest.get("asset_source_path", "")),
             "preview_frame_path": clean_text(scene_manifest.get("frame_path", "")),
         },
+        "current_generated_outputs": {
+            "video_source_type": clean_text(scene_manifest.get("video_source_type", "")),
+            "video_source_path": clean_text(scene_manifest.get("video_source_path", "")),
+            "final_clip_path": clean_text(scene_manifest.get("final_clip_path", "")),
+            "scene_dialogue_audio": clean_text(scene_manifest.get("scene_dialogue_audio", "")),
+            "scene_master_clip": clean_text(scene_manifest.get("scene_master_clip", "")),
+            "has_generated_scene_video": bool(clean_text(scene_manifest.get("video_source_type", ""))),
+            "has_scene_dialogue_audio": bool(clean_text(scene_manifest.get("scene_dialogue_audio", ""))),
+            "has_scene_master_clip": bool(clean_text(scene_manifest.get("scene_master_clip", ""))),
+        },
         "storyboard": {
             "requires_new_storyboard_frames": True,
             "reference_slots": reference_slots,
@@ -802,6 +812,27 @@ def build_episode_production_package_payload(
             )
         )
     total_line_count = sum(len(scene.get("voice_clone", {}).get("lines", [])) for scene in scene_packages if isinstance(scene.get("voice_clone", {}), dict))
+    generated_scene_video_count = sum(
+        1
+        for scene in scene_packages
+        if isinstance(scene, dict)
+        and isinstance(scene.get("current_generated_outputs", {}), dict)
+        and bool(scene["current_generated_outputs"].get("has_generated_scene_video", False))
+    )
+    scene_dialogue_audio_count = sum(
+        1
+        for scene in scene_packages
+        if isinstance(scene, dict)
+        and isinstance(scene.get("current_generated_outputs", {}), dict)
+        and bool(scene["current_generated_outputs"].get("has_scene_dialogue_audio", False))
+    )
+    scene_master_clip_count = sum(
+        1
+        for scene in scene_packages
+        if isinstance(scene, dict)
+        and isinstance(scene.get("current_generated_outputs", {}), dict)
+        and bool(scene["current_generated_outputs"].get("has_scene_master_clip", False))
+    )
     return {
         "episode_id": episode_id,
         "package_kind": "full_generated_episode_backend_package",
@@ -823,6 +854,13 @@ def build_episode_production_package_payload(
             "video_generation": True,
             "voice_clone": total_line_count > 0,
             "lip_sync": total_line_count > 0,
+        },
+        "completion_status": {
+            "generated_scene_video_count": generated_scene_video_count,
+            "scene_dialogue_audio_count": scene_dialogue_audio_count,
+            "scene_master_clip_count": scene_master_clip_count,
+            "all_scene_videos_ready": generated_scene_video_count >= max(1, len(scene_packages)) if scene_packages else False,
+            "all_scene_master_clips_ready": scene_master_clip_count >= max(1, len(scene_packages)) if scene_packages else False,
         },
         "target_master_outputs": {
             "image_root": str(package_root / "images"),
