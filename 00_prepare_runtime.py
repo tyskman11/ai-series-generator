@@ -62,6 +62,13 @@ def module_available(py: Path, module_name: str) -> bool:
     return result.returncode == 0
 
 
+def runtime_pip_install_command(py: Path, *args: str) -> list[str]:
+    command = list(pip_install_command(py, *args))
+    if "--user" not in command and "--no-user" not in command:
+        command.insert(4, "--no-user")
+    return command
+
+
 def install_group(
     py: Path,
     name: str,
@@ -75,7 +82,7 @@ def install_group(
         return True
     info(f"Installing {name} ...")
     result = run(
-        pip_install_command(py, "--upgrade", *(pip_extra_args or []), *packages),
+        runtime_pip_install_command(py, "--upgrade", *(pip_extra_args or []), *packages),
         check=False,
     )
     log_dir = SCRIPT_DIR / "runtime" / "install_logs"
@@ -160,7 +167,7 @@ def install_torch_stack(py: Path, cfg: dict) -> tuple[bool, dict]:
             (
                 "torch_cuda",
                 [
-                    *pip_install_command(
+                    *runtime_pip_install_command(
                         py,
                         "--upgrade",
                         "--force-reinstall",
@@ -177,14 +184,14 @@ def install_torch_stack(py: Path, cfg: dict) -> tuple[bool, dict]:
     attempts.append(
         (
             "torch_default",
-            [
-                *pip_install_command(
-                    py,
-                    "--upgrade",
-                    "--force-reinstall",
-                    "--no-cache-dir",
-                    "torch",
-                    "torchvision",
+                [
+                    *runtime_pip_install_command(
+                        py,
+                        "--upgrade",
+                        "--force-reinstall",
+                        "--no-cache-dir",
+                        "torch",
+                        "torchvision",
                     "torchaudio",
                 ),
             ],
@@ -216,7 +223,7 @@ def main() -> None:
     py = ensure_venv()
     info(f"Runtime-Tag: {runtime_environment_tag()}")
     info(f"Using Python: {py}")
-    run(pip_install_command(py, "--upgrade", "pip", "setuptools<81", "wheel"), check=False)
+    run(runtime_pip_install_command(py, "--upgrade", "pip", "setuptools<81", "wheel"), check=False)
     clone_cfg = cfg.get("cloning", {}) if isinstance(cfg.get("cloning"), dict) else {}
     requested_voice_engine = str(clone_cfg.get("voice_clone_engine", "pyttsx3") or "pyttsx3").strip().lower()
     optional_tts_requested = requested_voice_engine in {"auto", "xtts"} or str(
