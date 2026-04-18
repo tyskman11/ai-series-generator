@@ -23,9 +23,9 @@ def main() -> None:
     rerun_in_runtime()
     headline("Build Series Bible")
     cfg = load_config()
-    mark_step_started("15_build_series_bible", "global")
+    mark_step_started("16_build_series_bible", "global")
     reporter = LiveProgressReporter(
-        script_name="15_build_series_bible.py",
+        script_name="16_build_series_bible.py",
         total=3,
         phase_label="Build Series Bible",
         parent_label="global",
@@ -82,13 +82,13 @@ def main() -> None:
         write_text(bible_markdown_path, "\n".join(markdown_lines))
         reporter.finish(current_label="Series Bible", extra_label=f"Written: {bible_json_path.name} und {bible_markdown_path.name}")
         mark_step_completed(
-            "15_build_series_bible",
+            "16_build_series_bible",
             "global",
             {"series_bible_json": str(bible_json_path), "series_bible_markdown": str(bible_markdown_path)},
         )
         ok("Series Bible wurde aktualisiert.")
     except Exception as exc:
-        mark_step_failed("15_build_series_bible", str(exc), "global")
+        mark_step_failed("16_build_series_bible", str(exc), "global")
         raise
 
 

@@ -48,6 +48,65 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def storyboard_episode_request(episode_id: str, shotlist_payload: dict) -> dict:
+    scenes = shotlist_payload.get("scenes", []) or []
+    return {
+        "episode_id": episode_id,
+        "storyboard_plan_mode": shotlist_payload.get("storyboard_plan_mode", ""),
+        "display_title": shotlist_payload.get("display_title", episode_id),
+        "episode_title": shotlist_payload.get("episode_title", ""),
+        "focus_characters": shotlist_payload.get("focus_characters", []) or [],
+        "keywords": shotlist_payload.get("keywords", []) or [],
+        "scene_requests": [
+            {
+                "scene_id": scene.get("scene_id", ""),
+                "title": scene.get("title", ""),
+                "characters": scene.get("characters", []) or [],
+                "summary": scene.get("summary", ""),
+                "location": scene.get("location", ""),
+                "mood": scene.get("mood", ""),
+                "generation_plan": scene.get("generation_plan", {}) if isinstance(scene.get("generation_plan", {}), dict) else {},
+            }
+            for scene in scenes
+        ],
+    }
+
+
+def write_storyboard_backend_requests(cfg: dict, episode_id: str, shotlist_payload: dict) -> dict:
+    requests_root = resolve_project_path(cfg["paths"].get("storyboard_requests", "generation/storyboard_requests")) / episode_id
+    requests_root.mkdir(parents=True, exist_ok=True)
+    episode_request = storyboard_episode_request(episode_id, shotlist_payload)
+    episode_request_path = requests_root / f"{episode_id}_storyboard_request.json"
+    write_json(episode_request_path, episode_request)
+
+    scene_request_paths: list[str] = []
+    prompt_preview_lines: list[str] = []
+    for scene in episode_request.get("scene_requests", []):
+        scene_id = str(scene.get("scene_id", "")).strip() or "scene"
+        scene_request_path = requests_root / f"{scene_id}_request.json"
+        write_json(scene_request_path, scene)
+        scene_request_paths.append(str(scene_request_path))
+        generation_plan = scene.get("generation_plan", {}) if isinstance(scene.get("generation_plan", {}), dict) else {}
+        prompt_preview_lines.extend(
+            [
+                f"[{scene_id}] {scene.get('title', '')}",
+                f"batch_prompt_line = {generation_plan.get('batch_prompt_line', '')}",
+                f"positive_prompt = {generation_plan.get('positive_prompt', '')}",
+                f"negative_prompt = {generation_plan.get('negative_prompt', '')}",
+                "",
+            ]
+        )
+
+    prompt_preview_path = requests_root / f"{episode_id}_storyboard_prompts.txt"
+    write_text(prompt_preview_path, "\n".join(prompt_preview_lines).strip() + "\n")
+    return {
+        "episode_request_path": str(episode_request_path),
+        "scene_request_paths": scene_request_paths,
+        "prompt_preview_path": str(prompt_preview_path),
+        "request_dir": str(requests_root),
+    }
+
+
 def main() -> None:
     rerun_in_runtime()
     args = parse_args()
@@ -62,7 +121,7 @@ def main() -> None:
     mark_step_started("14_generate_episode_from_trained_model", autosave_target, {"series_model": str(model_path)})
     reporter = LiveProgressReporter(
         script_name="14_generate_episode_from_trained_model.py",
-        total=4,
+        total=5,
         phase_label="Generate New Episode",
         parent_label=autosave_target,
     )
@@ -94,22 +153,36 @@ def main() -> None:
         shotlist_path = shotlist_dir / f"{episode_id}.json"
         reporter.update(3, current_label=episode_id, extra_label="Running now: write story and shotlist")
         write_text(story_path, markdown)
-        write_json(
-            shotlist_path,
+        shotlist_payload = {
+            "episode_id": episode_id,
+            "trained_model": str(model_path),
+            "adapter_training_summary": str(adapter_status.get("summary_path", "")) if adapter_status.get("summary_exists") else "",
+            "fine_tune_training_summary": str(fine_tune_status.get("summary_path", "")) if fine_tune_status.get("summary_exists") else "",
+            "backend_fine_tune_summary": str(backend_status.get("summary_path", "")) if backend_status.get("summary_exists") else "",
+            **episode_package,
+        }
+        write_json(shotlist_path, shotlist_payload)
+        reporter.update(4, current_label=episode_id, extra_label="Running now: export model-side storyboard backend requests")
+        storyboard_request_paths = write_storyboard_backend_requests(cfg, episode_id, shotlist_payload)
+        shotlist_payload.update(
             {
-                "episode_id": episode_id,
-                "trained_model": str(model_path),
-                "adapter_training_summary": str(adapter_status.get("summary_path", "")) if adapter_status.get("summary_exists") else "",
-                "fine_tune_training_summary": str(fine_tune_status.get("summary_path", "")) if fine_tune_status.get("summary_exists") else "",
-                "backend_fine_tune_summary": str(backend_status.get("summary_path", "")) if backend_status.get("summary_exists") else "",
-                **episode_package,
-            },
+                "storyboard_request": storyboard_request_paths["episode_request_path"],
+                "storyboard_request_dir": storyboard_request_paths["request_dir"],
+                "storyboard_scene_requests": storyboard_request_paths["scene_request_paths"],
+                "storyboard_prompt_preview": storyboard_request_paths["prompt_preview_path"],
+            }
         )
-        reporter.finish(current_label=episode_id, extra_label=f"Episode geschrieben: {story_path.name} und {shotlist_path.name}")
+        write_json(shotlist_path, shotlist_payload)
+        reporter.finish(current_label=episode_id, extra_label=f"Episode geschrieben: {story_path.name}, {shotlist_path.name} und Storyboard-Requests")
         mark_step_completed(
             "14_generate_episode_from_trained_model",
             episode_id,
-            {"series_model": str(model_path), "story_path": str(story_path), "shotlist_path": str(shotlist_path)},
+            {
+                "series_model": str(model_path),
+                "story_path": str(story_path),
+                "shotlist_path": str(shotlist_path),
+                "storyboard_request": storyboard_request_paths["episode_request_path"],
+            },
         )
         ok(f"Neue Episode aus trainiertem Modell erzeugt: {episode_id}")
     except Exception as exc:

@@ -60,7 +60,7 @@ def main() -> None:
     headline("Generate Multiple Visible Preview Episodes")
     generated: list[str] = []
     autosave_target = f"count_{count}"
-    mark_step_started("17_generate_preview_episodes", autosave_target, {"requested_count": count})
+    mark_step_started("18_generate_preview_episodes", autosave_target, {"requested_count": count})
     try:
         review_count = open_review_item_count(cfg)
         if review_count > 0:
@@ -77,10 +77,9 @@ def main() -> None:
                     planned_steps.append("12_train_fine_tune_models.py")
                     if bool(backend_cfg.get("auto_run_after_fine_tune", True)):
                         planned_steps.append("13_run_backend_finetunes.py")
-        planned_steps.extend(["14_generate_episode_from_trained_model.py", "16_render_episode.py"] * count)
-        planned_steps.append("15_build_series_bible.py")
+        planned_steps.extend(["14_generate_episode_from_trained_model.py", "15_generate_storyboard_assets.py", "16_build_series_bible.py", "17_render_episode.py"] * count)
         reporter = LiveProgressReporter(
-            script_name="17_generate_preview_episodes.py",
+            script_name="18_generate_preview_episodes.py",
             total=len(planned_steps),
             phase_label="Generate Preview Episodes",
             parent_label=f"Anzahl: {count}",
@@ -133,28 +132,33 @@ def main() -> None:
                 raise RuntimeError("Could not determine the new episode.")
             reporter.update(completed_steps, current_label=episode_id, extra_label=f"Episode generated: {episode_id}")
             env = os.environ.copy()
+            env["SERIES_STORYBOARD_EPISODE"] = episode_id
+            reporter.update(completed_steps, current_label=f"{episode_id} storyboard assets", extra_label="Running now: 15_generate_storyboard_assets.py", force=True)
+            run_step("15_generate_storyboard_assets.py", env=env)
+            completed_steps += 1
+            reporter.update(completed_steps, current_label=episode_id, extra_label=f"Storyboard assets ready: {episode_id}")
+            reporter.update(completed_steps, current_label="Series Bible aktualisieren", extra_label="Running now: 16_build_series_bible.py", force=True)
+            run_step("16_build_series_bible.py")
+            completed_steps += 1
+            reporter.update(completed_steps, current_label="Series Bible aktualisieren", extra_label="Completed: 16_build_series_bible.py")
+            env = os.environ.copy()
             env["SERIES_RENDER_EPISODE"] = episode_id
-            reporter.update(completed_steps, current_label=f"{episode_id} render", extra_label="Running now: 16_render_episode.py", force=True)
-            run_step("16_render_episode.py", env=env)
+            reporter.update(completed_steps, current_label=f"{episode_id} render", extra_label="Running now: 17_render_episode.py", force=True)
+            run_step("17_render_episode.py", env=env)
             completed_steps += 1
             generated.append(episode_id)
             reporter.update(completed_steps, current_label=episode_id, extra_label=f"Episode render complete: {episode_id}")
             ok(f"{index + 1}/{count}: {episode_id} erzeugt und gerendert.")
-
-        reporter.update(completed_steps, current_label="Series Bible aktualisieren", extra_label="Running now: 15_build_series_bible.py", force=True)
-        run_step("15_build_series_bible.py")
-        completed_steps += 1
-        reporter.update(completed_steps, current_label="Series Bible aktualisieren", extra_label="Completed: 15_build_series_bible.py")
         reporter.finish(current_label="Preview Episodes", extra_label=f"Total episodes: {len(generated)}")
         mark_step_completed(
-            "17_generate_preview_episodes",
+            "18_generate_preview_episodes",
             autosave_target,
             {"requested_count": count, "generated_episodes": generated, "generated_count": len(generated)},
         )
         ok(f"Done. New visible episodes: {', '.join(generated)}")
     except Exception as exc:
         mark_step_failed(
-            "17_generate_preview_episodes",
+            "18_generate_preview_episodes",
             str(exc),
             autosave_target,
             {"requested_count": count, "generated_episodes": generated, "generated_count": len(generated)},

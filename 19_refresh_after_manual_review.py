@@ -33,7 +33,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--stop-after-training",
         action="store_true",
-        help="Beendet nach dem kompletten Trainingsblock to 13 und erzeugt noch keine neue Folge und keinen Render.",
+        help="Stop after the complete training block through 13 and skip episode generation and rendering.",
     )
     parser.add_argument(
         "--allow-open-review",
@@ -57,7 +57,7 @@ def main() -> None:
     headline("Rebuild After Manual Character Review")
     autosave_target = "global"
     mark_step_started(
-        "18_refresh_after_manual_review",
+        "19_refresh_after_manual_review",
         autosave_target,
         {
             "allow_open_review": bool(args.allow_open_review),
@@ -94,12 +94,13 @@ def main() -> None:
             planned_steps.extend(
                 [
                     ("14_generate_episode_from_trained_model.py", "Neue Folge aus aktualisiertem Modell erzeugen", []),
-                    ("15_build_series_bible.py", "Series Bible mit aktuellem Stand aktualisieren", []),
-                    ("16_render_episode.py", "Aktualisierte Folge render", []),
+                    ("15_generate_storyboard_assets.py", "Storyboard-Assets fuer die neue Folge erzeugen", []),
+                    ("16_build_series_bible.py", "Series Bible mit aktuellem Stand aktualisieren", []),
+                    ("17_render_episode.py", "Aktualisierte Folge render", []),
                 ]
             )
         reporter = LiveProgressReporter(
-            script_name="18_refresh_after_manual_review.py",
+            script_name="19_refresh_after_manual_review.py",
             total=len(planned_steps),
             phase_label="Rebuild After Review",
             parent_label="global",
@@ -126,13 +127,14 @@ def main() -> None:
             completed_steps.extend(
                 [
                     "14_generate_episode_from_trained_model.py",
-                    "15_build_series_bible.py",
-                    "16_render_episode.py",
+                    "15_generate_storyboard_assets.py",
+                    "16_build_series_bible.py",
+                    "17_render_episode.py",
                 ]
             )
 
         mark_step_completed(
-            "18_refresh_after_manual_review",
+            "19_refresh_after_manual_review",
             autosave_target,
             {
                 "allow_open_review": bool(args.allow_open_review),
@@ -144,7 +146,7 @@ def main() -> None:
         ok("Rebuild After Manual Character Review abgeschlossen.")
     except Exception as exc:
         mark_step_failed(
-            "18_refresh_after_manual_review",
+            "19_refresh_after_manual_review",
             str(exc),
             autosave_target,
             {

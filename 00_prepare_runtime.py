@@ -54,7 +54,7 @@ def ensure_venv() -> Path:
         [sys.executable, "-m", "venv", str(venv_dir)],
         check=True,
     )
-    return py
+    return runtime_python()
 
 
 def module_available(py: Path, module_name: str) -> bool:

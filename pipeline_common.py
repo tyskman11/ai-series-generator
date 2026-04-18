@@ -67,6 +67,8 @@ DEFAULT_STRUCTURE = {
         "model": {},
         "story_prompts": {},
         "shotlists": {},
+        "storyboard_requests": {},
+        "storyboard_assets": {},
         "renders": {"drafts": {}, "final": {}},
     },
     "training": {
@@ -117,6 +119,8 @@ DEFAULT_CONFIG = {
         "voice_samples": "characters/voice_samples",
         "voice_models": "characters/voice_models",
         "series_model": "generation/model/series_model.json",
+        "storyboard_requests": "generation/storyboard_requests",
+        "storyboard_assets": "generation/storyboard_assets",
         "series_bible_json": "series_bible/episode_summaries/auto_series_bible.json",
         "series_bible_markdown": "series_bible/episode_summaries/auto_series_bible.md",
         "foundation_frames": "training/foundation/datasets/frames",
@@ -681,6 +685,32 @@ def mark_step_failed(
 
 def resolve_project_path(relative_path: str) -> Path:
     return PROJECT_ROOT / relative_path
+
+
+def resolve_stored_project_path(path_value: str | Path | None) -> Path:
+    text = coalesce_text(str(path_value or ""))
+    if not text:
+        return Path()
+    candidate = Path(text)
+    if candidate.exists():
+        return candidate
+    if not candidate.is_absolute():
+        rebased_relative = (PROJECT_ROOT / candidate).resolve()
+        if rebased_relative.exists():
+            return rebased_relative
+        return candidate
+
+    parts = candidate.parts
+    lowered = [str(part).lower() for part in parts]
+    for anchor, root in (("ai_series_project", PROJECT_ROOT), (SCRIPT_DIR.name.lower(), SCRIPT_DIR)):
+        if anchor not in lowered:
+            continue
+        index = lowered.index(anchor)
+        relative_parts = parts[index + 1 :]
+        rebased = root / Path(*relative_parts) if relative_parts else root
+        if rebased.exists():
+            return rebased
+    return candidate
 
 
 def ensure_project_structure(config: dict[str, Any] | None = None, write_config_file: bool = False) -> dict[str, Any]:
@@ -1385,7 +1415,7 @@ def load_foundation_training_index(cfg: dict[str, Any]) -> dict[str, dict[str, A
         character_name = coalesce_text(row.get("character", ""))
         if not character_name:
             continue
-        pack_path = Path(str(row.get("pack_path", "") or ""))
+        pack_path = resolve_stored_project_path(row.get("pack_path", ""))
         pack_payload = read_json(pack_path, {}) if pack_path.exists() else {}
         voice_pack = pack_payload.get("voice_pack", {}) if isinstance(pack_payload.get("voice_pack"), dict) else {}
         video_pack = pack_payload.get("video_pack", {}) if isinstance(pack_payload.get("video_pack"), dict) else {}
@@ -1495,7 +1525,7 @@ def load_adapter_training_index(cfg: dict[str, Any]) -> dict[str, dict[str, Any]
         character_name = coalesce_text(row.get("character", ""))
         if not character_name:
             continue
-        profile_path = Path(str(row.get("profile_path", "") or ""))
+        profile_path = resolve_stored_project_path(row.get("profile_path", ""))
         profile_payload = read_json(profile_path, {}) if profile_path.exists() else {}
         modalities = profile_payload.get("modalities", {}) if isinstance(profile_payload.get("modalities"), dict) else {}
         index[_normalized_training_name(character_name)] = {
@@ -1609,7 +1639,7 @@ def load_fine_tune_training_index(cfg: dict[str, Any]) -> dict[str, dict[str, An
         character_name = coalesce_text(row.get("character", ""))
         if not character_name:
             continue
-        profile_path = Path(str(row.get("fine_tune_path", "") or ""))
+        profile_path = resolve_stored_project_path(row.get("fine_tune_path", ""))
         profile_payload = read_json(profile_path, {}) if profile_path.exists() else {}
         index[_normalized_training_name(character_name)] = {
             "character": character_name,
@@ -1711,7 +1741,7 @@ def load_backend_run_index(cfg: dict[str, Any]) -> dict[str, dict[str, Any]]:
         character_name = coalesce_text(row.get("character", ""))
         if not character_name:
             continue
-        run_path = Path(str(row.get("backend_run_path", "") or ""))
+        run_path = resolve_stored_project_path(row.get("backend_run_path", ""))
         run_payload = read_json(run_path, {}) if run_path.exists() else {}
         index[_normalized_training_name(character_name)] = {
             "character": character_name,
@@ -1769,11 +1799,11 @@ def backend_fine_tune_status(
                 break
             artifacts = backend_payload.get("artifacts", {}) if isinstance(backend_payload.get("artifacts"), dict) else {}
             required_paths = [
-                str(artifacts.get("job_path", "") or "").strip(),
-                str(artifacts.get("bundle_path", "") or "").strip(),
-                str(artifacts.get("weights_path", "") or "").strip(),
+                resolve_stored_project_path(artifacts.get("job_path", "")),
+                resolve_stored_project_path(artifacts.get("bundle_path", "")),
+                resolve_stored_project_path(artifacts.get("weights_path", "")),
             ]
-            if not all(required_paths) or not all(Path(path).exists() for path in required_paths):
+            if not all(str(path).strip() for path in required_paths) or not all(path.exists() for path in required_paths):
                 artifact_missing = True
                 break
         if artifact_missing:

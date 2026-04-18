@@ -7,6 +7,7 @@ import random
 import re
 import time
 from collections import Counter, defaultdict
+from pathlib import Path
 
 from pipeline_common import (
     coalesce_text,
@@ -92,6 +93,32 @@ TITLE_PHRASE_STOPWORDS = {
     "Genau",
     "Vielen",
     "Videos",
+}
+CAMERA_PRESETS = {
+    "Cold Open": [
+        {"shot_type": "wide establishing shot", "composition": "two-subject frame", "camera_move": "static", "lens_hint": "24mm", "pose_hint": "introduce characters in place"},
+        {"shot_type": "medium two-shot", "composition": "balanced eye-level framing", "camera_move": "slow push-in", "lens_hint": "35mm", "pose_hint": "conversation starter beat"},
+    ],
+    "Plan": [
+        {"shot_type": "medium shot", "composition": "over-table planning frame", "camera_move": "subtle dolly-in", "lens_hint": "40mm", "pose_hint": "characters pointing at plan or prop"},
+        {"shot_type": "over-the-shoulder shot", "composition": "focus on problem-solving detail", "camera_move": "static", "lens_hint": "50mm", "pose_hint": "one character explains while the other reacts"},
+    ],
+    "Komplikation": [
+        {"shot_type": "dynamic medium shot", "composition": "off-center tension framing", "camera_move": "handheld energy", "lens_hint": "35mm", "pose_hint": "sudden reaction or interruption"},
+        {"shot_type": "close reaction shot", "composition": "tight emotional framing", "camera_move": "quick push-in", "lens_hint": "70mm", "pose_hint": "surprised or stressed expression"},
+    ],
+    "Verwechslung": [
+        {"shot_type": "split-focus two-shot", "composition": "misaligned eyelines", "camera_move": "static", "lens_hint": "50mm", "pose_hint": "characters talking past each other"},
+        {"shot_type": "comedic close-up", "composition": "punchline framing", "camera_move": "snap zoom feel", "lens_hint": "85mm", "pose_hint": "confused or incredulous expression"},
+    ],
+    "Wendepunkt": [
+        {"shot_type": "hero medium close-up", "composition": "resolved center frame", "camera_move": "slow reveal push-in", "lens_hint": "65mm", "pose_hint": "moment of realization"},
+        {"shot_type": "insert and reaction pair", "composition": "detail then face", "camera_move": "rack-focus feel", "lens_hint": "55mm", "pose_hint": "show clue or fix clearly"},
+    ],
+    "Auflösung": [
+        {"shot_type": "wide payoff shot", "composition": "clean resolved staging", "camera_move": "gentle pull-back", "lens_hint": "28mm", "pose_hint": "show outcome and group energy"},
+        {"shot_type": "warm medium shot", "composition": "friendly end beat", "camera_move": "static", "lens_hint": "45mm", "pose_hint": "relaxed success pose"},
+    ],
 }
 
 
@@ -410,6 +437,51 @@ def append_unique_line_entry(target: dict[str, list[dict]], key: str, entry: dic
     target.setdefault(key, []).append(entry)
 
 
+def collect_preview_assets(preview_dir: str, patterns: list[str], limit: int = 3) -> list[str]:
+    root = Path(preview_dir)
+    if not root.exists():
+        return []
+    results: list[str] = []
+    for pattern in patterns:
+        for candidate in sorted(root.glob(pattern)):
+            if candidate.exists():
+                resolved = str(candidate.resolve())
+                if resolved not in results:
+                    results.append(resolved)
+                if len(results) >= limit:
+                    return results
+    return results
+
+
+def build_character_reference_library(char_map: dict) -> dict[str, dict]:
+    library: dict[str, dict] = {}
+    for cluster_id, payload in (char_map.get("clusters", {}) or {}).items():
+        if payload.get("ignored"):
+            continue
+        name = display_person_name(str(payload.get("name", "")), cluster_id)
+        if not name:
+            continue
+        preview_dir = str(payload.get("preview_dir", "") or "")
+        entry = library.setdefault(
+            name,
+            {
+                "context_images": [],
+                "portrait_images": [],
+                "priority": False,
+                "background_role": False,
+            },
+        )
+        entry["priority"] = entry["priority"] or bool(payload.get("priority", False))
+        entry["background_role"] = entry["background_role"] or background_character(name)
+        for image_path in collect_preview_assets(preview_dir, ["*_context.jpg", "*_speaker_frame_*.jpg", "*.jpg"], limit=4):
+            if image_path not in entry["context_images"]:
+                entry["context_images"].append(image_path)
+        for image_path in collect_preview_assets(preview_dir, ["*_crop.jpg", "*.jpg"], limit=4):
+            if image_path not in entry["portrait_images"]:
+                entry["portrait_images"].append(image_path)
+    return library
+
+
 def build_linked_segment_line_library(cfg: dict) -> tuple[dict[str, list[str]], dict[str, list[dict]]]:
     linked_root = resolve_project_path(cfg["paths"]["linked_segments"])
     scene_root = resolve_project_path(cfg["paths"]["scene_clips"])
@@ -447,6 +519,7 @@ def build_linked_segment_line_library(cfg: dict) -> tuple[dict[str, list[str]], 
 
 def build_series_model(dataset_files: list, cfg: dict, char_map: dict) -> dict:
     character_directory = build_character_directory(char_map)
+    character_reference_library = build_character_reference_library(char_map)
     character_stats: dict[str, dict[str, int | bool]] = defaultdict(
         lambda: {"scene_count": 0, "line_count": 0, "priority": False, "face_cluster_count": 0}
     )
@@ -520,6 +593,8 @@ def build_series_model(dataset_files: list, cfg: dict, char_map: dict) -> dict:
                     "speaker_names": row.get("speaker_names", []),
                     "keywords": scene_keywords,
                     "transcript": transcript,
+                    "video_file": row.get("video_file", ""),
+                    "duration_seconds": row_duration,
                 }
             )
 
@@ -554,6 +629,7 @@ def build_series_model(dataset_files: list, cfg: dict, char_map: dict) -> dict:
         "keywords": top_keywords,
         "speaker_samples": {speaker: samples[:20] for speaker, samples in speaker_samples.items()},
         "speaker_line_library": {speaker: rows[:160] for speaker, rows in speaker_line_library.items()},
+        "character_reference_library": character_reference_library,
         "scene_library": scene_library,
         "source_episode_durations": dict(episode_duration_counter),
         "average_scene_duration_seconds": round(average_scene_duration, 3),
@@ -844,6 +920,113 @@ def summary_line(characters: list[str], keyword: str, beat: str) -> str:
     return f"{joined} {verb} das Thema '{keyword}' voran und geraten in eine typische {beat.lower()}-Situation."
 
 
+def choose_camera_plan(beat: str, scene_index: int, rng: random.Random) -> dict:
+    presets = CAMERA_PRESETS.get(beat) or CAMERA_PRESETS["Plan"]
+    preset = presets[scene_index % len(presets)]
+    return dict(preset)
+
+
+def choose_environment_reference(scene_characters: list[str], keyword: str, model: dict, used_scene_refs: set[str]) -> dict:
+    best_entry: dict | None = None
+    best_score = -1.0
+    keyword_token = keyword.lower().strip()
+    for entry in model.get("scene_library", []) or []:
+        video_file = coalesce_text(entry.get("video_file", ""))
+        entry_scene_id = coalesce_text(entry.get("scene_id", ""))
+        if not video_file or not entry_scene_id:
+            continue
+        if entry_scene_id in used_scene_refs:
+            continue
+        score = 0.0
+        entry_characters = {coalesce_text(name) for name in entry.get("characters", []) or []}
+        overlap = len(entry_characters & set(scene_characters))
+        score += overlap * 2.0
+        if keyword_token and keyword_token in {coalesce_text(token).lower() for token in entry.get("keywords", []) or []}:
+            score += 1.25
+        if float(entry.get("duration_seconds", 0.0) or 0.0) >= 8.0:
+            score += 0.2
+        if score > best_score:
+            best_score = score
+            best_entry = entry
+    if not best_entry:
+        return {}
+    used_scene_refs.add(coalesce_text(best_entry.get("scene_id", "")))
+    return {
+        "type": "environment",
+        "episode_id": coalesce_text(best_entry.get("episode_id", "")),
+        "scene_id": coalesce_text(best_entry.get("scene_id", "")),
+        "video_file": coalesce_text(best_entry.get("video_file", "")),
+        "keywords": best_entry.get("keywords", []) or [],
+        "characters": best_entry.get("characters", []) or [],
+    }
+
+
+def build_scene_generation_plan(
+    scene_id: str,
+    scene_index: int,
+    beat: str,
+    keyword: str,
+    scene_characters: list[str],
+    summary: str,
+    model: dict,
+    used_scene_refs: set[str],
+    previous_scene_id: str,
+) -> dict:
+    reference_library = model.get("character_reference_library", {}) or {}
+    camera_plan = choose_camera_plan(beat, scene_index, random.Random(scene_index + len(scene_characters)))
+    reference_slots: list[dict] = []
+    for slot_index, character in enumerate(scene_characters[:2], start=1):
+        reference_row = reference_library.get(character, {}) if isinstance(reference_library, dict) else {}
+        reference_slots.append(
+            {
+                "slot": f"subject_{slot_index}",
+                "type": "character",
+                "name": character,
+                "context_images": list((reference_row.get("context_images", []) or [])[:2]),
+                "portrait_images": list((reference_row.get("portrait_images", []) or [])[:2]),
+                "priority": bool(reference_row.get("priority", False)),
+            }
+        )
+    environment_reference = choose_environment_reference(scene_characters, keyword, model, used_scene_refs)
+    if environment_reference:
+        reference_slots.append({"slot": "scene_reference", **environment_reference})
+
+    positive_prompt = (
+        f"storyboard frame, animated sitcom look, {camera_plan['shot_type']}, {camera_plan['composition']}, "
+        f"{camera_plan['camera_move']}, {camera_plan['lens_hint']}, "
+        f"characters {', '.join(scene_characters[:2])}, keyword {keyword}, beat {beat}, "
+        f"{camera_plan['pose_hint']}, keep identity, wardrobe and environment continuity, "
+        f"16:9 frame, clean readable staging"
+    )
+    negative_prompt = (
+        "no collage, no split panel, no duplicate characters, no extra fingers, no warped face, "
+        "no mismatched outfit, no GUI overlay, no text box, no watermark"
+    )
+    batch_prompt_line = (
+        f"{beat} | {', '.join(scene_characters[:2])} | {keyword} | {camera_plan['shot_type']} | "
+        f"{camera_plan['composition']} | continuity from {previous_scene_id or 'none'}"
+    )
+    return {
+        "scene_id": scene_id,
+        "model_mode": "multi_reference_storyboard",
+        "reference_slots": reference_slots,
+        "continuity": {
+            "previous_scene_id": previous_scene_id,
+            "use_previous_scene_as_reference": bool(previous_scene_id),
+        },
+        "camera_plan": camera_plan,
+        "control_hints": {
+            "pose_guidance": camera_plan["pose_hint"],
+            "composition_guidance": camera_plan["composition"],
+            "motion_guidance": camera_plan["camera_move"],
+        },
+        "positive_prompt": positive_prompt,
+        "negative_prompt": negative_prompt,
+        "batch_prompt_line": batch_prompt_line,
+        "summary": summary,
+    }
+
+
 def generate_episode_package(model: dict, cfg: dict, episode_index: int = 1) -> tuple[dict, str]:
     generation_cfg = cfg.get("generation", {})
     rng_seed = int(generation_cfg.get("seed", 42)) + len(model.get("dataset_files", [])) + (episode_index * 101)
@@ -881,8 +1064,11 @@ def generate_episode_package(model: dict, cfg: dict, episode_index: int = 1) -> 
         f"- Ziel-Laufzeit: ca. {round(target_runtime_seconds / 60.0, 1)} Minuten",
         f"- Ziel-Szenen: {scene_count}",
         f"- Ziel-Dialogzeilen pro Szene: {target_lines_per_scene}",
+        "- Storyboard-Plan: multi-reference, continuity-aware, model-native prompts",
         "",
     ]
+    used_scene_refs: set[str] = set()
+    previous_scene_id = ""
     for scene_index in range(scene_count):
         beat = beats[scene_index % len(beats)]
         keyword = keywords[scene_index % len(keywords)]
@@ -902,6 +1088,17 @@ def generate_episode_package(model: dict, cfg: dict, episode_index: int = 1) -> 
             target_length=target_lines_per_scene,
         )
         scene_id = f"scene_{scene_index + 1:04d}"
+        generation_plan = build_scene_generation_plan(
+            scene_id,
+            scene_index,
+            beat,
+            keyword,
+            scene_characters,
+            summary,
+            model,
+            used_scene_refs,
+            previous_scene_id,
+        )
         scenes.append(
             {
                 "scene_id": scene_id,
@@ -917,6 +1114,7 @@ def generate_episode_package(model: dict, cfg: dict, episode_index: int = 1) -> 
                     f"{beat} mit {', '.join(scene_characters)}. Fokus auf {keyword}, schnelle Pointen "
                     f"und klaren Konfliktbogen."
                 ),
+                "generation_plan": generation_plan,
                 "estimated_runtime_seconds": round(len(dialogue) * float(model.get("average_segment_duration_seconds", 2.7) or 2.7), 2),
             }
         )
@@ -926,18 +1124,28 @@ def generate_episode_package(model: dict, cfg: dict, episode_index: int = 1) -> 
                 "",
                 summary,
                 "",
+                f"Shot Plan: {generation_plan['camera_plan']['shot_type']} | {generation_plan['camera_plan']['composition']} | {generation_plan['camera_plan']['camera_move']}",
+                f"Continuity: previous scene = {generation_plan['continuity']['previous_scene_id'] or 'none'}",
+                "Reference Slots:",
+                *[
+                    f"- {slot['slot']}: {slot.get('type', '')} {slot.get('name', slot.get('scene_id', ''))}".strip()
+                    for slot in generation_plan["reference_slots"]
+                ],
+                "",
                 "Dialog:",
                 "",
                 *[f"- {line}" for line in dialogue],
                 "",
             ]
         )
+        previous_scene_id = scene_id
 
     return {
         "episode_title": episode_title,
         "episode_label": episode_label,
         "display_title": display_title,
         "generation_mode": "synthetic_preview",
+        "storyboard_plan_mode": "multi_reference_storyboard",
         "target_runtime_seconds": target_runtime_seconds,
         "target_scene_count": scene_count,
         "target_dialogue_lines_per_scene": target_lines_per_scene,
