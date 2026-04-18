@@ -48,20 +48,47 @@ def run_step(script_name: str, env: dict[str, str] | None = None) -> None:
         raise SystemExit(result.returncode)
 
 
-def planned_preview_steps(cfg: dict, count: int) -> list[str]:
-    steps = ["07_build_dataset.py", "08_train_series_model.py"]
+def training_stage_flags(cfg: dict) -> tuple[bool, bool, bool, bool, bool]:
     foundation_cfg = cfg.get("foundation_training", {}) if isinstance(cfg.get("foundation_training"), dict) else {}
     adapter_cfg = cfg.get("adapter_training", {}) if isinstance(cfg.get("adapter_training"), dict) else {}
     fine_tune_cfg = cfg.get("fine_tune_training", {}) if isinstance(cfg.get("fine_tune_training"), dict) else {}
     backend_cfg = cfg.get("backend_fine_tune", {}) if isinstance(cfg.get("backend_fine_tune"), dict) else {}
-    if bool(foundation_cfg.get("required_before_generate", True)) or bool(foundation_cfg.get("required_before_render", True)):
-        steps.extend(["09_prepare_foundation_training.py", "10_train_foundation_models.py"])
-        if bool(adapter_cfg.get("auto_train_after_foundation", True)):
-            steps.append("11_train_adapter_models.py")
-            if bool(fine_tune_cfg.get("auto_train_after_adapter", True)):
-                steps.append("12_train_fine_tune_models.py")
-                if bool(backend_cfg.get("auto_run_after_fine_tune", True)):
-                    steps.append("13_run_backend_finetunes.py")
+    needs_foundation_training = bool(foundation_cfg.get("required_before_generate", True)) or bool(
+        foundation_cfg.get("required_before_render", True)
+    )
+    should_prepare_foundation = bool(foundation_cfg.get("prepare_after_batch", False)) or needs_foundation_training
+    should_train_foundation = bool(foundation_cfg.get("auto_train_after_prepare", False)) or needs_foundation_training
+    should_train_adapter = bool(adapter_cfg.get("auto_train_after_foundation", True))
+    should_train_fine_tune = bool(fine_tune_cfg.get("auto_train_after_adapter", True))
+    should_run_backend = bool(backend_cfg.get("auto_run_after_fine_tune", True))
+    return (
+        should_prepare_foundation,
+        should_train_foundation,
+        should_train_adapter,
+        should_train_fine_tune,
+        should_run_backend,
+    )
+
+
+def planned_preview_steps(cfg: dict, count: int) -> list[str]:
+    steps = ["07_build_dataset.py", "08_train_series_model.py"]
+    (
+        should_prepare_foundation,
+        should_train_foundation,
+        should_train_adapter,
+        should_train_fine_tune,
+        should_run_backend,
+    ) = training_stage_flags(cfg)
+    if should_prepare_foundation:
+        steps.append("09_prepare_foundation_training.py")
+        if should_train_foundation:
+            steps.append("10_train_foundation_models.py")
+            if should_train_adapter:
+                steps.append("11_train_adapter_models.py")
+                if should_train_fine_tune:
+                    steps.append("12_train_fine_tune_models.py")
+                    if should_run_backend:
+                        steps.append("13_run_backend_finetunes.py")
     steps.extend(
         [
             "14_generate_episode_from_trained_model.py",
@@ -85,10 +112,13 @@ def main() -> None:
     args = parse_args()
     count = max(1, int(args.count))
     cfg = load_config()
-    foundation_cfg = cfg.get("foundation_training", {}) if isinstance(cfg.get("foundation_training"), dict) else {}
-    adapter_cfg = cfg.get("adapter_training", {}) if isinstance(cfg.get("adapter_training"), dict) else {}
-    fine_tune_cfg = cfg.get("fine_tune_training", {}) if isinstance(cfg.get("fine_tune_training"), dict) else {}
-    backend_cfg = cfg.get("backend_fine_tune", {}) if isinstance(cfg.get("backend_fine_tune"), dict) else {}
+    (
+        should_prepare_foundation,
+        should_train_foundation,
+        should_train_adapter,
+        should_train_fine_tune,
+        should_run_backend,
+    ) = training_stage_flags(cfg)
 
     headline("Generate Multiple Visible Preview Episodes")
     generated: list[str] = []
@@ -120,28 +150,27 @@ def main() -> None:
         completed_steps += 1
         reporter.update(completed_steps, current_label="Train Series Model", extra_label="Completed: 08_train_series_model.py")
 
-        if bool(foundation_cfg.get("required_before_generate", True)) or bool(foundation_cfg.get("required_before_render", True)):
+        if should_prepare_foundation:
             reporter.update(completed_steps, current_label="Prepare Foundation Data", extra_label="Running now: 09_prepare_foundation_training.py", force=True)
             run_step("09_prepare_foundation_training.py")
             completed_steps += 1
             reporter.update(completed_steps, current_label="Prepare Foundation Data", extra_label="Completed: 09_prepare_foundation_training.py")
-
-            reporter.update(completed_steps, current_label="Train Foundation Packs", extra_label="Running now: 10_train_foundation_models.py", force=True)
-            run_step("10_train_foundation_models.py")
-            completed_steps += 1
-            reporter.update(completed_steps, current_label="Train Foundation Packs", extra_label="Completed: 10_train_foundation_models.py")
-
-            if bool(adapter_cfg.get("auto_train_after_foundation", True)):
+            if should_train_foundation:
+                reporter.update(completed_steps, current_label="Train Foundation Packs", extra_label="Running now: 10_train_foundation_models.py", force=True)
+                run_step("10_train_foundation_models.py")
+                completed_steps += 1
+                reporter.update(completed_steps, current_label="Train Foundation Packs", extra_label="Completed: 10_train_foundation_models.py")
+            if should_train_foundation and should_train_adapter:
                 reporter.update(completed_steps, current_label="Train Adapter Profiles", extra_label="Running now: 11_train_adapter_models.py", force=True)
                 run_step("11_train_adapter_models.py")
                 completed_steps += 1
                 reporter.update(completed_steps, current_label="Train Adapter Profiles", extra_label="Completed: 11_train_adapter_models.py")
-                if bool(fine_tune_cfg.get("auto_train_after_adapter", True)):
+                if should_train_fine_tune:
                     reporter.update(completed_steps, current_label="Train Fine-Tune Profiles", extra_label="Running now: 12_train_fine_tune_models.py", force=True)
                     run_step("12_train_fine_tune_models.py")
                     completed_steps += 1
                     reporter.update(completed_steps, current_label="Train Fine-Tune Profiles", extra_label="Completed: 12_train_fine_tune_models.py")
-                    if bool(backend_cfg.get("auto_run_after_fine_tune", True)):
+                    if should_run_backend:
                         reporter.update(completed_steps, current_label="Prepare Backend Fine-Tunes", extra_label="Running now: 13_run_backend_finetunes.py", force=True)
                         run_step("13_run_backend_finetunes.py")
                         completed_steps += 1

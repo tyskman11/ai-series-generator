@@ -29,7 +29,7 @@ All scripts in this repository are AI-generated and maintained with `GPT-5.4`.
 | Dataset / model | usable | A local series dataset and heuristic series model can be rebuilt from reviewed material. |
 | Training stack | expanding | Foundation, adapter, fine-tune, and backend-prep stages now exist as explicit steps. |
 | Generation / render | preview-ready | New episodes, shotlists, draft videos, and final preview videos can be produced. |
-| GitHub sync | active | All root Python scripts, including the sync helper itself, plus `README.md` are mirrored to GitHub, never downloaded back. |
+| GitHub sync | active | All root Python scripts except `21_sync_to_github.py`, plus `README.md`, are mirrored to GitHub, never downloaded back. |
 
 ## What Already Works Well
 
@@ -43,7 +43,7 @@ All scripts in this repository are AI-generated and maintained with `GPT-5.4`.
 - draft and final silent storyboard preview rendering
 - autosaves and live progress dashboards for long-running pipelines
 - local voice fallback with German Windows voices instead of old English default fallbacks
-- GitHub mirroring that updates the repo `About` text, includes the sync helper itself, and never uses `clone`, `fetch`, or `pull`
+- GitHub mirroring that updates the repo `About` text, excludes the sync helper itself (`21_sync_to_github.py`), and never uses `clone`, `fetch`, or `pull`
 
 ## Current Focus
 
@@ -86,6 +86,7 @@ All scripts in this repository are AI-generated and maintained with `GPT-5.4`.
 - `19_generate_preview_episodes.py` now rebuilds the series bible once after the full generated/rendered batch instead of after every single episode, so multi-episode runs stay closer to the intended train-then-generate/render flow
 - `20_refresh_after_manual_review.py` now derives its rebuild order from one explicit planned-step list, keeps the same train-then-generate/render-then-bible sequence, and now also respects the configured optional foundation/adapter/fine-tune/backend stages instead of always forcing `09` through `13`
 - `19_generate_preview_episodes.py` now also records explicit planned/completed batch-step lists in its completion metadata, so autosaves and orchestration logs keep the same ordering contract as the refreshed rebuild path
+- `19_generate_preview_episodes.py` now also uses the same configurable foundation/adapter/fine-tune/backend stage toggles as `99_process_next_episode.py` and `20_refresh_after_manual_review.py`, including the `prepare_after_batch` / `auto_train_after_prepare` split, so planned and executed batch steps stay aligned
 
 ## Planned
 
@@ -142,7 +143,7 @@ Also keep the `In Progress` and `Planned` sections current. If priorities change
 - `18_build_series_bible.py`: rebuild the series bible
 - `19_generate_preview_episodes.py`: generate multiple visible preview episodes in one run
 - `20_refresh_after_manual_review.py`: rebuild the pipeline after manual character review
-- `21_sync_to_github.py`: mirror all root local Python scripts plus `README.md` to GitHub
+- `21_sync_to_github.py`: mirror all root local Python scripts except itself plus `README.md` to GitHub
 - `99_process_next_episode.py`: run the full end-to-end workflow
 - `pipeline_common.py`: shared helpers for paths, config, runtime, progress reporting, and status handling
 
@@ -319,7 +320,7 @@ Rebuilds the compact series bible from the trained series model and current revi
 
 ### 19 - Generate Preview Episodes
 
-Runs a full visible multi-episode generation flow, including rebuild, training, generation, storyboard backend materialization, and render stages. It now rebuilds the series bible once after the full batch instead of repeating that step after every generated episode, and it records the planned/completed batch-step order in its step metadata for easier resume/debug inspection.
+Runs a full visible multi-episode generation flow, including rebuild, training, generation, storyboard backend materialization, and render stages. It now rebuilds the series bible once after the full batch instead of repeating that step after every generated episode, records the planned/completed batch-step order in its step metadata for easier resume/debug inspection, and respects the same optional foundation/adapter/fine-tune/backend training toggles used by the other orchestration scripts.
 
 ### 20 - Refresh After Manual Review
 
@@ -327,7 +328,7 @@ One-command rebuild path after manual character cleanup. This is the preferred w
 
 ### 21 - Sync To GitHub
 
-Mirrors all root `*.py` files plus `README.md` to GitHub, including `21_sync_to_github.py` itself.
+Mirrors all root `*.py` files plus `README.md` to GitHub, excluding `21_sync_to_github.py`.
 
 Key rules:
 
