@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import argparse
 import json
 import subprocess
 import time
@@ -46,6 +47,16 @@ GLOBAL_STEPS = [
     "17_render_episode.py",
     "18_build_series_bible.py",
 ]
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Run the full end-to-end series pipeline.")
+    parser.add_argument(
+        "--skip-downloads",
+        action="store_true",
+        help="Skip model downloads in 09 and only use existing downloads/updates.",
+    )
+    return parser.parse_args()
 
 
 def run_step(script_name: str, title: str, extra_args: list[str] | None = None) -> None:
@@ -321,6 +332,10 @@ def mark_episode_completed(state: dict, episode_name: str) -> None:
 
 
 def global_steps_to_run(cfg: dict) -> list[str]:
+    return [row[0] for row in global_step_rows(cfg)]
+
+
+def global_step_rows(cfg: dict, skip_downloads: bool = False) -> list[tuple[str, str, list[str]]]:
     foundation_cfg = cfg.get("foundation_training", {}) if isinstance(cfg.get("foundation_training"), dict) else {}
     adapter_cfg = cfg.get("adapter_training", {}) if isinstance(cfg.get("adapter_training"), dict) else {}
     fine_tune_cfg = cfg.get("fine_tune_training", {}) if isinstance(cfg.get("fine_tune_training"), dict) else {}
@@ -328,24 +343,28 @@ def global_steps_to_run(cfg: dict) -> list[str]:
     needs_foundation_training = bool(foundation_cfg.get("required_before_generate", True)) or bool(
         foundation_cfg.get("required_before_render", True)
     )
-    steps = ["07_build_dataset.py", "08_train_series_model.py"]
+    steps: list[tuple[str, str, list[str]]] = [
+        ("07_build_dataset.py", "Build training dataset from reviewed data", []),
+        ("08_train_series_model.py", "Train Series Model", []),
+    ]
     if bool(foundation_cfg.get("prepare_after_batch", False)) or needs_foundation_training:
-        steps.append("09_prepare_foundation_training.py")
+        prepare_args = ["--skip-downloads"] if skip_downloads else []
+        steps.append(("09_prepare_foundation_training.py", "Prepare Foundation Training", prepare_args))
         if bool(foundation_cfg.get("auto_train_after_prepare", False)) or needs_foundation_training:
-            steps.append("10_train_foundation_models.py")
+            steps.append(("10_train_foundation_models.py", "Train Foundation Models", []))
             if bool(adapter_cfg.get("auto_train_after_foundation", True)):
-                steps.append("11_train_adapter_models.py")
+                steps.append(("11_train_adapter_models.py", "Train Local Adapter Profiles", []))
                 if bool(fine_tune_cfg.get("auto_train_after_adapter", True)):
-                    steps.append("12_train_fine_tune_models.py")
+                    steps.append(("12_train_fine_tune_models.py", "Train Local Fine-Tune Profiles", []))
                     if bool(backend_cfg.get("auto_run_after_fine_tune", True)):
-                        steps.append("13_run_backend_finetunes.py")
+                        steps.append(("13_run_backend_finetunes.py", "Create Concrete Backend Fine-Tune Runs", []))
     steps.extend(
         [
-            "14_generate_episode_from_trained_model.py",
-            "15_generate_storyboard_assets.py",
-            "16_run_storyboard_backend.py",
-            "17_render_episode.py",
-            "18_build_series_bible.py",
+            ("14_generate_episode_from_trained_model.py", "Generate New Episode From Trained Model", []),
+            ("15_generate_storyboard_assets.py", "Generate Storyboard Scene Assets", []),
+            ("16_run_storyboard_backend.py", "Materialize Storyboard Backend Frames", []),
+            ("17_render_episode.py", "Render Storyboard Video", []),
+            ("18_build_series_bible.py", "Update Series Bible", []),
         ]
     )
     return steps
@@ -371,6 +390,7 @@ def global_step_title(script_name: str) -> str:
 
 def main() -> None:
     rerun_in_runtime()
+    args = parse_args()
     headline("Run Full Series Pipeline")
     cfg = load_config()
     inbox_dir = resolve_project_path(cfg["paths"]["inbox_episodes"])
@@ -498,7 +518,8 @@ def main() -> None:
     state["current_phase"] = "global"
     state["current_step"] = None
     save_autosave(cfg, state, "global_phase_started", inbox_dir)
-    steps_to_run = global_steps_to_run(cfg)
+    step_rows = global_step_rows(cfg, skip_downloads=bool(args.skip_downloads))
+    steps_to_run = [row[0] for row in step_rows]
     completed_global_steps = set(state.get("global_steps_completed", []) or [])
     global_reporter = LiveProgressReporter(
         script_name="99_process_next_episode.py",
@@ -506,7 +527,7 @@ def main() -> None:
         phase_label="Global Pipeline Steps",
         parent_label="Training to Render",
     )
-    for script_name in steps_to_run:
+    for script_name, step_title, step_args in step_rows:
         if script_name in completed_global_steps:
             continue
         global_step_started_at = time.time()
@@ -515,7 +536,7 @@ def main() -> None:
         save_autosave(cfg, state, f"global_step_started:{script_name}", inbox_dir)
         global_reporter.update(
             len(completed_global_steps),
-            current_label=global_step_title(script_name),
+            current_label=step_title,
             extra_label=f"Running now: {script_name}",
             force=True,
             scope_current=len(completed_global_steps),
@@ -523,12 +544,12 @@ def main() -> None:
             scope_started_at=global_step_started_at,
             scope_label="Global Steps",
         )
-        run_step(script_name, global_step_title(script_name))
+        run_step(script_name, step_title, step_args)
         mark_global_step_completed(state, script_name)
         completed_global_steps.add(script_name)
         global_reporter.update(
             len(completed_global_steps),
-            current_label=global_step_title(script_name),
+            current_label=step_title,
             extra_label=f"Completed: {script_name}",
             scope_current=len(completed_global_steps),
             scope_total=len(steps_to_run),

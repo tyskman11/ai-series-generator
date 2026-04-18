@@ -86,6 +86,7 @@ All scripts in this repository are AI-generated and maintained with `GPT-5.4`.
 - `19_generate_preview_episodes.py` now also records explicit planned/completed batch-step lists in its completion metadata, so autosaves and orchestration logs keep the same ordering contract as the refreshed rebuild path
 - `19_generate_preview_episodes.py` now also uses the same configurable foundation/adapter/fine-tune/backend stage toggles as `99_process_next_episode.py` and `20_refresh_after_manual_review.py`, including the `prepare_after_batch` / `auto_train_after_prepare` split, so planned and executed batch steps stay aligned
 - `19_generate_preview_episodes.py` now also supports `--skip-downloads` for step `09`, so multi-episode rebuild runs can reuse existing model downloads like the manual refresh path
+- `99_process_next_episode.py` now also supports `--skip-downloads` for step `09`, so the full end-to-end inbox pipeline can reuse existing model downloads without changing the train-then-generate/render order
 
 ## Planned
 
@@ -333,6 +334,7 @@ Runs the main end-to-end flow:
 9. rebuild the bible
 
 The pipeline now writes autosaves, resumable checkpoints, and live status files for long-running batch work.
+It also supports `--skip-downloads` for the foundation-prepare stage when existing model downloads should be reused.
 
 ## Testing And Smoke Runs
 
@@ -408,7 +410,7 @@ When a script changes, at minimum check whether the README must also be updated 
 ```powershell
 python 00_prepare_runtime.py
 python 01_setup_project.py
-python 99_process_next_episode.py
+python 99_process_next_episode.py --skip-downloads
 ```
 
 ### Generate New Preview Episodes From Existing Reviewed Data
