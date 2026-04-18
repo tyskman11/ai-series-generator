@@ -87,6 +87,7 @@ All scripts in this repository are AI-generated and maintained with `GPT-5.4`.
 - `19_generate_preview_episodes.py` now also uses the same configurable foundation/adapter/fine-tune/backend stage toggles as `99_process_next_episode.py` and `20_refresh_after_manual_review.py`, including the `prepare_after_batch` / `auto_train_after_prepare` split, so planned and executed batch steps stay aligned
 - `19_generate_preview_episodes.py` now also supports `--skip-downloads` for step `09`, so multi-episode rebuild runs can reuse existing model downloads like the manual refresh path
 - `99_process_next_episode.py` now also supports `--skip-downloads` for step `09`, so the full end-to-end inbox pipeline can reuse existing model downloads without changing the train-then-generate/render order
+- `99_process_next_episode.py` now also stores explicit planned/completed global step metadata in its autosaves and status files, so resume state and live status stay aligned with the real train-then-generate/render plan
 
 ## Planned
 
@@ -334,7 +335,7 @@ Runs the main end-to-end flow:
 9. rebuild the bible
 
 The pipeline now writes autosaves, resumable checkpoints, and live status files for long-running batch work.
-It also supports `--skip-downloads` for the foundation-prepare stage when existing model downloads should be reused.
+It also supports `--skip-downloads` for the foundation-prepare stage when existing model downloads should be reused, and it stores the planned/completed global step order in the autosave state so resume and status output reflect the real run plan.
 
 ## Testing And Smoke Runs
 

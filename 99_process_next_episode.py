@@ -107,6 +107,7 @@ def default_state() -> dict:
         "status": "running",
         "updated_at": utc_timestamp(),
         "setup_completed": False,
+        "skip_downloads": False,
         "processed_count": 0,
         "current_phase": None,
         "current_episode_file": None,
@@ -114,6 +115,8 @@ def default_state() -> dict:
         "current_step": None,
         "episode_steps_completed": {},
         "processed_episodes": [],
+        "global_planned_steps": [],
+        "global_completed_step_labels": [],
         "global_steps_completed": [],
     }
 
@@ -186,26 +189,31 @@ def build_status_snapshot(cfg: dict, state: dict, inbox_dir: Path | None = None)
 
     global_rows = []
     completed_global_steps = set(state.get("global_steps_completed", []) or [])
-    for step_name in global_steps_to_run(cfg):
+    for row in global_step_payloads(state, cfg):
+        step_name = str(row.get("script_name") or "").strip()
+        step_label = str(row.get("label") or step_name).strip() or step_name
         if step_name in completed_global_steps:
             status = "completed"
         elif current_phase == "global" and current_step == step_name:
             status = "running"
         else:
             status = "pending"
-        global_rows.append({"step": step_name, "status": status})
+        global_rows.append({"step": step_label, "script_name": step_name, "status": status})
 
     return {
         "status": str(state.get("status", "running")),
         "updated_at": str(state.get("updated_at", "")),
         "autosave_reason": str(state.get("autosave_reason", "")),
         "setup_completed": bool(state.get("setup_completed", False)),
+        "skip_downloads": bool(state.get("skip_downloads", False)),
         "processed_count": int(state.get("processed_count", 0) or 0),
         "pending_inbox_count": pending_inbox_count,
         "current_phase": state.get("current_phase"),
         "current_episode_file": state.get("current_episode_file"),
         "current_episode_name": state.get("current_episode_name"),
         "current_step": state.get("current_step"),
+        "global_planned_steps": list(state.get("global_planned_steps", []) or []),
+        "global_completed_step_labels": list(state.get("global_completed_step_labels", []) or []),
         "episode_progress": episode_rows,
         "global_progress": global_rows,
     }
@@ -219,6 +227,7 @@ def render_status_markdown(snapshot: dict) -> str:
         f"- Updated: {snapshot.get('updated_at', '-')}",
         f"- Reason: {snapshot.get('autosave_reason', '-')}",
         f"- Setup completed: {'yes' if snapshot.get('setup_completed') else 'no'}",
+        f"- Skip downloads: {'yes' if snapshot.get('skip_downloads') else 'no'}",
         f"- Processed source episodes: {snapshot.get('processed_count', 0)}",
         f"- Files currently in inbox: {snapshot.get('pending_inbox_count', 0)}",
         f"- Phase: {snapshot.get('current_phase') or '-'}",
@@ -370,6 +379,61 @@ def global_step_rows(cfg: dict, skip_downloads: bool = False) -> list[tuple[str,
     return steps
 
 
+def global_step_label(script_name: str, extra_args: list[str] | None = None) -> str:
+    suffix = " ".join(str(arg) for arg in (extra_args or []) if str(arg).strip())
+    return f"{script_name} {suffix}".strip()
+
+
+def global_step_payloads(state: dict, cfg: dict) -> list[dict[str, object]]:
+    stored = state.get("global_planned_steps", [])
+    if isinstance(stored, list) and stored:
+        payloads: list[dict[str, object]] = []
+        for row in stored:
+            if not isinstance(row, dict):
+                continue
+            script_name = str(row.get("script_name") or "").strip()
+            title = str(row.get("title") or "").strip()
+            args = row.get("args", [])
+            if not script_name:
+                continue
+            if not isinstance(args, list):
+                args = []
+            payloads.append(
+                {
+                    "script_name": script_name,
+                    "title": title,
+                    "args": [str(arg) for arg in args],
+                    "label": str(row.get("label") or global_step_label(script_name, args)),
+                }
+            )
+        if payloads:
+            return payloads
+    return serialize_global_step_rows(global_step_rows(cfg, skip_downloads=bool(state.get("skip_downloads", False))))
+
+
+def serialize_global_step_rows(step_rows: list[tuple[str, str, list[str]]]) -> list[dict[str, object]]:
+    payloads: list[dict[str, object]] = []
+    for script_name, title, extra_args in step_rows:
+        payloads.append(
+            {
+                "script_name": script_name,
+                "title": title,
+                "args": list(extra_args),
+                "label": global_step_label(script_name, extra_args),
+            }
+        )
+    return payloads
+
+
+def completed_global_step_labels(planned_steps: list[dict[str, object]], completed_scripts: set[str]) -> list[str]:
+    labels: list[str] = []
+    for row in planned_steps:
+        script_name = str(row.get("script_name") or "").strip()
+        if script_name in completed_scripts:
+            labels.append(str(row.get("label") or script_name))
+    return labels
+
+
 def global_step_title(script_name: str) -> str:
     titles = {
         "07_build_dataset.py": "Build training dataset from reviewed data",
@@ -395,6 +459,7 @@ def main() -> None:
     cfg = load_config()
     inbox_dir = resolve_project_path(cfg["paths"]["inbox_episodes"])
     state = load_latest_autosave(cfg) or default_state()
+    state["skip_downloads"] = bool(args.skip_downloads)
     initial_inbox_files = sorted([path for path in inbox_dir.iterdir() if path.is_file()]) if inbox_dir.exists() else []
     initial_episode_total = len(initial_inbox_files)
     resume_episode = str(state.get("current_episode_name") or "").strip()
@@ -517,10 +582,12 @@ def main() -> None:
 
     state["current_phase"] = "global"
     state["current_step"] = None
-    save_autosave(cfg, state, "global_phase_started", inbox_dir)
     step_rows = global_step_rows(cfg, skip_downloads=bool(args.skip_downloads))
+    state["global_planned_steps"] = serialize_global_step_rows(step_rows)
     steps_to_run = [row[0] for row in step_rows]
     completed_global_steps = set(state.get("global_steps_completed", []) or [])
+    state["global_completed_step_labels"] = completed_global_step_labels(state["global_planned_steps"], completed_global_steps)
+    save_autosave(cfg, state, "global_phase_started", inbox_dir)
     global_reporter = LiveProgressReporter(
         script_name="99_process_next_episode.py",
         total=max(1, len(steps_to_run)),
@@ -547,6 +614,7 @@ def main() -> None:
         run_step(script_name, step_title, step_args)
         mark_global_step_completed(state, script_name)
         completed_global_steps.add(script_name)
+        state["global_completed_step_labels"] = completed_global_step_labels(state["global_planned_steps"], completed_global_steps)
         global_reporter.update(
             len(completed_global_steps),
             current_label=step_title,
