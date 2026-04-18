@@ -29,7 +29,6 @@ All scripts in this repository are AI-generated and maintained with `GPT-5.4`.
 | Dataset / model | usable | A local series dataset and heuristic series model can be rebuilt from reviewed material. |
 | Training stack | expanding | Foundation, adapter, fine-tune, and backend-prep stages now exist as explicit steps. |
 | Generation / render | preview-ready | New episodes, shotlists, draft videos, and final preview videos can be produced. |
-| GitHub sync | active | All root Python scripts except `21_sync_to_github.py`, plus `README.md`, are mirrored to GitHub, never downloaded back. |
 
 ## What Already Works Well
 
@@ -43,7 +42,6 @@ All scripts in this repository are AI-generated and maintained with `GPT-5.4`.
 - draft and final silent storyboard preview rendering
 - autosaves and live progress dashboards for long-running pipelines
 - local voice fallback with German Windows voices instead of old English default fallbacks
-- GitHub mirroring that updates the repo `About` text, excludes the sync helper itself (`21_sync_to_github.py`), and never uses `clone`, `fetch`, or `pull`
 
 ## Current Focus
 
@@ -106,7 +104,7 @@ This file is mandatory documentation.
 
 Whenever you change any of the following, update `README.md` in the same task:
 
-- `00_prepare_runtime.py` through `21_sync_to_github.py`
+- `00_prepare_runtime.py` through `20_refresh_after_manual_review.py`
 - `99_process_next_episode.py`
 - `pipeline_common.py`
 - `ai_series_project/configs/project.json`
@@ -143,7 +141,6 @@ Also keep the `In Progress` and `Planned` sections current. If priorities change
 - `18_build_series_bible.py`: rebuild the series bible
 - `19_generate_preview_episodes.py`: generate multiple visible preview episodes in one run
 - `20_refresh_after_manual_review.py`: rebuild the pipeline after manual character review
-- `21_sync_to_github.py`: mirror all root local Python scripts except itself plus `README.md` to GitHub
 - `99_process_next_episode.py`: run the full end-to-end workflow
 - `pipeline_common.py`: shared helpers for paths, config, runtime, progress reporting, and status handling
 
@@ -213,12 +210,6 @@ Also keep the `In Progress` and `Planned` sections current. If priorities change
    - `generation/renders/drafts`
    - `generation/renders/final`
    - `series_bible/episode_summaries`
-
-To mirror the current code to GitHub:
-
-```powershell
-python 21_sync_to_github.py
-```
 
 ## Workflow Summary
 
@@ -316,7 +307,7 @@ Renders a draft and final local storyboard preview video. The current default pa
 
 ### 18 - Build Series Bible
 
-Rebuilds the compact series bible from the trained series model and current reviewed data, including an English-first markdown summary for downstream review and sync output.
+Rebuilds the compact series bible from the trained series model and current reviewed data, including an English-first markdown summary for downstream review output.
 
 ### 19 - Generate Preview Episodes
 
@@ -325,20 +316,6 @@ Runs a full visible multi-episode generation flow, including rebuild, training, 
 ### 20 - Refresh After Manual Review
 
 One-command rebuild path after manual character cleanup. This is the preferred way to rebuild dependent outputs after heavy review work, including refreshed storyboard assets, backend frames, render output, and the final series bible update. Its planned-step list now keeps the same train-then-generate/render ordering as the other orchestration scripts, `--stop-after-training` cuts the run cleanly after the active training block, and the refresh path now respects the same optional foundation/adapter/fine-tune/backend stage toggles as the other numbered orchestrators instead of always forcing `09` through `13`.
-
-### 21 - Sync To GitHub
-
-Mirrors all root `*.py` files plus `README.md` to GitHub, excluding `21_sync_to_github.py`.
-
-Key rules:
-
-- never downloads from GitHub
-- never uses `clone`, `fetch`, or `pull`
-- updates the repository `About` text on every run
-- keeps local as the source of truth
-- ends cleanly when there are no allowed file changes to commit
-
-The GitHub `About` text states that the project is a local AI pipeline for learning from TV episodes and generating new preview episodes, and that all scripts are AI-generated with `GPT-5.4`.
 
 ### 99 - Full Pipeline
 
