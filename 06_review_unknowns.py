@@ -47,31 +47,31 @@ REVIEW_QUIT_TOKEN = "__quit__"
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Review, Benennung und Ignorieren von Face-Clustern")
-    parser.add_argument("--list-faces", action="store_true", help="Zeigt standardmaessig nur bereits benannte Figuren mit Preview-Pfaden.")
-    parser.add_argument("--created", action="store_true", help="Zeigt nur die Namen bereits angelegter erkannter Figuren.")
-    parser.add_argument("--show-queue", action="store_true", help="Zeigt die offene review_queue.json statt der Face-Review.")
-    parser.add_argument("--assign-face", help="Face-Cluster-ID wie face_001.")
-    parser.add_argument("--name", help="Name fuer --assign-face, z. B. 'Babe Carano'.")
-    parser.add_argument("--priority", action="store_true", help="Markiert --assign-face oder --rename-face als priorisierte Hauptfigur.")
-    parser.add_argument("--set-priority", help="Setzt fuer einen bereits benannten Face-Cluster per ID oder Name die Hauptfiguren-Prioritaet.")
-    parser.add_argument("--clear-priority", help="Entfernt fuer einen bereits benannten Face-Cluster per ID oder Name die Hauptfiguren-Prioritaet.")
-    parser.add_argument("--rename-face", help="Bereits benannten Face-Cluster per ID oder aktuellem Namen umbenennen.")
-    parser.add_argument("--rename-to", help="Neuer Name fuer --rename-face.")
-    parser.add_argument("--ignore", action="store_true", help="Setzt --assign-face auf 'noface' und ignoriert das Cluster kuenftig.")
+    parser = argparse.ArgumentParser(description="Review, assign, rename, or ignore face clusters")
+    parser.add_argument("--list-faces", action="store_true", help="Show already named characters together with preview paths.")
+    parser.add_argument("--created", action="store_true", help="Show only the names of already created recognized characters.")
+    parser.add_argument("--show-queue", action="store_true", help="Show the open review_queue.json instead of the face review.")
+    parser.add_argument("--assign-face", help="Face cluster ID such as face_001.")
+    parser.add_argument("--name", help="Name for --assign-face, for example 'Babe Carano'.")
+    parser.add_argument("--priority", action="store_true", help="Mark --assign-face or --rename-face as a prioritized main character.")
+    parser.add_argument("--set-priority", help="Set main-character priority for an already named face cluster by ID or name.")
+    parser.add_argument("--clear-priority", help="Clear main-character priority for an already named face cluster by ID or name.")
+    parser.add_argument("--rename-face", help="Rename an already named face cluster by ID or current name.")
+    parser.add_argument("--rename-to", help="New name for --rename-face.")
+    parser.add_argument("--ignore", action="store_true", help="Set --assign-face to 'noface' and ignore the cluster from now on.")
     parser.add_argument(
         "--review-faces",
         action="store_true",
-        help="Interaktive Benennung fuer automatisch benannte Face-Cluster.",
+        help="Interactive naming for automatically named face clusters.",
     )
     parser.add_argument(
         "--include-named",
         action="store_true",
-        help="Nimmt bei --review-faces auch bereits benannte Cluster mit auf.",
+        help="Include already named clusters in --review-faces as well.",
     )
-    parser.add_argument("--limit", type=int, default=20, help="Maximale Anzahl ausgegebener Cluster pro Start. Standard: 20")
-    parser.add_argument("--all", action="store_true", help="Bearbeitet wirklich alle aktuell offenen Face-Cluster.")
-    parser.add_argument("--open-previews", action="store_true", help="Oeffnet die Montage-Datei bei der interaktiven Review.")
+    parser.add_argument("--limit", type=int, default=20, help="Maximum number of clusters to process per start. Default: 20")
+    parser.add_argument("--all", action="store_true", help="Process every currently open face cluster.")
+    parser.add_argument("--open-previews", action="store_true", help="Open the contact sheet during interactive review.")
     return parser.parse_args()
 
 
@@ -121,9 +121,9 @@ def resolve_face_reference(char_map: dict, reference: str) -> str:
             matches.append(cluster_id)
 
     if not matches:
-        raise FileNotFoundError(f"Face-Cluster oder Name nicht gefunden: {reference}")
+        raise FileNotFoundError(f"Face cluster or name not found: {reference}")
     if len(matches) > 1:
-        raise ValueError(f"Face-Referenz ist nicht eindeutig: {reference} -> {', '.join(sorted(matches))}")
+        raise ValueError(f"Face reference is ambiguous: {reference} -> {', '.join(sorted(matches))}")
     return matches[0]
 
 
@@ -287,13 +287,13 @@ def create_face_review_sheet(cluster_id: str, payload: dict) -> Path | None:
         files = preview_files(payload)
         if not files:
             return None
-        return create_contact_sheet(files, preview_dir / f"{cluster_id}_montage.jpg", title=f"{cluster_id} | Vorschau")
+        return create_contact_sheet(files, preview_dir / f"{cluster_id}_montage.jpg", title=f"{cluster_id} | Preview")
 
     try:
         from PIL import Image, ImageDraw, ImageOps
     except Exception:
         fallback_files = [path for pair in pairs for path in pair if path is not None]
-        return create_contact_sheet(fallback_files, preview_dir / f"{cluster_id}_montage.jpg", title=f"{cluster_id} | Vorschau")
+    return create_contact_sheet(fallback_files, preview_dir / f"{cluster_id}_montage.jpg", title=f"{cluster_id} | Preview")
 
     row_height = 300
     row_width = 560
@@ -448,7 +448,7 @@ def show_preview_assignment_window(
 
     hint = tk.Label(
         window,
-        text="Name hier eingeben, Schnellwahl-Button klicken oder im Terminal tippen. Enter uebernimmt sofort. 'noface' ignoriert, 'statist' setzt eine Nebenfigur. '!Name' im Terminal markiert direkt eine Hauptfigur.",
+        text="Type a name here, click a quick-assign button, or enter it in the terminal. Enter confirms immediately. 'noface' ignores the cluster, 'statist' marks a minor character, and '!Name' in the terminal marks a main character right away.",
         fg="white",
         bg="#1f2937",
         wraplength=900,
@@ -459,7 +459,7 @@ def show_preview_assignment_window(
     if quick_assignments:
         quick_label = tk.Label(
             window,
-            text="Bekannte Figuren Schnellwahl",
+            text="Known Character Quick Assign",
             fg="white",
             bg="#1f2937",
             justify="left",
@@ -483,7 +483,7 @@ def show_preview_assignment_window(
 
     priority_check = tk.Checkbutton(
         window,
-        text="Als Hauptfigur priorisieren",
+        text="Prioritize as main character",
         variable=priority_var,
         fg="white",
         bg="#1f2937",
@@ -495,11 +495,11 @@ def show_preview_assignment_window(
 
     button_row = tk.Frame(window, bg="#1f2937")
     button_row.pack(padx=12, pady=(0, 12), fill="x")
-    tk.Button(button_row, text="Uebernehmen", command=lambda: finish(entry_var.get(), priority_var.get())).pack(side="left", padx=(0, 8))
-    tk.Button(button_row, text="Statist", command=lambda: finish("statist", False)).pack(side="left", padx=(0, 8))
+    tk.Button(button_row, text="Apply", command=lambda: finish(entry_var.get(), priority_var.get())).pack(side="left", padx=(0, 8))
+    tk.Button(button_row, text="Minor", command=lambda: finish("statist", False)).pack(side="left", padx=(0, 8))
     tk.Button(button_row, text="NoFace", command=lambda: finish("noface", False)).pack(side="left", padx=(0, 8))
     tk.Button(button_row, text="Terminal", command=lambda: finish(None)).pack(side="left", padx=(0, 8))
-    tk.Button(button_row, text="Beenden", command=lambda: finish(REVIEW_QUIT_TOKEN, False)).pack(side="right")
+    tk.Button(button_row, text="Quit", command=lambda: finish(REVIEW_QUIT_TOKEN, False)).pack(side="right")
 
     def poll_terminal() -> None:
         if result["value"] is not None:
@@ -526,7 +526,7 @@ def prompt_terminal_assignment(char_map: dict) -> tuple[str, bool | None]:
     quick_names = [name for name, _priority, _count in known_identity_button_options(char_map, limit=8)]
     if quick_names:
         print(f"Bekannte Figuren: {' | '.join(quick_names)}")
-    print("Name eingeben. 'noface' ignoriert den Treffer, 'statist' speichert eine Nebenfigur, '!Name' priorisiert als Hauptfigur. 'q' beendet die Review.")
+    print("Enter a name. 'noface' ignores the match, 'statist' saves a minor character, '!Name' prioritizes as a main character, and 'q' quits the review.")
     raw = input("> ").strip()
     name, explicit_priority = parse_assignment_input(raw)
     if not name:
@@ -1412,7 +1412,7 @@ def print_cluster(char_map: dict, cluster_id: str, payload: dict) -> None:
     print(f"  Treffer: {detection_count}")
     print(f"  Figuren-Faces: {identity_count}")
     print(f"  Auto: {auto_named}")
-    print(f"  Priorisiert: {priority}")
+    print(f"  Prioritized: {priority}")
     print(f"  Rollenhinweis: {role_hint}")
     print(f"  Review-Tipp: {action_hint}")
     print(f"  Preview: {preview_dir}")
@@ -1503,13 +1503,13 @@ def session_face_review_candidates(
 
 def interactive_face_review(cfg: dict, char_map: dict, voice_map: dict, include_named: bool, limit: int, open_previews: bool) -> None:
     if not is_interactive_session():
-        raise RuntimeError("--review-faces benoetigt eine interaktive Konsole.")
+        raise RuntimeError("--review-faces requires an interactive console.")
 
     skipped_clusters: set[str] = set()
     handled_count = 0
     candidates = session_face_review_candidates(char_map, include_named, limit, handled_count, skipped_clusters)
     if not candidates:
-        info("Keine Face-Cluster fuer die Review gefunden.")
+        info("No face clusters were found for review.")
         return
 
     changed = 0
@@ -1519,10 +1519,10 @@ def interactive_face_review(cfg: dict, char_map: dict, voice_map: dict, include_
         if auto_matched.get("matched_faces", 0) or auto_matched.get("matched_speakers", 0):
             changed_linked_files, review_count = persist_updates(cfg, char_map, voice_map)
             info(
-                f"Vor der naechsten Eingabe wurden {auto_matched['matched_faces']} bekannte Face-Cluster "
-                f"und {auto_matched['matched_speakers']} Sprecher-Zuordnungen automatisch uebernommen. "
-                f"{changed_linked_files + int(auto_matched.get('linked_files', 0))} Linked-Segment-Dateien aktualisiert, "
-                f"{review_count} offene Review-Faelle."
+                f"Before the next input, {auto_matched['matched_faces']} known face clusters "
+                f"and {auto_matched['matched_speakers']} speaker assignments were applied automatically. "
+                f"{changed_linked_files + int(auto_matched.get('linked_files', 0))} linked-segment files updated, "
+                f"{review_count} open review cases."
             )
         candidates = session_face_review_candidates(char_map, include_named, limit, handled_count, skipped_clusters)
         if not candidates:
@@ -1538,14 +1538,14 @@ def interactive_face_review(cfg: dict, char_map: dict, voice_map: dict, include_
             print()
             print("-" * 72)
             print_cluster(char_map, cluster_id, payload)
-            print(f"Session verbleibend inkl. aktuellem Fall: {session_remaining_count}")
-            print(f"Tatsaechlich offen gesamt: {total_open_count}")
-            print(f"Automatischer Rollenhinweis: {role_hint}")
-            print(f"Automatischer Review-Tipp: {action_hint}")
+            print(f"Remaining in this session including current case: {session_remaining_count}")
+            print(f"Total actually still open: {total_open_count}")
+            print(f"Automatic role hint: {role_hint}")
+            print(f"Automatic review hint: {action_hint}")
             if montage:
                 print(f"Contact sheet: {montage}")
                 if open_previews:
-                    info("Vorschau ist offen. Name kann direkt im Fenster oder parallel im Terminal eingegeben werden.")
+                    info("Preview is open. You can enter the name directly in the window or in parallel in the terminal.")
             for context_path, crop_path in preview_pairs(payload):
                 if context_path:
                     print(f"Szene: {context_path}")
@@ -1557,11 +1557,11 @@ def interactive_face_review(cfg: dict, char_map: dict, voice_map: dict, include_
                 quick_assignments = known_identity_button_options(char_map, limit=16)
                 preview_result = show_preview_assignment_window(
                     montage,
-                    f"{cluster_id} Vorschau | Session: {session_remaining_count} | Offen: {total_open_count}",
+                    f"{cluster_id} Preview | Session: {session_remaining_count} | Open: {total_open_count}",
                     status_text=(
-                        f"Session verbleibend inkl. aktuellem Fall: {session_remaining_count} | "
-                        f"Tatsaechlich offen gesamt: {total_open_count} | "
-                        f"Rollenhinweis: {role_hint} | {action_hint}"
+                        f"Remaining in this session including current case: {session_remaining_count} | "
+                        f"Total actually still open: {total_open_count} | "
+                        f"Role hint: {role_hint} | {action_hint}"
                     ),
                     initial_priority=identity_has_priority(char_map, str(payload.get("name", cluster_id))),
                     quick_assignments=quick_assignments,
@@ -1577,16 +1577,16 @@ def interactive_face_review(cfg: dict, char_map: dict, voice_map: dict, include_
                     answer, explicit_priority = prompt_terminal_assignment(char_map)
                 answer = answer.strip()
             except EOFError:
-                info("Keine weitere Eingabe verfuegbar. Review wird nach der aktuellen Vorschau beendet.")
+                info("No further input is available. Review will stop after the current preview.")
                 stop_review = True
                 break
             if not answer:
-                info("Bitte einen Namen eingeben oder 'noface' verwenden. Der aktuelle Face-Cluster bleibt geoeffnet.")
+                info("Please enter a name or use 'noface'. The current face cluster stays open.")
                 continue
             if answer.lower() == "q" or answer == REVIEW_QUIT_TOKEN:
                 break
             if answer == REVIEW_SKIP_TOKEN:
-                info("Aktueller Face-Cluster wurde nicht veraendert.")
+                info("Current face cluster was left unchanged.")
                 skipped_clusters.add(cluster_id)
                 handled_count += 1
                 break
@@ -1601,14 +1601,14 @@ def interactive_face_review(cfg: dict, char_map: dict, voice_map: dict, include_
             sync_count = changed_linked_files + int(auto_matched.get("linked_files", 0))
             if merged_count or speaker_count:
                 ok(
-                    f"{cluster_id} gespeichert. Danach wurden {merged_count} weitere Face-Cluster und "
-                    f"{speaker_count} Sprecher-Zuordnungen automatisch uebernommen. "
-                    f"{sync_count} Linked-Segment-Dateien synchronisiert, {review_count} offene Review-Faelle."
+                    f"{cluster_id} saved. Afterwards, {merged_count} additional face clusters and "
+                    f"{speaker_count} speaker assignments were applied automatically. "
+                    f"{sync_count} linked-segment files synchronized, {review_count} open review cases."
                 )
             else:
                 ok(
-                    f"{cluster_id} gespeichert. "
-                    f"{sync_count} Linked-Segment-Dateien synchronisiert, {review_count} offene Review-Faelle."
+                    f"{cluster_id} saved. "
+                    f"{sync_count} linked-segment files synchronized, {review_count} open review cases."
                 )
             break
         if stop_review or answer.lower() == "q" or answer == REVIEW_QUIT_TOKEN:
@@ -1616,24 +1616,24 @@ def interactive_face_review(cfg: dict, char_map: dict, voice_map: dict, include_
 
     if changed:
         remaining_session_count = session_case_budget_remaining(limit, handled_count)
-        ok(f"{changed} Face-Cluster aktualisiert. Noch offene Face-Cluster in dieser Session: {remaining_session_count}.")
+        ok(f"{changed} face clusters updated. Still open in this session: {remaining_session_count}.")
     else:
-        info("Keine Aenderungen vorgenommen.")
+        info("No changes were made.")
 
 
 def assign_single_face(cfg: dict, char_map: dict, voice_map: dict, cluster_id: str, assigned_name: str, priority: bool = False) -> None:
     payload = char_map.get("clusters", {}).get(cluster_id)
     if payload is None:
-        raise FileNotFoundError(f"Face-Cluster nicht gefunden: {cluster_id}")
+        raise FileNotFoundError(f"Face cluster not found: {cluster_id}")
     assign_character_name(char_map, cluster_id, assigned_name, priority=priority)
     auto_matched = auto_learn_remaining_reviews(cfg, char_map, voice_map)
     changed_linked_files, review_count = persist_updates(cfg, char_map, voice_map)
     final_name = char_map["clusters"][cluster_id]["name"]
     ok(
-        f"{cluster_id} -> {final_name} gespeichert. "
-        f"{changed_linked_files + int(auto_matched.get('linked_files', 0))} Linked-Segment-Dateien synchronisiert, "
-        f"{review_count} offene Review-Faelle. "
-        f"Auto-Lernen: {int(auto_matched.get('matched_faces', 0))} Face-Cluster, {int(auto_matched.get('matched_speakers', 0))} Sprecher."
+        f"{cluster_id} -> {final_name} saved. "
+        f"{changed_linked_files + int(auto_matched.get('linked_files', 0))} linked-segment files synchronized, "
+        f"{review_count} open review cases. "
+        f"Auto-learn: {int(auto_matched.get('matched_faces', 0))} face clusters, {int(auto_matched.get('matched_speakers', 0))} speakers."
     )
 
 
@@ -1644,10 +1644,10 @@ def rename_face(cfg: dict, char_map: dict, voice_map: dict, reference: str, new_
     changed_linked_files, review_count = persist_updates(cfg, char_map, voice_map)
     final_name = char_map["clusters"][cluster_id]["name"]
     ok(
-        f"{cluster_id} wurde umbenannt zu {final_name}. "
-        f"{changed_linked_files + int(auto_matched.get('linked_files', 0))} Linked-Segment-Dateien synchronisiert, "
-        f"{review_count} offene Review-Faelle. "
-        f"Auto-Lernen: {int(auto_matched.get('matched_faces', 0))} Face-Cluster, {int(auto_matched.get('matched_speakers', 0))} Sprecher."
+        f"{cluster_id} was renamed to {final_name}. "
+        f"{changed_linked_files + int(auto_matched.get('linked_files', 0))} linked-segment files synchronized, "
+        f"{review_count} open review cases. "
+        f"Auto-learn: {int(auto_matched.get('matched_faces', 0))} face clusters, {int(auto_matched.get('matched_speakers', 0))} speakers."
     )
 
 
@@ -1655,15 +1655,15 @@ def set_character_priority(char_map: dict, reference: str, priority: bool) -> tu
     cluster_id = resolve_face_reference(char_map, reference)
     payload = char_map.get("clusters", {}).get(cluster_id)
     if payload is None:
-        raise FileNotFoundError(f"Face-Cluster nicht gefunden: {reference}")
+        raise FileNotFoundError(f"Face cluster not found: {reference}")
 
     final_name = canonical_person_name(str(payload.get("name", cluster_id)))
     if is_ignored_face_payload(payload):
-        raise ValueError(f"{cluster_id} ist als noface/ignoriert markiert und kann nicht priorisiert werden.")
+        raise ValueError(f"{cluster_id} is marked as noface/ignored and cannot be prioritized.")
     if is_background_person_name(final_name):
-        raise ValueError(f"{cluster_id} ist als statist/Nebenfigur markiert und kann nicht priorisiert werden.")
+        raise ValueError(f"{cluster_id} is marked as statist/minor character and cannot be prioritized.")
     if not has_manual_person_name(final_name):
-        raise ValueError(f"{cluster_id} hat noch keinen manuellen Figurennamen und kann erst danach priorisiert werden.")
+        raise ValueError(f"{cluster_id} does not have a manual character name yet and can only be prioritized afterwards.")
 
     payload["priority"] = bool(priority)
     payload["auto_named"] = False
@@ -1674,10 +1674,10 @@ def update_face_priority(cfg: dict, char_map: dict, voice_map: dict, reference: 
     cluster_id, payload = set_character_priority(char_map, reference, priority)
     changed_linked_files, review_count = persist_updates(cfg, char_map, voice_map)
     final_name = payload.get("name", cluster_id)
-    state = "priorisiert" if priority else "nicht mehr priorisiert"
+    state = "prioritized" if priority else "no longer prioritized"
     ok(
-        f"{cluster_id} ({final_name}) ist jetzt {state}. "
-        f"{changed_linked_files} Linked-Segment-Dateien synchronisiert, {review_count} offene Review-Faelle."
+        f"{cluster_id} ({final_name}) is now {state}. "
+        f"{changed_linked_files} linked-segment files synchronized, {review_count} open review cases."
     )
 
 
@@ -1685,15 +1685,15 @@ def show_review_queue(cfg: dict) -> None:
     queue = read_json(resolve_project_path(cfg["paths"]["review_queue"]), {"items": []})
     items = queue.get("items", [])
     if not items:
-        info("Keine offenen Review-Fälle.")
+        info("No open review cases.")
         return
     for index, item in enumerate(items, start=1):
         print("-" * 72)
-        print(f"Fall {index}")
-        print(f"Szene: {item.get('scene_id')}")
+        print(f"Case {index}")
+        print(f"Scene: {item.get('scene_id')}")
         print(f"Speaker: {item.get('speaker_name')}")
         print(f"Text: {str(item.get('text', ''))[:220]}")
-        print(f"Sichtbare Figuren: {', '.join(item.get('visible_character_names', []))}")
+        print(f"Visible characters: {', '.join(item.get('visible_character_names', []))}")
         frames = item.get("speaker_reference_frames", [])
         if frames:
             print(f"Frames: {', '.join(frames[:3])}")
@@ -1703,7 +1703,7 @@ def main() -> None:
     rerun_in_runtime()
     args = parse_args()
     effective_limit = 0 if args.all else max(0, args.limit)
-    headline("Review offener Zuordnungen")
+    headline("Review Open Assignments")
     cfg = load_config()
     char_map = read_json(resolve_project_path(cfg["paths"]["character_map"]), {"clusters": {}, "aliases": {}})
     voice_map = read_json(resolve_project_path(cfg["paths"]["voice_map"]), {"clusters": {}, "aliases": {}})
@@ -1719,31 +1719,31 @@ def main() -> None:
         )
     hydrated = hydrate_face_clusters_from_previews(cfg, char_map)
     if hydrated:
-        info(f"{hydrated} Face-Cluster aus vorhandenen Preview-Ordnern ergänzt.")
+        info(f"{hydrated} face clusters hydrated from existing preview folders.")
     auto_matched = auto_learn_remaining_reviews(cfg, char_map, voice_map)
     if auto_matched.get("matched_faces", 0) or auto_matched.get("matched_speakers", 0):
         info(
-            f"Vor der Review wurden {auto_matched['matched_faces']} unknowne Face-Cluster "
-            f"und {auto_matched['matched_speakers']} Sprecher-Zuordnungen automatisch uebernommen."
+            f"Before review, {auto_matched['matched_faces']} unknown face clusters "
+            f"and {auto_matched['matched_speakers']} speaker assignments were applied automatically."
         )
     if normalized_faces or normalized_voices or hydrated or auto_matched.get("matched_faces", 0) or auto_matched.get("matched_speakers", 0):
         changed_linked_files, review_count = persist_updates(cfg, char_map, voice_map)
         info(
-            f"Maps synchronisiert: {changed_linked_files + int(auto_matched.get('linked_files', 0))} Linked-Segment-Dateien aktualisiert, "
-            f"{review_count} offene Review-Faelle."
+            f"Maps synchronized: {changed_linked_files + int(auto_matched.get('linked_files', 0))} linked-segment files updated, "
+            f"{review_count} open review cases."
         )
 
     if args.assign_face:
         assigned_name = "noface" if args.ignore else (args.name or "").strip()
         if not assigned_name:
-            raise ValueError("Bitte --name angeben oder --ignore verwenden.")
+            raise ValueError("Please provide --name or use --ignore.")
         assign_single_face(cfg, char_map, voice_map, args.assign_face, assigned_name, priority=args.priority)
         return
 
     if args.rename_face:
         new_name = (args.rename_to or "").strip()
         if not new_name:
-            raise ValueError("Bitte --rename-to angeben.")
+            raise ValueError("Please provide --rename-to.")
         rename_face(cfg, char_map, voice_map, args.rename_face, new_name, priority=args.priority)
         return
 

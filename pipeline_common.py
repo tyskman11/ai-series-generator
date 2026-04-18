@@ -779,7 +779,7 @@ def detect_tool(bin_dir: Path, tool_name: str) -> Path:
     path_candidate = tool_on_path(tool_name)
     if path_candidate is not None:
         return path_candidate
-    raise FileNotFoundError(f"{tool_name} nicht gefunden in: {', '.join(checked)}")
+    raise FileNotFoundError(f"{tool_name} was not found in: {', '.join(checked)}")
 
 
 @lru_cache(maxsize=1)

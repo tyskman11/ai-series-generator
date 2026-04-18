@@ -646,7 +646,7 @@ def write_training_plan(
     if downloads:
         lines.extend(["## Basis-Downloads", ""])
         for target in downloads:
-            status = "aktualisiert" if target.get("updated") else "heruntergeladen" if target.get("downloaded") else "aktuell"
+            status = "updated" if target.get("updated") else "downloaded" if target.get("downloaded") else "current"
             revision = coalesce_text(target.get("revision", ""))
             revision_text = f" | Revision: {revision}" if revision else ""
             lines.append(

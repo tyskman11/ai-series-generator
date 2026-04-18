@@ -69,6 +69,8 @@ All scripts in this repository are AI-generated and maintained with `GPT-5.4`.
 - `18_render_episode.py` now automatically picks up already generated storyboard scene frames from `generation/storyboard_assets/<episode>` when they exist, so local backend materialization and later model backends can feed visuals back into the render path without changing script order
 - `15_generate_storyboard_assets.py` now emits backend-ready scene input payloads beside each generated seed frame and rebases older stored artifact paths after project moves, so NAS relocations do not silently break later backend use
 - `15_generate_storyboard_assets.py`, `16_run_storyboard_backend.py`, `18_render_episode.py`, and `19_generate_preview_episodes.py` now resolve the newest generated artifact by timestamp instead of assuming a `folge_*` filename pattern
+- `06_review_unknowns.py`, `17_build_series_bible.py`, and `99_process_next_episode.py` continue to standardize user-facing CLI help, review prompts, and progress output in English so the numbered pipeline reads consistently end to end
+- `pipeline_common.py` now also uses the same English-first tool and runtime error wording as the numbered scripts, so shared failures read consistently in logs and consoles
 
 ## Planned
 
@@ -230,7 +232,7 @@ Detects faces, clusters them, links visible faces to dialogue segments, and writ
 
 ### 06 - Review Unknowns
 
-Interactive review stage for unknown or auto-named face clusters. It now tries to recognize already known characters first, supports stronger role hints, and propagates new manual names back into open review state.
+Interactive review stage for unknown or auto-named face clusters. It now tries to recognize already known characters first, supports stronger role hints, propagates new manual names back into open review state, and keeps its CLI/help and interactive prompts aligned with the English-first numbered pipeline.
 
 ### 07 - Build Dataset
 

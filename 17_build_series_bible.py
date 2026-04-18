@@ -80,13 +80,13 @@ def main() -> None:
         reporter.update(2, current_label="Write Files", extra_label="Running now: save JSON and Markdown series bible")
         write_json(bible_json_path, bible_json)
         write_text(bible_markdown_path, "\n".join(markdown_lines))
-        reporter.finish(current_label="Series Bible", extra_label=f"Written: {bible_json_path.name} und {bible_markdown_path.name}")
+        reporter.finish(current_label="Series Bible", extra_label=f"Written: {bible_json_path.name} and {bible_markdown_path.name}")
         mark_step_completed(
             "17_build_series_bible",
             "global",
             {"series_bible_json": str(bible_json_path), "series_bible_markdown": str(bible_markdown_path)},
         )
-        ok("Series Bible wurde aktualisiert.")
+        ok("Series Bible was updated.")
     except Exception as exc:
         mark_step_failed("17_build_series_bible", str(exc), "global")
         raise

@@ -284,7 +284,7 @@ def episode_step_title(script_name: str, episode_file: str, episode_name: str) -
         "04_diarize_and_transcribe.py": f"Audio Segmentation And Transcription: {episode_name}",
         "05_link_faces_and_speakers.py": f"Link Faces And Voices: {episode_name}",
         "07_build_dataset.py": "Build training dataset from reviewed data",
-        "08_train_series_model.py": "Series Model aus reviewtem Datensatz trainieren",
+        "08_train_series_model.py": "Train series model from reviewed data",
     }
     return titles.get(script_name, episode_name)
 
