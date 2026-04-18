@@ -85,6 +85,7 @@ All scripts in this repository are AI-generated and maintained with `GPT-5.4`.
 - `20_refresh_after_manual_review.py` now derives its rebuild order from one explicit planned-step list, keeps the same train-then-generate/render-then-bible sequence, and now also respects the configured optional foundation/adapter/fine-tune/backend stages instead of always forcing `09` through `13`
 - `19_generate_preview_episodes.py` now also records explicit planned/completed batch-step lists in its completion metadata, so autosaves and orchestration logs keep the same ordering contract as the refreshed rebuild path
 - `19_generate_preview_episodes.py` now also uses the same configurable foundation/adapter/fine-tune/backend stage toggles as `99_process_next_episode.py` and `20_refresh_after_manual_review.py`, including the `prepare_after_batch` / `auto_train_after_prepare` split, so planned and executed batch steps stay aligned
+- `19_generate_preview_episodes.py` now also supports `--skip-downloads` for step `09`, so multi-episode rebuild runs can reuse existing model downloads like the manual refresh path
 
 ## Planned
 
@@ -311,7 +312,7 @@ Rebuilds the compact series bible from the trained series model and current revi
 
 ### 19 - Generate Preview Episodes
 
-Runs a full visible multi-episode generation flow, including rebuild, training, generation, storyboard backend materialization, and render stages. It now rebuilds the series bible once after the full batch instead of repeating that step after every generated episode, records the planned/completed batch-step order in its step metadata for easier resume/debug inspection, and respects the same optional foundation/adapter/fine-tune/backend training toggles used by the other orchestration scripts.
+Runs a full visible multi-episode generation flow, including rebuild, training, generation, storyboard backend materialization, and render stages. It now rebuilds the series bible once after the full batch instead of repeating that step after every generated episode, records the planned/completed batch-step order in its step metadata for easier resume/debug inspection, respects the same optional foundation/adapter/fine-tune/backend training toggles used by the other orchestration scripts, and supports `--skip-downloads` for the foundation-prepare step.
 
 ### 20 - Refresh After Manual Review
 
@@ -328,8 +329,8 @@ Runs the main end-to-end flow:
 5. prepare and train downstream local packs
 6. generate a new episode
 7. generate storyboard seed assets and optional local backend frames
-8. rebuild the bible
-9. render preview outputs
+8. render preview outputs
+9. rebuild the bible
 
 The pipeline now writes autosaves, resumable checkpoints, and live status files for long-running batch work.
 
@@ -435,5 +436,5 @@ python 20_refresh_after_manual_review.py --skip-downloads
 ### Generate Multiple Visible Preview Episodes
 
 ```powershell
-python 19_generate_preview_episodes.py --count 2
+python 19_generate_preview_episodes.py --count 2 --skip-downloads
 ```

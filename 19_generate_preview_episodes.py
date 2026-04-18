@@ -26,6 +26,11 @@ from pipeline_common import (
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Generate multiple visible preview episodes in one run.")
     parser.add_argument("--count", type=int, default=2, help="Number of new episodes. Default: 2")
+    parser.add_argument(
+        "--skip-downloads",
+        action="store_true",
+        help="Skip model downloads in 09 and only use existing downloads/updates.",
+    )
     return parser.parse_args()
 
 
@@ -38,9 +43,9 @@ def latest_episode_id() -> str | None:
     return latest.stem if latest else None
 
 
-def run_step(script_name: str, env: dict[str, str] | None = None) -> None:
+def run_step(script_name: str, env: dict[str, str] | None = None, extra_args: list[str] | None = None) -> None:
     result = subprocess.run(
-        [str(runtime_python()), str(SCRIPT_DIR / script_name)],
+        [str(runtime_python()), str(SCRIPT_DIR / script_name), *(extra_args or [])],
         env=env,
         cwd=str(SCRIPT_DIR),
     )
@@ -70,8 +75,7 @@ def training_stage_flags(cfg: dict) -> tuple[bool, bool, bool, bool, bool]:
     )
 
 
-def planned_preview_steps(cfg: dict, count: int) -> list[str]:
-    steps = ["07_build_dataset.py", "08_train_series_model.py"]
+def training_plan_rows(cfg: dict, skip_downloads: bool = False) -> list[tuple[str, str, list[str]]]:
     (
         should_prepare_foundation,
         should_train_foundation,
@@ -79,16 +83,26 @@ def planned_preview_steps(cfg: dict, count: int) -> list[str]:
         should_train_fine_tune,
         should_run_backend,
     ) = training_stage_flags(cfg)
+    rows: list[tuple[str, str, list[str]]] = [
+        ("07_build_dataset.py", "Build Datasets", []),
+        ("08_train_series_model.py", "Train Series Model", []),
+    ]
     if should_prepare_foundation:
-        steps.append("09_prepare_foundation_training.py")
+        prepare_args: list[str] = ["--skip-downloads"] if skip_downloads else []
+        rows.append(("09_prepare_foundation_training.py", "Prepare Foundation Data", prepare_args))
         if should_train_foundation:
-            steps.append("10_train_foundation_models.py")
+            rows.append(("10_train_foundation_models.py", "Train Foundation Packs", []))
             if should_train_adapter:
-                steps.append("11_train_adapter_models.py")
+                rows.append(("11_train_adapter_models.py", "Train Adapter Profiles", []))
                 if should_train_fine_tune:
-                    steps.append("12_train_fine_tune_models.py")
+                    rows.append(("12_train_fine_tune_models.py", "Train Fine-Tune Profiles", []))
                     if should_run_backend:
-                        steps.append("13_run_backend_finetunes.py")
+                        rows.append(("13_run_backend_finetunes.py", "Prepare Backend Fine-Tunes", []))
+    return rows
+
+
+def planned_preview_steps(cfg: dict, count: int) -> list[str]:
+    steps = [row[0] for row in training_plan_rows(cfg, skip_downloads=False)]
     steps.extend(
         [
             "14_generate_episode_from_trained_model.py",
@@ -112,18 +126,16 @@ def main() -> None:
     args = parse_args()
     count = max(1, int(args.count))
     cfg = load_config()
-    (
-        should_prepare_foundation,
-        should_train_foundation,
-        should_train_adapter,
-        should_train_fine_tune,
-        should_run_backend,
-    ) = training_stage_flags(cfg)
+    training_rows = training_plan_rows(cfg, skip_downloads=bool(args.skip_downloads))
 
     headline("Generate Multiple Visible Preview Episodes")
     generated: list[str] = []
     autosave_target = f"count_{count}"
-    mark_step_started("19_generate_preview_episodes", autosave_target, {"requested_count": count})
+    mark_step_started(
+        "19_generate_preview_episodes",
+        autosave_target,
+        {"requested_count": count, "skip_downloads": bool(args.skip_downloads)},
+    )
     try:
         review_count = open_review_item_count(cfg)
         if review_count > 0:
@@ -136,45 +148,15 @@ def main() -> None:
             script_name="19_generate_preview_episodes.py",
             total=len(planned_steps),
             phase_label="Generate Preview Episodes",
-            parent_label=f"Anzahl: {count}",
+            parent_label=f"Count: {count}",
         )
         completed_steps = 0
 
-        reporter.update(completed_steps, current_label="Build Datasets", extra_label="Running now: 07_build_dataset.py", force=True)
-        run_step("07_build_dataset.py")
-        completed_steps += 1
-        reporter.update(completed_steps, current_label="Build Datasets", extra_label="Completed: 07_build_dataset.py")
-
-        reporter.update(completed_steps, current_label="Train Series Model", extra_label="Running now: 08_train_series_model.py", force=True)
-        run_step("08_train_series_model.py")
-        completed_steps += 1
-        reporter.update(completed_steps, current_label="Train Series Model", extra_label="Completed: 08_train_series_model.py")
-
-        if should_prepare_foundation:
-            reporter.update(completed_steps, current_label="Prepare Foundation Data", extra_label="Running now: 09_prepare_foundation_training.py", force=True)
-            run_step("09_prepare_foundation_training.py")
+        for script_name, current_label, extra_args in training_rows:
+            reporter.update(completed_steps, current_label=current_label, extra_label=f"Running now: {script_name}", force=True)
+            run_step(script_name, extra_args=extra_args)
             completed_steps += 1
-            reporter.update(completed_steps, current_label="Prepare Foundation Data", extra_label="Completed: 09_prepare_foundation_training.py")
-            if should_train_foundation:
-                reporter.update(completed_steps, current_label="Train Foundation Packs", extra_label="Running now: 10_train_foundation_models.py", force=True)
-                run_step("10_train_foundation_models.py")
-                completed_steps += 1
-                reporter.update(completed_steps, current_label="Train Foundation Packs", extra_label="Completed: 10_train_foundation_models.py")
-            if should_train_foundation and should_train_adapter:
-                reporter.update(completed_steps, current_label="Train Adapter Profiles", extra_label="Running now: 11_train_adapter_models.py", force=True)
-                run_step("11_train_adapter_models.py")
-                completed_steps += 1
-                reporter.update(completed_steps, current_label="Train Adapter Profiles", extra_label="Completed: 11_train_adapter_models.py")
-                if should_train_fine_tune:
-                    reporter.update(completed_steps, current_label="Train Fine-Tune Profiles", extra_label="Running now: 12_train_fine_tune_models.py", force=True)
-                    run_step("12_train_fine_tune_models.py")
-                    completed_steps += 1
-                    reporter.update(completed_steps, current_label="Train Fine-Tune Profiles", extra_label="Completed: 12_train_fine_tune_models.py")
-                    if should_run_backend:
-                        reporter.update(completed_steps, current_label="Prepare Backend Fine-Tunes", extra_label="Running now: 13_run_backend_finetunes.py", force=True)
-                        run_step("13_run_backend_finetunes.py")
-                        completed_steps += 1
-                        reporter.update(completed_steps, current_label="Prepare Backend Fine-Tunes", extra_label="Completed: 13_run_backend_finetunes.py")
+            reporter.update(completed_steps, current_label=current_label, extra_label=f"Completed: {script_name}")
         for index in range(count):
             before = latest_episode_id()
             reporter.update(completed_steps, current_label=f"Generate episode {index + 1}", extra_label="Running now: 14_generate_episode_from_trained_model.py", force=True)
@@ -212,6 +194,7 @@ def main() -> None:
             autosave_target,
             {
                 "requested_count": count,
+                "skip_downloads": bool(args.skip_downloads),
                 "planned_steps": planned_steps,
                 "completed_steps": completed_step_labels(planned_steps, completed_steps),
                 "generated_episodes": generated,
@@ -227,6 +210,7 @@ def main() -> None:
             autosave_target,
             {
                 "requested_count": count,
+                "skip_downloads": bool(args.skip_downloads),
                 "planned_steps": planned_steps if "planned_steps" in locals() else [],
                 "completed_steps": completed_step_labels(planned_steps, completed_steps)
                 if "planned_steps" in locals()
