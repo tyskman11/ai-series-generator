@@ -132,7 +132,7 @@ def process_episode_dir(
                 "dataset_manifest": str(resolve_project_path(cfg["paths"]["datasets_video_training"]) / f"{episode_dir.name}_dataset_manifest.json"),
             },
         )
-        ok(f"Datensatz bereits vorhanden: {episode_dir.name}")
+        ok(f"Dataset already exists: {episode_dir.name}")
         return False
 
     linked_rows = read_json(
@@ -220,11 +220,11 @@ def process_episode_dir(
                     (episode_index - 1) + (index / max(1, len(scene_ids))),
                     current_label=scene_id,
                     parent_label=episode_dir.name,
-                    extra_label=f"Datensatzzeilen bisher: {len(dataset_rows)}",
+                    extra_label=f"Dataset rows so far: {len(dataset_rows)}",
                     scope_current=index,
                     scope_total=len(scene_ids),
                     scope_started_at=episode_started_at,
-                    scope_label=f"Folge {episode_index}/{episode_total}",
+                    scope_label=f"Episode {episode_index}/{episode_total}",
                 )
 
         dataset_root = resolve_project_path(cfg["paths"]["datasets_video_training"])
