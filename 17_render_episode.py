@@ -18,6 +18,7 @@ from pipeline_common import (
     PROJECT_ROOT,
     detect_tool,
     error,
+    generated_episode_completion_summary,
     headline,
     info,
     latest_matching_file,
@@ -833,6 +834,15 @@ def build_episode_production_package_payload(
         and isinstance(scene.get("current_generated_outputs", {}), dict)
         and bool(scene["current_generated_outputs"].get("has_scene_master_clip", False))
     )
+    completion_status = generated_episode_completion_summary(
+        scene_count=len(scene_packages),
+        generated_scene_video_count=generated_scene_video_count,
+        scene_dialogue_audio_count=scene_dialogue_audio_count,
+        scene_master_clip_count=scene_master_clip_count,
+        render_mode=clean_text(manifest.get("render_mode", "")),
+        final_render=clean_text(manifest.get("final_render", "")),
+        full_generated_episode=str(package_root / "master" / f"{episode_id}_full_generated_episode.mp4"),
+    )
     return {
         "episode_id": episode_id,
         "package_kind": "full_generated_episode_backend_package",
@@ -855,13 +865,7 @@ def build_episode_production_package_payload(
             "voice_clone": total_line_count > 0,
             "lip_sync": total_line_count > 0,
         },
-        "completion_status": {
-            "generated_scene_video_count": generated_scene_video_count,
-            "scene_dialogue_audio_count": scene_dialogue_audio_count,
-            "scene_master_clip_count": scene_master_clip_count,
-            "all_scene_videos_ready": generated_scene_video_count >= max(1, len(scene_packages)) if scene_packages else False,
-            "all_scene_master_clips_ready": scene_master_clip_count >= max(1, len(scene_packages)) if scene_packages else False,
-        },
+        "completion_status": completion_status,
         "target_master_outputs": {
             "image_root": str(package_root / "images"),
             "video_root": str(package_root / "videos"),

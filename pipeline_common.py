@@ -741,6 +741,73 @@ def resolve_generated_output_path(path_value: Any) -> Path | None:
     return candidate if candidate.is_absolute() else resolve_project_path(raw_path)
 
 
+def completion_ratio(completed: int | float, total: int | float) -> float:
+    total_value = max(0, int(total or 0))
+    if total_value <= 0:
+        return 0.0
+    completed_value = max(0, min(int(completed or 0), total_value))
+    return round(completed_value / total_value, 4)
+
+
+def generated_episode_completion_summary(
+    *,
+    scene_count: int | float,
+    generated_scene_video_count: int | float,
+    scene_dialogue_audio_count: int | float,
+    scene_master_clip_count: int | float,
+    render_mode: str = "",
+    final_render: str = "",
+    full_generated_episode: str = "",
+) -> dict[str, Any]:
+    scene_total = max(0, int(scene_count or 0))
+    video_count = max(0, int(generated_scene_video_count or 0))
+    dialogue_count = max(0, int(scene_dialogue_audio_count or 0))
+    master_count = max(0, int(scene_master_clip_count or 0))
+    full_generated_ready = bool(coalesce_text(full_generated_episode))
+    final_render_ready = bool(coalesce_text(final_render))
+    render_mode_value = coalesce_text(render_mode)
+
+    all_scene_videos_ready = bool(scene_total) and video_count >= scene_total
+    all_scene_dialogue_ready = bool(scene_total) and dialogue_count >= scene_total
+    all_scene_master_clips_ready = bool(scene_total) and master_count >= scene_total
+
+    remaining_backend_tasks: list[str] = []
+    if scene_total > 0 and not all_scene_videos_ready:
+        remaining_backend_tasks.append("generate missing scene videos")
+    if scene_total > 0 and not all_scene_dialogue_ready:
+        remaining_backend_tasks.append("materialize missing scene dialogue audio")
+    if scene_total > 0 and not all_scene_master_clips_ready:
+        remaining_backend_tasks.append("master remaining scene clips")
+    if scene_total > 0 and not full_generated_ready:
+        remaining_backend_tasks.append("assemble the full generated episode master")
+
+    if scene_total > 0 and all_scene_videos_ready and all_scene_master_clips_ready and full_generated_ready:
+        production_readiness = "fully_generated_episode_ready"
+    elif scene_total > 0 and (master_count > 0 or full_generated_ready):
+        production_readiness = "hybrid_generated_episode"
+    elif scene_total > 0 and video_count > 0:
+        production_readiness = "partial_generated_scene_video"
+    elif final_render_ready or render_mode_value in {"storyboard_voiced", "storyboard_video_only"}:
+        production_readiness = "voiced_storyboard_episode_ready"
+    else:
+        production_readiness = "storyboard_only"
+
+    return {
+        "scene_count": scene_total,
+        "generated_scene_video_count": video_count,
+        "scene_dialogue_audio_count": dialogue_count,
+        "scene_master_clip_count": master_count,
+        "all_scene_videos_ready": all_scene_videos_ready,
+        "all_scene_dialogue_audio_ready": all_scene_dialogue_ready,
+        "all_scene_master_clips_ready": all_scene_master_clips_ready,
+        "scene_video_completion_ratio": completion_ratio(video_count, scene_total),
+        "scene_dialogue_completion_ratio": completion_ratio(dialogue_count, scene_total),
+        "scene_master_completion_ratio": completion_ratio(master_count, scene_total),
+        "production_readiness": production_readiness,
+        "remaining_backend_tasks": remaining_backend_tasks,
+    }
+
+
 def generated_episode_artifacts(cfg: dict[str, Any], episode_id: str) -> dict[str, Any]:
     episode_name = coalesce_text(episode_id)
     if not episode_name:
@@ -774,6 +841,54 @@ def generated_episode_artifacts(cfg: dict[str, Any], episode_id: str) -> dict[st
         if isinstance(production_package.get("completion_status"), dict)
         else {}
     )
+    scene_count = int(
+        (render_manifest.get("scene_count") if isinstance(render_manifest, dict) else 0)
+        or completion_status.get("scene_count", 0)
+        or (production_package.get("scene_count") if isinstance(production_package, dict) else 0)
+        or max(
+            int((render_manifest.get("generated_scene_video_count") if isinstance(render_manifest, dict) else 0) or 0),
+            int(completion_status.get("generated_scene_video_count", 0) or 0),
+            int(completion_status.get("scene_dialogue_audio_count", 0) or 0),
+            int((render_manifest.get("scene_master_clip_count") if isinstance(render_manifest, dict) else 0) or 0),
+            int(completion_status.get("scene_master_clip_count", 0) or 0),
+        )
+        or (len(shotlist.get("scenes", [])) if isinstance(shotlist.get("scenes", []), list) else 0)
+        or 0
+    )
+    generated_scene_video_count = int(
+        (render_manifest.get("generated_scene_video_count") if isinstance(render_manifest, dict) else 0)
+        or completion_status.get("generated_scene_video_count", 0)
+        or 0
+    )
+    scene_dialogue_audio_count = int(completion_status.get("scene_dialogue_audio_count", 0) or 0)
+    scene_master_clip_count = int(
+        (render_manifest.get("scene_master_clip_count") if isinstance(render_manifest, dict) else 0)
+        or completion_status.get("scene_master_clip_count", 0)
+        or 0
+    )
+    final_render = coalesce_text(
+        (shotlist.get("final_render") if isinstance(shotlist, dict) else "")
+        or (render_manifest.get("final_render") if isinstance(render_manifest, dict) else "")
+        or preview_outputs.get("final_storyboard_render", "")
+    )
+    full_generated_episode = coalesce_text(
+        (shotlist.get("full_generated_episode") if isinstance(shotlist, dict) else "")
+        or (render_manifest.get("full_generated_episode") if isinstance(render_manifest, dict) else "")
+        or target_outputs.get("final_master_episode", "")
+    )
+    render_mode = coalesce_text(
+        (render_manifest.get("render_mode") if isinstance(render_manifest, dict) else "")
+        or (shotlist.get("render_mode") if isinstance(shotlist, dict) else "")
+    )
+    derived_completion_status = generated_episode_completion_summary(
+        scene_count=scene_count,
+        generated_scene_video_count=generated_scene_video_count,
+        scene_dialogue_audio_count=scene_dialogue_audio_count,
+        scene_master_clip_count=scene_master_clip_count,
+        render_mode=render_mode,
+        final_render=final_render,
+        full_generated_episode=full_generated_episode,
+    )
     return {
         "episode_id": episode_name,
         "display_title": coalesce_text(
@@ -804,11 +919,7 @@ def generated_episode_artifacts(cfg: dict[str, Any], episode_id: str) -> dict[st
             or (render_manifest.get("draft_render") if isinstance(render_manifest, dict) else "")
             or preview_outputs.get("draft_render", "")
         ),
-        "final_render": coalesce_text(
-            (shotlist.get("final_render") if isinstance(shotlist, dict) else "")
-            or (render_manifest.get("final_render") if isinstance(render_manifest, dict) else "")
-            or preview_outputs.get("final_storyboard_render", "")
-        ),
+        "final_render": final_render,
         "dialogue_audio": coalesce_text(
             (shotlist.get("dialogue_audio") if isinstance(shotlist, dict) else "")
             or (render_manifest.get("dialogue_audio") if isinstance(render_manifest, dict) else "")
@@ -823,26 +934,25 @@ def generated_episode_artifacts(cfg: dict[str, Any], episode_id: str) -> dict[st
             or (render_manifest.get("subtitle_preview") if isinstance(render_manifest, dict) else "")
             or preview_outputs.get("subtitle_preview", "")
         ),
-        "full_generated_episode": coalesce_text(
-            (shotlist.get("full_generated_episode") if isinstance(shotlist, dict) else "")
-            or (render_manifest.get("full_generated_episode") if isinstance(render_manifest, dict) else "")
-            or target_outputs.get("final_master_episode", "")
+        "full_generated_episode": full_generated_episode,
+        "render_mode": render_mode,
+        "scene_count": scene_count,
+        "generated_scene_video_count": generated_scene_video_count,
+        "scene_dialogue_audio_count": scene_dialogue_audio_count,
+        "scene_master_clip_count": scene_master_clip_count,
+        "all_scene_videos_ready": bool(derived_completion_status.get("all_scene_videos_ready", False)),
+        "all_scene_dialogue_audio_ready": bool(derived_completion_status.get("all_scene_dialogue_audio_ready", False)),
+        "all_scene_master_clips_ready": bool(derived_completion_status.get("all_scene_master_clips_ready", False)),
+        "scene_video_completion_ratio": float(derived_completion_status.get("scene_video_completion_ratio", 0.0) or 0.0),
+        "scene_dialogue_completion_ratio": float(derived_completion_status.get("scene_dialogue_completion_ratio", 0.0) or 0.0),
+        "scene_master_completion_ratio": float(derived_completion_status.get("scene_master_completion_ratio", 0.0) or 0.0),
+        "production_readiness": coalesce_text(
+            completion_status.get("production_readiness", "") or derived_completion_status.get("production_readiness", "")
         ),
-        "render_mode": coalesce_text(
-            (render_manifest.get("render_mode") if isinstance(render_manifest, dict) else "")
-            or (shotlist.get("render_mode") if isinstance(shotlist, dict) else "")
-        ),
-        "generated_scene_video_count": int(
-            (render_manifest.get("generated_scene_video_count") if isinstance(render_manifest, dict) else 0)
-            or completion_status.get("generated_scene_video_count", 0)
-            or 0
-        ),
-        "scene_dialogue_audio_count": int(completion_status.get("scene_dialogue_audio_count", 0) or 0),
-        "scene_master_clip_count": int(
-            (render_manifest.get("scene_master_clip_count") if isinstance(render_manifest, dict) else 0)
-            or completion_status.get("scene_master_clip_count", 0)
-            or 0
-        ),
+        "remaining_backend_tasks": completion_status.get("remaining_backend_tasks", [])
+        if isinstance(completion_status.get("remaining_backend_tasks"), list) and completion_status.get("remaining_backend_tasks")
+        else derived_completion_status.get("remaining_backend_tasks", []),
+        "completion_status": deep_merge(derived_completion_status, completion_status),
     }
 
 
