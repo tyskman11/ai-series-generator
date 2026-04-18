@@ -232,9 +232,9 @@ def main() -> None:
 
         if not args.force and backend_run_completed(output_path):
             payload = read_json(output_path, {})
-            info(f"Backend-Fine-Tune-Lauf bereits vorhanden: {character_name}")
+            info(f"Backend fine-tune run already exists: {character_name}")
         else:
-            info(f"Erzeuge Backend-Fine-Tune-Lauf: {character_name}")
+            info(f"Creating backend fine-tune run: {character_name}")
             mark_step_started(
                 "13_run_backend_finetunes",
                 autosave_target,

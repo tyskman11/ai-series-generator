@@ -198,9 +198,9 @@ def main() -> None:
         pack_path = pack_path_for_manifest(cfg, manifest)
         if not args.force and foundation_pack_completed(pack_path):
             payload = read_json(pack_path, {})
-            info(f"Foundation-Pack bereits vorhanden: {character_name}")
+            info(f"Foundation pack already exists: {character_name}")
         else:
-            info(f"Trainiere lokalen Foundation-Pack: {character_name}")
+            info(f"Training local foundation pack: {character_name}")
             mark_step_started(
                 "10_train_foundation_models",
                 autosave_target,

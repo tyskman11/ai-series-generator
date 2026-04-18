@@ -310,9 +310,9 @@ def main() -> None:
 
         if not args.force and adapter_profile_completed(profile_path):
             payload = read_json(profile_path, {})
-            info(f"Adapter-Profil bereits vorhanden: {character_name}")
+            info(f"Adapter profile already exists: {character_name}")
         else:
-            info(f"Trainiere lokales Adapter-Profil: {character_name}")
+            info(f"Training local adapter profile: {character_name}")
             mark_step_started(
                 "11_train_adapter_models",
                 autosave_target,

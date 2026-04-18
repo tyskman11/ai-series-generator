@@ -76,6 +76,7 @@ All scripts in this repository are AI-generated and maintained with `GPT-5.4`.
 - `05_link_faces_and_speakers.py`, `06_review_unknowns.py`, and `07_build_dataset.py` continue the same English-first cleanup for interactive naming prompts, named-character listings, and dataset completion messages
 - `13_run_backend_finetunes.py`, `14_generate_episode_from_trained_model.py`, and `17_build_series_bible.py` now also use English-first status and missing-model messages so the mid-pipeline generation path reads consistently in logs and dashboards
 - `07_build_dataset.py` now also uses English-first progress labels inside the live reporter, so dataset rebuild runs match the rest of the numbered training chain
+- `10_train_foundation_models.py`, `11_train_adapter_models.py`, `12_train_fine_tune_models.py`, and `13_run_backend_finetunes.py` now also use English-first training/existing-artifact status lines so the numbered training chain reads consistently from preparation through backend runs
 
 ## Planned
 

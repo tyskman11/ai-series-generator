@@ -129,9 +129,9 @@ def main() -> None:
 
         if not args.force and fine_tune_profile_completed(output_path):
             payload = read_json(output_path, {})
-            info(f"Fine-Tune-Profil bereits vorhanden: {character_name}")
+            info(f"Fine-tune profile already exists: {character_name}")
         else:
-            info(f"Trainiere lokales Fine-Tune-Profil: {character_name}")
+            info(f"Training local fine-tune profile: {character_name}")
             mark_step_started(
                 "12_train_fine_tune_models",
                 autosave_target,
@@ -191,7 +191,7 @@ def main() -> None:
             "characters": summary_rows,
         },
     )
-    ok(f"Fine-Tune-Profile trainiert: {summary_path}")
+    ok(f"Fine-tune profiles trained: {summary_path}")
 
 
 if __name__ == "__main__":
