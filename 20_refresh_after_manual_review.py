@@ -51,7 +51,14 @@ def run_step(script_name: str, title: str, extra_args: list[str] | None = None) 
         raise SystemExit(result.returncode)
 
 
-def planned_refresh_steps(skip_downloads: bool = False, stop_after_training: bool = False) -> list[tuple[str, str, list[str]]]:
+def planned_refresh_steps(cfg: dict, skip_downloads: bool = False, stop_after_training: bool = False) -> list[tuple[str, str, list[str]]]:
+    foundation_cfg = cfg.get("foundation_training", {}) if isinstance(cfg.get("foundation_training"), dict) else {}
+    adapter_cfg = cfg.get("adapter_training", {}) if isinstance(cfg.get("adapter_training"), dict) else {}
+    fine_tune_cfg = cfg.get("fine_tune_training", {}) if isinstance(cfg.get("fine_tune_training"), dict) else {}
+    backend_cfg = cfg.get("backend_fine_tune", {}) if isinstance(cfg.get("backend_fine_tune"), dict) else {}
+    needs_foundation_training = bool(foundation_cfg.get("required_before_generate", True)) or bool(
+        foundation_cfg.get("required_before_render", True)
+    )
     planned_steps: list[tuple[str, str, list[str]]] = [
         ("07_build_dataset.py", "Rebuild datasets with the latest reviewed character names", ["--force"]),
         ("08_train_series_model.py", "Retrain the series model with the latest reviewed names", []),
@@ -59,15 +66,26 @@ def planned_refresh_steps(skip_downloads: bool = False, stop_after_training: boo
     prepare_args = ["--force"]
     if skip_downloads:
         prepare_args.append("--skip-downloads")
-    planned_steps.extend(
-        [
-            ("09_prepare_foundation_training.py", "Prepare foundation training with the latest reviewed character state", prepare_args),
-            ("10_train_foundation_models.py", "Retrain foundation packs with the latest reviewed character state", ["--force"]),
-            ("11_train_adapter_models.py", "Retrain local adapter profiles with the latest reviewed character state", ["--force"]),
-            ("12_train_fine_tune_models.py", "Retrain local fine-tune profiles with the latest reviewed character state", ["--force"]),
-            ("13_run_backend_finetunes.py", "Create backend fine-tune runs with the latest reviewed character state", ["--force"]),
-        ]
-    )
+    if bool(foundation_cfg.get("prepare_after_batch", False)) or needs_foundation_training:
+        planned_steps.append(
+            ("09_prepare_foundation_training.py", "Prepare foundation training with the latest reviewed character state", prepare_args)
+        )
+        if bool(foundation_cfg.get("auto_train_after_prepare", False)) or needs_foundation_training:
+            planned_steps.append(
+                ("10_train_foundation_models.py", "Retrain foundation packs with the latest reviewed character state", ["--force"])
+            )
+            if bool(adapter_cfg.get("auto_train_after_foundation", True)):
+                planned_steps.append(
+                    ("11_train_adapter_models.py", "Retrain local adapter profiles with the latest reviewed character state", ["--force"])
+                )
+                if bool(fine_tune_cfg.get("auto_train_after_adapter", True)):
+                    planned_steps.append(
+                        ("12_train_fine_tune_models.py", "Retrain local fine-tune profiles with the latest reviewed character state", ["--force"])
+                    )
+                    if bool(backend_cfg.get("auto_run_after_fine_tune", True)):
+                        planned_steps.append(
+                            ("13_run_backend_finetunes.py", "Create backend fine-tune runs with the latest reviewed character state", ["--force"])
+                        )
     if not stop_after_training:
         planned_steps.extend(
             [
@@ -113,6 +131,7 @@ def main() -> None:
                     "Run 06_review_unknowns.py first or intentionally continue with --allow-open-review."
                 )
         planned_steps = planned_refresh_steps(
+            cfg,
             skip_downloads=bool(args.skip_downloads),
             stop_after_training=bool(args.stop_after_training),
         )
