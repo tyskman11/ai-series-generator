@@ -11,6 +11,7 @@ from pipeline_common import (
     SCRIPT_DIR,
     error,
     headline,
+    latest_matching_file,
     load_config,
     mark_step_completed,
     mark_step_failed,
@@ -33,8 +34,8 @@ def story_dir() -> Path:
 
 
 def latest_episode_id() -> str | None:
-    files = sorted(story_dir().glob("folge_*.md"))
-    return files[-1].stem if files else None
+    latest = latest_matching_file(story_dir(), "*.md")
+    return latest.stem if latest else None
 
 
 def run_step(script_name: str, env: dict[str, str] | None = None) -> None:

@@ -18,6 +18,7 @@ from pipeline_common import (
     info,
     load_backend_run_index,
     load_config,
+    latest_matching_file,
     mark_step_completed,
     mark_step_failed,
     mark_step_started,
@@ -32,7 +33,7 @@ from pipeline_common import (
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Generate storyboard scene assets from exported storyboard requests")
-    parser.add_argument("--episode-id", help="Target a specific episode ID such as folge_09.")
+    parser.add_argument("--episode-id", help="Target a specific episode ID such as episode_09 or folge_09.")
     parser.add_argument("--force", action="store_true", help="Recreate existing storyboard scene assets.")
     return parser.parse_args()
 
@@ -43,8 +44,7 @@ def find_latest_shotlist(shotlist_dir: Path) -> Path | None:
         candidate = shotlist_dir / f"{episode_id}.json"
         if candidate.exists():
             return candidate
-    files = sorted(shotlist_dir.glob("folge_*.json"))
-    return files[-1] if files else None
+    return latest_matching_file(shotlist_dir, "*.json")
 
 
 def fit_image_to_frame(source_path: Path, output_path: Path, width: int, height: int) -> bool:

@@ -68,6 +68,7 @@ All scripts in this repository are AI-generated and maintained with `GPT-5.4`.
 - `14_generate_episode_from_trained_model.py` now also exports backend-ready storyboard request files per episode and per scene under `generation/storyboard_requests`
 - `18_render_episode.py` now automatically picks up already generated storyboard scene frames from `generation/storyboard_assets/<episode>` when they exist, so local backend materialization and later model backends can feed visuals back into the render path without changing script order
 - `15_generate_storyboard_assets.py` now emits backend-ready scene input payloads beside each generated seed frame and rebases older stored artifact paths after project moves, so NAS relocations do not silently break later backend use
+- `15_generate_storyboard_assets.py`, `16_run_storyboard_backend.py`, `18_render_episode.py`, and `19_generate_preview_episodes.py` now resolve the newest generated artifact by timestamp instead of assuming a `folge_*` filename pattern
 
 ## Planned
 
@@ -271,6 +272,8 @@ Generates a new synthetic preview episode from the trained local model. It resto
 
 In addition, `14` now exports backend-ready storyboard request files under `generation/storyboard_requests/<episode>`, including one episode-level request, one scene-level request per scene, and a prompt preview text file.
 
+When no explicit episode ID is provided, the downstream storyboard, backend, render, and multi-episode helpers now select the newest matching generated artifact by timestamp rather than relying on a `folge_*` filename prefix.
+
 ### 15 - Generate Storyboard Assets
 
 Builds scene-level storyboard asset files from the exported storyboard requests. This step prepares `generation/storyboard_assets/<episode>` so later render passes can already reuse scene frames when they exist.
@@ -396,6 +399,7 @@ When a script changes, at minimum check whether the README must also be updated 
 - changed output paths
 - new cache or reset behavior
 - changed workflow order
+- changed artifact filename assumptions
 - new limitations or caveats
 
 ## Typical Daily Use

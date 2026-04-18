@@ -18,6 +18,7 @@ from pipeline_common import (
     error,
     headline,
     info,
+    latest_matching_file,
     load_config,
     mark_step_completed,
     mark_step_failed,
@@ -33,7 +34,7 @@ from pipeline_common import (
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Render a draft and final storyboard preview video.")
-    parser.add_argument("--episode-id", help="Target a specific episode ID such as folge_09.")
+    parser.add_argument("--episode-id", help="Target a specific episode ID such as episode_09 or folge_09.")
     parser.add_argument("--force", action="store_true", help="Recreate existing draft and final renders.")
     return parser.parse_args()
 
@@ -44,8 +45,7 @@ def find_latest_shotlist(shotlist_dir: Path) -> Path | None:
         candidate = shotlist_dir / f"{episode_id}.json"
         if candidate.exists():
             return candidate
-    files = sorted(shotlist_dir.glob("folge_*.json"))
-    return files[-1] if files else None
+    return latest_matching_file(shotlist_dir, "*.json")
 
 
 def storyboard_assets_root(cfg: dict, episode_id: str) -> Path:

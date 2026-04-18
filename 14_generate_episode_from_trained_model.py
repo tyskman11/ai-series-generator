@@ -44,7 +44,7 @@ STEP08 = load_step08()
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Generate a new episode from the trained series model")
-    parser.add_argument("--episode-id", help="Target a specific episode ID such as folge_09.")
+    parser.add_argument("--episode-id", help="Target a specific episode ID such as episode_09 or folge_09.")
     return parser.parse_args()
 
 

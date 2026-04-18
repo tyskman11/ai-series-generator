@@ -687,6 +687,15 @@ def resolve_project_path(relative_path: str) -> Path:
     return PROJECT_ROOT / relative_path
 
 
+def latest_matching_file(directory: Path, pattern: str) -> Path | None:
+    if not directory.exists():
+        return None
+    candidates = [path for path in directory.glob(pattern) if path.is_file()]
+    if not candidates:
+        return None
+    return max(candidates, key=lambda path: (path.stat().st_mtime, path.name))
+
+
 def resolve_stored_project_path(path_value: str | Path | None) -> Path:
     text = coalesce_text(str(path_value or ""))
     if not text:
