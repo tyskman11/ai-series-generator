@@ -83,12 +83,12 @@ def install_group(
     log_file = log_dir / f"{name}_{int(time.time())}.log"
     log_file.write_text(result.stdout or "", encoding="utf-8")
     if result.returncode == 0 and all(module_available(py, module) for module in modules):
-        ok(f"{name} erfolgreich installiert.")
+        ok(f"{name} installed successfully.")
         return True
     if required:
-        error(f"{name} konnte nicht installiert werden. Siehe {log_file}")
-        raise RuntimeError(f"{name} konnte nicht installiert werden.")
-    warn(f"{name} konnte nicht installiert werden. Siehe {log_file}")
+        error(f"{name} could not be installed. See {log_file}")
+        raise RuntimeError(f"{name} could not be installed.")
+    warn(f"{name} could not be installed. See {log_file}")
     return False
 
 
@@ -215,7 +215,7 @@ def main() -> None:
     cfg = ensure_project_structure(write_config_file=True)
     py = ensure_venv()
     info(f"Runtime-Tag: {runtime_environment_tag()}")
-    info(f"Verwende Python: {py}")
+    info(f"Using Python: {py}")
     run(pip_install_command(py, "--upgrade", "pip", "setuptools<81", "wheel"), check=False)
     clone_cfg = cfg.get("cloning", {}) if isinstance(cfg.get("cloning"), dict) else {}
     requested_voice_engine = str(clone_cfg.get("voice_clone_engine", "pyttsx3") or "pyttsx3").strip().lower()

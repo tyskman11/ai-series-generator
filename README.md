@@ -79,6 +79,7 @@ All scripts in this repository are AI-generated and maintained with `GPT-5.4`.
 - `10_train_foundation_models.py`, `11_train_adapter_models.py`, `12_train_fine_tune_models.py`, and `13_run_backend_finetunes.py` now also use English-first training/existing-artifact status lines so the numbered training chain reads consistently from preparation through backend runs
 - `00_prepare_runtime.py` now also uses English-first package-install and already-present status messages so the numbered pipeline starts with the same console tone as the later steps
 - `04_diarize_and_transcribe.py` and `09_prepare_foundation_training.py` now also use English-first completion and remote-revision fallback messages so transcription and model-prep logs stay consistent with the rest of the numbered pipeline
+- `00_prepare_runtime.py` now also uses English-first install-failure and runtime-Python status lines so startup diagnostics match the rest of the numbered pipeline
 
 ## Planned
 
