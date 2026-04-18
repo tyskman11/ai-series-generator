@@ -75,6 +75,11 @@ def planned_preview_steps(cfg: dict, count: int) -> list[str]:
     return steps
 
 
+def completed_step_labels(planned_steps: list[str], completed_count: int) -> list[str]:
+    limit = max(0, min(int(completed_count or 0), len(planned_steps)))
+    return list(planned_steps[:limit])
+
+
 def main() -> None:
     rerun_in_runtime()
     args = parse_args()
@@ -176,7 +181,14 @@ def main() -> None:
         mark_step_completed(
             "19_generate_preview_episodes",
             autosave_target,
-            {"requested_count": count, "generated_episodes": generated, "generated_count": len(generated)},
+            {
+                "requested_count": count,
+                "planned_steps": planned_steps,
+                "completed_steps": completed_step_labels(planned_steps, completed_steps),
+                "generated_episodes": generated,
+                "generated_count": len(generated),
+                "bible_updated_once_after_batch": True,
+            },
         )
         ok(f"Done. New visible episodes: {', '.join(generated)}")
     except Exception as exc:
@@ -184,7 +196,15 @@ def main() -> None:
             "19_generate_preview_episodes",
             str(exc),
             autosave_target,
-            {"requested_count": count, "generated_episodes": generated, "generated_count": len(generated)},
+            {
+                "requested_count": count,
+                "planned_steps": planned_steps if "planned_steps" in locals() else [],
+                "completed_steps": completed_step_labels(planned_steps, completed_steps)
+                if "planned_steps" in locals()
+                else [],
+                "generated_episodes": generated,
+                "generated_count": len(generated),
+            },
         )
         raise
 

@@ -85,6 +85,7 @@ All scripts in this repository are AI-generated and maintained with `GPT-5.4`.
 - the numbered order now keeps all training in `07-13`, then generation/render in `14-17`, and only then rebuilds the series bible in `18`, so the pipeline follows the requested train-before-generate/render sequence more clearly
 - `19_generate_preview_episodes.py` now rebuilds the series bible once after the full generated/rendered batch instead of after every single episode, so multi-episode runs stay closer to the intended train-then-generate/render flow
 - `20_refresh_after_manual_review.py` now derives its rebuild order from one explicit planned-step list, keeping the same train-then-generate/render-then-bible sequence and making `--stop-after-training` behavior easier to keep consistent
+- `19_generate_preview_episodes.py` now also records explicit planned/completed batch-step lists in its completion metadata, so autosaves and orchestration logs keep the same ordering contract as the refreshed rebuild path
 
 ## Planned
 
@@ -318,7 +319,7 @@ Rebuilds the compact series bible from the trained series model and current revi
 
 ### 19 - Generate Preview Episodes
 
-Runs a full visible multi-episode generation flow, including rebuild, training, generation, storyboard backend materialization, and render stages. It now rebuilds the series bible once after the full batch instead of repeating that step after every generated episode.
+Runs a full visible multi-episode generation flow, including rebuild, training, generation, storyboard backend materialization, and render stages. It now rebuilds the series bible once after the full batch instead of repeating that step after every generated episode, and it records the planned/completed batch-step order in its step metadata for easier resume/debug inspection.
 
 ### 20 - Refresh After Manual Review
 
