@@ -12,9 +12,9 @@ Starting from real episode files, the pipeline can:
 - build a local series dataset and heuristic series model
 - train local foundation, adapter, fine-tune, and backend preparation artifacts
 - generate new synthetic preview episodes as markdown and shotlists
-- render draft and final preview videos
+- render draft and final storyboard preview videos
 
-The default path stays local-first and license-light. Standard voice output uses local `pyttsx3`. Optional XTTS / Coqui paths remain explicit opt-ins rather than the default.
+The default path stays local-first and license-light. Voice cloning and stronger TTS backends remain optional follow-up paths rather than the default preview flow.
 
 All scripts in this repository are AI-generated and maintained with `GPT-5.4`.
 
@@ -38,8 +38,9 @@ All scripts in this repository are AI-generated and maintained with `GPT-5.4`.
 - synthetic preview episode generation from the trained local model
 - model-native storyboard planning per scene, with multi-reference slots, continuity anchors, and camera/control hints for later image-model backends
 - storyboard scene asset generation now writes backend-ready per-scene seed packages and can reuse moved training artifacts after workspace path changes
+- local storyboard backend materialization can turn those seed packages into reusable per-scene backend frames before render
 - real episode titles for generated outputs instead of raw `folge_0x` placeholders
-- draft and final preview rendering
+- draft and final silent storyboard preview rendering
 - autosaves and live progress dashboards for long-running pipelines
 - local voice fallback with German Windows voices instead of old English default fallbacks
 - GitHub mirroring that updates the repo `About` text and never uses `clone`, `fetch`, or `pull`
@@ -59,23 +60,25 @@ All scripts in this repository are AI-generated and maintained with `GPT-5.4`.
 - `06_review_unknowns.py` keeps iterating after each manual naming step, so newly named characters immediately help resolve more open clusters
 - `04_diarize_and_transcribe.py` now applies extra rescue passes for remaining `speaker_unknown` segments using neighborhood and embedding agreement
 - `99_process_next_episode.py` is being hardened for real inbox batch workflows with autosaves, resumable checkpoints, and live status files
-- `17_render_episode.py` continues to improve long Windows render runs, especially for large segment stacks
+- `18_render_episode.py` continues to improve long Windows render runs, especially for large segment stacks
 - the new training chain around `09` through `13` is being observed on real project data, especially where voice material is still weak
 - `14_generate_episode_from_trained_model.py` now writes per-scene multi-reference storyboard plans inspired by shot-by-shot image-edit workflows, but stays model-only and does not depend on any GUI workflow
-- `17_render_episode.py` now carries those storyboard plans into the render manifests so later backend models can reuse the same reference and continuity structure directly
+- `16_run_storyboard_backend.py` can now materialize local backend-style scene frames from the seed payloads emitted by `15_generate_storyboard_assets.py`
+- `18_render_episode.py` now carries storyboard plans into the render manifest, reuses backend frames from `16` when they exist, and falls back to seed assets or generated placeholder cards when needed
 - `14_generate_episode_from_trained_model.py` now also exports backend-ready storyboard request files per episode and per scene under `generation/storyboard_requests`
-- `17_render_episode.py` now automatically picks up already generated storyboard scene frames from `generation/storyboard_assets/<episode>` when they exist, so later model backends can feed visuals back into the render path without changing script order
+- `18_render_episode.py` now automatically picks up already generated storyboard scene frames from `generation/storyboard_assets/<episode>` when they exist, so local backend materialization and later model backends can feed visuals back into the render path without changing script order
 - `15_generate_storyboard_assets.py` now emits backend-ready scene input payloads beside each generated seed frame and rebases older stored artifact paths after project moves, so NAS relocations do not silently break later backend use
 
 ## Planned
 
 - finish naming main characters in `06_review_unknowns.py`
 - mark minor characters as `statist` where appropriate so they stay visible but do not become main roles
-- run `19_refresh_after_manual_review.py` on the fully reviewed set to rebuild datasets, model, training packs, generated episodes, bible, and renders
+- run `20_refresh_after_manual_review.py` on the fully reviewed set to rebuild datasets, model, training packs, generated episodes, bible, and renders
 - keep reducing `speaker_unknown` cases across full seasons
 - expand the fine-tune and backend stages from local preparation artifacts into real model-weight training later on
 - connect the new backend-ready storyboard seed packages from `15_generate_storyboard_assets.py` to an actual local image/video model runner later on
 - improve render quality, character consistency, and synthetic episode quality after the review and training loop stabilizes
+- add an optional voiced render path on top of the current silent storyboard preview video flow
 - only re-enable stronger lip-sync paths when they actually look series-quality
 
 ## Documentation Rule
@@ -84,7 +87,7 @@ This file is mandatory documentation.
 
 Whenever you change any of the following, update `README.md` in the same task:
 
-- `00_prepare_runtime.py` through `20_sync_to_github.py`
+- `00_prepare_runtime.py` through `21_sync_to_github.py`
 - `99_process_next_episode.py`
 - `pipeline_common.py`
 - `ai_series_project/configs/project.json`
@@ -116,11 +119,12 @@ Also keep the `In Progress` and `Planned` sections current. If priorities change
 - `13_run_backend_finetunes.py`: materialize backend-oriented fine-tune runs
 - `14_generate_episode_from_trained_model.py`: generate a new synthetic preview episode
 - `15_generate_storyboard_assets.py`: build scene-level storyboard seed assets and backend-ready per-scene input payloads from exported storyboard requests
-- `16_build_series_bible.py`: rebuild the series bible
-- `17_render_episode.py`: render draft and final preview videos
-- `18_generate_preview_episodes.py`: generate multiple visible preview episodes in one run
-- `19_refresh_after_manual_review.py`: rebuild the pipeline after manual character review
-- `20_sync_to_github.py`: mirror allowed local files to GitHub
+- `16_run_storyboard_backend.py`: materialize local backend-style storyboard scene frames from the per-scene backend input payloads
+- `17_build_series_bible.py`: rebuild the series bible
+- `18_render_episode.py`: render draft and final storyboard preview videos from seed assets, backend frames, or placeholder scene cards
+- `19_generate_preview_episodes.py`: generate multiple visible preview episodes in one run
+- `20_refresh_after_manual_review.py`: rebuild the pipeline after manual character review
+- `21_sync_to_github.py`: mirror allowed local files to GitHub
 - `99_process_next_episode.py`: run the full end-to-end workflow
 - `pipeline_common.py`: shared helpers for paths, config, runtime, progress reporting, and status handling
 
@@ -150,7 +154,7 @@ Also keep the `In Progress` and `Planned` sections current. If priorities change
 - `ai_series_project/generation/renders/final`: final preview renders
 - `ai_series_project/series_bible/episode_summaries`: generated series bible files
 - `ai_series_project/runtime/autosaves`: autosaves and resumable run state
-- `runtime/venv`: local Python environment
+- `runtime/venv_<os>_<arch>_<bitness>`: local Python environment for the current machine and runtime architecture
 
 ## Requirements
 
@@ -192,14 +196,14 @@ Also keep the `In Progress` and `Planned` sections current. If priorities change
 To mirror the current code to GitHub:
 
 ```powershell
-python 20_sync_to_github.py
+python 21_sync_to_github.py
 ```
 
 ## Workflow Summary
 
 ### 00 - Prepare Runtime
 
-Creates `runtime/venv`, updates packaging tools, installs dependencies, prepares the project structure, and prefers CUDA-capable Torch when possible.
+Creates `runtime/venv_<os>_<arch>_<bitness>`, updates packaging tools, installs dependencies, prepares the project structure, and prefers CUDA-capable Torch when possible.
 
 The default path stays license-light. Optional XTTS / Coqui is only prepared when explicitly enabled. XTTS must never be enabled implicitly through a hidden license acceptance.
 
@@ -271,31 +275,34 @@ In addition, `14` now exports backend-ready storyboard request files under `gene
 
 Builds scene-level storyboard asset files from the exported storyboard requests. This step prepares `generation/storyboard_assets/<episode>` so later render passes can already reuse scene frames when they exist.
 
-### 16 - Build Series Bible
+### 16 - Run Storyboard Backend
+
+Materializes local backend-style scene frames from the per-scene backend input payloads written by `15`. This is the bridge between the seed-package export and later render reuse.
+
+### 17 - Build Series Bible
 
 Rebuilds the compact series bible from the trained series model and current reviewed data.
 
-### 17 - Render Episode
+### 18 - Render Episode
 
-Renders a draft and final preview video. The current default path:
+Renders a draft and final local storyboard preview video. The current default path:
 
-- prefers local `pyttsx3`
-- only attempts XTTS when explicitly enabled
-- writes per-character voice model metadata
+- reuses materialized backend frames from `16_run_storyboard_backend.py` when they exist
+- otherwise reuses generated storyboard seed assets from `generation/storyboard_assets/<episode>`
+- generates readable placeholder scene cards when no visual asset exists yet
 - preserves the per-scene storyboard plan in the render manifest for future model backends
-- reuses generated storyboard scene frames from `generation/storyboard_assets/<episode>` when those assets already exist
 - uses FFmpeg concat lists to avoid long Windows command line failures
-- keeps synthetic preview generation separate from automatic original-scene reuse
+- currently renders a silent storyboard preview rather than a voiced final mix
 
-### 18 - Generate Preview Episodes
+### 19 - Generate Preview Episodes
 
-Runs a full visible multi-episode generation flow, including rebuild, training, generation, and render stages.
+Runs a full visible multi-episode generation flow, including rebuild, training, generation, storyboard backend materialization, and render stages.
 
-### 19 - Refresh After Manual Review
+### 20 - Refresh After Manual Review
 
-One-command rebuild path after manual character cleanup. This is the preferred way to rebuild dependent outputs after heavy review work.
+One-command rebuild path after manual character cleanup. This is the preferred way to rebuild dependent outputs after heavy review work, including refreshed storyboard assets, backend frames, bible output, and render output.
 
-### 20 - Sync To GitHub
+### 21 - Sync To GitHub
 
 Mirrors only root `*.py` files plus `README.md` to GitHub.
 
@@ -319,8 +326,9 @@ Runs the main end-to-end flow:
 4. rebuild dataset and model
 5. prepare and train downstream local packs
 6. generate a new episode
-7. rebuild the bible
-8. render preview outputs
+7. generate storyboard seed assets and optional local backend frames
+8. rebuild the bible
+9. render preview outputs
 
 The pipeline now writes autosaves, resumable checkpoints, and live status files for long-running batch work.
 
@@ -354,14 +362,15 @@ python 12_train_fine_tune_models.py
 python 13_run_backend_finetunes.py
 python 14_generate_episode_from_trained_model.py
 python 15_generate_storyboard_assets.py
-python 16_build_series_bible.py
-python 17_render_episode.py
+python 16_run_storyboard_backend.py
+python 17_build_series_bible.py
+python 18_render_episode.py
 ```
 
 After major manual review work:
 
 ```powershell
-python 19_refresh_after_manual_review.py --skip-downloads
+python 20_refresh_after_manual_review.py --skip-downloads
 ```
 
 ## Known Limitations
@@ -410,17 +419,18 @@ python 12_train_fine_tune_models.py
 python 13_run_backend_finetunes.py
 python 14_generate_episode_from_trained_model.py
 python 15_generate_storyboard_assets.py
-python 17_render_episode.py
+python 16_run_storyboard_backend.py
+python 18_render_episode.py
 ```
 
 ### Rebuild After Manual Character Review
 
 ```powershell
-python 19_refresh_after_manual_review.py --skip-downloads
+python 20_refresh_after_manual_review.py --skip-downloads
 ```
 
 ### Generate Multiple Visible Preview Episodes
 
 ```powershell
-python 18_generate_preview_episodes.py --count 2
+python 19_generate_preview_episodes.py --count 2
 ```

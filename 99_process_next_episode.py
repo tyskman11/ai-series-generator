@@ -42,8 +42,9 @@ GLOBAL_STEPS = [
     "13_run_backend_finetunes.py",
     "14_generate_episode_from_trained_model.py",
     "15_generate_storyboard_assets.py",
-    "16_build_series_bible.py",
-    "17_render_episode.py",
+    "16_run_storyboard_backend.py",
+    "17_build_series_bible.py",
+    "18_render_episode.py",
 ]
 
 
@@ -204,16 +205,16 @@ def render_status_markdown(snapshot: dict) -> str:
         "# 99 Process Status",
         "",
         f"- Status: {snapshot.get('status', '-')}",
-        f"- Aktualisiert: {snapshot.get('updated_at', '-')}",
-        f"- Grund: {snapshot.get('autosave_reason', '-')}",
-        f"- Setup fertig: {'ja' if snapshot.get('setup_completed') else 'nein'}",
-        f"- Verarbeitete Quellfolgen: {snapshot.get('processed_count', 0)}",
-        f"- Dateien aktuell in Inbox: {snapshot.get('pending_inbox_count', 0)}",
+        f"- Updated: {snapshot.get('updated_at', '-')}",
+        f"- Reason: {snapshot.get('autosave_reason', '-')}",
+        f"- Setup completed: {'yes' if snapshot.get('setup_completed') else 'no'}",
+        f"- Processed source episodes: {snapshot.get('processed_count', 0)}",
+        f"- Files currently in inbox: {snapshot.get('pending_inbox_count', 0)}",
         f"- Phase: {snapshot.get('current_phase') or '-'}",
-        f"- Laufende Folge: {snapshot.get('current_episode_name') or '-'}",
-        f"- Laufender Schritt: {snapshot.get('current_step') or '-'}",
+        f"- Current episode: {snapshot.get('current_episode_name') or '-'}",
+        f"- Current step: {snapshot.get('current_step') or '-'}",
         "",
-        "## Episodenstatus",
+        "## Episode Status",
         "",
     ]
     episode_progress = snapshot.get("episode_progress", []) or []
@@ -225,24 +226,24 @@ def render_status_markdown(snapshot: dict) -> str:
                 [
                     f"### {row.get('episode')}",
                     f"- Status: {row.get('status')}",
-                    f"- Erledigt: {completed}",
-                    f"- Offen: {remaining}",
-                    f"- Aktueller Schritt: {row.get('current_step') or '-'}",
+                    f"- Completed: {completed}",
+                    f"- Remaining: {remaining}",
+                    f"- Current step: {row.get('current_step') or '-'}",
                     "",
                 ]
             )
     else:
-        lines.append("Keine Episoden im aktuellen Status vorhanden.")
+        lines.append("No episodes are currently listed in the status snapshot.")
         lines.append("")
 
-    lines.append("## Globaler Status")
+    lines.append("## Global Status")
     lines.append("")
     global_progress = snapshot.get("global_progress", []) or []
     if global_progress:
         for row in global_progress:
             lines.append(f"- {row.get('step')}: {row.get('status')}")
     else:
-        lines.append("- Keine globalen Schritte aktiv.")
+        lines.append("- No global steps are currently active.")
     lines.append("")
     return "\n".join(lines)
 
@@ -342,8 +343,9 @@ def global_steps_to_run(cfg: dict) -> list[str]:
         [
             "14_generate_episode_from_trained_model.py",
             "15_generate_storyboard_assets.py",
-            "16_build_series_bible.py",
-            "17_render_episode.py",
+            "16_run_storyboard_backend.py",
+            "17_build_series_bible.py",
+            "18_render_episode.py",
         ]
     )
     return steps
@@ -360,8 +362,9 @@ def global_step_title(script_name: str) -> str:
         "13_run_backend_finetunes.py": "Create Concrete Backend Fine-Tune Runs",
         "14_generate_episode_from_trained_model.py": "Generate New Episode From Trained Model",
         "15_generate_storyboard_assets.py": "Generate Storyboard Scene Assets",
-        "16_build_series_bible.py": "Update Series Bible",
-        "17_render_episode.py": "Render Storyboard Video",
+        "16_run_storyboard_backend.py": "Materialize Storyboard Backend Frames",
+        "17_build_series_bible.py": "Update Series Bible",
+        "18_render_episode.py": "Render Storyboard Video",
     }
     return titles[script_name]
 
@@ -392,7 +395,7 @@ def main() -> None:
         state["current_phase"] = "setup"
         state["current_step"] = SETUP_STEP
         save_autosave(cfg, state, "setup_started", inbox_dir)
-        run_step(SETUP_STEP, "Projektstruktur")
+        run_step(SETUP_STEP, "Set Up Project Structure")
         state["setup_completed"] = True
         state["current_phase"] = None
         state["current_step"] = None
@@ -443,7 +446,7 @@ def main() -> None:
                 scope_current=len(finished_steps),
                 scope_total=len(EPISODE_STEPS),
                 scope_started_at=step_started_at,
-                scope_label="Schritte aktuelle Folge",
+                scope_label="Current Episode Steps",
             )
             run_step(
                 script_name,
@@ -459,14 +462,14 @@ def main() -> None:
                 scope_current=len(finished_steps),
                 scope_total=len(EPISODE_STEPS),
                 scope_started_at=step_started_at,
-                scope_label="Schritte aktuelle Folge",
+                scope_label="Current Episode Steps",
             )
             save_autosave(cfg, state, f"{episode_name}:{script_name}", inbox_dir)
 
         inbox_file = inbox_dir / next_video_name
         if cleanup_processed_inbox_episode(inbox_file):
-            info(f"Inbox-Datei entfernt: {next_video_name}")
-        episode_step_reporter.finish(current_label=episode_name, extra_label=f"Schritte gesamt: {len(finished_steps)}")
+            info(f"Inbox file removed: {next_video_name}")
+        episode_step_reporter.finish(current_label=episode_name, extra_label=f"Total completed steps: {len(finished_steps)}")
         mark_episode_completed(state, episode_name)
         processed_in_this_run += 1
         episode_batch_reporter.update(
@@ -480,7 +483,7 @@ def main() -> None:
     if review_count > 0:
         info(
             f"Es gibt noch {review_count} offene Review-Faelle. "
-            "Fuehre zuerst 06_review_unknowns.py aus, bevor Datensatz, Training, Generierung oder Render starten."
+            "Run 06_review_unknowns.py first before dataset rebuild, training, generation, or render can continue."
         )
         state["current_phase"] = "review"
         state["current_step"] = "06_review_unknowns.py"
@@ -518,7 +521,7 @@ def main() -> None:
             scope_current=len(completed_global_steps),
             scope_total=len(steps_to_run),
             scope_started_at=global_step_started_at,
-            scope_label="Globale Schritte",
+            scope_label="Global Steps",
         )
         run_step(script_name, global_step_title(script_name))
         mark_global_step_completed(state, script_name)
@@ -530,7 +533,7 @@ def main() -> None:
             scope_current=len(completed_global_steps),
             scope_total=len(steps_to_run),
             scope_started_at=global_step_started_at,
-            scope_label="Globale Schritte",
+            scope_label="Global Steps",
         )
         save_autosave(cfg, state, f"global:{script_name}", inbox_dir)
     global_reporter.finish(current_label="Global Phase", extra_label=f"Total global steps: {len(completed_global_steps)}")

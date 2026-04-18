@@ -57,7 +57,7 @@ def main() -> None:
     headline("Rebuild After Manual Character Review")
     autosave_target = "global"
     mark_step_started(
-        "19_refresh_after_manual_review",
+        "20_refresh_after_manual_review",
         autosave_target,
         {
             "allow_open_review": bool(args.allow_open_review),
@@ -72,35 +72,36 @@ def main() -> None:
             if review_count > 0:
                 raise RuntimeError(
                     f"Es gibt noch {review_count} offene Review-Faelle. "
-                    "Run 06_review_unknowns.py first or intentionally start with --allow-open-review."
+                    "Run 06_review_unknowns.py first or intentionally continue with --allow-open-review."
                 )
         planned_steps: list[tuple[str, str, list[str]]] = [
-            ("07_build_dataset.py", "Datensaetze mit aktuellen Figurennamen neu aufbauen", ["--force"]),
-            ("08_train_series_model.py", "Series Model mit aktuellen Namen neu trainieren", []),
+            ("07_build_dataset.py", "Rebuild datasets with the latest reviewed character names", ["--force"]),
+            ("08_train_series_model.py", "Retrain the series model with the latest reviewed names", []),
         ]
         prepare_args = ["--force"]
         if args.skip_downloads:
             prepare_args.append("--skip-downloads")
         planned_steps.extend(
             [
-                ("09_prepare_foundation_training.py", "Foundation Training mit aktuellem Figurenstand vorbereiten", prepare_args),
-                ("10_train_foundation_models.py", "Foundation-Packs mit aktuellem Figurenstand neu trainieren", ["--force"]),
-                ("11_train_adapter_models.py", "Lokale Adapter-Profile mit aktuellem Figurenstand neu trainieren", ["--force"]),
-                ("12_train_fine_tune_models.py", "Lokale Fine-Tune-Profile mit aktuellem Figurenstand neu trainieren", ["--force"]),
-                ("13_run_backend_finetunes.py", "Konkrete Backend-Fine-Tune-Laeufe mit aktuellem Figurenstand erzeugen", ["--force"]),
+                ("09_prepare_foundation_training.py", "Prepare foundation training with the latest reviewed character state", prepare_args),
+                ("10_train_foundation_models.py", "Retrain foundation packs with the latest reviewed character state", ["--force"]),
+                ("11_train_adapter_models.py", "Retrain local adapter profiles with the latest reviewed character state", ["--force"]),
+                ("12_train_fine_tune_models.py", "Retrain local fine-tune profiles with the latest reviewed character state", ["--force"]),
+                ("13_run_backend_finetunes.py", "Create backend fine-tune runs with the latest reviewed character state", ["--force"]),
             ]
         )
         if not args.stop_after_training:
             planned_steps.extend(
                 [
-                    ("14_generate_episode_from_trained_model.py", "Neue Folge aus aktualisiertem Modell erzeugen", []),
-                    ("15_generate_storyboard_assets.py", "Storyboard-Assets fuer die neue Folge erzeugen", []),
-                    ("16_build_series_bible.py", "Series Bible mit aktuellem Stand aktualisieren", []),
-                    ("17_render_episode.py", "Aktualisierte Folge render", []),
+                    ("14_generate_episode_from_trained_model.py", "Generate a new episode from the refreshed model", []),
+                    ("15_generate_storyboard_assets.py", "Generate storyboard assets for the refreshed episode", []),
+                    ("16_run_storyboard_backend.py", "Materialize local storyboard backend frames for the refreshed episode", []),
+                    ("17_build_series_bible.py", "Update the series bible with the refreshed state", []),
+                    ("18_render_episode.py", "Render the refreshed episode", []),
                 ]
             )
         reporter = LiveProgressReporter(
-            script_name="19_refresh_after_manual_review.py",
+            script_name="20_refresh_after_manual_review.py",
             total=len(planned_steps),
             phase_label="Rebuild After Review",
             parent_label="global",
@@ -128,13 +129,14 @@ def main() -> None:
                 [
                     "14_generate_episode_from_trained_model.py",
                     "15_generate_storyboard_assets.py",
-                    "16_build_series_bible.py",
-                    "17_render_episode.py",
+                    "16_run_storyboard_backend.py",
+                    "17_build_series_bible.py",
+                    "18_render_episode.py",
                 ]
             )
 
         mark_step_completed(
-            "19_refresh_after_manual_review",
+            "20_refresh_after_manual_review",
             autosave_target,
             {
                 "allow_open_review": bool(args.allow_open_review),
@@ -143,10 +145,10 @@ def main() -> None:
                 "completed_steps": completed_steps,
             },
         )
-        ok("Rebuild After Manual Character Review abgeschlossen.")
+        ok("Rebuild after manual character review completed.")
     except Exception as exc:
         mark_step_failed(
-            "19_refresh_after_manual_review",
+            "20_refresh_after_manual_review",
             str(exc),
             autosave_target,
             {

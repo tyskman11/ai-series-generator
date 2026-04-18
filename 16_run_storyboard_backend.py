@@ -266,9 +266,9 @@ def main() -> None:
         return
 
     autosave_target = episode_id
-    mark_step_started("15b_run_storyboard_backend", autosave_target, {"episode_id": episode_id, "shotlist": str(shotlist_path)})
+    mark_step_started("16_run_storyboard_backend", autosave_target, {"episode_id": episode_id, "shotlist": str(shotlist_path)})
     reporter = LiveProgressReporter(
-        script_name="15b_run_storyboard_backend.py",
+        script_name="16_run_storyboard_backend.py",
         total=max(1, len(backend_inputs)),
         phase_label="Storyboard Backend",
         parent_label=episode_id,
@@ -307,13 +307,13 @@ def main() -> None:
             extra_label=f"Storyboard backend ready: {completed_count}/{len(backend_inputs)} scenes",
         )
         mark_step_completed(
-            "15b_run_storyboard_backend",
+            "16_run_storyboard_backend",
             autosave_target,
             {"episode_id": episode_id, "manifest": str(manifest_path), "completed_scene_count": completed_count},
         )
         ok(f"Storyboard backend materialized: {episode_id}")
     except Exception as exc:
-        mark_step_failed("15b_run_storyboard_backend", str(exc), autosave_target, {"episode_id": episode_id})
+        mark_step_failed("16_run_storyboard_backend", str(exc), autosave_target, {"episode_id": episode_id})
         raise
 
 
