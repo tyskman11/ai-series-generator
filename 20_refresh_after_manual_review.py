@@ -71,7 +71,7 @@ def main() -> None:
             review_count = open_review_item_count(cfg)
             if review_count > 0:
                 raise RuntimeError(
-                    f"Es gibt noch {review_count} offene Review-Faelle. "
+                    f"There are still {review_count} open review cases. "
                     "Run 06_review_unknowns.py first or intentionally continue with --allow-open-review."
                 )
         planned_steps: list[tuple[str, str, list[str]]] = [

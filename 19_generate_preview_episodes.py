@@ -66,7 +66,7 @@ def main() -> None:
         review_count = open_review_item_count(cfg)
         if review_count > 0:
             raise RuntimeError(
-                f"Es gibt noch {review_count} offene Review-Faelle. "
+                f"There are still {review_count} open review cases. "
                 "Run 06_review_unknowns.py first before training, generation, or render can start."
             )
         planned_steps = ["07_build_dataset.py", "08_train_series_model.py"]

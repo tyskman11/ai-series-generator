@@ -475,14 +475,14 @@ def main() -> None:
         episode_batch_reporter.update(
             processed_in_this_run,
             current_label=episode_name,
-            extra_label=f"Komplett verarbeitet: {episode_name}",
+            extra_label=f"Completed: {episode_name}",
         )
         save_autosave(cfg, state, f"episode_completed:{episode_name}", inbox_dir)
 
     review_count = open_review_item_count(cfg)
     if review_count > 0:
         info(
-            f"Es gibt noch {review_count} offene Review-Faelle. "
+            f"There are still {review_count} open review cases. "
             "Run 06_review_unknowns.py first before dataset rebuild, training, generation, or render can continue."
         )
         state["current_phase"] = "review"

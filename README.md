@@ -424,6 +424,7 @@ python 13_run_backend_finetunes.py
 python 14_generate_episode_from_trained_model.py
 python 15_generate_storyboard_assets.py
 python 16_run_storyboard_backend.py
+python 17_build_series_bible.py
 python 18_render_episode.py
 ```
 
