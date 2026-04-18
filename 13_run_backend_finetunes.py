@@ -296,7 +296,7 @@ def main() -> None:
             "characters": summary_rows,
         },
     )
-    ok(f"Backend-Fine-Tune-Laeufe erstellt: {summary_path}")
+    ok(f"Backend fine-tune runs created: {summary_path}")
 
 
 if __name__ == "__main__":

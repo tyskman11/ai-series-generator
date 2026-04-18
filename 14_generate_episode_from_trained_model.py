@@ -130,7 +130,7 @@ def main() -> None:
         model = read_json(model_path, {})
         if not model:
             reporter.finish(current_label="Series Model", extra_label="Stopped: model is empty")
-            info("Das Series Model ist leer. Fuehre zuerst 08_train_series_model.py aus.")
+            info("The series model is empty. Run 08_train_series_model.py first.")
             return
         reporter.update(1, current_label="Validate Training Status", extra_label="Checking foundation, adapter, fine-tune and backend status")
         ensure_foundation_training_ready(cfg, model_path=model_path)

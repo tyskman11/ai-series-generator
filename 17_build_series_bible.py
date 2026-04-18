@@ -31,11 +31,11 @@ def main() -> None:
         parent_label="global",
     )
     model_path = resolve_project_path(cfg["paths"]["series_model"])
-    reporter.update(0, current_label="Series Model lesen", extra_label="Running now: load trained model for the series bible", force=True)
+    reporter.update(0, current_label="Load Series Model", extra_label="Running now: load the trained model for the series bible", force=True)
     model = read_json(model_path, {})
     if not model:
         reporter.finish(current_label="Series Model", extra_label="Stopped: no trained model found")
-        info("Kein trainiertes Series Model gefunden.")
+        info("No trained series model was found.")
         return
 
     reporter.update(1, current_label="Generate Bible Content", extra_label="Running now: collect main characters, themes and reference scenes")
