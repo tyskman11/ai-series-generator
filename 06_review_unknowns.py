@@ -375,7 +375,7 @@ def prompt_priority_for_name(char_map: dict, name: str) -> bool:
         return False
     if identity_has_priority(char_map, final_name):
         return True
-    print("Hauptfigur priorisieren? [j/N]")
+    print("Prioritize as main character? [y/N]")
     try:
         decision = input("> ").strip().lower()
     except EOFError:
@@ -522,10 +522,10 @@ def show_preview_assignment_window(
 
 
 def prompt_terminal_assignment(char_map: dict) -> tuple[str, bool | None]:
-    print(f"Beispielnamen: {' | '.join(EXAMPLE_FACE_HINTS)}")
+    print(f"Example names: {' | '.join(EXAMPLE_FACE_HINTS)}")
     quick_names = [name for name, _priority, _count in known_identity_button_options(char_map, limit=8)]
     if quick_names:
-        print(f"Bekannte Figuren: {' | '.join(quick_names)}")
+        print(f"Known characters: {' | '.join(quick_names)}")
     print("Enter a name. 'noface' ignores the match, 'statist' saves a minor character, '!Name' prioritizes as a main character, and 'q' quits the review.")
     raw = input("> ").strip()
     name, explicit_priority = parse_assignment_input(raw)
@@ -579,14 +579,14 @@ def suggested_face_role(payload: dict) -> str:
 def suggested_face_action_hint(payload: dict) -> str:
     role = suggested_face_role(payload)
     if role == "hauptfigur-kandidat":
-        return "Tipp: echter Name + optional Hauptfigur setzen"
+        return "Hint: use a real name and optionally mark as a main character"
     if role == "statist-kandidat":
-        return "Tipp: eher 'statist' oder 'noface' prüfen"
+        return "Hint: consider 'statist' or 'noface'"
     if role == "statist":
-        return "Tipp: bereits als Statist gespeichert"
+        return "Hint: already saved as a minor character"
     if role == "ignorieren":
-        return "Tipp: bereits ignoriert"
-    return "Tipp: echter Name oder 'statist' prüfen"
+        return "Hint: already ignored"
+    return "Hint: use a real name or consider 'statist'"
 
 
 def hydrate_face_clusters_from_previews(cfg: dict, char_map: dict) -> int:
@@ -1408,13 +1408,13 @@ def print_cluster(char_map: dict, cluster_id: str, payload: dict) -> None:
     print(f"{cluster_id}: {name}")
     print(f"  Status: {status}")
     print(f"  Samples: {samples}")
-    print(f"  Szenen: {scene_count}")
-    print(f"  Treffer: {detection_count}")
-    print(f"  Figuren-Faces: {identity_count}")
+    print(f"  Scenes: {scene_count}")
+    print(f"  Detections: {detection_count}")
+    print(f"  Identity faces: {identity_count}")
     print(f"  Auto: {auto_named}")
     print(f"  Prioritized: {priority}")
-    print(f"  Rollenhinweis: {role_hint}")
-    print(f"  Review-Tipp: {action_hint}")
+    print(f"  Role hint: {role_hint}")
+    print(f"  Review hint: {action_hint}")
     print(f"  Preview: {preview_dir}")
 
 
@@ -1779,7 +1779,7 @@ def main() -> None:
         return
 
     if not is_interactive_session():
-        info("Keine interaktive Konsole erkannt. Zeige stattdessen unbenannte Face-Cluster mit Preview-Pfaden.")
+        info("No interactive console detected. Showing unnamed face clusters with preview paths instead.")
         list_faces(char_map, effective_limit, args.include_named)
         return
 

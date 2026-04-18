@@ -622,11 +622,11 @@ def write_training_plan(
     lines = [
         "# Foundation Training Plan",
         "",
-        f"- Generiert am: {summary['generated_at']}",
-        f"- Figuren mit Trainingsmaterial: {len(manifests)}",
-        f"- Quellenfilter: {episode_filter or 'alle verarbeiteten Folgen'}",
+        f"- Generated at: {summary['generated_at']}",
+        f"- Characters with training material: {len(manifests)}",
+        f"- Source filter: {episode_filter or 'all processed episodes'}",
         "",
-        "## Figuren",
+        "## Characters",
         "",
     ]
     for manifest in manifests:
@@ -634,17 +634,17 @@ def write_training_plan(
             [
                 f"### {manifest['name']}",
                 "",
-                f"- Prioritaet: {'ja' if manifest.get('priority') else 'nein'}",
-                f"- Szenen-Hinweis: {manifest.get('scene_count', 0)}",
-                f"- Zeilen-Hinweis: {manifest.get('line_count', 0)}",
-                f"- Exportierte Frames: {len(manifest.get('frame_samples', []))}",
-                f"- Exportierte Clips: {len(manifest.get('video_samples', []))}",
-                f"- Referenzstimmen: {len(manifest.get('voice_samples', []))}",
+                f"- Priority: {'yes' if manifest.get('priority') else 'no'}",
+                f"- Scene count hint: {manifest.get('scene_count', 0)}",
+                f"- Line count hint: {manifest.get('line_count', 0)}",
+                f"- Exported frames: {len(manifest.get('frame_samples', []))}",
+                f"- Exported clips: {len(manifest.get('video_samples', []))}",
+                f"- Reference voices: {len(manifest.get('voice_samples', []))}",
                 "",
             ]
         )
     if downloads:
-        lines.extend(["## Basis-Downloads", ""])
+        lines.extend(["## Base Downloads", ""])
         for target in downloads:
             status = "updated" if target.get("updated") else "downloaded" if target.get("downloaded") else "current"
             revision = coalesce_text(target.get("revision", ""))

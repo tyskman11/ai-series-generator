@@ -71,6 +71,8 @@ All scripts in this repository are AI-generated and maintained with `GPT-5.4`.
 - `15_generate_storyboard_assets.py`, `16_run_storyboard_backend.py`, `18_render_episode.py`, and `19_generate_preview_episodes.py` now resolve the newest generated artifact by timestamp instead of assuming a `folge_*` filename pattern
 - `06_review_unknowns.py`, `17_build_series_bible.py`, and `99_process_next_episode.py` continue to standardize user-facing CLI help, review prompts, and progress output in English so the numbered pipeline reads consistently end to end
 - `pipeline_common.py` now also uses the same English-first tool and runtime error wording as the numbered scripts, so shared failures read consistently in logs and consoles
+- `09_prepare_foundation_training.py` and `17_build_series_bible.py` now write English-first markdown summaries, while `pipeline_common.py` continues to standardize live dashboard labels and dependency-staleness warnings across the numbered training chain
+- `08_train_series_model.py` now also emits English-first story markdown summaries and generic fallback beat dialogue, so the model-training and generation outputs match the rest of the numbered pipeline
 
 ## Planned
 
@@ -240,11 +242,11 @@ Builds the consolidated training dataset from linked segments and reviewed chara
 
 ### 08 - Train Series Model
 
-Builds the local heuristic series model from the reviewed datasets. This is not a large neural model; it is a structured local model used for preview generation.
+Builds the local heuristic series model from the reviewed datasets. This is not a large neural model; it is a structured local model used for preview generation, and its fallback summaries and beat templates now follow the same English-first output style as the downstream steps.
 
 ### 09 - Prepare Foundation Training
 
-Prepares 720p frame, clip, and voice assets for later training stages. It can also manage model downloads and update checks for configured base assets.
+Prepares 720p frame, clip, and voice assets for later training stages. It can also manage model downloads and update checks for configured base assets, and now writes its training-plan markdown summary with English-first labels.
 
 ### 10 - Train Foundation Models
 
@@ -286,7 +288,7 @@ Materializes local backend-style scene frames from the per-scene backend input p
 
 ### 17 - Build Series Bible
 
-Rebuilds the compact series bible from the trained series model and current reviewed data.
+Rebuilds the compact series bible from the trained series model and current reviewed data, including an English-first markdown summary for downstream review and sync output.
 
 ### 18 - Render Episode
 

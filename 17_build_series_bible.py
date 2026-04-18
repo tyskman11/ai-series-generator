@@ -53,21 +53,21 @@ def main() -> None:
     }
 
     markdown_lines = [
-        "# Automatische Series Bible",
+        "# Automatic Series Bible",
         "",
-        f"- Trainiert am: {model.get('trained_at', 'unknown')}",
-        f"- Ausgewertete Szenen: {model.get('scene_count', 0)}",
+        f"- Trained at: {model.get('trained_at', 'unknown')}",
+        f"- Evaluated scenes: {model.get('scene_count', 0)}",
         "",
-        "## Hauptfiguren",
+        "## Main Characters",
         "",
     ]
     for character in top_characters:
         markdown_lines.append(
-            f"- {character['name']}: {character.get('scene_count', 0)} Szenen, {character.get('line_count', 0)} Sprechanteile"
+            f"- {character['name']}: {character.get('scene_count', 0)} scenes, {character.get('line_count', 0)} dialogue segments"
         )
-    markdown_lines.extend(["", "## Wiederkehrende Themen", ""])
+    markdown_lines.extend(["", "## Recurring Themes", ""])
     markdown_lines.extend([f"- {keyword}" for keyword in top_keywords])
-    markdown_lines.extend(["", "## Referenzszenen", ""])
+    markdown_lines.extend(["", "## Reference Scenes", ""])
     for scene in scene_library[:12]:
         markdown_lines.append(
             f"- {scene['episode_id']} / {scene['scene_id']}: {', '.join(scene.get('characters', []))} | {scene.get('transcript', '')[:180]}"

@@ -933,7 +933,7 @@ def first_video(folder: Path) -> Path | None:
     return files[0] if files else None
 
 
-def progress(current: int, total: int, prefix: str = "Fortschritt") -> None:
+def progress(current: int, total: int, prefix: str = "Progress") -> None:
     width = 28
     total = max(total, 1)
     done = int(width * current / total)
@@ -1036,18 +1036,18 @@ class LiveProgressReporter:
         lines = [
             "+" + ("=" * (width - 2)) + "+",
             line("LIVE", self.script_name),
-            line("Schritt", self.phase_label),
+            line("Step", self.phase_label),
         ]
         if active_parent:
-            lines.append(line("Datei", active_parent))
+            lines.append(line("File", active_parent))
         if current_label:
-            lines.append(line("Aktuell", current_label))
+            lines.append(line("Current", current_label))
         if scope_current is not None and scope_total is not None:
             scope_total_value = max(1.0, float(scope_total or 1.0))
             scope_current_value = max(0.0, min(float(scope_current or 0.0), scope_total_value))
             scope_percent = int((100 * scope_current_value) / scope_total_value)
             scope_remaining_seconds, scope_eta_timestamp = _progress_eta(scope_started_at or self.started_at, scope_current_value, scope_total_value)
-            active_scope_label = coalesce_text(scope_label) or "Aktuell"
+            active_scope_label = coalesce_text(scope_label) or "Current"
             lines.append(
                 line(
                     active_scope_label,
@@ -1057,29 +1057,29 @@ class LiveProgressReporter:
             )
             lines.append(
                 line(
-                    "Ende aktuell",
-                    format_timestamp_seconds(scope_eta_timestamp) if scope_eta_timestamp else "wird berechnet",
+                    "Current ETA",
+                    format_timestamp_seconds(scope_eta_timestamp) if scope_eta_timestamp else "calculating",
                 )
             )
         else:
             lines.append(
                 line(
-                    "Ende aktuell",
-                    format_timestamp_seconds(overall_eta_timestamp) if overall_eta_timestamp else "wird berechnet",
+                    "Current ETA",
+                    format_timestamp_seconds(overall_eta_timestamp) if overall_eta_timestamp else "calculating",
                 )
             )
         lines.append(
             line(
-                "Gesamt",
+                "Overall",
                 f"{dashboard_bar(current_value, self.total)} "
                 f"{format_progress_value(current_value)}/{format_progress_value(self.total)} ({percent}%)",
             )
         )
-        lines.append(line("Rest gesamt", format_duration_hms(overall_remaining_seconds)))
+        lines.append(line("Remaining overall", format_duration_hms(overall_remaining_seconds)))
         lines.append(
             line(
-                "Ende gesamt",
-                format_timestamp_seconds(overall_eta_timestamp) if overall_eta_timestamp else "wird berechnet",
+                "Overall ETA",
+                format_timestamp_seconds(overall_eta_timestamp) if overall_eta_timestamp else "calculating",
             )
         )
         if extra_label:
@@ -1508,21 +1508,21 @@ def ensure_foundation_training_ready(
         return status
     if not status["summary_exists"]:
         raise RuntimeError(
-            "Foundation Training fehlt. Fuehre vor Generierung/Render zuerst 09_prepare_foundation_training.py und 10_train_foundation_models.py aus."
+            "Foundation training is missing. Run 09_prepare_foundation_training.py and 10_train_foundation_models.py before generation or render."
         )
     if not status["summary_new_enough"]:
         raise RuntimeError(
-        "Foundation Training ist aelter als das aktuelle Series Model. Fuehre nach 08_train_series_model.py erneut 09_prepare_foundation_training.py und 10_train_foundation_models.py aus."
+        "Foundation training is older than the current series model. Run 09_prepare_foundation_training.py and 10_train_foundation_models.py again after 08_train_series_model.py."
         )
     if status["missing_characters"]:
         missing = ", ".join(status["missing_characters"])
         raise RuntimeError(
-            f"Fuer diese Figuren fehlen trainierte Foundation-Packs: {missing}. Fuehre 09_prepare_foundation_training.py und 10_train_foundation_models.py erneut aus."
+            f"Trained foundation packs are missing for these characters: {missing}. Run 09_prepare_foundation_training.py and 10_train_foundation_models.py again."
         )
     if status["weak_characters"]:
         weak = ", ".join(status["weak_characters"])
         raise RuntimeError(
-            f"Fuer diese Figuren fehlen brauchbare Voice-Samples im Training: {weak}. Pruefe 05/08 und trainiere danach 09_prepare_foundation_training.py und 10_train_foundation_models.py erneut."
+            f"Usable voice samples are missing in training for these characters: {weak}. Check 05/08 and then run 09_prepare_foundation_training.py and 10_train_foundation_models.py again."
         )
     return status
 
@@ -1622,21 +1622,21 @@ def ensure_adapter_training_ready(
         return status
     if not status["summary_exists"]:
         raise RuntimeError(
-        "Adapter Training fehlt. Fuehre vor Generierung/Render zuerst 11_train_adapter_models.py aus."
+        "Adapter training is missing. Run 11_train_adapter_models.py before generation or render."
         )
     if not status["summary_new_enough"]:
         raise RuntimeError(
-        "Adapter Training ist aelter als das aktuelle Foundation Training. Fuehre nach 10_train_foundation_models.py erneut 11_train_adapter_models.py aus."
+        "Adapter training is older than the current foundation training. Run 11_train_adapter_models.py again after 10_train_foundation_models.py."
         )
     if status["missing_characters"]:
         missing = ", ".join(status["missing_characters"])
         raise RuntimeError(
-        f"Fuer diese Figuren fehlen trainierte Adapter-Profile: {missing}. Fuehre 11_train_adapter_models.py erneut aus."
+        f"Trained adapter profiles are missing for these characters: {missing}. Run 11_train_adapter_models.py again."
         )
     if status["weak_characters"]:
         weak = ", ".join(status["weak_characters"])
         raise RuntimeError(
-        f"Fuer diese Figuren sind die Adapter-Profile noch zu schwach: {weak}. Pruefe 09/10 und trainiere danach 11_train_adapter_models.py erneut."
+        f"Adapter profiles are still too weak for these characters: {weak}. Check 09/10 and then run 11_train_adapter_models.py again."
         )
     return status
 
@@ -1724,21 +1724,21 @@ def ensure_fine_tune_training_ready(
         return status
     if not status["summary_exists"]:
         raise RuntimeError(
-        "Fine-Tune Training fehlt. Fuehre vor Generierung/Render zuerst 12_train_fine_tune_models.py aus."
+        "Fine-tune training is missing. Run 12_train_fine_tune_models.py before generation or render."
         )
     if not status["summary_new_enough"]:
         raise RuntimeError(
-        "Fine-Tune Training ist aelter als das aktuelle Adapter Training. Fuehre nach 11_train_adapter_models.py erneut 12_train_fine_tune_models.py aus."
+        "Fine-tune training is older than the current adapter training. Run 12_train_fine_tune_models.py again after 11_train_adapter_models.py."
         )
     if status["missing_characters"]:
         missing = ", ".join(status["missing_characters"])
         raise RuntimeError(
-        f"Fuer diese Figuren fehlen trainierte Fine-Tune-Profile: {missing}. Fuehre 12_train_fine_tune_models.py erneut aus."
+        f"Trained fine-tune profiles are missing for these characters: {missing}. Run 12_train_fine_tune_models.py again."
         )
     if status["weak_characters"]:
         weak = ", ".join(status["weak_characters"])
         raise RuntimeError(
-        f"Fuer diese Figuren sind die Fine-Tune-Profile noch zu schwach: {weak}. Fuehre 12_train_fine_tune_models.py erneut aus."
+        f"Fine-tune profiles are still too weak for these characters: {weak}. Run 12_train_fine_tune_models.py again."
         )
     return status
 
@@ -1842,21 +1842,21 @@ def ensure_backend_fine_tune_ready(
         return status
     if not status["summary_exists"]:
         raise RuntimeError(
-        "Backend-Fine-Tune-Laeufe fehlen. Fuehre vor Generierung/Render zuerst 13_run_backend_finetunes.py aus."
+        "Backend fine-tune runs are missing. Run 13_run_backend_finetunes.py before generation or render."
         )
     if not status["summary_new_enough"]:
         raise RuntimeError(
-        "Backend-Fine-Tune-Laeufe sind aelter als das aktuelle Fine-Tune Training. Fuehre nach 12_train_fine_tune_models.py erneut 13_run_backend_finetunes.py aus."
+        "Backend fine-tune runs are older than the current fine-tune training. Run 13_run_backend_finetunes.py again after 12_train_fine_tune_models.py."
         )
     if status["missing_characters"]:
         missing = ", ".join(status["missing_characters"])
         raise RuntimeError(
-        f"Fuer diese Figuren fehlen Backend-Fine-Tune-Laeufe: {missing}. Fuehre 13_run_backend_finetunes.py erneut aus."
+        f"Backend fine-tune runs are missing for these characters: {missing}. Run 13_run_backend_finetunes.py again."
         )
     if status["weak_characters"]:
         weak = ", ".join(status["weak_characters"])
         raise RuntimeError(
-        f"Fuer diese Figuren sind die Backend-Fine-Tune-Laeufe noch zu schwach: {weak}. Fuehre 13_run_backend_finetunes.py erneut aus."
+        f"Backend fine-tune runs are still too weak for these characters: {weak}. Run 13_run_backend_finetunes.py again."
         )
     return status
 
