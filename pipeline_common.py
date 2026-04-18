@@ -853,6 +853,22 @@ def latest_generated_episode_artifacts(cfg: dict[str, Any]) -> dict[str, Any]:
     return generated_episode_artifacts(cfg, latest_shotlist.stem)
 
 
+def list_generated_episode_artifacts(cfg: dict[str, Any], limit: int | None = None) -> list[dict[str, Any]]:
+    shotlist_dir = generated_shotlist_dir(cfg)
+    if not shotlist_dir.exists():
+        return []
+    shotlists = [path for path in shotlist_dir.glob("*.json") if path.is_file()]
+    shotlists.sort(key=lambda path: (path.stat().st_mtime, path.name), reverse=True)
+    if isinstance(limit, int) and limit > 0:
+        shotlists = shotlists[:limit]
+    rows: list[dict[str, Any]] = []
+    for shotlist_path in shotlists:
+        payload = generated_episode_artifacts(cfg, shotlist_path.stem)
+        if payload:
+            rows.append(payload)
+    return rows
+
+
 def ensure_project_structure(config: dict[str, Any] | None = None, write_config_file: bool = False) -> dict[str, Any]:
     PROJECT_ROOT.mkdir(parents=True, exist_ok=True)
     create_tree(PROJECT_ROOT, DEFAULT_STRUCTURE)

@@ -49,6 +49,7 @@ All scripts in this repository are AI-generated and maintained with `GPT-5.4`.
 - per-scene mastered episode clips inside the production package, so each scene already has a reusable endclip with its local dialogue timing
 - scene and master package JSONs that now track the real already-generated outputs, not only planned target paths
 - autosaves and live progress dashboards for long-running pipelines, now including concrete finished-episode output paths instead of only step completion flags
+- the series bible can now summarize the most recent generated episodes together with their final render, full generated master, and production-package progress
 - local voice fallback with German Windows voices instead of old English default fallbacks
 
 ## Current Focus
@@ -109,6 +110,7 @@ All scripts in this repository are AI-generated and maintained with `GPT-5.4`.
 - `99_process_next_episode.py` now also stores explicit planned/completed global step metadata in its autosaves and status files, so resume state and live status stay aligned with the real train-then-generate/render plan
 - `19_generate_finished_episodes.py`, `20_refresh_after_manual_review.py`, and `99_process_next_episode.py` now block only on actionable open face-review clusters from step `06`, while `06_review_unknowns.py` explicitly points to `--show-queue` when only speaker/segment review_queue entries remain
 - `pipeline_common.py`, `19_generate_finished_episodes.py`, and `99_process_next_episode.py` now also collect the real render/package outputs written by `17_render_episode.py`, so batch metadata and live status files point directly to the latest final render, full generated episode master, render manifest, and production package
+- `18_build_series_bible.py` now also pulls in the most recent generated-episode outputs, so the bible itself reflects the current finished-episode production state instead of only the trained model summary
 
 ## Planned
 
@@ -358,7 +360,7 @@ At the same time, `17` now exports `generation/final_episode_packages/<episode>/
 
 ### 18 - Build Series Bible
 
-Rebuilds the compact series bible from the trained series model and current reviewed data, including an English-first markdown summary for downstream review output.
+Rebuilds the compact series bible from the trained series model and current reviewed data, including an English-first markdown summary for downstream review output. It now also appends the most recent generated episodes with their render mode, final render path, full generated episode master, production package, render manifest, and scene-output counters so the bible doubles as a lightweight production snapshot.
 
 ### 19 - Generate Finished Episodes
 
