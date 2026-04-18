@@ -667,7 +667,7 @@ def main() -> None:
     autosave_target = episode_id
     mark_step_started("18_render_episode", autosave_target, {"episode_id": episode_id, "shotlist": str(shotlist_path)})
     reporter = LiveProgressReporter(
-        script_name="18_render_episode.py",
+        script_name="17_render_episode.py",
         total=len(scenes) + 3,
         phase_label="Render Episode",
         parent_label=episode_id,

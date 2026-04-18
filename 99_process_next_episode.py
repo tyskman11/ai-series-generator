@@ -43,8 +43,8 @@ GLOBAL_STEPS = [
     "14_generate_episode_from_trained_model.py",
     "15_generate_storyboard_assets.py",
     "16_run_storyboard_backend.py",
-    "17_build_series_bible.py",
-    "18_render_episode.py",
+    "17_render_episode.py",
+    "18_build_series_bible.py",
 ]
 
 
@@ -344,8 +344,8 @@ def global_steps_to_run(cfg: dict) -> list[str]:
             "14_generate_episode_from_trained_model.py",
             "15_generate_storyboard_assets.py",
             "16_run_storyboard_backend.py",
-            "17_build_series_bible.py",
-            "18_render_episode.py",
+            "17_render_episode.py",
+            "18_build_series_bible.py",
         ]
     )
     return steps
@@ -363,8 +363,8 @@ def global_step_title(script_name: str) -> str:
         "14_generate_episode_from_trained_model.py": "Generate New Episode From Trained Model",
         "15_generate_storyboard_assets.py": "Generate Storyboard Scene Assets",
         "16_run_storyboard_backend.py": "Materialize Storyboard Backend Frames",
-        "17_build_series_bible.py": "Update Series Bible",
-        "18_render_episode.py": "Render Storyboard Video",
+        "17_render_episode.py": "Render Storyboard Video",
+        "18_build_series_bible.py": "Update Series Bible",
     }
     return titles[script_name]
 

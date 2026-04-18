@@ -83,8 +83,8 @@ def main() -> None:
                 "14_generate_episode_from_trained_model.py",
                 "15_generate_storyboard_assets.py",
                 "16_run_storyboard_backend.py",
-                "17_build_series_bible.py",
-                "18_render_episode.py",
+                "17_render_episode.py",
+                "18_build_series_bible.py",
             ]
             * count
         )
@@ -151,17 +151,17 @@ def main() -> None:
             run_step("16_run_storyboard_backend.py", env=env)
             completed_steps += 1
             reporter.update(completed_steps, current_label=episode_id, extra_label=f"Storyboard backend frames ready: {episode_id}")
-            reporter.update(completed_steps, current_label="Update series bible", extra_label="Running now: 17_build_series_bible.py", force=True)
-            run_step("17_build_series_bible.py")
-            completed_steps += 1
-            reporter.update(completed_steps, current_label="Update series bible", extra_label="Completed: 17_build_series_bible.py")
             env = os.environ.copy()
             env["SERIES_RENDER_EPISODE"] = episode_id
-            reporter.update(completed_steps, current_label=f"{episode_id} render", extra_label="Running now: 18_render_episode.py", force=True)
-            run_step("18_render_episode.py", env=env)
+            reporter.update(completed_steps, current_label=f"{episode_id} render", extra_label="Running now: 17_render_episode.py", force=True)
+            run_step("17_render_episode.py", env=env)
             completed_steps += 1
-            generated.append(episode_id)
             reporter.update(completed_steps, current_label=episode_id, extra_label=f"Episode render complete: {episode_id}")
+            reporter.update(completed_steps, current_label="Update series bible", extra_label="Running now: 18_build_series_bible.py", force=True)
+            run_step("18_build_series_bible.py")
+            completed_steps += 1
+            reporter.update(completed_steps, current_label="Update series bible", extra_label="Completed: 18_build_series_bible.py")
+            generated.append(episode_id)
             ok(f"{index + 1}/{count}: {episode_id} generated and rendered.")
         reporter.finish(current_label="Preview Episodes", extra_label=f"Total episodes: {len(generated)}")
         mark_step_completed(

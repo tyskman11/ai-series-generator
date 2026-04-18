@@ -96,8 +96,8 @@ def main() -> None:
                     ("14_generate_episode_from_trained_model.py", "Generate a new episode from the refreshed model", []),
                     ("15_generate_storyboard_assets.py", "Generate storyboard assets for the refreshed episode", []),
                     ("16_run_storyboard_backend.py", "Materialize local storyboard backend frames for the refreshed episode", []),
-                    ("17_build_series_bible.py", "Update the series bible with the refreshed state", []),
-                    ("18_render_episode.py", "Render the refreshed episode", []),
+                    ("17_render_episode.py", "Render the refreshed episode", []),
+                    ("18_build_series_bible.py", "Update the series bible with the refreshed state", []),
                 ]
             )
         reporter = LiveProgressReporter(
@@ -130,8 +130,8 @@ def main() -> None:
                     "14_generate_episode_from_trained_model.py",
                     "15_generate_storyboard_assets.py",
                     "16_run_storyboard_backend.py",
-                    "17_build_series_bible.py",
-                    "18_render_episode.py",
+                    "17_render_episode.py",
+                    "18_build_series_bible.py",
                 ]
             )
 

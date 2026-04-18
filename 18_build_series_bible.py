@@ -25,7 +25,7 @@ def main() -> None:
     cfg = load_config()
     mark_step_started("17_build_series_bible", "global")
     reporter = LiveProgressReporter(
-        script_name="17_build_series_bible.py",
+        script_name="18_build_series_bible.py",
         total=3,
         phase_label="Build Series Bible",
         parent_label="global",

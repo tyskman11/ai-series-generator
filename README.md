@@ -60,28 +60,29 @@ All scripts in this repository are AI-generated and maintained with `GPT-5.4`.
 - `06_review_unknowns.py` keeps iterating after each manual naming step, so newly named characters immediately help resolve more open clusters
 - `04_diarize_and_transcribe.py` now applies extra rescue passes for remaining `speaker_unknown` segments using neighborhood and embedding agreement
 - `99_process_next_episode.py` is being hardened for real inbox batch workflows with autosaves, resumable checkpoints, and live status files
-- `18_render_episode.py` continues to improve long Windows render runs, especially for large segment stacks
+- `17_render_episode.py` continues to improve long Windows render runs, especially for large segment stacks
 - the new training chain around `09` through `13` is being observed on real project data, especially where voice material is still weak
 - `14_generate_episode_from_trained_model.py` now writes per-scene multi-reference storyboard plans inspired by shot-by-shot image-edit workflows, but stays model-only and does not depend on any GUI workflow
 - `16_run_storyboard_backend.py` can now materialize local backend-style scene frames from the seed payloads emitted by `15_generate_storyboard_assets.py`
-- `18_render_episode.py` now carries storyboard plans into the render manifest, reuses backend frames from `16` when they exist, and falls back to seed assets or generated placeholder cards when needed
+- `17_render_episode.py` now carries storyboard plans into the render manifest, reuses backend frames from `16` when they exist, and falls back to seed assets or generated placeholder cards when needed
 - `14_generate_episode_from_trained_model.py` now also exports backend-ready storyboard request files per episode and per scene under `generation/storyboard_requests`
-- `18_render_episode.py` now automatically picks up already generated storyboard scene frames from `generation/storyboard_assets/<episode>` when they exist, so local backend materialization and later model backends can feed visuals back into the render path without changing script order
+- `17_render_episode.py` now automatically picks up already generated storyboard scene frames from `generation/storyboard_assets/<episode>` when they exist, so local backend materialization and later model backends can feed visuals back into the render path without changing script order
 - `15_generate_storyboard_assets.py` now emits backend-ready scene input payloads beside each generated seed frame and rebases older stored artifact paths after project moves, so NAS relocations do not silently break later backend use
-- `15_generate_storyboard_assets.py`, `16_run_storyboard_backend.py`, `18_render_episode.py`, and `19_generate_preview_episodes.py` now resolve the newest generated artifact by timestamp instead of assuming a `folge_*` filename pattern
-- `06_review_unknowns.py`, `17_build_series_bible.py`, and `99_process_next_episode.py` continue to standardize user-facing CLI help, review prompts, and progress output in English so the numbered pipeline reads consistently end to end
+- `15_generate_storyboard_assets.py`, `16_run_storyboard_backend.py`, `17_render_episode.py`, and `19_generate_preview_episodes.py` now resolve the newest generated artifact by timestamp instead of assuming a `folge_*` filename pattern
+- `06_review_unknowns.py`, `18_build_series_bible.py`, and `99_process_next_episode.py` continue to standardize user-facing CLI help, review prompts, and progress output in English so the numbered pipeline reads consistently end to end
 - `pipeline_common.py` now also uses the same English-first tool and runtime error wording as the numbered scripts, so shared failures read consistently in logs and consoles
-- `09_prepare_foundation_training.py` and `17_build_series_bible.py` now write English-first markdown summaries, while `pipeline_common.py` continues to standardize live dashboard labels and dependency-staleness warnings across the numbered training chain
+- `09_prepare_foundation_training.py` and `18_build_series_bible.py` now write English-first markdown summaries, while `pipeline_common.py` continues to standardize live dashboard labels and dependency-staleness warnings across the numbered training chain
 - `08_train_series_model.py` now also emits English-first story markdown summaries and generic fallback beat dialogue, so the model-training and generation outputs match the rest of the numbered pipeline
 - `05_link_faces_and_speakers.py`, `06_review_unknowns.py`, and `07_build_dataset.py` continue the same English-first cleanup for interactive naming prompts, named-character listings, and dataset completion messages
-- `13_run_backend_finetunes.py`, `14_generate_episode_from_trained_model.py`, and `17_build_series_bible.py` now also use English-first status and missing-model messages so the mid-pipeline generation path reads consistently in logs and dashboards
+- `13_run_backend_finetunes.py`, `14_generate_episode_from_trained_model.py`, and `18_build_series_bible.py` now also use English-first status and missing-model messages so the mid-pipeline generation path reads consistently in logs and dashboards
 - `07_build_dataset.py` now also uses English-first progress labels inside the live reporter, so dataset rebuild runs match the rest of the numbered training chain
 - `10_train_foundation_models.py`, `11_train_adapter_models.py`, `12_train_fine_tune_models.py`, and `13_run_backend_finetunes.py` now also use English-first training/existing-artifact status lines so the numbered training chain reads consistently from preparation through backend runs
 - `00_prepare_runtime.py` now also uses English-first package-install and already-present status messages so the numbered pipeline starts with the same console tone as the later steps
 - `04_diarize_and_transcribe.py` and `09_prepare_foundation_training.py` now also use English-first completion and remote-revision fallback messages so transcription and model-prep logs stay consistent with the rest of the numbered pipeline
 - `00_prepare_runtime.py` now also uses English-first install-failure and runtime-Python status lines so startup diagnostics match the rest of the numbered pipeline
 - `03_split_scenes.py`, `04_diarize_and_transcribe.py`, `05_link_faces_and_speakers.py`, and `07_build_dataset.py` now also use English-first live progress scope labels and segment/cluster counters so long batch runs read consistently across the early numbered pipeline
-- `18_render_episode.py` now also writes a timed dialogue voice-plan JSON and SRT subtitle preview beside the silent render outputs, so later voiced render backends can reuse speaker timing and optional original-line retrieval hints without changing the default silent preview flow
+- `17_render_episode.py` now also writes a timed dialogue voice-plan JSON and SRT subtitle preview beside the silent render outputs, so later voiced render backends can reuse speaker timing and optional original-line retrieval hints without changing the default silent preview flow
+- the numbered order now keeps all training in `07-13`, then generation/render in `14-17`, and only then rebuilds the series bible in `18`, so the pipeline follows the requested train-before-generate/render sequence more clearly
 
 ## Planned
 
@@ -134,8 +135,8 @@ Also keep the `In Progress` and `Planned` sections current. If priorities change
 - `14_generate_episode_from_trained_model.py`: generate a new synthetic preview episode
 - `15_generate_storyboard_assets.py`: build scene-level storyboard seed assets and backend-ready per-scene input payloads from exported storyboard requests
 - `16_run_storyboard_backend.py`: materialize local backend-style storyboard scene frames from the per-scene backend input payloads
-- `17_build_series_bible.py`: rebuild the series bible
-- `18_render_episode.py`: render draft and final storyboard preview videos from seed assets, backend frames, or placeholder scene cards
+- `17_render_episode.py`: render draft and final storyboard preview videos from seed assets, backend frames, or placeholder scene cards
+- `18_build_series_bible.py`: rebuild the series bible
 - `19_generate_preview_episodes.py`: generate multiple visible preview episodes in one run
 - `20_refresh_after_manual_review.py`: rebuild the pipeline after manual character review
 - `21_sync_to_github.py`: mirror all root local Python scripts plus `README.md` to GitHub
@@ -297,11 +298,7 @@ Builds scene-level storyboard asset files from the exported storyboard requests.
 
 Materializes local backend-style scene frames from the per-scene backend input payloads written by `15`. This is the bridge between the seed-package export and later render reuse.
 
-### 17 - Build Series Bible
-
-Rebuilds the compact series bible from the trained series model and current reviewed data, including an English-first markdown summary for downstream review and sync output.
-
-### 18 - Render Episode
+### 17 - Render Episode
 
 Renders a draft and final local storyboard preview video. The current default path:
 
@@ -312,6 +309,10 @@ Renders a draft and final local storyboard preview video. The current default pa
 - uses FFmpeg concat lists to avoid long Windows command line failures
 - currently renders a silent storyboard preview rather than a voiced final mix
 - now also writes a timed dialogue voice-plan JSON plus an `.srt` subtitle preview so later voiced render steps can reuse scene timing, speaker assignments, and optional original-line retrieval matches
+
+### 18 - Build Series Bible
+
+Rebuilds the compact series bible from the trained series model and current reviewed data, including an English-first markdown summary for downstream review and sync output.
 
 ### 19 - Generate Preview Episodes
 
@@ -382,8 +383,8 @@ python 13_run_backend_finetunes.py
 python 14_generate_episode_from_trained_model.py
 python 15_generate_storyboard_assets.py
 python 16_run_storyboard_backend.py
-python 17_build_series_bible.py
-python 18_render_episode.py
+python 17_render_episode.py
+python 18_build_series_bible.py
 ```
 
 After major manual review work:
@@ -440,8 +441,8 @@ python 13_run_backend_finetunes.py
 python 14_generate_episode_from_trained_model.py
 python 15_generate_storyboard_assets.py
 python 16_run_storyboard_backend.py
-python 17_build_series_bible.py
-python 18_render_episode.py
+python 17_render_episode.py
+python 18_build_series_bible.py
 ```
 
 ### Rebuild After Manual Character Review
