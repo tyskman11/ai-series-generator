@@ -757,6 +757,13 @@ def tool_on_path(tool_name: str) -> Path | None:
     return Path(found).resolve() if found else None
 
 
+def platform_tool_filenames(tool_name: str, os_name: str | None = None) -> list[str]:
+    target_os = os_name or current_os()
+    if target_os == "windows":
+        return [f"{tool_name}.exe", tool_name]
+    return [tool_name]
+
+
 def detect_tool(bin_dir: Path, tool_name: str) -> Path:
     fallback_dirs = [bin_dir]
     try:
@@ -768,10 +775,7 @@ def detect_tool(bin_dir: Path, tool_name: str) -> Path:
     checked = []
     for candidate_dir in fallback_dirs:
         checked.append(str(candidate_dir))
-        if current_os() == "windows":
-            candidates = [candidate_dir / f"{tool_name}.exe", candidate_dir / tool_name]
-        else:
-            candidates = [candidate_dir / tool_name, candidate_dir / f"{tool_name}.exe"]
+        candidates = [candidate_dir / filename for filename in platform_tool_filenames(tool_name)]
         for candidate in candidates:
             if candidate.exists():
                 return candidate

@@ -6,11 +6,18 @@ import os
 import subprocess
 import shutil
 import sys
+import tarfile
 import time
+import urllib.request
+import zipfile
 from pathlib import Path
 
 from pipeline_common import (
+    PROJECT_ROOT,
     SCRIPT_DIR,
+    current_architecture,
+    current_os,
+    detect_tool,
     ensure_project_structure,
     error,
     headline,
@@ -21,6 +28,7 @@ from pipeline_common import (
     nvidia_gpu_available,
     ok,
     pip_install_command,
+    platform_tool_filenames,
     runtime_environment_tag,
     runtime_python,
     runtime_settings,
@@ -67,6 +75,103 @@ def module_available(py: Path, module_name: str) -> bool:
 
 def runtime_pip_install_command(py: Path, *args: str) -> list[str]:
     return list(pip_install_command(py, *args))
+
+
+def ffmpeg_asset_spec() -> dict[str, str]:
+    os_name = current_os()
+    architecture = current_architecture()
+    specs = {
+        ("windows", "x86_64"): {
+            "url": "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip",
+            "archive_name": "ffmpeg-win64.zip",
+        },
+        ("windows", "arm64"): {
+            "url": "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-winarm64-gpl.zip",
+            "archive_name": "ffmpeg-winarm64.zip",
+        },
+        ("linux", "x86_64"): {
+            "url": "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz",
+            "archive_name": "ffmpeg-linux64.tar.xz",
+        },
+        ("linux", "arm64"): {
+            "url": "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linuxarm64-gpl.tar.xz",
+            "archive_name": "ffmpeg-linuxarm64.tar.xz",
+        },
+    }
+    spec = specs.get((os_name, architecture))
+    if spec is None:
+        raise RuntimeError(f"FFmpeg auto-download is not configured for {os_name}/{architecture}.")
+    return spec
+
+
+def ffmpeg_bin_dir() -> Path:
+    return PROJECT_ROOT / "tools" / "ffmpeg" / "bin"
+
+
+def ffmpeg_archive_path() -> Path:
+    return PROJECT_ROOT / "tools" / "ffmpeg" / ffmpeg_asset_spec()["archive_name"]
+
+
+def ffmpeg_extract_members(archive_path: Path) -> dict[str, bytes]:
+    expected_names = set(platform_tool_filenames("ffmpeg") + platform_tool_filenames("ffprobe"))
+    extracted: dict[str, bytes] = {}
+    if archive_path.suffix.lower() == ".zip":
+        with zipfile.ZipFile(archive_path) as archive:
+            for member in archive.infolist():
+                if member.is_dir():
+                    continue
+                member_name = Path(member.filename).name
+                if member_name not in expected_names:
+                    continue
+                extracted[member_name] = archive.read(member)
+    else:
+        with tarfile.open(archive_path, "r:*") as archive:
+            for member in archive.getmembers():
+                if not member.isfile():
+                    continue
+                member_name = Path(member.name).name
+                if member_name not in expected_names:
+                    continue
+                handle = archive.extractfile(member)
+                if handle is None:
+                    continue
+                extracted[member_name] = handle.read()
+    return extracted
+
+
+def install_ffmpeg_binaries() -> dict[str, str]:
+    bin_dir = ffmpeg_bin_dir()
+    try:
+        ffmpeg_path = detect_tool(bin_dir, "ffmpeg")
+        return {"ready": "true", "ffmpeg": str(ffmpeg_path)}
+    except FileNotFoundError:
+        pass
+
+    spec = ffmpeg_asset_spec()
+    archive_path = ffmpeg_archive_path()
+    archive_path.parent.mkdir(parents=True, exist_ok=True)
+    bin_dir.mkdir(parents=True, exist_ok=True)
+
+    info(f"Downloading FFmpeg for {current_os()} {current_architecture()} ...")
+    urllib.request.urlretrieve(spec["url"], archive_path)
+    extracted = ffmpeg_extract_members(archive_path)
+    if not extracted:
+        raise RuntimeError(f"Downloaded FFmpeg archive does not contain platform binaries: {archive_path.name}")
+
+    expected_names = set(platform_tool_filenames("ffmpeg") + platform_tool_filenames("ffprobe"))
+    for stale_path in bin_dir.iterdir():
+        if stale_path.is_file() and stale_path.name in expected_names:
+            stale_path.unlink()
+
+    for filename, payload in extracted.items():
+        target = bin_dir / filename
+        target.write_bytes(payload)
+        if current_os() != "windows":
+            target.chmod(0o755)
+
+    ffmpeg_path = detect_tool(bin_dir, "ffmpeg")
+    ok(f"FFmpeg ready: {ffmpeg_path}")
+    return {"ready": "true", "ffmpeg": str(ffmpeg_path), "archive": str(archive_path)}
 
 
 def install_group(
@@ -224,6 +329,7 @@ def main() -> None:
     info(f"Runtime-Tag: {runtime_environment_tag()}")
     info(f"Using Python: {py}")
     run(runtime_pip_install_command(py, "--upgrade", "pip", "setuptools<81", "wheel"), check=False)
+    ffmpeg_info = install_ffmpeg_binaries()
     clone_cfg = cfg.get("cloning", {}) if isinstance(cfg.get("cloning"), dict) else {}
     requested_voice_engine = str(clone_cfg.get("voice_clone_engine", "pyttsx3") or "pyttsx3").strip().lower()
     optional_tts_requested = requested_voice_engine in {"auto", "xtts"} or str(
@@ -278,6 +384,7 @@ def main() -> None:
             "python": str(py),
             "runtime_tag": runtime_environment_tag(),
             "runtime_dir": str(runtime_venv_dir()),
+            "ffmpeg": ffmpeg_info,
             "torch": torch_ok,
             "torch_info": torch_info,
             "nvidia_gpu_detected": nvidia_gpu_available(),
@@ -303,6 +410,7 @@ def main() -> None:
             "python": str(py),
             "runtime_tag": runtime_environment_tag(),
             "runtime_dir": str(runtime_venv_dir()),
+            "ffmpeg": ffmpeg_info.get("ffmpeg", ""),
             "torch": bool(torch_ok),
             "cuda_available": bool(torch_info.get("cuda_available", False)),
             "voice_cloning": bool(voice_clone_ok),
