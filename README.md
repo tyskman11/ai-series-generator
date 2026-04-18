@@ -29,7 +29,7 @@ All scripts in this repository are AI-generated and maintained with `GPT-5.4`.
 | Dataset / model | usable | A local series dataset and heuristic series model can be rebuilt from reviewed material. |
 | Training stack | expanding | Foundation, adapter, fine-tune, and backend-prep stages now exist as explicit steps. |
 | Generation / render | preview-ready | New episodes, shotlists, draft videos, and final preview videos can be produced. |
-| GitHub sync | active | Only root Python scripts plus `README.md` are mirrored to GitHub, never downloaded back. |
+| GitHub sync | active | All root Python scripts, including the sync helper itself, plus `README.md` are mirrored to GitHub, never downloaded back. |
 
 ## What Already Works Well
 
@@ -43,7 +43,7 @@ All scripts in this repository are AI-generated and maintained with `GPT-5.4`.
 - draft and final silent storyboard preview rendering
 - autosaves and live progress dashboards for long-running pipelines
 - local voice fallback with German Windows voices instead of old English default fallbacks
-- GitHub mirroring that updates the repo `About` text and never uses `clone`, `fetch`, or `pull`
+- GitHub mirroring that updates the repo `About` text, includes the sync helper itself, and never uses `clone`, `fetch`, or `pull`
 
 ## Current Focus
 
@@ -124,7 +124,7 @@ Also keep the `In Progress` and `Planned` sections current. If priorities change
 - `18_render_episode.py`: render draft and final storyboard preview videos from seed assets, backend frames, or placeholder scene cards
 - `19_generate_preview_episodes.py`: generate multiple visible preview episodes in one run
 - `20_refresh_after_manual_review.py`: rebuild the pipeline after manual character review
-- `21_sync_to_github.py`: mirror allowed local files to GitHub
+- `21_sync_to_github.py`: mirror all root local Python scripts plus `README.md` to GitHub
 - `99_process_next_episode.py`: run the full end-to-end workflow
 - `pipeline_common.py`: shared helpers for paths, config, runtime, progress reporting, and status handling
 
@@ -304,7 +304,7 @@ One-command rebuild path after manual character cleanup. This is the preferred w
 
 ### 21 - Sync To GitHub
 
-Mirrors only root `*.py` files plus `README.md` to GitHub.
+Mirrors all root `*.py` files plus `README.md` to GitHub, including `21_sync_to_github.py` itself.
 
 Key rules:
 
