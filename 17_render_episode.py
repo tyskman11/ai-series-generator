@@ -29,6 +29,7 @@ from pipeline_common import (
     read_json,
     rerun_in_runtime,
     resolve_project_path,
+    resolve_stored_project_path,
     write_json,
     write_text,
 )
@@ -77,6 +78,16 @@ def production_scene_frame_candidates(package_root: Path, scene_id: str) -> list
     ]
 
 
+def production_scene_video_candidates(package_root: Path, scene_id: str) -> list[tuple[str, Path]]:
+    return [
+        ("generated_lipsync_video", package_root / "lipsync" / scene_id / f"{scene_id}_lipsync.mp4"),
+        ("generated_lipsync_video", package_root / "lipsync" / scene_id / "lipsync.mp4"),
+        ("generated_scene_video", package_root / "videos" / scene_id / f"{scene_id}.mp4"),
+        ("generated_scene_video", package_root / "videos" / scene_id / "scene.mp4"),
+        ("generated_scene_video", package_root / "videos" / scene_id / "clip.mp4"),
+    ]
+
+
 def scene_frame_candidates(assets_root: Path, scene_id: str) -> list[tuple[str, Path]]:
     return [
         ("backend_frame", assets_root / scene_id / "frame.png"),
@@ -88,6 +99,13 @@ def scene_frame_candidates(assets_root: Path, scene_id: str) -> list[tuple[str, 
 
 def first_existing_scene_frame(assets_root: Path, scene_id: str) -> tuple[str, Path] | None:
     for source_type, candidate in scene_frame_candidates(assets_root, scene_id):
+        if candidate.exists() and candidate.stat().st_size > 0:
+            return source_type, candidate
+    return None
+
+
+def first_existing_production_scene_video(package_root: Path, scene_id: str) -> tuple[str, Path] | None:
+    for source_type, candidate in production_scene_video_candidates(package_root, scene_id):
         if candidate.exists() and candidate.stat().st_size > 0:
             return source_type, candidate
     return None
@@ -256,12 +274,12 @@ def title_card(width: int, height: int, episode_id: str, display_title: str, epi
     draw.rectangle((80, 80, width - 80, height - 80), outline=(240, 244, 248), width=2)
     font = ImageFont.load_default()
     lines = [
-        "AI Series Preview Render",
+        "AI Series Episode Render",
         "",
         display_title or episode_id,
         episode_title or "",
         "",
-        "Storyboard-driven local preview video",
+        "Storyboard-driven local final episode render",
     ]
     draw_multiline_block(draw, lines=lines, x=120, y=150, font=font, fill=(248, 248, 248), spacing=10)
     return image
@@ -273,7 +291,7 @@ def closing_card(width: int, height: int, display_title: str, scene_count: int) 
     draw.rectangle((0, 0, width, height), fill=(18, 18, 18))
     font = ImageFont.load_default()
     lines = [
-        display_title or "Preview Episode",
+        display_title or "Final Episode",
         "",
         f"Rendered storyboard scenes: {scene_count}",
         "Draft and final preview written locally",
@@ -562,6 +580,21 @@ def prompt_preview_text(text: str, fallback: str) -> str:
     return cleaned or fallback
 
 
+def voice_line_output_audio_path(episode_package_root: Path, line: dict) -> Path:
+    speaker_name = clean_text(line.get("speaker_name", "")) or "Narrator"
+    speaker_slug = production_scene_slug(speaker_name.lower())
+    return episode_package_root / "audio" / speaker_slug / f"line_{int(line.get('line_index', 0) or 0):04d}.wav"
+
+
+def scene_dialogue_output_audio_path(episode_package_root: Path, scene_id: str) -> Path:
+    scene_slug = production_scene_slug(scene_id)
+    return episode_package_root / "audio" / scene_slug / f"{scene_slug}_dialogue.wav"
+
+
+def valid_media_source_path(path: Path) -> bool:
+    return bool(str(path).strip()) and path.exists() and path.is_file()
+
+
 def build_video_generation_prompt(scene: dict, generation_plan: dict) -> str:
     prompt_parts: list[str] = []
     positive_prompt = clean_text(generation_plan.get("positive_prompt", ""))
@@ -626,7 +659,7 @@ def build_voice_clone_line_package(cfg: dict, episode_package_root: Path, line: 
         },
         "candidate_sample_dirs": [path for path in candidate_sample_dirs if path],
         "candidate_model_dirs": [path for path in candidate_model_dirs if path],
-        "target_output_audio": str(episode_package_root / "audio" / speaker_slug / f"line_{int(line.get('line_index', 0) or 0):04d}.wav"),
+        "target_output_audio": str(voice_line_output_audio_path(episode_package_root, line)),
     }
 
 
@@ -711,7 +744,7 @@ def build_scene_production_package(
             "required": bool(voice_lines),
             "mode": "original_character_voice_clone",
             "target_outputs": {
-                "scene_dialogue_audio": str((episode_package_root / "audio" / scene_slug / f"{scene_slug}_dialogue.wav")),
+                "scene_dialogue_audio": str(scene_dialogue_output_audio_path(episode_package_root, scene_id)),
             },
             "lines": voice_lines,
         },
@@ -996,6 +1029,63 @@ def normalize_line_audio(ffmpeg: Path, input_path: Path, duration_seconds: float
         raise RuntimeError(f"Could not normalize dialogue audio {input_path.name}.")
 
 
+def extract_clip_audio(
+    ffmpeg: Path,
+    input_path: Path,
+    start_seconds: float,
+    duration_seconds: float,
+    output_path: Path,
+    sample_rate: int,
+) -> None:
+    command = [
+        str(ffmpeg),
+        "-hide_banner",
+        "-y",
+        "-ss",
+        f"{max(0.0, float(start_seconds or 0.0)):.3f}",
+        "-i",
+        str(input_path),
+        "-af",
+        "apad",
+        "-t",
+        f"{max(0.01, float(duration_seconds or 0.0)):.3f}",
+        "-ac",
+        "1",
+        "-ar",
+        str(sample_rate),
+        str(output_path),
+    ]
+    result = subprocess.run(command, check=False, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    if result.returncode != 0 or not render_output_ready(output_path):
+        raise RuntimeError(f"Could not extract dialogue audio from {input_path.name}.")
+
+
+def materialize_original_segment_audio(
+    ffmpeg: Path,
+    retrieval_segment: dict,
+    duration_seconds: float,
+    output_path: Path,
+    sample_rate: int,
+) -> str:
+    source_audio_path = resolve_stored_project_path(retrieval_segment.get("audio_path", ""))
+    if valid_media_source_path(source_audio_path):
+        normalize_line_audio(ffmpeg, source_audio_path, duration_seconds, output_path, sample_rate)
+        return "original_segment_audio"
+
+    scene_clip_path = resolve_stored_project_path(retrieval_segment.get("scene_clip_path", ""))
+    if valid_media_source_path(scene_clip_path):
+        extract_clip_audio(
+            ffmpeg,
+            scene_clip_path,
+            float(retrieval_segment.get("start", 0.0) or 0.0),
+            duration_seconds,
+            output_path,
+            sample_rate,
+        )
+        return "scene_clip_extract"
+    return ""
+
+
 def concat_audio_segments(ffmpeg: Path, segment_paths: list[Path], output_path: Path) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".txt", delete=False) as handle:
@@ -1056,6 +1146,71 @@ def mux_episode_audio(ffmpeg: Path, video_path: Path, audio_path: Path, output_p
         raise RuntimeError(f"Could not mux final voiced episode {output_path.name}.")
 
 
+def materialize_scene_dialogue_tracks(
+    ffmpeg: Path,
+    voice_plan_scenes: list[dict],
+    line_output_map: dict[int, Path],
+    sample_rate: int,
+    package_root: Path,
+) -> dict[str, str]:
+    scene_outputs: dict[str, str] = {}
+    for scene in voice_plan_scenes:
+        if not isinstance(scene, dict):
+            continue
+        scene_id = clean_text(scene.get("scene_id", ""))
+        if not scene_id:
+            continue
+        scene_duration = float(scene.get("duration_seconds", 0.0) or 0.0)
+        scene_start = float(scene.get("scene_start_seconds", 0.0) or 0.0)
+        local_lines: list[dict] = []
+        for line in scene.get("lines", []) if isinstance(scene.get("lines", []), list) else []:
+            if not isinstance(line, dict):
+                continue
+            line_index = int(line.get("line_index", 0) or 0)
+            line_output = line_output_map.get(line_index)
+            if line_output is None or not line_output.exists():
+                continue
+            start_seconds = max(0.0, float(line.get("start_seconds", 0.0) or 0.0) - scene_start)
+            end_seconds = max(start_seconds, float(line.get("end_seconds", start_seconds) or start_seconds) - scene_start)
+            local_lines.append(
+                {
+                    "line_index": line_index,
+                    "start_seconds": round(start_seconds, 3),
+                    "end_seconds": round(min(scene_duration, end_seconds), 3),
+                }
+            )
+        if not local_lines and scene_duration <= 0.0:
+            continue
+        segment_plan = build_audio_segment_plan(local_lines, scene_duration)
+        output_path = scene_dialogue_output_audio_path(package_root, scene_id)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        concat_segments: list[Path] = []
+        silence_index = 0
+        with tempfile.TemporaryDirectory() as tmpdir:
+            temp_root = Path(tmpdir)
+            for segment in segment_plan:
+                if segment.get("kind") == "silence":
+                    duration_seconds = float(segment.get("duration_seconds", 0.0) or 0.0)
+                    if duration_seconds <= 0.01:
+                        continue
+                    silence_path = temp_root / f"silence_{silence_index:04d}.wav"
+                    create_silence_audio(ffmpeg, duration_seconds, silence_path, sample_rate)
+                    concat_segments.append(silence_path)
+                    silence_index += 1
+                    continue
+                line_index = int(segment.get("line_index", 0) or 0)
+                line_output = line_output_map.get(line_index)
+                if line_output is not None and line_output.exists():
+                    concat_segments.append(line_output)
+            if not concat_segments:
+                silence_path = temp_root / "silence_full.wav"
+                create_silence_audio(ffmpeg, max(scene_duration, 0.25), silence_path, sample_rate)
+                concat_segments.append(silence_path)
+            concat_audio_segments(ffmpeg, concat_segments, output_path)
+        scene_outputs[scene_id] = str(output_path)
+    return scene_outputs
+
+
 def render_episode_audio_track(
     ffmpeg: Path,
     voice_plan_lines: list[dict],
@@ -1063,26 +1218,70 @@ def render_episode_audio_track(
     render_cfg: dict,
     temp_root: Path,
     output_path: Path,
+    package_root: Path | None = None,
+    voice_plan_scenes: list[dict] | None = None,
 ) -> dict:
     audio_root = temp_root / "audio"
     audio_root.mkdir(parents=True, exist_ok=True)
     sample_rate = int(render_cfg.get("audio_sample_rate", 22050) or 22050)
-    synthesized_map, voice_meta = synthesize_voice_lines(audio_root, voice_plan_lines, render_cfg)
+    reusable_indexes: set[int] = set()
+    for line in voice_plan_lines:
+        if not isinstance(line, dict):
+            continue
+        retrieval_segment = line.get("retrieval_segment", {}) if isinstance(line.get("retrieval_segment", {}), dict) else {}
+        source_audio_path = resolve_stored_project_path(retrieval_segment.get("audio_path", ""))
+        scene_clip_path = resolve_stored_project_path(retrieval_segment.get("scene_clip_path", ""))
+        if valid_media_source_path(source_audio_path) or valid_media_source_path(scene_clip_path):
+            reusable_indexes.add(int(line.get("line_index", 0) or 0))
+    tts_lines = [line for line in voice_plan_lines if int(line.get("line_index", 0) or 0) not in reusable_indexes]
+    synthesized_map: dict[int, Path] = {}
+    voice_meta: dict[str, object] = {"backend": "", "voice_id": "", "voices": []}
+    if tts_lines:
+        synthesized_map, voice_meta = synthesize_voice_lines(audio_root, tts_lines, render_cfg)
     segment_plan = build_audio_segment_plan(voice_plan_lines, total_duration)
     normalized_map: dict[int, Path] = {}
+    packaged_line_map: dict[int, Path] = {}
+    line_materializations: list[dict[str, object]] = []
+    reused_original_lines = 0
+    synthesized_lines = 0
     for line in voice_plan_lines:
         line_index = int(line.get("line_index", 0) or 0)
         if line_index in normalized_map:
             continue
         normalized_path = audio_root / f"line_{line_index:04d}.wav"
-        normalize_line_audio(
+        line_duration = float(line.get("estimated_duration_seconds", 0.0) or 0.0)
+        retrieval_segment = line.get("retrieval_segment", {}) if isinstance(line.get("retrieval_segment", {}), dict) else {}
+        source_backend = materialize_original_segment_audio(
             ffmpeg,
-            synthesized_map[line_index],
-            float(line.get("estimated_duration_seconds", 0.0) or 0.0),
+            retrieval_segment,
+            line_duration,
             normalized_path,
             sample_rate,
         )
+        if source_backend:
+            reused_original_lines += 1
+        else:
+            synthesized_source = synthesized_map.get(line_index)
+            if synthesized_source is None:
+                raise RuntimeError(f"Voice synthesis input is missing for dialogue line {line_index}.")
+            normalize_line_audio(ffmpeg, synthesized_source, line_duration, normalized_path, sample_rate)
+            source_backend = "pyttsx3"
+            synthesized_lines += 1
         normalized_map[line_index] = normalized_path
+        package_line_path = normalized_path
+        if package_root is not None:
+            package_line_path = voice_line_output_audio_path(package_root, line)
+            package_line_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(normalized_path, package_line_path)
+        packaged_line_map[line_index] = package_line_path
+        line_materializations.append(
+            {
+                "line_index": line_index,
+                "speaker_name": clean_text(line.get("speaker_name", "")) or "Narrator",
+                "audio_backend": source_backend,
+                "audio_path": str(package_line_path),
+            }
+        )
     concat_segments: list[Path] = []
     silence_index = 0
     for segment in segment_plan:
@@ -1102,12 +1301,32 @@ def render_episode_audio_track(
         create_silence_audio(ffmpeg, total_duration, silence_path, sample_rate)
         concat_segments.append(silence_path)
     concat_audio_segments(ffmpeg, concat_segments, output_path)
+    scene_dialogue_outputs: dict[str, str] = {}
+    if package_root is not None and voice_plan_scenes:
+        scene_dialogue_outputs = materialize_scene_dialogue_tracks(
+            ffmpeg,
+            voice_plan_scenes,
+            packaged_line_map,
+            sample_rate,
+            package_root,
+        )
+    audio_backend = str(voice_meta.get("backend", "") or "")
+    if reused_original_lines and synthesized_lines:
+        audio_backend = "mixed_original_segment_and_pyttsx3"
+    elif reused_original_lines and not synthesized_lines:
+        audio_backend = "original_segment_reuse"
+    elif not audio_backend:
+        audio_backend = "pyttsx3"
     return {
         "audio_track": str(output_path),
-        "audio_backend": voice_meta.get("backend", "pyttsx3"),
+        "audio_backend": audio_backend,
         "voice_id": voice_meta.get("voice_id", ""),
         "sample_rate": sample_rate,
         "segment_count": len(concat_segments),
+        "reused_original_lines": reused_original_lines,
+        "synthesized_lines": synthesized_lines,
+        "scene_dialogue_outputs": scene_dialogue_outputs,
+        "line_materializations": line_materializations,
     }
 
 
@@ -1158,6 +1377,82 @@ def create_final_render(ffmpeg_path: Path, segment_paths: list[Path], output_pat
             pass
 
 
+def choose_render_mode(scene_count: int, generated_scene_video_count: int, audio_available: bool) -> str:
+    if generated_scene_video_count >= max(1, int(scene_count or 0)):
+        return "fully_generated_scene_video_episode" if audio_available else "silent_generated_scene_video_fallback"
+    if generated_scene_video_count > 0:
+        return "hybrid_generated_scene_video_episode" if audio_available else "silent_hybrid_generated_scene_video_fallback"
+    return "voiced_storyboard_episode" if audio_available else "silent_storyboard_preview_fallback"
+
+
+def encode_still_clip(ffmpeg: Path, image_path: Path, duration_seconds: float, output_path: Path, fps: int, width: int, height: int, crf: int) -> None:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    command = [
+        str(ffmpeg),
+        "-hide_banner",
+        "-y",
+        "-loop",
+        "1",
+        "-i",
+        str(image_path),
+        "-t",
+        f"{max(0.01, float(duration_seconds or 0.0)):.3f}",
+        "-vf",
+        f"fps={fps},scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:black,format=yuv420p",
+        "-an",
+        "-c:v",
+        "libx264",
+        "-preset",
+        "medium",
+        "-crf",
+        str(crf),
+        "-movflags",
+        "+faststart",
+        str(output_path),
+    ]
+    result = subprocess.run(command, check=False, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    if result.returncode != 0 or not render_output_ready(output_path):
+        raise RuntimeError(f"Could not encode still clip {output_path.name}: {(result.stdout or '').strip()[-600:]}")
+
+
+def normalize_scene_video_clip(
+    ffmpeg: Path,
+    input_path: Path,
+    duration_seconds: float,
+    output_path: Path,
+    fps: int,
+    width: int,
+    height: int,
+    crf: int,
+) -> None:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    target_duration = max(0.01, float(duration_seconds or 0.0))
+    command = [
+        str(ffmpeg),
+        "-hide_banner",
+        "-y",
+        "-i",
+        str(input_path),
+        "-t",
+        f"{target_duration:.3f}",
+        "-vf",
+        f"fps={fps},scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:black,tpad=stop_mode=clone:stop_duration={target_duration:.3f},format=yuv420p",
+        "-an",
+        "-c:v",
+        "libx264",
+        "-preset",
+        "medium",
+        "-crf",
+        str(crf),
+        "-movflags",
+        "+faststart",
+        str(output_path),
+    ]
+    result = subprocess.run(command, check=False, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    if result.returncode != 0 or not render_output_ready(output_path):
+        raise RuntimeError(f"Could not normalize generated scene clip {input_path.name}: {(result.stdout or '').strip()[-600:]}")
+
+
 def encode_video(ffmpeg: Path, concat_path: Path, output_path: Path, fps: int, width: int, height: int, crf: int) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     command = [
@@ -1188,6 +1483,34 @@ def encode_video(ffmpeg: Path, concat_path: Path, output_path: Path, fps: int, w
         raise RuntimeError(f"FFmpeg render failed for {output_path.name}: {(result.stdout or '').strip()[-600:]}")
 
 
+def encode_clip_sequence(ffmpeg: Path, concat_path: Path, output_path: Path, crf: int) -> None:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    command = [
+        str(ffmpeg),
+        "-hide_banner",
+        "-y",
+        "-f",
+        "concat",
+        "-safe",
+        "0",
+        "-i",
+        str(concat_path),
+        "-an",
+        "-c:v",
+        "libx264",
+        "-preset",
+        "medium",
+        "-crf",
+        str(crf),
+        "-movflags",
+        "+faststart",
+        str(output_path),
+    ]
+    result = subprocess.run(command, check=False, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    if result.returncode != 0 or not render_output_ready(output_path):
+        raise RuntimeError(f"FFmpeg clip concat failed for {output_path.name}: {(result.stdout or '').strip()[-600:]}")
+
+
 def build_concat_file(entries: list[tuple[Path, float]], output_path: Path) -> None:
     lines: list[str] = []
     for frame_path, duration in entries:
@@ -1198,6 +1521,14 @@ def build_concat_file(entries: list[tuple[Path, float]], output_path: Path) -> N
         escaped = str(entries[-1][0]).replace("'", "''")
         lines.append(f"file '{escaped}'")
     write_text(output_path, "\n".join(lines) + "\n")
+
+
+def build_clip_concat_file(clip_paths: list[Path], output_path: Path) -> None:
+    lines = []
+    for path in clip_paths:
+        escaped = str(path).replace("'", "''")
+        lines.append(f"file '{escaped}'")
+    write_text(output_path, "\n".join(lines) + ("\n" if lines else ""))
 
 
 def main() -> None:
@@ -1231,6 +1562,7 @@ def main() -> None:
     assets_root = Path(str(shotlist.get("storyboard_assets_root", ""))).resolve() if shotlist.get("storyboard_assets_root") else storyboard_assets_root(cfg, episode_id)
     render_root = resolve_project_path("generation/renders")
     temp_frame_root = render_root / "tmp" / episode_id
+    temp_clip_root = temp_frame_root / "clips"
     draft_path = render_root / "drafts" / f"{episode_id}.mp4"
     final_path = render_root / "final" / f"{episode_id}.mp4"
     final_video_only_path = temp_frame_root / f"{episode_id}_video_only.mp4"
@@ -1239,7 +1571,9 @@ def main() -> None:
     subtitle_preview_path = render_root / "final" / f"{episode_id}_dialogue_preview.srt"
     dialogue_audio_path = render_root / "final" / f"{episode_id}_dialogue_audio.wav"
     concat_path = temp_frame_root / "frames.txt"
+    clip_concat_path = temp_frame_root / "clips.txt"
     production_package_path = episode_production_package_root(cfg, episode_id) / "master" / f"{episode_id}_production_package.json"
+    full_generated_episode_path = episode_production_package_root(cfg, episode_id) / "master" / f"{episode_id}_full_generated_episode.mp4"
 
     autosave_target = episode_id
     mark_step_started("18_render_episode", autosave_target, {"episode_id": episode_id, "shotlist": str(shotlist_path)})
@@ -1267,16 +1601,20 @@ def main() -> None:
             return
 
         temp_frame_root.mkdir(parents=True, exist_ok=True)
+        temp_clip_root.mkdir(parents=True, exist_ok=True)
         entries: list[tuple[Path, float]] = []
+        final_clip_paths: list[Path] = []
         manifest_scenes: list[dict] = []
         voice_plan_scenes: list[dict] = []
         voice_plan_lines: list[dict] = []
         original_line_library = build_original_line_library(cfg)
         voice_lookup = build_voice_lookup(cfg)
         timeline_cursor = 0.0
+        generated_scene_video_count = 0
         render_mode = "voiced_storyboard_episode"
         audio_track_meta: dict[str, object] = {}
         audio_render_error = ""
+        package_root = episode_production_package_root(cfg, episode_id)
 
         if include_title_cards and title_card_seconds > 0.0:
             reporter.update(0, current_label="Title Card", extra_label="Running now: render opening title card", force=True)
@@ -1290,6 +1628,9 @@ def main() -> None:
             )
             title_image.save(title_path, quality=95)
             entries.append((title_path, title_card_seconds))
+            title_clip_path = temp_clip_root / "0000_title.mp4"
+            encode_still_clip(ffmpeg, title_path, title_card_seconds, title_clip_path, fps, width, height, crf=20)
+            final_clip_paths.append(title_clip_path)
             timeline_cursor += title_card_seconds
 
         for index, scene in enumerate(scenes, start=1):
@@ -1300,6 +1641,17 @@ def main() -> None:
             scene_image.save(frame_path, quality=95)
             duration = safe_duration_seconds(scene)
             entries.append((frame_path, duration))
+            final_clip_path = temp_clip_root / f"{index:04d}_{scene_id}.mp4"
+            scene_video_source = first_existing_production_scene_video(package_root, scene_id)
+            if scene_video_source is not None:
+                generated_scene_video_count += 1
+                scene_video_source_type, scene_video_source_path = scene_video_source
+                normalize_scene_video_clip(ffmpeg, scene_video_source_path, duration, final_clip_path, fps, width, height, crf=20)
+            else:
+                scene_video_source_type = ""
+                scene_video_source_path = Path()
+                encode_still_clip(ffmpeg, frame_path, duration, final_clip_path, fps, width, height, crf=20)
+            final_clip_paths.append(final_clip_path)
             scene_voice_plan = build_scene_voice_plan(
                 scene,
                 duration,
@@ -1312,6 +1664,8 @@ def main() -> None:
             voice_plan_scenes.append(
                 {
                     "scene_id": scene_id,
+                    "scene_start_seconds": round(timeline_cursor, 3),
+                    "scene_end_seconds": round(timeline_cursor + duration, 3),
                     "duration_seconds": duration,
                     "line_count": len(scene_voice_plan),
                     "lines": scene_voice_plan,
@@ -1326,13 +1680,23 @@ def main() -> None:
                     "frame_path": str(frame_path),
                     "asset_source_type": scene_meta.get("asset_source_type", ""),
                     "asset_source_path": scene_meta.get("asset_source_path", ""),
+                    "video_source_type": scene_video_source_type,
+                    "video_source_path": str(scene_video_source_path) if scene_video_source is not None else "",
+                    "final_clip_path": str(final_clip_path),
                     "characters": scene.get("characters", []) if isinstance(scene.get("characters", []), list) else [],
                     "summary": scene.get("summary", ""),
                     "generation_plan": scene.get("generation_plan", {}) if isinstance(scene.get("generation_plan", {}), dict) else {},
                     "voice_line_count": len(scene_voice_plan),
                 }
             )
-            reporter.update(index, current_label=scene_id, extra_label=f"Frame source: {scene_meta.get('asset_source_type', 'placeholder')}")
+            reporter.update(
+                index,
+                current_label=scene_id,
+                extra_label=(
+                    f"Frame source: {scene_meta.get('asset_source_type', 'placeholder')} | "
+                    f"Final clip: {scene_video_source_type or 'storyboard_card'}"
+                ),
+            )
             timeline_cursor += duration
 
         if closing_card_seconds > 0.0:
@@ -1342,14 +1706,18 @@ def main() -> None:
             closing_image = closing_card(width, height, str(shotlist.get("display_title", episode_id)), len(scenes))
             closing_image.save(closing_path, quality=95)
             entries.append((closing_path, closing_card_seconds))
+            closing_clip_path = temp_clip_root / f"{closing_index:04d}_closing.mp4"
+            encode_still_clip(ffmpeg, closing_path, closing_card_seconds, closing_clip_path, fps, width, height, crf=20)
+            final_clip_paths.append(closing_clip_path)
             timeline_cursor += closing_card_seconds
 
         reporter.update(len(scenes) + 1, current_label="Concat List", extra_label="Running now: assemble FFmpeg concat list")
         build_concat_file(entries, concat_path)
+        build_clip_concat_file(final_clip_paths, clip_concat_path)
 
         reporter.update(len(scenes) + 2, current_label="Draft Render", extra_label="Running now: encode draft and final video", force=True)
         encode_video(ffmpeg, concat_path, draft_path, fps, min(width, 960), min(height, 540), crf=28)
-        encode_video(ffmpeg, concat_path, final_video_only_path, fps, width, height, crf=20)
+        encode_clip_sequence(ffmpeg, clip_concat_path, final_video_only_path, crf=20)
 
         try:
             audio_track_meta = render_episode_audio_track(
@@ -1359,13 +1727,15 @@ def main() -> None:
                 render_cfg,
                 temp_frame_root,
                 dialogue_audio_path,
+                episode_production_package_root(cfg, episode_id),
+                voice_plan_scenes,
             )
             mux_episode_audio(ffmpeg, final_video_only_path, dialogue_audio_path, final_path)
         except Exception as audio_exc:
-            render_mode = "silent_storyboard_preview_fallback"
             audio_render_error = str(audio_exc)
             shutil.copyfile(final_video_only_path, final_path)
             info(f"Audio render fallback active for {episode_id}: {audio_render_error}")
+        render_mode = choose_render_mode(len(scenes), generated_scene_video_count, bool(audio_track_meta))
 
         voice_plan_payload = {
             "episode_id": episode_id,
@@ -1377,6 +1747,7 @@ def main() -> None:
             "audio_render_error": audio_render_error,
             "scene_count": len(voice_plan_scenes),
             "line_count": len(voice_plan_lines),
+            "generated_scene_video_count": generated_scene_video_count,
             "scenes": voice_plan_scenes,
         }
         write_json(voice_plan_path, voice_plan_payload)
@@ -1404,12 +1775,16 @@ def main() -> None:
             "width": width,
             "height": height,
             "include_title_cards": include_title_cards,
+            "generated_scene_video_count": generated_scene_video_count,
+            "full_generated_episode": str(full_generated_episode_path),
             "scene_count": len(scenes),
             "scenes": manifest_scenes,
         }
         manifest["render_manifest_path"] = str(manifest_path)
         write_json(manifest_path, manifest)
         production_package = write_episode_production_package(cfg, episode_id, shotlist, manifest, voice_plan_payload)
+        full_generated_episode_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(final_path, full_generated_episode_path)
         manifest["production_package_root"] = production_package["package_root"]
         manifest["production_package"] = production_package["package_path"]
         manifest["production_prompt_preview"] = production_package["prompt_preview_path"]
@@ -1421,6 +1796,7 @@ def main() -> None:
         shotlist["dialogue_audio"] = str(dialogue_audio_path) if audio_track_meta else ""
         shotlist["voice_plan"] = str(voice_plan_path)
         shotlist["subtitle_preview"] = str(subtitle_preview_path)
+        shotlist["full_generated_episode"] = str(full_generated_episode_path)
         shotlist["production_package_root"] = production_package["package_root"]
         shotlist["production_package"] = production_package["package_path"]
         shotlist["production_prompt_preview"] = production_package["prompt_preview_path"]
