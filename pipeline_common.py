@@ -69,6 +69,7 @@ DEFAULT_STRUCTURE = {
         "shotlists": {},
         "storyboard_requests": {},
         "storyboard_assets": {},
+        "final_episode_packages": {},
         "renders": {"drafts": {}, "final": {}},
     },
     "training": {
@@ -121,6 +122,7 @@ DEFAULT_CONFIG = {
         "series_model": "generation/model/series_model.json",
         "storyboard_requests": "generation/storyboard_requests",
         "storyboard_assets": "generation/storyboard_assets",
+        "final_episode_packages": "generation/final_episode_packages",
         "series_bible_json": "series_bible/episode_summaries/auto_series_bible.json",
         "series_bible_markdown": "series_bible/episode_summaries/auto_series_bible.md",
         "foundation_frames": "training/foundation/datasets/frames",
