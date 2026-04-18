@@ -79,7 +79,7 @@ All scripts in this repository are AI-generated and maintained with `GPT-5.4`.
 - `04_diarize_and_transcribe.py` and `09_prepare_foundation_training.py` now also use English-first completion and remote-revision fallback messages so transcription and model-prep logs stay consistent with the rest of the numbered pipeline
 - `00_prepare_runtime.py` now also uses English-first install-failure and runtime-Python status lines so startup diagnostics match the rest of the numbered pipeline
 - `00_prepare_runtime.py` now installs the torch stack before torch-dependent packages like Whisper, SpeechBrain, facenet-pytorch, and optional XTTS, which avoids Linux install failures caused by dependency resolution in the wrong order
-- `00_prepare_runtime.py` now also forces runtime `pip install` calls to use `--no-user`, so Linux and NAS setups do not silently install `core_ai` packages into `~/.local` instead of the project venv
+- `00_prepare_runtime.py` now uses the active `python3` interpreter on Linux/NAS and installs with `python3 -m pip install --break-system-packages` instead of relying on a separate venv there, which avoids Synology-style runtime installs silently landing outside the usable environment
 - `03_split_scenes.py`, `04_diarize_and_transcribe.py`, `05_link_faces_and_speakers.py`, and `07_build_dataset.py` now also use English-first live progress scope labels and segment/cluster counters so long batch runs read consistently across the early numbered pipeline
 - `17_render_episode.py` now also turns the timed dialogue voice-plan into a final dialogue audio track and muxes it into the final storyboard episode, while keeping the draft render as a lighter silent check
 - the numbered order now keeps all training in `07-13`, then generation/render in `14-17`, and only then rebuilds the series bible in `18`, so the pipeline follows the requested train-before-generate/render sequence more clearly
@@ -178,11 +178,11 @@ Also keep the `In Progress` and `Planned` sections current. If priorities change
 - `ai_series_project/generation/renders/final/*_dialogue_preview.srt`: subtitle-style dialogue preview aligned to the silent storyboard render timeline
 - `ai_series_project/series_bible/episode_summaries`: generated series bible files
 - `ai_series_project/runtime/autosaves`: autosaves and resumable run state
-- `runtime/venv_<os>_<arch>_<bitness>`: local Python environment for the current machine and runtime architecture
+- `runtime/venv_<os>_<arch>_<bitness>`: local Python environment for the current machine and runtime architecture on Windows; Linux/NAS uses the active `python3` runtime directly
 
 ## Requirements
 
-- Windows / PowerShell
+- Windows / PowerShell or Linux with `python3`
 - working local Python
 - enough disk space for scenes, audio, model assets, and renders
 - patience: `04`, `05`, and the training stages can take a long time
@@ -221,7 +221,7 @@ Also keep the `In Progress` and `Planned` sections current. If priorities change
 
 ### 00 - Prepare Runtime
 
-Creates `runtime/venv_<os>_<arch>_<bitness>`, updates packaging tools, installs dependencies, prepares the project structure, and prefers CUDA-capable Torch when possible. The runtime step now installs base packages first, then torch, and only afterwards torch-dependent packages such as Whisper and SpeechBrain so Linux setups do not fail on dependency order. It also forces runtime installs to stay inside the venv with `--no-user`, which avoids Linux/NAS cases where `pip` would otherwise fall back to `~/.local` and leave the runtime incomplete.
+Creates `runtime/venv_<os>_<arch>_<bitness>` on Windows, updates packaging tools, installs dependencies, prepares the project structure, and prefers CUDA-capable Torch when possible. The runtime step now installs base packages first, then torch, and only afterwards torch-dependent packages such as Whisper and SpeechBrain so Linux setups do not fail on dependency order. On Linux/NAS it now uses the active `python3` interpreter directly and installs via `python3 -m pip install --break-system-packages`, which avoids Synology-style cases where a separate venv still installs packages outside the actually usable runtime.
 
 The default path stays license-light. Optional XTTS / Coqui is only prepared when explicitly enabled. XTTS must never be enabled implicitly through a hidden license acceptance.
 

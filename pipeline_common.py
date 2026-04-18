@@ -496,10 +496,9 @@ def runtime_venv_dir() -> Path:
 
 
 def runtime_python() -> Path:
-    if current_os() == "windows":
-        candidate = runtime_venv_dir() / "Scripts" / "python.exe"
-    else:
-        candidate = runtime_venv_dir() / "bin" / "python3"
+    if current_os() != "windows":
+        return Path(sys.executable).resolve()
+    candidate = runtime_venv_dir() / "Scripts" / "python.exe"
     if candidate.exists():
         return candidate
     return Path(sys.executable).resolve()

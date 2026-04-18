@@ -39,8 +39,11 @@ def run(cmd: list[str], check: bool = True) -> subprocess.CompletedProcess[str]:
 
 
 def ensure_venv() -> Path:
-    py = venv_python()
     headline("Create Python Environment")
+    if sys.platform != "win32":
+        info("Linux runtime uses the active python3 interpreter with --break-system-packages.")
+        return Path(sys.executable).resolve()
+    py = venv_python()
     venv_dir = runtime_venv_dir()
     cfg_file = venv_dir / "pyvenv.cfg"
     if py.exists() and cfg_file.exists():
@@ -63,10 +66,7 @@ def module_available(py: Path, module_name: str) -> bool:
 
 
 def runtime_pip_install_command(py: Path, *args: str) -> list[str]:
-    command = list(pip_install_command(py, *args))
-    if "--user" not in command and "--no-user" not in command:
-        command.insert(4, "--no-user")
-    return command
+    return list(pip_install_command(py, *args))
 
 
 def install_group(
