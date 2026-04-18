@@ -224,6 +224,25 @@ def build_status_snapshot(cfg: dict, state: dict, inbox_dir: Path | None = None)
     }
 
 
+def format_completion_ratio(value: object) -> str:
+    try:
+        ratio = float(value)
+    except (TypeError, ValueError):
+        return "-"
+    if ratio < 0:
+        ratio = 0.0
+    if ratio > 1:
+        ratio = 1.0
+    return f"{ratio * 100:.1f}%"
+
+
+def format_backend_tasks(value: object) -> str:
+    if not isinstance(value, list):
+        return "-"
+    tasks = [str(task).strip() for task in value if str(task).strip()]
+    return ", ".join(tasks) if tasks else "-"
+
+
 def render_status_markdown(snapshot: dict) -> str:
     lines = [
         "# 99 Process Status",
@@ -279,6 +298,13 @@ def render_status_markdown(snapshot: dict) -> str:
                 "",
                 f"- Episode: {latest_generated_episode.get('episode_id') or '-'}",
                 f"- Display title: {latest_generated_episode.get('display_title') or '-'}",
+                f"- Render mode: {latest_generated_episode.get('render_mode') or '-'}",
+                f"- Production readiness: {latest_generated_episode.get('production_readiness') or '-'}",
+                f"- Scene count: {latest_generated_episode.get('scene_count') or '-'}",
+                f"- Scene video coverage: {format_completion_ratio(latest_generated_episode.get('scene_video_completion_ratio'))}",
+                f"- Scene dialogue coverage: {format_completion_ratio(latest_generated_episode.get('scene_dialogue_completion_ratio'))}",
+                f"- Scene master coverage: {format_completion_ratio(latest_generated_episode.get('scene_master_completion_ratio'))}",
+                f"- Remaining backend tasks: {format_backend_tasks(latest_generated_episode.get('remaining_backend_tasks'))}",
                 f"- Final render: {latest_generated_episode.get('final_render') or '-'}",
                 f"- Full generated episode: {latest_generated_episode.get('full_generated_episode') or '-'}",
                 f"- Production package: {latest_generated_episode.get('production_package') or '-'}",

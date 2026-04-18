@@ -48,7 +48,7 @@ All scripts in this repository are AI-generated and maintained with `GPT-5.4`.
 - final-episode composition that already prefers generated scene videos and lip-sync clips from the production package over static storyboard cards whenever those scene outputs exist
 - per-scene mastered episode clips inside the production package, so each scene already has a reusable endclip with its local dialogue timing
 - scene and master package JSONs that now track the real already-generated outputs, not only planned target paths
-- autosaves and live progress dashboards for long-running pipelines, now including concrete finished-episode output paths instead of only step completion flags
+- autosaves and live progress dashboards for long-running pipelines, now including concrete finished-episode output paths, production-readiness labels, coverage ratios, and remaining backend tasks instead of only step completion flags
 - the series bible can now summarize the most recent generated episodes together with their final render, full generated master, and production-package progress
 - generated episodes now also carry a central production-readiness label plus scene-video, scene-dialogue, and scene-master coverage ratios for easier follow-up automation
 - local voice fallback with German Windows voices instead of old English default fallbacks
@@ -113,6 +113,7 @@ All scripts in this repository are AI-generated and maintained with `GPT-5.4`.
 - `pipeline_common.py`, `19_generate_finished_episodes.py`, and `99_process_next_episode.py` now also collect the real render/package outputs written by `17_render_episode.py`, so batch metadata and live status files point directly to the latest final render, full generated episode master, render manifest, and production package
 - `18_build_series_bible.py` now also pulls in the most recent generated-episode outputs, so the bible itself reflects the current finished-episode production state instead of only the trained model summary
 - `pipeline_common.py`, `17_render_episode.py`, and `18_build_series_bible.py` now also derive and expose a central production-readiness summary with coverage ratios and remaining backend tasks per generated episode
+- `99_process_next_episode.py` now also shows that same production-readiness summary directly in its live markdown status, so the full pipeline dashboard reveals how close the latest generated episode is to a fully generated master
 
 ## Planned
 
@@ -387,7 +388,7 @@ Runs the main end-to-end flow:
 9. rebuild the bible
 
 The pipeline now writes autosaves, resumable checkpoints, and live status files for long-running batch work.
-It also supports `--skip-downloads` for the foundation-prepare stage when existing model downloads should be reused, stores the planned/completed global step order in the autosave state so resume and status output reflect the real run plan, and now carries the latest generated episode output bundle through those status files so the current final render, full generated episode master, render manifest, and production package are visible without digging through folders.
+It also supports `--skip-downloads` for the foundation-prepare stage when existing model downloads should be reused, stores the planned/completed global step order in the autosave state so resume and status output reflect the real run plan, and now carries the latest generated episode output bundle through those status files so the current final render, full generated episode master, render manifest, production package, production-readiness label, coverage ratios, and remaining backend tasks are visible without digging through folders.
 
 ## Testing And Smoke Runs
 
