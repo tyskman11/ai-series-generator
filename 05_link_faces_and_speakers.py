@@ -992,11 +992,12 @@ def process_episode_dir(
                 },
             )
             if live_reporter is not None:
+                scene_face_clusters = payload.get("face_clusters", []) or []
                 live_reporter.update(
                     (episode_index - 1) + (index / episode_total_units),
                     current_label=scene_file.name,
                     parent_label=episode_dir.name,
-                    extra_label=f"Face clusters so far: {len(face_clusters)}",
+                    extra_label=f"Face clusters so far: {len(scene_face_clusters)}",
                     scope_current=index,
                     scope_total=episode_total_units,
                     scope_started_at=episode_started_at,

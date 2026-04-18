@@ -9,6 +9,7 @@ from datetime import datetime
 from pathlib import Path
 
 from pipeline_common import (
+    open_face_review_item_count,
     LiveProgressReporter,
     SCRIPT_DIR,
     error,
@@ -16,7 +17,6 @@ from pipeline_common import (
     info,
     load_config,
     next_unprocessed_video,
-    open_review_item_count,
     ok,
     read_json,
     rerun_in_runtime,
@@ -564,10 +564,10 @@ def main() -> None:
         )
         save_autosave(cfg, state, f"episode_completed:{episode_name}", inbox_dir)
 
-    review_count = open_review_item_count(cfg)
+    review_count = open_face_review_item_count(cfg)
     if review_count > 0:
         info(
-            f"There are still {review_count} open review cases. "
+            f"There are still {review_count} open face review cases. "
             "Run 06_review_unknowns.py first before dataset rebuild, training, generation, or render can continue."
         )
         state["current_phase"] = "review"

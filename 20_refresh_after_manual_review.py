@@ -5,6 +5,7 @@ import argparse
 import subprocess
 
 from pipeline_common import (
+    open_face_review_item_count,
     LiveProgressReporter,
     SCRIPT_DIR,
     error,
@@ -14,7 +15,6 @@ from pipeline_common import (
     mark_step_completed,
     mark_step_failed,
     mark_step_started,
-    open_review_item_count,
     ok,
     rerun_in_runtime,
     runtime_python,
@@ -124,10 +124,10 @@ def main() -> None:
     try:
         cfg = load_config()
         if not args.allow_open_review:
-            review_count = open_review_item_count(cfg)
+            review_count = open_face_review_item_count(cfg)
             if review_count > 0:
                 raise RuntimeError(
-                    f"There are still {review_count} open review cases. "
+                    f"There are still {review_count} open face review cases. "
                     "Run 06_review_unknowns.py first or intentionally continue with --allow-open-review."
                 )
         planned_steps = planned_refresh_steps(

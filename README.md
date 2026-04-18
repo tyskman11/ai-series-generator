@@ -82,6 +82,7 @@ All scripts in this repository are AI-generated and maintained with `GPT-5.4`.
 - `00_prepare_runtime.py` now uses the active `python3` interpreter on Linux/NAS and installs with `python3 -m pip install --break-system-packages` instead of relying on a separate venv there, which avoids Synology-style runtime installs silently landing outside the usable environment
 - `00_prepare_runtime.py` now also downloads and installs the matching FFmpeg build for the current OS into `ai_series_project/tools/ffmpeg/bin`, and `pipeline_common.py` only resolves the platform-valid binary there so Linux never tries to launch a Windows `.exe`
 - `03_split_scenes.py`, `04_diarize_and_transcribe.py`, `05_link_faces_and_speakers.py`, and `07_build_dataset.py` now also use English-first live progress scope labels and segment/cluster counters so long batch runs read consistently across the early numbered pipeline
+- `05_link_faces_and_speakers.py` now also derives its live face-cluster counter directly from each processed scene payload, so long linking runs no longer break on the progress display after scene analysis starts
 - `17_render_episode.py` now also turns the timed dialogue voice-plan into a final dialogue audio track and muxes it into the final storyboard episode, while keeping the draft render as a lighter silent check
 - the numbered order now keeps all training in `07-13`, then generation/render in `14-17`, and only then rebuilds the series bible in `18`, so the pipeline follows the requested train-before-generate/render sequence more clearly
 - `19_generate_preview_episodes.py` now rebuilds the series bible once after the full generated/rendered batch instead of after every single episode, so multi-episode runs stay closer to the intended train-then-generate/render flow
@@ -91,6 +92,7 @@ All scripts in this repository are AI-generated and maintained with `GPT-5.4`.
 - `19_generate_preview_episodes.py` now also supports `--skip-downloads` for step `09`, so multi-episode rebuild runs can reuse existing model downloads like the manual refresh path
 - `99_process_next_episode.py` now also supports `--skip-downloads` for step `09`, so the full end-to-end inbox pipeline can reuse existing model downloads without changing the train-then-generate/render order
 - `99_process_next_episode.py` now also stores explicit planned/completed global step metadata in its autosaves and status files, so resume state and live status stay aligned with the real train-then-generate/render plan
+- `19_generate_preview_episodes.py`, `20_refresh_after_manual_review.py`, and `99_process_next_episode.py` now block only on actionable open face-review clusters from step `06`, while `06_review_unknowns.py` explicitly points to `--show-queue` when only speaker/segment review_queue entries remain
 
 ## Planned
 

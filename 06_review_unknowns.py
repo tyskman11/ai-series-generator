@@ -17,6 +17,7 @@ from pipeline_common import (
     is_background_person_name,
     is_interactive_session,
     load_config,
+    open_review_item_count,
     ok,
     read_json,
     rerun_in_runtime,
@@ -1509,7 +1510,14 @@ def interactive_face_review(cfg: dict, char_map: dict, voice_map: dict, include_
     handled_count = 0
     candidates = session_face_review_candidates(char_map, include_named, limit, handled_count, skipped_clusters)
     if not candidates:
-        info("No face clusters were found for review.")
+        remaining_queue_count = open_review_item_count(cfg)
+        if remaining_queue_count > 0:
+            info(
+                f"No face clusters were found for review. "
+                f"There are still {remaining_queue_count} speaker/segment review cases in review_queue.json; use --show-queue to inspect them."
+            )
+        else:
+            info("No face clusters were found for review.")
         return
 
     changed = 0

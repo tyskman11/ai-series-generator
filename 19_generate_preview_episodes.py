@@ -7,6 +7,7 @@ import subprocess
 from pathlib import Path
 
 from pipeline_common import (
+    open_face_review_item_count,
     LiveProgressReporter,
     SCRIPT_DIR,
     error,
@@ -16,7 +17,6 @@ from pipeline_common import (
     mark_step_completed,
     mark_step_failed,
     mark_step_started,
-    open_review_item_count,
     ok,
     rerun_in_runtime,
     runtime_python,
@@ -137,10 +137,10 @@ def main() -> None:
         {"requested_count": count, "skip_downloads": bool(args.skip_downloads)},
     )
     try:
-        review_count = open_review_item_count(cfg)
+        review_count = open_face_review_item_count(cfg)
         if review_count > 0:
             raise RuntimeError(
-                f"There are still {review_count} open review cases. "
+                f"There are still {review_count} open face review cases. "
                 "Run 06_review_unknowns.py first before training, generation, or render can start."
             )
         planned_steps = planned_preview_steps(cfg, count)

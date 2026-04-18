@@ -752,6 +752,23 @@ def open_review_item_count(cfg: dict[str, Any]) -> int:
     return len(items) if isinstance(items, list) else 0
 
 
+def open_face_review_item_count(cfg: dict[str, Any]) -> int:
+    char_map = read_json(resolve_project_path(cfg["paths"]["character_map"]), {"clusters": {}})
+    clusters = char_map.get("clusters", {}) if isinstance(char_map, dict) else {}
+    if not isinstance(clusters, dict):
+        return 0
+    pending = 0
+    for cluster_id, payload in clusters.items():
+        if not isinstance(payload, dict):
+            continue
+        if bool(payload.get("ignored")):
+            continue
+        if has_manual_person_name(str(payload.get("name", cluster_id))):
+            continue
+        pending += 1
+    return pending
+
+
 def tool_on_path(tool_name: str) -> Path | None:
     found = shutil.which(tool_name)
     return Path(found).resolve() if found else None
