@@ -78,6 +78,7 @@ All scripts in this repository are AI-generated and maintained with `GPT-5.4`.
 - `00_prepare_runtime.py` now also uses English-first package-install and already-present status messages so the numbered pipeline starts with the same console tone as the later steps
 - `04_diarize_and_transcribe.py` and `09_prepare_foundation_training.py` now also use English-first completion and remote-revision fallback messages so transcription and model-prep logs stay consistent with the rest of the numbered pipeline
 - `00_prepare_runtime.py` now also uses English-first install-failure and runtime-Python status lines so startup diagnostics match the rest of the numbered pipeline
+- `00_prepare_runtime.py` now installs the torch stack before torch-dependent packages like Whisper, SpeechBrain, facenet-pytorch, and optional XTTS, which avoids Linux install failures caused by dependency resolution in the wrong order
 - `03_split_scenes.py`, `04_diarize_and_transcribe.py`, `05_link_faces_and_speakers.py`, and `07_build_dataset.py` now also use English-first live progress scope labels and segment/cluster counters so long batch runs read consistently across the early numbered pipeline
 - `17_render_episode.py` now also writes a timed dialogue voice-plan JSON and SRT subtitle preview beside the silent render outputs, so later voiced render backends can reuse speaker timing and optional original-line retrieval hints without changing the default silent preview flow
 - the numbered order now keeps all training in `07-13`, then generation/render in `14-17`, and only then rebuilds the series bible in `18`, so the pipeline follows the requested train-before-generate/render sequence more clearly
@@ -218,7 +219,7 @@ Also keep the `In Progress` and `Planned` sections current. If priorities change
 
 ### 00 - Prepare Runtime
 
-Creates `runtime/venv_<os>_<arch>_<bitness>`, updates packaging tools, installs dependencies, prepares the project structure, and prefers CUDA-capable Torch when possible.
+Creates `runtime/venv_<os>_<arch>_<bitness>`, updates packaging tools, installs dependencies, prepares the project structure, and prefers CUDA-capable Torch when possible. The runtime step now installs base packages first, then torch, and only afterwards torch-dependent packages such as Whisper and SpeechBrain so Linux setups do not fail on dependency order.
 
 The default path stays license-light. Optional XTTS / Coqui is only prepared when explicitly enabled. XTTS must never be enabled implicitly through a hidden license acceptance.
 

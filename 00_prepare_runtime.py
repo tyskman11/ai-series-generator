@@ -226,10 +226,18 @@ def main() -> None:
     core_ok = install_group(
         py,
         "core_ai",
-        ["numpy", "PIL", "cv2", "librosa", "whisper"],
-        ["numpy", "Pillow", "opencv-python", "librosa", "openai-whisper"],
+        ["numpy", "PIL", "cv2", "librosa"],
+        ["numpy", "Pillow", "opencv-python", "librosa"],
     )
     scene_ok = install_group(py, "scene_detection", ["scenedetect"], ["scenedetect[opencv]"])
+    tts_ok = install_group(py, "render_tts", ["pyttsx3"], ["pyttsx3"])
+    torch_ok, torch_info = install_torch_stack(py, cfg)
+    whisper_ok = install_group(
+        py,
+        "speech_to_text",
+        ["whisper"],
+        ["openai-whisper"],
+    )
     facenet_ok = install_group(
         py,
         "face_recognition",
@@ -245,7 +253,6 @@ def main() -> None:
         ["speechbrain"],
         required=False,
     )
-    tts_ok = install_group(py, "render_tts", ["pyttsx3"], ["pyttsx3"])
     voice_clone_ok = False
     if optional_tts_requested:
         voice_clone_ok = install_group(
@@ -257,7 +264,6 @@ def main() -> None:
         )
     else:
         info("Optional XTTS/Coqui packages are not installed automatically in the license-free default path.")
-    torch_ok, torch_info = install_torch_stack(py, cfg)
 
     write_json(
         SCRIPT_DIR / "runtime" / "package_status.json",
@@ -270,6 +276,7 @@ def main() -> None:
             "nvidia_gpu_detected": nvidia_gpu_available(),
             "core_ai": core_ok,
             "scene_detection": scene_ok,
+            "speech_to_text": whisper_ok,
             "facenet_pytorch": facenet_ok,
             "speaker_embeddings": speaker_embeddings_ok,
             "render_tts": tts_ok,
