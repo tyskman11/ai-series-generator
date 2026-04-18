@@ -48,6 +48,33 @@ def run_step(script_name: str, env: dict[str, str] | None = None) -> None:
         raise SystemExit(result.returncode)
 
 
+def planned_preview_steps(cfg: dict, count: int) -> list[str]:
+    steps = ["07_build_dataset.py", "08_train_series_model.py"]
+    foundation_cfg = cfg.get("foundation_training", {}) if isinstance(cfg.get("foundation_training"), dict) else {}
+    adapter_cfg = cfg.get("adapter_training", {}) if isinstance(cfg.get("adapter_training"), dict) else {}
+    fine_tune_cfg = cfg.get("fine_tune_training", {}) if isinstance(cfg.get("fine_tune_training"), dict) else {}
+    backend_cfg = cfg.get("backend_fine_tune", {}) if isinstance(cfg.get("backend_fine_tune"), dict) else {}
+    if bool(foundation_cfg.get("required_before_generate", True)) or bool(foundation_cfg.get("required_before_render", True)):
+        steps.extend(["09_prepare_foundation_training.py", "10_train_foundation_models.py"])
+        if bool(adapter_cfg.get("auto_train_after_foundation", True)):
+            steps.append("11_train_adapter_models.py")
+            if bool(fine_tune_cfg.get("auto_train_after_adapter", True)):
+                steps.append("12_train_fine_tune_models.py")
+                if bool(backend_cfg.get("auto_run_after_fine_tune", True)):
+                    steps.append("13_run_backend_finetunes.py")
+    steps.extend(
+        [
+            "14_generate_episode_from_trained_model.py",
+            "15_generate_storyboard_assets.py",
+            "16_run_storyboard_backend.py",
+            "17_render_episode.py",
+        ]
+        * max(1, int(count))
+    )
+    steps.append("18_build_series_bible.py")
+    return steps
+
+
 def main() -> None:
     rerun_in_runtime()
     args = parse_args()
@@ -69,25 +96,7 @@ def main() -> None:
                 f"There are still {review_count} open review cases. "
                 "Run 06_review_unknowns.py first before training, generation, or render can start."
             )
-        planned_steps = ["07_build_dataset.py", "08_train_series_model.py"]
-        if bool(foundation_cfg.get("required_before_generate", True)) or bool(foundation_cfg.get("required_before_render", True)):
-            planned_steps.extend(["09_prepare_foundation_training.py", "10_train_foundation_models.py"])
-            if bool(adapter_cfg.get("auto_train_after_foundation", True)):
-                planned_steps.append("11_train_adapter_models.py")
-                if bool(fine_tune_cfg.get("auto_train_after_adapter", True)):
-                    planned_steps.append("12_train_fine_tune_models.py")
-                    if bool(backend_cfg.get("auto_run_after_fine_tune", True)):
-                        planned_steps.append("13_run_backend_finetunes.py")
-        planned_steps.extend(
-            [
-                "14_generate_episode_from_trained_model.py",
-                "15_generate_storyboard_assets.py",
-                "16_run_storyboard_backend.py",
-                "17_render_episode.py",
-                "18_build_series_bible.py",
-            ]
-            * count
-        )
+        planned_steps = planned_preview_steps(cfg, count)
         reporter = LiveProgressReporter(
             script_name="19_generate_preview_episodes.py",
             total=len(planned_steps),
@@ -157,12 +166,12 @@ def main() -> None:
             run_step("17_render_episode.py", env=env)
             completed_steps += 1
             reporter.update(completed_steps, current_label=episode_id, extra_label=f"Episode render complete: {episode_id}")
-            reporter.update(completed_steps, current_label="Update series bible", extra_label="Running now: 18_build_series_bible.py", force=True)
-            run_step("18_build_series_bible.py")
-            completed_steps += 1
-            reporter.update(completed_steps, current_label="Update series bible", extra_label="Completed: 18_build_series_bible.py")
             generated.append(episode_id)
             ok(f"{index + 1}/{count}: {episode_id} generated and rendered.")
+        reporter.update(completed_steps, current_label="Update series bible", extra_label="Running now: 18_build_series_bible.py", force=True)
+        run_step("18_build_series_bible.py")
+        completed_steps += 1
+        reporter.update(completed_steps, current_label="Update series bible", extra_label="Completed: 18_build_series_bible.py")
         reporter.finish(current_label="Preview Episodes", extra_label=f"Total episodes: {len(generated)}")
         mark_step_completed(
             "19_generate_preview_episodes",

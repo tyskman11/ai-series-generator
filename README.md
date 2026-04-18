@@ -83,6 +83,7 @@ All scripts in this repository are AI-generated and maintained with `GPT-5.4`.
 - `03_split_scenes.py`, `04_diarize_and_transcribe.py`, `05_link_faces_and_speakers.py`, and `07_build_dataset.py` now also use English-first live progress scope labels and segment/cluster counters so long batch runs read consistently across the early numbered pipeline
 - `17_render_episode.py` now also writes a timed dialogue voice-plan JSON and SRT subtitle preview beside the silent render outputs, so later voiced render backends can reuse speaker timing and optional original-line retrieval hints without changing the default silent preview flow
 - the numbered order now keeps all training in `07-13`, then generation/render in `14-17`, and only then rebuilds the series bible in `18`, so the pipeline follows the requested train-before-generate/render sequence more clearly
+- `19_generate_preview_episodes.py` now rebuilds the series bible once after the full generated/rendered batch instead of after every single episode, so multi-episode runs stay closer to the intended train-then-generate/render flow
 
 ## Planned
 
@@ -316,7 +317,7 @@ Rebuilds the compact series bible from the trained series model and current revi
 
 ### 19 - Generate Preview Episodes
 
-Runs a full visible multi-episode generation flow, including rebuild, training, generation, storyboard backend materialization, and render stages.
+Runs a full visible multi-episode generation flow, including rebuild, training, generation, storyboard backend materialization, and render stages. It now rebuilds the series bible once after the full batch instead of repeating that step after every generated episode.
 
 ### 20 - Refresh After Manual Review
 
