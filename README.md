@@ -46,6 +46,7 @@ All scripts in this repository are AI-generated and maintained with `GPT-5.4`.
 - full-episode production packages with per-scene image generation, video generation, voice clone, and lip-sync plans for later real episode backends
 - mixed final-audio rendering that already reuses matching original dialogue segments and materializes per-line/per-scene audio into the full-episode package
 - final-episode composition that already prefers generated scene videos and lip-sync clips from the production package over static storyboard cards whenever those scene outputs exist
+- per-scene mastered episode clips inside the production package, so each scene already has a reusable endclip with its local dialogue timing
 - autosaves and live progress dashboards for long-running pipelines
 - local voice fallback with German Windows voices instead of old English default fallbacks
 
@@ -94,6 +95,7 @@ All scripts in this repository are AI-generated and maintained with `GPT-5.4`.
 - `17_render_episode.py` now also exports a full generated-episode production package under `generation/final_episode_packages/<episode>`, with stable per-scene targets for image generation, shot video generation, voice cloning, and lip-sync backends
 - `17_render_episode.py` now also reuses original dialogue segments in the final episode audio when matching source audio or scene clips are available, materializes per-speaker line audio into `generation/final_episode_packages/<episode>/audio/<speaker>/`, and writes per-scene dialogue tracks beside the production package
 - `17_render_episode.py` now also normalizes already generated per-scene video or lip-sync clips from `generation/final_episode_packages/<episode>` into one full final episode and falls back scene-by-scene to storyboard cards only where real generated video is still missing
+- `17_render_episode.py` now also writes per-scene mastered clips under `generation/final_episode_packages/<episode>/master/scenes`, muxing each scene clip with its own scene dialogue track when available before assembling the package-level full episode master
 - the numbered order now keeps all training in `07-13`, then generation/render in `14-17`, and only then rebuilds the series bible in `18`, so the pipeline follows the requested train-before-generate/render sequence more clearly
 - `19_generate_finished_episodes.py` now rebuilds the series bible once after the full generated/rendered batch instead of after every single episode, so multi-episode runs stay closer to the intended train-then-generate/render flow
 - `19_generate_finished_episodes.py` now also supports an endless generation mode: `--count 0` or `--endless` keeps generating episodes until stopped, and updates the series bible after each newly rendered episode in that mode
@@ -193,6 +195,7 @@ Also keep the `In Progress` and `Planned` sections current. If priorities change
 - `ai_series_project/generation/renders/final/*_dialogue_preview.srt`: subtitle-style dialogue preview aligned to the silent storyboard render timeline
 - `ai_series_project/generation/final_episode_packages/<episode>/audio/<speaker>/line_*.wav`: materialized per-line voice assets, now filled automatically from original dialogue reuse or local fallback TTS during step `17`
 - `ai_series_project/generation/final_episode_packages/<episode>/audio/<scene>/<scene>_dialogue.wav`: per-scene dialogue tracks aligned to the generated scene timing, ready for later lip-sync or video backends
+- `ai_series_project/generation/final_episode_packages/<episode>/master/scenes/*_master.mp4`: per-scene mastered clips that combine each scene video with its own dialogue track when available
 - `ai_series_project/generation/final_episode_packages/<episode>/master/*_production_package.json`: master production package for a later full generated episode
 - `ai_series_project/generation/final_episode_packages/<episode>/master/*_full_generated_episode.mp4`: full episode master that `17_render_episode.py` now writes from generated scene clips when available, with storyboard-card fallback for missing scenes
 - `ai_series_project/series_bible/episode_summaries`: generated series bible files
@@ -323,7 +326,7 @@ Materializes local backend-style scene frames from the per-scene backend input p
 
 ### 17 - Render Episode
 
-Builds the draft render from storyboard cards and the final episode from the best currently available scene material in this order: generated lip-sync clips, generated scene videos, backend/seed storyboard frames, and only then placeholder cards. It reuses matching original dialogue segments when available, fills only missing lines with local fallback TTS, writes per-line and per-scene audio into the production package, muxes the full dialogue track into the final render, and now also writes a `*_full_generated_episode.mp4` master into `generation/final_episode_packages/<episode>/master`.
+Builds the draft render from storyboard cards and the final episode from the best currently available scene material in this order: generated lip-sync clips, generated scene videos, backend/seed storyboard frames, and only then placeholder cards. It reuses matching original dialogue segments when available, fills only missing lines with local fallback TTS, writes per-line and per-scene audio into the production package, muxes the full dialogue track into the final render, and now also writes per-scene mastered clips plus a `*_full_generated_episode.mp4` master into `generation/final_episode_packages/<episode>/master`.
 
 Renders a draft local preview plus a final voiced storyboard episode. The current default path:
 
@@ -339,6 +342,7 @@ Renders a draft local preview plus a final voiced storyboard episode. The curren
 - falls back to a silent final video only if local audio synthesis fails
 - also writes a timed dialogue voice-plan JSON plus an `.srt` subtitle preview beside the final outputs
 - materializes per-speaker line audio and per-scene dialogue tracks into `generation/final_episode_packages/<episode>/audio/...` so later lip-sync/video backends already receive concrete audio assets, not only planned paths
+- writes `generation/final_episode_packages/<episode>/master/scenes/*_master.mp4` so every scene already has a reusable mastered clip for later assembly, replacement, or QA
 
 At the same time, `17` now exports `generation/final_episode_packages/<episode>/master/<episode>_production_package.json` plus per-scene production JSONs. Those packages define the next stage for a real newly generated episode:
 

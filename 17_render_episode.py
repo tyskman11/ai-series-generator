@@ -591,6 +591,11 @@ def scene_dialogue_output_audio_path(episode_package_root: Path, scene_id: str) 
     return episode_package_root / "audio" / scene_slug / f"{scene_slug}_dialogue.wav"
 
 
+def scene_master_clip_output_path(episode_package_root: Path, scene_id: str) -> Path:
+    scene_slug = production_scene_slug(scene_id)
+    return episode_package_root / "master" / "scenes" / f"{scene_slug}_master.mp4"
+
+
 def valid_media_source_path(path: Path) -> bool:
     return bool(str(path).strip()) and path.exists() and path.is_file()
 
@@ -758,6 +763,13 @@ def build_scene_production_package(
             "speaker_targets": sorted({clean_text(line.get("speaker_name", "")) for line in voice_lines if clean_text(line.get("speaker_name", ""))}),
             "audio_dependencies": [clean_text(line.get("target_output_audio", "")) for line in voice_lines if clean_text(line.get("target_output_audio", ""))],
         },
+        "mastering": {
+            "required": True,
+            "mode": "scene_master_clip",
+            "target_outputs": {
+                "scene_master_clip": str(scene_master_clip_output_path(episode_package_root, scene_id)),
+            },
+        },
     }
 
 
@@ -818,6 +830,7 @@ def build_episode_production_package_payload(
             "audio_root": str(package_root / "audio"),
             "lipsync_root": str(package_root / "lipsync"),
             "scene_package_root": str(package_root / "scenes"),
+            "scene_master_root": str(package_root / "master" / "scenes"),
             "final_master_episode": str(package_root / "master" / f"{episode_id}_full_generated_episode.mp4"),
         },
         "scene_count": len(scene_packages),
@@ -1144,6 +1157,33 @@ def mux_episode_audio(ffmpeg: Path, video_path: Path, audio_path: Path, output_p
     result = subprocess.run(command, check=False, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     if result.returncode != 0 or not render_output_ready(output_path):
         raise RuntimeError(f"Could not mux final voiced episode {output_path.name}.")
+
+
+def materialize_scene_master_clips(
+    ffmpeg: Path,
+    manifest_scenes: list[dict],
+    scene_dialogue_outputs: dict[str, str],
+    package_root: Path,
+) -> dict[str, str]:
+    master_outputs: dict[str, str] = {}
+    for scene in manifest_scenes:
+        if not isinstance(scene, dict):
+            continue
+        scene_id = clean_text(scene.get("scene_id", ""))
+        if not scene_id:
+            continue
+        final_clip_path = resolve_stored_project_path(scene.get("final_clip_path", ""))
+        if not render_output_ready(final_clip_path):
+            continue
+        scene_master_path = scene_master_clip_output_path(package_root, scene_id)
+        scene_master_path.parent.mkdir(parents=True, exist_ok=True)
+        scene_audio_path = resolve_stored_project_path(scene_dialogue_outputs.get(scene_id, ""))
+        if render_output_ready(scene_audio_path):
+            mux_episode_audio(ffmpeg, final_clip_path, scene_audio_path, scene_master_path)
+        else:
+            shutil.copyfile(final_clip_path, scene_master_path)
+        master_outputs[scene_id] = str(scene_master_path)
+    return master_outputs
 
 
 def materialize_scene_dialogue_tracks(
@@ -1604,6 +1644,9 @@ def main() -> None:
         temp_clip_root.mkdir(parents=True, exist_ok=True)
         entries: list[tuple[Path, float]] = []
         final_clip_paths: list[Path] = []
+        opening_clip_paths: list[Path] = []
+        scene_clip_paths: list[Path] = []
+        closing_clip_paths: list[Path] = []
         manifest_scenes: list[dict] = []
         voice_plan_scenes: list[dict] = []
         voice_plan_lines: list[dict] = []
@@ -1630,6 +1673,7 @@ def main() -> None:
             entries.append((title_path, title_card_seconds))
             title_clip_path = temp_clip_root / "0000_title.mp4"
             encode_still_clip(ffmpeg, title_path, title_card_seconds, title_clip_path, fps, width, height, crf=20)
+            opening_clip_paths.append(title_clip_path)
             final_clip_paths.append(title_clip_path)
             timeline_cursor += title_card_seconds
 
@@ -1651,6 +1695,7 @@ def main() -> None:
                 scene_video_source_type = ""
                 scene_video_source_path = Path()
                 encode_still_clip(ffmpeg, frame_path, duration, final_clip_path, fps, width, height, crf=20)
+            scene_clip_paths.append(final_clip_path)
             final_clip_paths.append(final_clip_path)
             scene_voice_plan = build_scene_voice_plan(
                 scene,
@@ -1708,6 +1753,7 @@ def main() -> None:
             entries.append((closing_path, closing_card_seconds))
             closing_clip_path = temp_clip_root / f"{closing_index:04d}_closing.mp4"
             encode_still_clip(ffmpeg, closing_path, closing_card_seconds, closing_clip_path, fps, width, height, crf=20)
+            closing_clip_paths.append(closing_clip_path)
             final_clip_paths.append(closing_clip_path)
             timeline_cursor += closing_card_seconds
 
@@ -1736,6 +1782,31 @@ def main() -> None:
             shutil.copyfile(final_video_only_path, final_path)
             info(f"Audio render fallback active for {episode_id}: {audio_render_error}")
         render_mode = choose_render_mode(len(scenes), generated_scene_video_count, bool(audio_track_meta))
+        scene_master_outputs = materialize_scene_master_clips(
+            ffmpeg,
+            manifest_scenes,
+            audio_track_meta.get("scene_dialogue_outputs", {}) if isinstance(audio_track_meta.get("scene_dialogue_outputs", {}), dict) else {},
+            package_root,
+        )
+        for scene_meta in manifest_scenes:
+            if not isinstance(scene_meta, dict):
+                continue
+            scene_id = clean_text(scene_meta.get("scene_id", ""))
+            scene_meta["scene_dialogue_audio"] = ""
+            scene_meta["scene_master_clip"] = ""
+            if isinstance(audio_track_meta.get("scene_dialogue_outputs", {}), dict):
+                scene_meta["scene_dialogue_audio"] = clean_text(audio_track_meta["scene_dialogue_outputs"].get(scene_id, ""))
+            scene_meta["scene_master_clip"] = clean_text(scene_master_outputs.get(scene_id, ""))
+        package_master_clip_paths = [*opening_clip_paths]
+        for scene_meta, scene_clip_path in zip(manifest_scenes, scene_clip_paths):
+            if not isinstance(scene_meta, dict):
+                continue
+            scene_id = clean_text(scene_meta.get("scene_id", ""))
+            scene_master_path = resolve_stored_project_path(scene_master_outputs.get(scene_id, ""))
+            package_master_clip_paths.append(scene_master_path if render_output_ready(scene_master_path) else scene_clip_path)
+        package_master_clip_paths.extend(closing_clip_paths)
+        build_clip_concat_file(package_master_clip_paths, clip_concat_path)
+        encode_clip_sequence(ffmpeg, clip_concat_path, full_generated_episode_path, crf=20)
 
         voice_plan_payload = {
             "episode_id": episode_id,
@@ -1748,6 +1819,7 @@ def main() -> None:
             "scene_count": len(voice_plan_scenes),
             "line_count": len(voice_plan_lines),
             "generated_scene_video_count": generated_scene_video_count,
+            "scene_master_clip_count": len(scene_master_outputs),
             "scenes": voice_plan_scenes,
         }
         write_json(voice_plan_path, voice_plan_payload)
@@ -1776,6 +1848,7 @@ def main() -> None:
             "height": height,
             "include_title_cards": include_title_cards,
             "generated_scene_video_count": generated_scene_video_count,
+            "scene_master_clip_count": len(scene_master_outputs),
             "full_generated_episode": str(full_generated_episode_path),
             "scene_count": len(scenes),
             "scenes": manifest_scenes,
@@ -1783,8 +1856,6 @@ def main() -> None:
         manifest["render_manifest_path"] = str(manifest_path)
         write_json(manifest_path, manifest)
         production_package = write_episode_production_package(cfg, episode_id, shotlist, manifest, voice_plan_payload)
-        full_generated_episode_path.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(final_path, full_generated_episode_path)
         manifest["production_package_root"] = production_package["package_root"]
         manifest["production_package"] = production_package["package_path"]
         manifest["production_prompt_preview"] = production_package["prompt_preview_path"]
