@@ -48,7 +48,7 @@ All scripts in this repository are AI-generated and maintained with `GPT-5.4`.
 - final-episode composition that already prefers generated scene videos and lip-sync clips from the production package over static storyboard cards whenever those scene outputs exist
 - per-scene mastered episode clips inside the production package, so each scene already has a reusable endclip with its local dialogue timing
 - scene and master package JSONs that now track the real already-generated outputs, not only planned target paths
-- autosaves and live progress dashboards for long-running pipelines
+- autosaves and live progress dashboards for long-running pipelines, now including concrete finished-episode output paths instead of only step completion flags
 - local voice fallback with German Windows voices instead of old English default fallbacks
 
 ## Current Focus
@@ -108,6 +108,7 @@ All scripts in this repository are AI-generated and maintained with `GPT-5.4`.
 - `99_process_next_episode.py` now also supports `--skip-downloads` for step `09`, so the full end-to-end inbox pipeline can reuse existing model downloads without changing the train-then-generate/render order
 - `99_process_next_episode.py` now also stores explicit planned/completed global step metadata in its autosaves and status files, so resume state and live status stay aligned with the real train-then-generate/render plan
 - `19_generate_finished_episodes.py`, `20_refresh_after_manual_review.py`, and `99_process_next_episode.py` now block only on actionable open face-review clusters from step `06`, while `06_review_unknowns.py` explicitly points to `--show-queue` when only speaker/segment review_queue entries remain
+- `pipeline_common.py`, `19_generate_finished_episodes.py`, and `99_process_next_episode.py` now also collect the real render/package outputs written by `17_render_episode.py`, so batch metadata and live status files point directly to the latest final render, full generated episode master, render manifest, and production package
 
 ## Planned
 
@@ -361,7 +362,7 @@ Rebuilds the compact series bible from the trained series model and current revi
 
 ### 19 - Generate Finished Episodes
 
-Runs a full visible multi-episode generation flow, including rebuild, training, generation, storyboard backend materialization, and render stages. It now targets finished episodes instead of merely preview-labeled batches, rebuilds the series bible once after the full batch instead of repeating that step after every generated episode, records the planned/completed batch-step order in its step metadata for easier resume/debug inspection, respects the same optional foundation/adapter/fine-tune/backend training toggles used by the other orchestration scripts, supports `--skip-downloads` for the foundation-prepare step, and can also run endlessly with `--count 0` or `--endless`. In endless mode it updates the series bible after each new rendered episode because there is no final batch end.
+Runs a full visible multi-episode generation flow, including rebuild, training, generation, storyboard backend materialization, and render stages. It now targets finished episodes instead of merely preview-labeled batches, rebuilds the series bible once after the full batch instead of repeating that step after every generated episode, records the planned/completed batch-step order in its step metadata for easier resume/debug inspection, stores the concrete output bundle per generated episode from step `17` for easier follow-up automation, respects the same optional foundation/adapter/fine-tune/backend training toggles used by the other orchestration scripts, supports `--skip-downloads` for the foundation-prepare step, and can also run endlessly with `--count 0` or `--endless`. In endless mode it updates the series bible after each new rendered episode because there is no final batch end.
 
 ### 20 - Refresh After Manual Review
 
@@ -378,11 +379,11 @@ Runs the main end-to-end flow:
 5. prepare and train downstream local packs
 6. generate a new episode
 7. generate storyboard seed assets and optional local backend frames
-8. render preview outputs
+8. render finished episode outputs
 9. rebuild the bible
 
 The pipeline now writes autosaves, resumable checkpoints, and live status files for long-running batch work.
-It also supports `--skip-downloads` for the foundation-prepare stage when existing model downloads should be reused, and it stores the planned/completed global step order in the autosave state so resume and status output reflect the real run plan.
+It also supports `--skip-downloads` for the foundation-prepare stage when existing model downloads should be reused, stores the planned/completed global step order in the autosave state so resume and status output reflect the real run plan, and now carries the latest generated episode output bundle through those status files so the current final render, full generated episode master, render manifest, and production package are visible without digging through folders.
 
 ## Testing And Smoke Runs
 

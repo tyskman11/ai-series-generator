@@ -13,6 +13,7 @@ from pipeline_common import (
     LiveProgressReporter,
     SCRIPT_DIR,
     error,
+    latest_generated_episode_artifacts,
     headline,
     info,
     load_config,
@@ -118,6 +119,8 @@ def default_state() -> dict:
         "global_planned_steps": [],
         "global_completed_step_labels": [],
         "global_steps_completed": [],
+        "latest_generated_episode": {},
+        "global_step_outputs": {},
     }
 
 
@@ -214,6 +217,8 @@ def build_status_snapshot(cfg: dict, state: dict, inbox_dir: Path | None = None)
         "current_step": state.get("current_step"),
         "global_planned_steps": list(state.get("global_planned_steps", []) or []),
         "global_completed_step_labels": list(state.get("global_completed_step_labels", []) or []),
+        "latest_generated_episode": dict(state.get("latest_generated_episode", {}) or {}),
+        "global_step_outputs": dict(state.get("global_step_outputs", {}) or {}),
         "episode_progress": episode_rows,
         "global_progress": global_rows,
     }
@@ -265,6 +270,22 @@ def render_status_markdown(snapshot: dict) -> str:
     else:
         lines.append("- No global steps are currently active.")
     lines.append("")
+
+    latest_generated_episode = snapshot.get("latest_generated_episode", {}) or {}
+    if latest_generated_episode:
+        lines.extend(
+            [
+                "## Latest Generated Episode",
+                "",
+                f"- Episode: {latest_generated_episode.get('episode_id') or '-'}",
+                f"- Display title: {latest_generated_episode.get('display_title') or '-'}",
+                f"- Final render: {latest_generated_episode.get('final_render') or '-'}",
+                f"- Full generated episode: {latest_generated_episode.get('full_generated_episode') or '-'}",
+                f"- Production package: {latest_generated_episode.get('production_package') or '-'}",
+                f"- Render manifest: {latest_generated_episode.get('render_manifest') or '-'}",
+                "",
+            ]
+        )
     return "\n".join(lines)
 
 
@@ -372,7 +393,7 @@ def global_step_rows(cfg: dict, skip_downloads: bool = False) -> list[tuple[str,
             ("14_generate_episode_from_trained_model.py", "Generate New Episode From Trained Model", []),
             ("15_generate_storyboard_assets.py", "Generate Storyboard Scene Assets", []),
             ("16_run_storyboard_backend.py", "Materialize Storyboard Backend Frames", []),
-            ("17_render_episode.py", "Render Storyboard Video", []),
+            ("17_render_episode.py", "Render Finished Episode", []),
             ("18_build_series_bible.py", "Update Series Bible", []),
         ]
     )
@@ -446,10 +467,30 @@ def global_step_title(script_name: str) -> str:
         "14_generate_episode_from_trained_model.py": "Generate New Episode From Trained Model",
         "15_generate_storyboard_assets.py": "Generate Storyboard Scene Assets",
         "16_run_storyboard_backend.py": "Materialize Storyboard Backend Frames",
-        "17_render_episode.py": "Render Storyboard Video",
+        "17_render_episode.py": "Render Finished Episode",
         "18_build_series_bible.py": "Update Series Bible",
     }
     return titles[script_name]
+
+
+def record_global_generated_episode_outputs(state: dict, cfg: dict, script_name: str) -> None:
+    if script_name not in {
+        "14_generate_episode_from_trained_model.py",
+        "15_generate_storyboard_assets.py",
+        "16_run_storyboard_backend.py",
+        "17_render_episode.py",
+        "18_build_series_bible.py",
+    }:
+        return
+    outputs = latest_generated_episode_artifacts(cfg)
+    if not outputs:
+        return
+    state["latest_generated_episode"] = outputs
+    global_step_outputs = state.get("global_step_outputs", {})
+    if not isinstance(global_step_outputs, dict):
+        global_step_outputs = {}
+    global_step_outputs[script_name] = outputs
+    state["global_step_outputs"] = global_step_outputs
 
 
 def main() -> None:
@@ -615,6 +656,7 @@ def main() -> None:
         mark_global_step_completed(state, script_name)
         completed_global_steps.add(script_name)
         state["global_completed_step_labels"] = completed_global_step_labels(state["global_planned_steps"], completed_global_steps)
+        record_global_generated_episode_outputs(state, cfg, script_name)
         global_reporter.update(
             len(completed_global_steps),
             current_label=step_title,

@@ -723,6 +723,136 @@ def resolve_stored_project_path(path_value: str | Path | None) -> Path:
     return candidate
 
 
+def generated_story_prompt_dir(cfg: dict[str, Any]) -> Path:
+    paths = cfg.get("paths", {}) if isinstance(cfg.get("paths"), dict) else {}
+    return resolve_project_path(str(paths.get("story_prompts", "generation/story_prompts")))
+
+
+def generated_shotlist_dir(cfg: dict[str, Any]) -> Path:
+    paths = cfg.get("paths", {}) if isinstance(cfg.get("paths"), dict) else {}
+    return resolve_project_path(str(paths.get("shotlists", "generation/shotlists")))
+
+
+def resolve_generated_output_path(path_value: Any) -> Path | None:
+    raw_path = coalesce_text(str(path_value or ""))
+    if not raw_path:
+        return None
+    candidate = Path(raw_path)
+    return candidate if candidate.is_absolute() else resolve_project_path(raw_path)
+
+
+def generated_episode_artifacts(cfg: dict[str, Any], episode_id: str) -> dict[str, Any]:
+    episode_name = coalesce_text(episode_id)
+    if not episode_name:
+        return {}
+
+    shotlist_path = generated_shotlist_dir(cfg) / f"{episode_name}.json"
+    story_prompt_path = generated_story_prompt_dir(cfg) / f"{episode_name}.md"
+    shotlist = read_json(shotlist_path, {}) if shotlist_path.exists() else {}
+    render_manifest_path = resolve_generated_output_path(
+        shotlist.get("render_manifest") if isinstance(shotlist, dict) else ""
+    ) or resolve_generated_output_path(shotlist.get("render_manifest_path") if isinstance(shotlist, dict) else "")
+    render_manifest = read_json(render_manifest_path, {}) if render_manifest_path and render_manifest_path.exists() else {}
+    production_package_path = resolve_generated_output_path(
+        shotlist.get("production_package") if isinstance(shotlist, dict) else ""
+    ) or resolve_generated_output_path(render_manifest.get("production_package") if isinstance(render_manifest, dict) else "")
+    production_package = (
+        read_json(production_package_path, {}) if production_package_path and production_package_path.exists() else {}
+    )
+    preview_outputs = (
+        production_package.get("current_preview_outputs", {})
+        if isinstance(production_package.get("current_preview_outputs"), dict)
+        else {}
+    )
+    target_outputs = (
+        production_package.get("target_master_outputs", {})
+        if isinstance(production_package.get("target_master_outputs"), dict)
+        else {}
+    )
+    completion_status = (
+        production_package.get("completion_status", {})
+        if isinstance(production_package.get("completion_status"), dict)
+        else {}
+    )
+    return {
+        "episode_id": episode_name,
+        "display_title": coalesce_text(
+            (shotlist.get("display_title") if isinstance(shotlist, dict) else "")
+            or (render_manifest.get("display_title") if isinstance(render_manifest, dict) else "")
+            or episode_name
+        ),
+        "episode_title": coalesce_text(
+            (shotlist.get("episode_title") if isinstance(shotlist, dict) else "")
+            or (render_manifest.get("episode_title") if isinstance(render_manifest, dict) else "")
+        ),
+        "story_prompt": str(story_prompt_path) if story_prompt_path.exists() else "",
+        "shotlist": str(shotlist_path) if shotlist_path.exists() else "",
+        "render_manifest": str(render_manifest_path) if render_manifest_path else "",
+        "production_package": str(production_package_path) if production_package_path else "",
+        "production_package_root": coalesce_text(
+            (shotlist.get("production_package_root") if isinstance(shotlist, dict) else "")
+            or (render_manifest.get("production_package_root") if isinstance(render_manifest, dict) else "")
+            or (production_package.get("package_root") if isinstance(production_package, dict) else "")
+        ),
+        "production_prompt_preview": coalesce_text(
+            (shotlist.get("production_prompt_preview") if isinstance(shotlist, dict) else "")
+            or (render_manifest.get("production_prompt_preview") if isinstance(render_manifest, dict) else "")
+            or (production_package.get("prompt_preview_path") if isinstance(production_package, dict) else "")
+        ),
+        "draft_render": coalesce_text(
+            (shotlist.get("draft_render") if isinstance(shotlist, dict) else "")
+            or (render_manifest.get("draft_render") if isinstance(render_manifest, dict) else "")
+            or preview_outputs.get("draft_render", "")
+        ),
+        "final_render": coalesce_text(
+            (shotlist.get("final_render") if isinstance(shotlist, dict) else "")
+            or (render_manifest.get("final_render") if isinstance(render_manifest, dict) else "")
+            or preview_outputs.get("final_storyboard_render", "")
+        ),
+        "dialogue_audio": coalesce_text(
+            (shotlist.get("dialogue_audio") if isinstance(shotlist, dict) else "")
+            or (render_manifest.get("dialogue_audio") if isinstance(render_manifest, dict) else "")
+            or preview_outputs.get("dialogue_audio", "")
+        ),
+        "voice_plan": coalesce_text(
+            (shotlist.get("voice_plan") if isinstance(shotlist, dict) else "")
+            or (render_manifest.get("voice_plan") if isinstance(render_manifest, dict) else "")
+        ),
+        "subtitle_preview": coalesce_text(
+            (shotlist.get("subtitle_preview") if isinstance(shotlist, dict) else "")
+            or (render_manifest.get("subtitle_preview") if isinstance(render_manifest, dict) else "")
+            or preview_outputs.get("subtitle_preview", "")
+        ),
+        "full_generated_episode": coalesce_text(
+            (shotlist.get("full_generated_episode") if isinstance(shotlist, dict) else "")
+            or (render_manifest.get("full_generated_episode") if isinstance(render_manifest, dict) else "")
+            or target_outputs.get("final_master_episode", "")
+        ),
+        "render_mode": coalesce_text(
+            (render_manifest.get("render_mode") if isinstance(render_manifest, dict) else "")
+            or (shotlist.get("render_mode") if isinstance(shotlist, dict) else "")
+        ),
+        "generated_scene_video_count": int(
+            (render_manifest.get("generated_scene_video_count") if isinstance(render_manifest, dict) else 0)
+            or completion_status.get("generated_scene_video_count", 0)
+            or 0
+        ),
+        "scene_dialogue_audio_count": int(completion_status.get("scene_dialogue_audio_count", 0) or 0),
+        "scene_master_clip_count": int(
+            (render_manifest.get("scene_master_clip_count") if isinstance(render_manifest, dict) else 0)
+            or completion_status.get("scene_master_clip_count", 0)
+            or 0
+        ),
+    }
+
+
+def latest_generated_episode_artifacts(cfg: dict[str, Any]) -> dict[str, Any]:
+    latest_shotlist = latest_matching_file(generated_shotlist_dir(cfg), "*.json")
+    if latest_shotlist is None:
+        return {}
+    return generated_episode_artifacts(cfg, latest_shotlist.stem)
+
+
 def ensure_project_structure(config: dict[str, Any] | None = None, write_config_file: bool = False) -> dict[str, Any]:
     PROJECT_ROOT.mkdir(parents=True, exist_ok=True)
     create_tree(PROJECT_ROOT, DEFAULT_STRUCTURE)
