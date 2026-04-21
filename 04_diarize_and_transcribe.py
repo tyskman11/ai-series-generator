@@ -10,12 +10,21 @@ from pathlib import Path
 import numpy as np
 
 from pipeline_common import (
+    DistributedLeaseHeartbeat,
     LiveProgressReporter,
     PROJECT_ROOT,
+    acquire_distributed_lease,
     completed_step_state,
     coalesce_text,
     cosine_similarity,
     detect_tool,
+    distributed_heartbeat_interval_seconds,
+    distributed_lease_ttl_seconds,
+    distributed_poll_interval_seconds,
+    distributed_runtime_enabled,
+    distributed_step_runtime_root,
+    distributed_worker_id,
+    distributed_worker_metadata,
     error,
     first_dir,
     headline,
@@ -28,6 +37,7 @@ from pipeline_common import (
     preferred_execution_label,
     preferred_torch_device,
     progress,
+    release_distributed_lease,
     rerun_in_runtime,
     resolve_project_path,
     run_command,
@@ -46,6 +56,8 @@ PROCESS_VERSION = 7
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Segment Speakers And Transcribe")
     parser.add_argument("--episode", help="Name of the scene folder under data/processed/scene_clips.")
+    parser.add_argument("--no-shared-workers", action="store_true", help="Disable NAS/shared-worker scene leasing.")
+    parser.add_argument("--worker-id", help="Optional stable worker id for shared NAS processing.")
     return parser.parse_args()
 
 
@@ -59,11 +71,11 @@ def episode_transcription_completed(episode_dir: Path, cfg: dict) -> bool:
         cluster_payload = resolve_rows(cluster_file)
     except Exception:
         return False
-    if not rows or not isinstance(cluster_payload, dict):
+    if not isinstance(rows, list) or not isinstance(cluster_payload, dict):
         return False
     if int(cluster_payload.get("process_version", 0) or 0) != PROCESS_VERSION:
         return False
-    if not rows[0].get("process_version") == PROCESS_VERSION:
+    if rows and rows[0].get("process_version") != PROCESS_VERSION:
         return False
     autosave_state = completed_step_state("04_diarize_and_transcribe", episode_dir.name, PROCESS_VERSION)
     if autosave_state:
@@ -111,6 +123,47 @@ def resolve_episode_dirs_for_processing(scene_root: Path, episode_name: str | No
         episode_dir = resolve_episode_dir(scene_root, episode_name, cfg)
         return [episode_dir] if episode_dir is not None else []
     return pending_untranscribed_episode_dirs(scene_root, cfg)
+
+
+def scene_cache_path(scene_cache_dir: Path, scene_name: str) -> Path:
+    return scene_cache_dir / f"{scene_name}.json"
+
+
+def scene_cache_completed(cache_file: Path) -> bool:
+    if not cache_file.exists():
+        return False
+    try:
+        rows = resolve_rows(cache_file)
+    except Exception:
+        return False
+    if not isinstance(rows, list):
+        return False
+    if not rows:
+        return True
+    return bool(rows[0].get("process_version") == PROCESS_VERSION)
+
+
+def completed_scene_cache_ids(scene_cache_dir: Path) -> set[str]:
+    completed: set[str] = set()
+    if not scene_cache_dir.exists():
+        return completed
+    for cache_file in scene_cache_dir.glob("scene_*.json"):
+        if scene_cache_completed(cache_file):
+            completed.add(cache_file.stem)
+    return completed
+
+
+def completed_scene_segment_count(scene_cache_dir: Path) -> int:
+    total = 0
+    if not scene_cache_dir.exists():
+        return total
+    for cache_file in scene_cache_dir.glob("scene_*.json"):
+        if not scene_cache_completed(cache_file):
+            continue
+        rows = resolve_rows(cache_file)
+        if isinstance(rows, list):
+            total += len(rows)
+    return total
 
 
 def wav_duration_seconds(wav_path: Path) -> float:
@@ -841,6 +894,54 @@ def assign_speaker_clusters(rows: list[dict], threshold: float, cfg: dict) -> tu
     return ordered_rows, cluster_payload
 
 
+def collect_episode_scene_rows(scene_cache_dir: Path, scenes: list[Path]) -> list[dict]:
+    all_rows: list[dict] = []
+    for scene_file in scenes:
+        cache_file = scene_cache_path(scene_cache_dir, scene_file.stem)
+        if not scene_cache_completed(cache_file):
+            raise RuntimeError(f"Scene cache is not ready yet: {scene_file.stem}")
+        rows = resolve_rows(cache_file)
+        if isinstance(rows, list):
+            all_rows.extend(rows)
+    return all_rows
+
+
+def finalize_episode_transcription_outputs(
+    episode_dir: Path,
+    scenes: list[Path],
+    cfg: dict,
+    scene_cache_dir: Path,
+    combined_dir: Path,
+    speaker_backend: str,
+) -> tuple[Path, Path, int]:
+    all_rows = collect_episode_scene_rows(scene_cache_dir, scenes)
+    threshold_key = "voice_embedding_threshold_speechbrain" if speaker_backend == "speechbrain" else "voice_embedding_threshold"
+    threshold_default = 0.58 if speaker_backend == "speechbrain" else 0.84
+    threshold = float(cfg["transcription"].get(threshold_key, threshold_default))
+    all_rows, clusters = assign_speaker_clusters(all_rows, threshold, cfg)
+    grouped_rows: dict[str, list[dict]] = defaultdict(list)
+    for row in all_rows:
+        grouped_rows[str(row.get("scene_id", ""))].append(row)
+    for scene_file in scenes:
+        write_json(scene_cache_path(scene_cache_dir, scene_file.stem), grouped_rows.get(scene_file.stem, []))
+
+    combined_file = combined_dir / f"{episode_dir.name}_segments.json"
+    cluster_file = scene_cache_dir / "_speaker_clusters.json"
+    write_json(combined_file, all_rows)
+    write_json(
+        cluster_file,
+        {
+            "clusters": clusters,
+            "threshold": threshold,
+            "backend": speaker_backend,
+            "process_version": PROCESS_VERSION,
+            "scene_count": len(scenes),
+            "segment_count": len(all_rows),
+        },
+    )
+    return combined_file, cluster_file, len(all_rows)
+
+
 def process_episode_dir(
     episode_dir: Path,
     cfg: dict,
@@ -850,6 +951,8 @@ def process_episode_dir(
     speaker_backend: str,
     speechbrain_model,
     device: str,
+    worker_id: str,
+    shared_workers: bool,
     live_reporter: LiveProgressReporter | None = None,
     episode_index: int = 1,
     episode_total: int = 1,
@@ -879,6 +982,12 @@ def process_episode_dir(
     combined_dir = resolve_project_path(cfg["paths"]["speaker_transcripts"])
     scene_cache_dir.mkdir(parents=True, exist_ok=True)
     combined_dir.mkdir(parents=True, exist_ok=True)
+    lease_root = distributed_step_runtime_root("04_diarize_and_transcribe", episode_dir.name)
+    scene_lease_root = lease_root / "scenes"
+    finalize_lease_root = lease_root / "finalize"
+    lease_ttl_seconds = distributed_lease_ttl_seconds(cfg)
+    heartbeat_interval_seconds = distributed_heartbeat_interval_seconds(cfg)
+    poll_interval_seconds = distributed_poll_interval_seconds(cfg)
     mark_step_started(
         "04_diarize_and_transcribe",
         autosave_target,
@@ -888,91 +997,212 @@ def process_episode_dir(
             "scene_count": len(scenes),
             "device": device,
             "model_name": cfg["transcription"]["model_name"],
+            "worker_id": worker_id,
+            "shared_workers": shared_workers,
         },
     )
-    completed_scene_ids: list[str] = []
+    completed_scene_ids: list[str] = sorted(completed_scene_cache_ids(scene_cache_dir))
+    contributed = False
     try:
-        all_rows: list[dict] = []
         episode_started_at = time.time()
-        for index, scene_file in enumerate(scenes, start=1):
-            scene_rows = process_scene(
-                model,
-                ffmpeg,
-                episode_dir.name,
-                scene_file,
-                audio_root,
-                scene_cache_dir,
-                cfg,
-                use_fp16,
-                speaker_backend,
-                speechbrain_model=speechbrain_model,
-                device=device,
-            )
-            all_rows.extend(scene_rows)
-            completed_scene_ids.append(scene_file.stem)
-            save_step_autosave(
-                "04_diarize_and_transcribe",
-                autosave_target,
-                {
-                    "status": "in_progress",
-                    "episode_id": episode_dir.name,
-                    "process_version": PROCESS_VERSION,
-                    "scene_count": len(scenes),
-                    "completed_scene_ids": completed_scene_ids,
-                    "segment_count": len(all_rows),
-                    "last_scene_id": scene_file.stem,
-                },
-            )
+        scene_index_by_id = {scene_file.stem: index for index, scene_file in enumerate(scenes, start=1)}
+        while len(completed_scene_ids) < len(scenes):
+            claimed_scene = False
+            for scene_file in scenes:
+                cache_file = scene_cache_path(scene_cache_dir, scene_file.stem)
+                if scene_cache_completed(cache_file):
+                    continue
+                heartbeat = None
+                if shared_workers:
+                    lease_meta = lambda: distributed_worker_metadata(  # noqa: E731
+                        {
+                            "step": "04_diarize_and_transcribe",
+                            "episode_id": episode_dir.name,
+                            "scene_id": scene_file.stem,
+                        }
+                    )
+                    lease = acquire_distributed_lease(
+                        scene_lease_root,
+                        scene_file.stem,
+                        worker_id,
+                        lease_ttl_seconds,
+                        meta=lease_meta(),
+                    )
+                    if lease is None:
+                        continue
+                    heartbeat = DistributedLeaseHeartbeat(
+                        root=scene_lease_root,
+                        lease_name=scene_file.stem,
+                        owner_id=worker_id,
+                        ttl_seconds=lease_ttl_seconds,
+                        interval_seconds=heartbeat_interval_seconds,
+                        meta_factory=lease_meta,
+                    )
+                    heartbeat.start()
+                try:
+                    if scene_cache_completed(cache_file):
+                        continue
+                    scene_rows = process_scene(
+                        model,
+                        ffmpeg,
+                        episode_dir.name,
+                        scene_file,
+                        audio_root,
+                        scene_cache_dir,
+                        cfg,
+                        use_fp16,
+                        speaker_backend,
+                        speechbrain_model=speechbrain_model,
+                        device=device,
+                    )
+                    contributed = True
+                    completed_scene_ids = sorted(completed_scene_cache_ids(scene_cache_dir))
+                    save_step_autosave(
+                        "04_diarize_and_transcribe",
+                        autosave_target,
+                        {
+                            "status": "in_progress",
+                            "episode_id": episode_dir.name,
+                            "process_version": PROCESS_VERSION,
+                            "scene_count": len(scenes),
+                            "completed_scene_ids": completed_scene_ids,
+                            "segment_count": completed_scene_segment_count(scene_cache_dir),
+                            "last_scene_id": scene_file.stem,
+                            "worker_id": worker_id,
+                            "shared_workers": shared_workers,
+                        },
+                    )
+                    if live_reporter is not None:
+                        live_reporter.update(
+                            (episode_index - 1) + (len(completed_scene_ids) / max(1, len(scenes))),
+                            current_label=scene_file.name,
+                            parent_label=episode_dir.name,
+                            extra_label=f"Completed scenes: {len(completed_scene_ids)}/{len(scenes)} | Segments in scene: {len(scene_rows)}",
+                            scope_current=scene_index_by_id.get(scene_file.stem, len(completed_scene_ids)),
+                            scope_total=len(scenes),
+                            scope_started_at=episode_started_at,
+                            scope_label=f"Episode {episode_index}/{episode_total}",
+                        )
+                    claimed_scene = True
+                    break
+                finally:
+                    if heartbeat is not None:
+                        heartbeat.stop()
+                        release_distributed_lease(scene_lease_root, scene_file.stem, worker_id)
+                if not shared_workers:
+                    break
+
+            if claimed_scene:
+                continue
+
+            completed_scene_ids = sorted(completed_scene_cache_ids(scene_cache_dir))
             if live_reporter is not None:
                 live_reporter.update(
-                    (episode_index - 1) + (index / max(1, len(scenes))),
-                    current_label=scene_file.name,
+                    (episode_index - 1) + (len(completed_scene_ids) / max(1, len(scenes))),
+                    current_label="Waiting for shared workers",
                     parent_label=episode_dir.name,
-                    extra_label=f"Segments so far: {len(all_rows)}",
-                    scope_current=index,
+                    extra_label=f"Completed scenes: {len(completed_scene_ids)}/{len(scenes)}",
+                    scope_current=min(len(completed_scene_ids) + 1, len(scenes)),
                     scope_total=len(scenes),
                     scope_started_at=episode_started_at,
                     scope_label=f"Episode {episode_index}/{episode_total}",
                 )
+            if len(completed_scene_ids) >= len(scenes):
+                break
+            time.sleep(poll_interval_seconds)
 
-        threshold_key = "voice_embedding_threshold_speechbrain" if speaker_backend == "speechbrain" else "voice_embedding_threshold"
-        threshold_default = 0.58 if speaker_backend == "speechbrain" else 0.84
-        threshold = float(cfg["transcription"].get(threshold_key, threshold_default))
-        all_rows, clusters = assign_speaker_clusters(all_rows, threshold, cfg)
-        grouped_rows: dict[str, list[dict]] = defaultdict(list)
-        for row in all_rows:
-            grouped_rows[row["scene_id"]].append(row)
-        for scene_id, scene_rows in grouped_rows.items():
-            write_json(scene_cache_dir / f"{scene_id}.json", scene_rows)
-
+        completed_scene_ids = sorted(completed_scene_cache_ids(scene_cache_dir))
         combined_file = combined_dir / f"{episode_dir.name}_segments.json"
         cluster_file = scene_cache_dir / "_speaker_clusters.json"
-        write_json(combined_file, all_rows)
-        write_json(
-            cluster_file,
-            {
-                "clusters": clusters,
-                "threshold": threshold,
-                "backend": speaker_backend,
-                "process_version": PROCESS_VERSION,
-            },
-        )
-        mark_step_completed(
-            "04_diarize_and_transcribe",
-            autosave_target,
-            {
-                "episode_id": episode_dir.name,
-                "process_version": PROCESS_VERSION,
-                "scene_count": len(scenes),
-                "segment_count": len(all_rows),
-                "completed_scene_ids": completed_scene_ids,
-                "combined_file": str(combined_file),
-                "cluster_file": str(cluster_file),
-                "backend": speaker_backend,
-            },
-        )
-        ok(f"Saved segment transcripts: {len(all_rows)} segments")
-        return True
+        if not episode_transcription_completed(episode_dir, cfg):
+            finalize_heartbeat = None
+            finalize_acquired = not shared_workers
+            if shared_workers:
+                finalize_meta = lambda: distributed_worker_metadata(  # noqa: E731
+                    {
+                        "step": "04_diarize_and_transcribe",
+                        "episode_id": episode_dir.name,
+                        "phase": "finalize",
+                    }
+                )
+                finalize_acquired = (
+                    acquire_distributed_lease(
+                        finalize_lease_root,
+                        "episode_finalize",
+                        worker_id,
+                        lease_ttl_seconds,
+                        meta=finalize_meta(),
+                    )
+                    is not None
+                )
+                if finalize_acquired:
+                    finalize_heartbeat = DistributedLeaseHeartbeat(
+                        root=finalize_lease_root,
+                        lease_name="episode_finalize",
+                        owner_id=worker_id,
+                        ttl_seconds=lease_ttl_seconds,
+                        interval_seconds=heartbeat_interval_seconds,
+                        meta_factory=finalize_meta,
+                    )
+                    finalize_heartbeat.start()
+            try:
+                if finalize_acquired and not episode_transcription_completed(episode_dir, cfg):
+                    combined_file, cluster_file, segment_count = finalize_episode_transcription_outputs(
+                        episode_dir,
+                        scenes,
+                        cfg,
+                        scene_cache_dir,
+                        combined_dir,
+                        speaker_backend,
+                    )
+                    contributed = True
+                    mark_step_completed(
+                        "04_diarize_and_transcribe",
+                        autosave_target,
+                        {
+                            "episode_id": episode_dir.name,
+                            "process_version": PROCESS_VERSION,
+                            "scene_count": len(scenes),
+                            "segment_count": segment_count,
+                            "completed_scene_ids": completed_scene_ids,
+                            "combined_file": str(combined_file),
+                            "cluster_file": str(cluster_file),
+                            "backend": speaker_backend,
+                            "worker_id": worker_id,
+                            "shared_workers": shared_workers,
+                        },
+                    )
+                    ok(f"Saved segment transcripts: {segment_count} segments")
+                elif shared_workers:
+                    while not episode_transcription_completed(episode_dir, cfg):
+                        time.sleep(poll_interval_seconds)
+            finally:
+                if finalize_heartbeat is not None:
+                    finalize_heartbeat.stop()
+                    release_distributed_lease(finalize_lease_root, "episode_finalize", worker_id)
+
+        if episode_transcription_completed(episode_dir, cfg) and not completed_step_state(
+            "04_diarize_and_transcribe", autosave_target, PROCESS_VERSION
+        ):
+            cluster_payload = resolve_rows(cluster_file) if cluster_file.exists() else {}
+            rows = resolve_rows(combined_file) if combined_file.exists() else []
+            mark_step_completed(
+                "04_diarize_and_transcribe",
+                autosave_target,
+                {
+                    "episode_id": episode_dir.name,
+                    "process_version": PROCESS_VERSION,
+                    "scene_count": len(scenes),
+                    "segment_count": len(rows) if isinstance(rows, list) else 0,
+                    "completed_scene_ids": completed_scene_ids,
+                    "combined_file": str(combined_file),
+                    "cluster_file": str(cluster_file),
+                    "backend": str(cluster_payload.get("backend", speaker_backend)) if isinstance(cluster_payload, dict) else speaker_backend,
+                    "worker_id": worker_id,
+                    "shared_workers": shared_workers,
+                },
+            )
+        return contributed
     except Exception as exc:
         mark_step_failed(
             "04_diarize_and_transcribe",
@@ -983,6 +1213,8 @@ def process_episode_dir(
                 "process_version": PROCESS_VERSION,
                 "scene_count": len(scenes),
                 "completed_scene_ids": completed_scene_ids,
+                "worker_id": worker_id,
+                "shared_workers": shared_workers,
             },
         )
         raise
@@ -1006,6 +1238,8 @@ def main() -> None:
     model_name = cfg["transcription"]["model_name"]
     device = preferred_torch_device(cfg)
     use_fp16 = device == "cuda"
+    worker_id = coalesce_text(args.worker_id) or distributed_worker_id()
+    shared_workers = distributed_runtime_enabled(cfg) and not args.no_shared_workers
     requested_backend = str(cfg["transcription"].get("speaker_embedding_backend", "auto")).strip().lower()
     speaker_backend = "mfcc"
     speechbrain_model = None
@@ -1013,6 +1247,9 @@ def main() -> None:
     info(f"Whisper model: {model_name}")
     info(f"Execution mode: {preferred_execution_label(cfg)}")
     info(f"Compute device: {preferred_compute_label(cfg)}")
+    info(f"Shared NAS workers: {'enabled' if shared_workers else 'disabled'}")
+    if shared_workers:
+        info(f"Worker id: {worker_id}")
 
     processed_count = 0
     total = len(episode_dirs)
@@ -1052,6 +1289,8 @@ def main() -> None:
             speaker_backend,
             speechbrain_model,
             device,
+            worker_id,
+            shared_workers,
             live_reporter=live_reporter,
             episode_index=index,
             episode_total=total,

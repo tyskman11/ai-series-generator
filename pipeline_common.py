@@ -7,10 +7,13 @@ import os
 import platform
 import re
 import shutil
+import socket
 import struct
 import subprocess
 import sys
+import threading
 import time
+import uuid
 from copy import deepcopy
 from datetime import datetime, timedelta
 from functools import lru_cache
@@ -101,6 +104,12 @@ DEFAULT_CONFIG = {
         "prefer_gpu": True,
         "prefer_ffmpeg_gpu": True,
         "torch_cuda_index_url": "https://download.pytorch.org/whl/cu128",
+    },
+    "distributed": {
+        "enabled": True,
+        "lease_ttl_seconds": 1800,
+        "heartbeat_interval_seconds": 45,
+        "poll_interval_seconds": 10,
     },
     "paths": {
         "inbox_episodes": "data/inbox/episodes",
@@ -493,6 +502,185 @@ def current_bitness() -> str:
 
 def runtime_environment_tag() -> str:
     return f"{current_os()}_{current_architecture()}_{current_bitness()}"
+
+
+def distributed_runtime_enabled(cfg: dict[str, Any]) -> bool:
+    distributed_cfg = cfg.get("distributed", {}) if isinstance(cfg.get("distributed", {}), dict) else {}
+    return bool(distributed_cfg.get("enabled", False))
+
+
+def distributed_lease_ttl_seconds(cfg: dict[str, Any]) -> float:
+    distributed_cfg = cfg.get("distributed", {}) if isinstance(cfg.get("distributed", {}), dict) else {}
+    return max(60.0, float(distributed_cfg.get("lease_ttl_seconds", 1800) or 1800))
+
+
+def distributed_heartbeat_interval_seconds(cfg: dict[str, Any]) -> float:
+    distributed_cfg = cfg.get("distributed", {}) if isinstance(cfg.get("distributed", {}), dict) else {}
+    ttl_seconds = distributed_lease_ttl_seconds(cfg)
+    configured = float(distributed_cfg.get("heartbeat_interval_seconds", 45) or 45)
+    return min(max(10.0, configured), max(10.0, ttl_seconds / 2.0))
+
+
+def distributed_poll_interval_seconds(cfg: dict[str, Any]) -> float:
+    distributed_cfg = cfg.get("distributed", {}) if isinstance(cfg.get("distributed", {}), dict) else {}
+    return max(2.0, float(distributed_cfg.get("poll_interval_seconds", 10) or 10))
+
+
+def distributed_runtime_root() -> Path:
+    return resolve_project_path("runtime/distributed")
+
+
+def distributed_step_runtime_root(step_name: str, target_name: str = "global") -> Path:
+    safe_step = re.sub(r"[^a-z0-9]+", "_", coalesce_text(step_name).lower()).strip("_") or "step"
+    safe_target = re.sub(r"[^a-z0-9]+", "_", coalesce_text(target_name).lower()).strip("_") or "global"
+    return distributed_runtime_root() / safe_step / safe_target
+
+
+@lru_cache(maxsize=1)
+def distributed_worker_id() -> str:
+    explicit = coalesce_text(os.environ.get("AI_SERIES_WORKER_ID", ""))
+    if explicit:
+        return explicit
+    hostname = re.sub(r"[^a-z0-9]+", "-", socket.gethostname().strip().lower()).strip("-") or "worker"
+    return f"{hostname}-{os.getpid()}-{uuid.uuid4().hex[:8]}"
+
+
+def distributed_worker_metadata(extra: dict[str, Any] | None = None) -> dict[str, Any]:
+    payload = {
+        "worker_id": distributed_worker_id(),
+        "hostname": socket.gethostname(),
+        "pid": os.getpid(),
+        "runtime_tag": runtime_environment_tag(),
+        "python": str(Path(sys.executable).resolve()),
+    }
+    if extra:
+        payload.update(extra)
+    return payload
+
+
+def distributed_lease_path(root: Path, lease_name: str) -> Path:
+    safe_name = re.sub(r"[^a-z0-9]+", "_", coalesce_text(lease_name).lower()).strip("_") or "lease"
+    return root / f"{safe_name}.json"
+
+
+def load_distributed_lease(root: Path, lease_name: str) -> dict[str, Any]:
+    return read_json(distributed_lease_path(root, lease_name), {})
+
+
+def _lease_payload(owner_id: str, ttl_seconds: float, meta: dict[str, Any] | None = None) -> dict[str, Any]:
+    now = time.time()
+    payload = {
+        "owner_id": owner_id,
+        "heartbeat_at": now,
+        "expires_at": now + max(1.0, ttl_seconds),
+    }
+    if meta:
+        payload["meta"] = dict(meta)
+    return payload
+
+
+def acquire_distributed_lease(
+    root: Path,
+    lease_name: str,
+    owner_id: str,
+    ttl_seconds: float,
+    meta: dict[str, Any] | None = None,
+    retries: int = 2,
+) -> dict[str, Any] | None:
+    root.mkdir(parents=True, exist_ok=True)
+    path = distributed_lease_path(root, lease_name)
+    for _ in range(max(1, retries)):
+        payload = _lease_payload(owner_id, ttl_seconds, meta=meta)
+        try:
+            fd = os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                json.dump(payload, handle, indent=2, ensure_ascii=False)
+            return payload
+        except FileExistsError:
+            current = read_json(path, {})
+            current_owner = coalesce_text(current.get("owner_id", ""))
+            expires_at = float(current.get("expires_at", 0.0) or 0.0)
+            if current_owner == owner_id:
+                refresh_distributed_lease(root, lease_name, owner_id, ttl_seconds, meta=meta)
+                return load_distributed_lease(root, lease_name)
+            if expires_at > time.time():
+                return None
+            try:
+                path.unlink()
+            except OSError:
+                return None
+    return None
+
+
+def refresh_distributed_lease(
+    root: Path,
+    lease_name: str,
+    owner_id: str,
+    ttl_seconds: float,
+    meta: dict[str, Any] | None = None,
+) -> bool:
+    path = distributed_lease_path(root, lease_name)
+    current = read_json(path, {})
+    if coalesce_text(current.get("owner_id", "")) != owner_id:
+        return False
+    payload = _lease_payload(owner_id, ttl_seconds, meta=meta if meta is not None else current.get("meta"))
+    write_json(path, payload)
+    return True
+
+
+def release_distributed_lease(root: Path, lease_name: str, owner_id: str) -> bool:
+    path = distributed_lease_path(root, lease_name)
+    current = read_json(path, {})
+    if not current:
+        return True
+    if coalesce_text(current.get("owner_id", "")) != owner_id:
+        return False
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        return True
+    return True
+
+
+class DistributedLeaseHeartbeat:
+    def __init__(
+        self,
+        *,
+        root: Path,
+        lease_name: str,
+        owner_id: str,
+        ttl_seconds: float,
+        interval_seconds: float,
+        meta_factory,
+    ) -> None:
+        self.root = root
+        self.lease_name = lease_name
+        self.owner_id = owner_id
+        self.ttl_seconds = ttl_seconds
+        self.interval_seconds = interval_seconds
+        self.meta_factory = meta_factory
+        self._stop_event = threading.Event()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop_event.set()
+        self._thread.join(timeout=max(1.0, self.interval_seconds + 2.0))
+
+    def _run(self) -> None:
+        while not self._stop_event.wait(self.interval_seconds):
+            try:
+                refresh_distributed_lease(
+                    self.root,
+                    self.lease_name,
+                    self.owner_id,
+                    self.ttl_seconds,
+                    meta=self.meta_factory() if callable(self.meta_factory) else None,
+                )
+            except Exception:
+                continue
 
 
 def runtime_venv_dir() -> Path:

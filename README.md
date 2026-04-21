@@ -8,6 +8,7 @@ Starting from real episode files, the pipeline can:
 
 - import and split source episodes into scenes
 - transcribe dialogue and build speaker clusters
+- let multiple PCs cooperate on the same NAS-backed transcription step by leasing scenes dynamically, so step `04` can split one episode across several workers and automatically recover when one worker disappears
 - detect the spoken language automatically per source segment instead of forcing one fixed transcription language
 - detect faces and link recurring characters to speakers
 - build a local series dataset and heuristic series model
@@ -39,6 +40,7 @@ All scripts in this repository are AI-generated and maintained with `GPT-5.4`.
 
 - full local preprocessing from inbox episode to linked scene data
 - batch processing over multiple new source episodes
+- NAS-based shared-worker processing for `04_diarize_and_transcribe.py`, so several PCs can transcribe different scenes of the same episode in parallel with lease/heartbeat takeover
 - synthetic episode generation from the trained local model
 - automatic language detection during transcription, so mixed-language material no longer depends on one hard-coded transcription language
 - model-native storyboard planning per scene, with multi-reference slots, continuity anchors, and camera/control hints for later image-model backends
@@ -74,6 +76,7 @@ All scripts in this repository are AI-generated and maintained with `GPT-5.4`.
 - `06_review_unknowns.py` keeps iterating after each manual naming step, so newly named characters immediately help resolve more open clusters
 - `04_diarize_and_transcribe.py` now applies extra rescue passes for remaining `speaker_unknown` segments using neighborhood and embedding agreement
 - `04_diarize_and_transcribe.py` now also auto-detects spoken language per transcription run and stores that language on the emitted source segments
+- `04_diarize_and_transcribe.py` now also supports shared NAS workers, leasing scenes dynamically so multiple PCs can help on the same episode and stale leases get reclaimed automatically
 - `99_process_next_episode.py` is being hardened for real inbox batch workflows with autosaves, resumable checkpoints, and live status files
 - `17_render_episode.py` continues to improve long Windows render runs, especially for large segment stacks
 - the new training chain around `09` through `13` is being observed on real project data, especially where voice material is still weak
@@ -218,6 +221,7 @@ Also keep the `In Progress` and `Planned` sections current. If priorities change
 - `ai_series_project/characters/voice_models/*_voice_model.json`: local per-character voice-model profiles with reference audio, language counts, dominant language, and original source segments
 - `ai_series_project/series_bible/episode_summaries`: generated series bible files
 - `ai_series_project/runtime/autosaves`: autosaves and resumable run state
+- `ai_series_project/runtime/distributed`: shared NAS lease files for cooperative multi-PC workers such as step `04`
 - `ai_series_project/tools/ffmpeg/bin`: OS-specific local FFmpeg binaries used by split, transcription, training prep, storyboard asset generation, and render steps
 - `runtime/venv_<os>_<arch>_<bitness>`: local Python environment for the current machine and runtime architecture on Windows; Linux/NAS uses the active `python3` runtime directly
 
@@ -227,6 +231,7 @@ Also keep the `In Progress` and `Planned` sections current. If priorities change
 - working local Python
 - enough disk space for scenes, audio, model assets, renders, and the local FFmpeg download
 - patience: `04`, `05`, and the training stages can take a long time
+- for NAS-based shared-worker mode in `04`, all participating PCs must see the same project path and the same `ai_series_project/runtime/distributed` lease files
 - optional NVIDIA GPU for faster transcription, embeddings, and rendering
 
 `00_prepare_runtime.py` prepares the runtime. Depending on availability, the stack may include:
@@ -283,6 +288,18 @@ Splits imported episodes into scene clips, writes a scene index CSV, and now wor
 ### 04 - Diarize And Transcribe
 
 Extracts audio, runs Whisper, auto-detects the spoken language unless a fixed language is explicitly configured, builds speaker segments, computes speaker embeddings, and clusters speakers. It now also includes additional rescue passes for unresolved `speaker_unknown` cases.
+
+On a NAS-backed workspace, multiple PCs can now run `04_diarize_and_transcribe.py` at the same time. They coordinate through shared lease files under `ai_series_project/runtime/distributed/04_diarize_and_transcribe/...`:
+
+- workers claim one scene at a time instead of locking the whole episode
+- several PCs can therefore split one episode across many scenes in parallel
+- if one PC exits or crashes, its lease expires and another PC can take over that scene automatically
+- the final speaker-clustering/merge step is also protected by a short shared finalize lease so only one worker writes the final episode outputs at a time
+
+Useful flags:
+
+- `--no-shared-workers`: force local single-worker behavior
+- `--worker-id <name>`: assign a stable readable worker id for NAS runs
 
 ### 05 - Link Faces And Speakers
 
@@ -435,6 +452,15 @@ python 17_render_episode.py
 python 18_build_series_bible.py
 ```
 
+Shared NAS transcription example:
+
+```powershell
+python 04_diarize_and_transcribe.py --worker-id pc1
+python 04_diarize_and_transcribe.py --worker-id pc2
+```
+
+Both workers will cooperate on the same pending episodes. They do not double-process the same scene unless a stale lease has to be recovered after a worker disappears.
+
 After major manual review work:
 
 ```powershell
@@ -452,6 +478,7 @@ python 20_refresh_after_manual_review.py --skip-downloads
 - lip-sync remains a local fallback path, not production-quality facial performance generation
 - XTTS requires explicit installation, explicit license acceptance, and sufficient voice reference quality
 - `large-v3` on CPU is possible but slow
+- shared-worker mode in `04` parallelizes at scene level, not inside one single scene; one especially long scene is still handled by one worker at a time
 
 ## Maintenance Checklist
 
