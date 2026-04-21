@@ -6,6 +6,9 @@ import time
 from pathlib import Path
 
 from pipeline_common import (
+    add_shared_worker_arguments,
+    distributed_item_lease,
+    distributed_step_runtime_root,
     LiveProgressReporter,
     backend_run_summary_path,
     coalesce_text,
@@ -22,6 +25,8 @@ from pipeline_common import (
     read_json,
     rerun_in_runtime,
     resolve_project_path,
+    shared_worker_id_for_args,
+    shared_workers_enabled_for_args,
     write_json,
 )
 
@@ -33,6 +38,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--limit-characters", type=int, default=0, help="Optionally train only the first N characters.")
     parser.add_argument("--character", help="Optionally train only one specific character.")
     parser.add_argument("--force", action="store_true", help="Intentionally recreate existing backend run profiles.")
+    add_shared_worker_arguments(parser)
     return parser.parse_args()
 
 
@@ -207,6 +213,8 @@ def main() -> None:
     args = parse_args()
     headline("Prepare Backend Fine-Tune Runs")
     cfg = load_config()
+    worker_id = shared_worker_id_for_args(args)
+    shared_workers = shared_workers_enabled_for_args(cfg, args)
     fine_rows = load_fine_tune_summary(cfg)
     if not fine_rows:
         info("No fine-tune summary found. Run 12_train_fine_tune_models.py first.")
@@ -225,11 +233,14 @@ def main() -> None:
         return
 
     summary_rows: list[dict] = []
+    lease_root = distributed_step_runtime_root("13_run_backend_finetunes", "characters")
     reporter = LiveProgressReporter(
         script_name="13_run_backend_finetunes.py",
         total=len(filtered_rows),
         phase_label="Prepare Backend Fine-Tunes",
     )
+    if shared_workers:
+        info(f"Shared NAS workers: enabled ({worker_id})")
     for index, row in enumerate(filtered_rows, start=1):
         character_name = coalesce_text(row.get("character", ""))
         fine_tune_path = Path(str(row.get("fine_tune_path", "") or ""))
@@ -237,63 +248,72 @@ def main() -> None:
         slug = str(fine_tune_payload.get("slug", "") or coalesce_text(character_name).lower().replace(" ", "_") or "figur")
         autosave_target = slug
         output_path = backend_run_path(cfg, slug)
-
-        if not args.force and backend_run_completed(output_path):
-            payload = read_json(output_path, {})
-            info(f"Backend fine-tune run already exists: {character_name}")
-        else:
-            info(f"Creating backend fine-tune run: {character_name}")
-            mark_step_started(
-                "13_run_backend_finetunes",
-                autosave_target,
-                {"character": character_name, "backend_run_path": str(output_path)},
-            )
-            try:
-                payload = build_backend_run_profile(row, fine_tune_payload, cfg)
-                output_path.parent.mkdir(parents=True, exist_ok=True)
-                write_json(output_path, payload)
-                mark_step_completed(
+        with distributed_item_lease(
+            root=lease_root,
+            lease_name=slug,
+            cfg=cfg,
+            worker_id=worker_id,
+            enabled=shared_workers,
+            meta={"step": "13_run_backend_finetunes", "character": character_name, "slug": slug, "worker_id": worker_id},
+        ) as acquired:
+            if not acquired:
+                continue
+            if not args.force and backend_run_completed(output_path):
+                payload = read_json(output_path, {})
+                info(f"Backend fine-tune run already exists: {character_name}")
+            else:
+                info(f"Creating backend fine-tune run: {character_name}")
+                mark_step_started(
                     "13_run_backend_finetunes",
-                    autosave_target,
-                    {
-                        "character": character_name,
-                        "backend_run_path": str(output_path),
-                        "modalities_ready": payload.get("modalities_ready", []),
-                        "voice_quality_score": float(payload.get("voice_quality_score", 0.0) or 0.0),
-                        "voice_duration_seconds": float(payload.get("voice_duration_seconds", 0.0) or 0.0),
-                        "voice_clone_ready": bool(payload.get("voice_clone_ready", False)),
-                        "training_ready": bool(payload.get("training_ready", False)),
-                    },
-                )
-            except Exception as exc:
-                mark_step_failed(
-                    "13_run_backend_finetunes",
-                    str(exc),
                     autosave_target,
                     {"character": character_name, "backend_run_path": str(output_path)},
                 )
-                raise
+                try:
+                    payload = build_backend_run_profile(row, fine_tune_payload, cfg)
+                    output_path.parent.mkdir(parents=True, exist_ok=True)
+                    write_json(output_path, payload)
+                    mark_step_completed(
+                        "13_run_backend_finetunes",
+                        autosave_target,
+                        {
+                            "character": character_name,
+                            "backend_run_path": str(output_path),
+                            "modalities_ready": payload.get("modalities_ready", []),
+                            "voice_quality_score": float(payload.get("voice_quality_score", 0.0) or 0.0),
+                            "voice_duration_seconds": float(payload.get("voice_duration_seconds", 0.0) or 0.0),
+                            "voice_clone_ready": bool(payload.get("voice_clone_ready", False)),
+                            "training_ready": bool(payload.get("training_ready", False)),
+                        },
+                    )
+                except Exception as exc:
+                    mark_step_failed(
+                        "13_run_backend_finetunes",
+                        str(exc),
+                        autosave_target,
+                        {"character": character_name, "backend_run_path": str(output_path)},
+                    )
+                    raise
 
-        summary_rows.append(
-            {
-                "character": payload.get("character", character_name),
-                "backend_run_path": str(output_path),
-                "training_ready": bool(payload.get("training_ready", False)),
-                "modalities_ready": list(payload.get("modalities_ready", []) or []),
-                "voice_quality_score": float(payload.get("voice_quality_score", 0.0) or 0.0),
-                "voice_duration_seconds": float(payload.get("voice_duration_seconds", 0.0) or 0.0),
-                "voice_clone_ready": bool(payload.get("voice_clone_ready", False)),
-                "voice_model_path": coalesce_text(payload.get("voice_model_path", "")),
-                "dominant_voice_language": coalesce_text(payload.get("dominant_voice_language", "")),
-                "backends": dict(payload.get("backends", {}) or {}),
-                "autosave": load_step_autosave("13_run_backend_finetunes", autosave_target),
-            }
-        )
-        reporter.update(
-            index,
-            current_label=character_name,
-            extra_label=f"Backend runs so far: {len(summary_rows)}",
-        )
+            summary_rows.append(
+                {
+                    "character": payload.get("character", character_name),
+                    "backend_run_path": str(output_path),
+                    "training_ready": bool(payload.get("training_ready", False)),
+                    "modalities_ready": list(payload.get("modalities_ready", []) or []),
+                    "voice_quality_score": float(payload.get("voice_quality_score", 0.0) or 0.0),
+                    "voice_duration_seconds": float(payload.get("voice_duration_seconds", 0.0) or 0.0),
+                    "voice_clone_ready": bool(payload.get("voice_clone_ready", False)),
+                    "voice_model_path": coalesce_text(payload.get("voice_model_path", "")),
+                    "dominant_voice_language": coalesce_text(payload.get("dominant_voice_language", "")),
+                    "backends": dict(payload.get("backends", {}) or {}),
+                    "autosave": load_step_autosave("13_run_backend_finetunes", autosave_target),
+                }
+            )
+            reporter.update(
+                index,
+                current_label=character_name,
+                extra_label=f"Backend runs so far: {len(summary_rows)}",
+            )
     reporter.finish(current_label="Backend-Fine-Tunes", extra_label=f"Total backend runs: {len(summary_rows)}")
 
     summary_path = backend_run_summary_path(cfg)

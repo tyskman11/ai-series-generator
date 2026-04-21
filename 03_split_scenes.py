@@ -7,6 +7,9 @@ import time
 from pathlib import Path
 
 from pipeline_common import (
+    add_shared_worker_arguments,
+    distributed_item_lease,
+    distributed_step_runtime_root,
     LiveProgressReporter,
     PROJECT_ROOT,
     detect_tool,
@@ -27,12 +30,15 @@ from pipeline_common import (
     rerun_in_runtime,
     resolve_project_path,
     run_command,
+    shared_worker_id_for_args,
+    shared_workers_enabled_for_args,
 )
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Split Episode Into Scenes")
     parser.add_argument("--episode-file", help="Filename or path of the imported working file under data/raw/episodes.")
+    add_shared_worker_arguments(parser)
     return parser.parse_args()
 
 
@@ -298,11 +304,16 @@ def main() -> None:
     args = parse_args()
     headline("Split Episode Into Scenes")
     cfg = load_config()
+    worker_id = shared_worker_id_for_args(args)
+    shared_workers = shared_workers_enabled_for_args(cfg, args)
     ffmpeg = detect_tool(PROJECT_ROOT / "tools" / "ffmpeg" / "bin", "ffmpeg")
     video_codec = preferred_ffmpeg_video_codec(ffmpeg, cfg)
     episodes_dir = resolve_project_path(cfg["paths"]["episodes"])
     scene_root = resolve_project_path(cfg["paths"]["scene_clips"])
     scene_index_root = resolve_project_path(cfg["paths"]["scene_index"])
+    lease_root = distributed_step_runtime_root("03_split_scenes", "episodes")
+    if shared_workers:
+        info(f"Shared NAS workers: enabled ({worker_id})")
 
     requested_stem = Path(args.episode_file).stem if args.episode_file else ""
     try:
@@ -333,7 +344,18 @@ def main() -> None:
         if episode is None:
             info("No imported working file found.")
             return
-        split_single_episode(episode, cfg, ffmpeg, video_codec, scene_root, scene_index_root)
+        with distributed_item_lease(
+            root=lease_root,
+            lease_name=episode.stem,
+            cfg=cfg,
+            worker_id=worker_id,
+            enabled=shared_workers,
+            meta={"step": "03_split_scenes", "episode_id": episode.stem, "worker_id": worker_id},
+        ) as acquired:
+            if not acquired:
+                info("This episode is already being split by another worker.")
+                return
+            split_single_episode(episode, cfg, ffmpeg, video_codec, scene_root, scene_index_root)
         return
 
     pending = pending_episode_files(episodes_dir)
@@ -349,28 +371,38 @@ def main() -> None:
         parent_label="Batch",
     )
     for index, current_episode in enumerate(pending, start=1):
-        split_single_episode(
-            current_episode,
-            cfg,
-            ffmpeg,
-            video_codec,
-            scene_root,
-            scene_index_root,
-            live_reporter=live_reporter,
-            episode_index=index,
-            episode_total=len(pending),
-        )
-        processed += 1
-        live_reporter.update(
-            index,
-            current_label=current_episode.name,
-            parent_label=current_episode.name,
-            extra_label=f"Episode completed: {current_episode.name}",
-            scope_current=1,
-            scope_total=1,
-            scope_started_at=time.time(),
-            scope_label=f"Episode {index}/{len(pending)}",
-        )
+        with distributed_item_lease(
+            root=lease_root,
+            lease_name=current_episode.stem,
+            cfg=cfg,
+            worker_id=worker_id,
+            enabled=shared_workers,
+            meta={"step": "03_split_scenes", "episode_id": current_episode.stem, "worker_id": worker_id},
+        ) as acquired:
+            if not acquired:
+                continue
+            split_single_episode(
+                current_episode,
+                cfg,
+                ffmpeg,
+                video_codec,
+                scene_root,
+                scene_index_root,
+                live_reporter=live_reporter,
+                episode_index=index,
+                episode_total=len(pending),
+            )
+            processed += 1
+            live_reporter.update(
+                index,
+                current_label=current_episode.name,
+                parent_label=current_episode.name,
+                extra_label=f"Episode completed: {current_episode.name}",
+                scope_current=1,
+                scope_total=1,
+                scope_started_at=time.time(),
+                scope_label=f"Episode {index}/{len(pending)}",
+            )
     live_reporter.finish(current_label="Batch", extra_label=f"Episodes processed: {processed}")
     ok(f"Batch completed: {processed} episodes processed in 03.")
 

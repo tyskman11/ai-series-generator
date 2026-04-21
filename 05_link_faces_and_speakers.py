@@ -13,6 +13,9 @@ import cv2
 import numpy as np
 
 from pipeline_common import (
+    add_shared_worker_arguments,
+    distributed_item_lease,
+    distributed_step_runtime_root,
     LiveProgressReporter,
     PROJECT_ROOT,
     canonical_person_name,
@@ -39,6 +42,8 @@ from pipeline_common import (
     rerun_in_runtime,
     resolve_project_path,
     save_step_autosave,
+    shared_worker_id_for_args,
+    shared_workers_enabled_for_args,
     mark_step_started,
     mark_step_completed,
     mark_step_failed,
@@ -69,6 +74,7 @@ def parse_args() -> argparse.Namespace:
         "--episode",
         help="Name of the scene folder under data/processed/scene_clips. Standard: erster verfuegbarer Ordner.",
     )
+    add_shared_worker_arguments(parser)
     return parser.parse_args()
 
 
@@ -1158,6 +1164,8 @@ def main() -> None:
     args = parse_args()
     headline("Detect Faces And Link Speakers")
     cfg = load_config()
+    worker_id = shared_worker_id_for_args(args)
+    shared_workers = shared_workers_enabled_for_args(cfg, args)
     scene_root = resolve_project_path(cfg["paths"]["scene_clips"])
     episode_dirs = resolve_episode_dirs_for_processing(scene_root, args.episode, cfg)
     if not episode_dirs:
@@ -1200,9 +1208,12 @@ def main() -> None:
     info(f"Execution mode: {preferred_execution_label(cfg)}")
     info(f"Compute device: {preferred_compute_label(cfg)}")
     info(f"Face detection: {engine['mode']}")
+    if shared_workers:
+        info(f"Shared NAS workers: enabled ({worker_id})")
 
     processed_count = 0
     total = len(episode_dirs)
+    lease_root = distributed_step_runtime_root("05_link_faces_and_speakers", "episodes")
     live_reporter = LiveProgressReporter(
         script_name="05_link_faces_and_speakers.py",
         total=max(1, total),
@@ -1210,38 +1221,48 @@ def main() -> None:
         parent_label="Batch",
     )
     for index, episode_dir in enumerate(episode_dirs, start=1):
-        if process_episode_dir(
-            episode_dir,
-            cfg,
-            fresh_run=bool(args.fresh),
-            faces_root=faces_root,
-            linked_root=linked_root,
-            previews_root=previews_root,
-            char_map=char_map,
-            voice_map=voice_map,
-            engine=engine,
-            interactive=interactive,
-            auto_open=auto_open,
-            sample_every=sample_every,
-            max_faces_per_frame=max_faces_per_frame,
-            max_visible_faces_per_segment=max_visible_faces_per_segment,
-            segment_padding_seconds=segment_padding_seconds,
-            threshold=threshold,
-            live_reporter=live_reporter,
-            episode_index=index,
-            episode_total=total,
-        ):
-            processed_count += 1
-            live_reporter.update(
-                index,
-                current_label=episode_dir.name,
-                parent_label=episode_dir.name,
-                extra_label=f"Episode completed: {episode_dir.name}",
-                scope_current=1,
-                scope_total=1,
-                scope_started_at=time.time(),
-                scope_label=f"Episode {index}/{total}",
-            )
+        with distributed_item_lease(
+            root=lease_root,
+            lease_name=episode_dir.name,
+            cfg=cfg,
+            worker_id=worker_id,
+            enabled=shared_workers,
+            meta={"step": "05_link_faces_and_speakers", "episode_id": episode_dir.name, "worker_id": worker_id},
+        ) as acquired:
+            if not acquired:
+                continue
+            if process_episode_dir(
+                episode_dir,
+                cfg,
+                fresh_run=bool(args.fresh),
+                faces_root=faces_root,
+                linked_root=linked_root,
+                previews_root=previews_root,
+                char_map=char_map,
+                voice_map=voice_map,
+                engine=engine,
+                interactive=interactive,
+                auto_open=auto_open,
+                sample_every=sample_every,
+                max_faces_per_frame=max_faces_per_frame,
+                max_visible_faces_per_segment=max_visible_faces_per_segment,
+                segment_padding_seconds=segment_padding_seconds,
+                threshold=threshold,
+                live_reporter=live_reporter,
+                episode_index=index,
+                episode_total=total,
+            ):
+                processed_count += 1
+                live_reporter.update(
+                    index,
+                    current_label=episode_dir.name,
+                    parent_label=episode_dir.name,
+                    extra_label=f"Episode completed: {episode_dir.name}",
+                    scope_current=1,
+                    scope_total=1,
+                    scope_started_at=time.time(),
+                    scope_label=f"Episode {index}/{total}",
+                )
     live_reporter.finish(current_label="Batch", extra_label=f"Episodes processed: {processed_count}")
 
     ok(f"Batch completed: {processed_count} episodes processed in 05.")

@@ -14,6 +14,7 @@ import sys
 import threading
 import time
 import uuid
+from contextlib import contextmanager
 from copy import deepcopy
 from datetime import datetime, timedelta
 from functools import lru_cache
@@ -558,6 +559,19 @@ def distributed_worker_metadata(extra: dict[str, Any] | None = None) -> dict[str
     return payload
 
 
+def add_shared_worker_arguments(parser) -> None:
+    parser.add_argument("--no-shared-workers", action="store_true", help="Disable NAS/shared-worker leasing for this run.")
+    parser.add_argument("--worker-id", help="Optional stable worker id for shared NAS processing.")
+
+
+def shared_worker_id_for_args(args) -> str:
+    return coalesce_text(getattr(args, "worker_id", "")).strip() or distributed_worker_id()
+
+
+def shared_workers_enabled_for_args(cfg: dict[str, Any], args) -> bool:
+    return distributed_runtime_enabled(cfg) and not bool(getattr(args, "no_shared_workers", False))
+
+
 def distributed_lease_path(root: Path, lease_name: str) -> Path:
     safe_name = re.sub(r"[^a-z0-9]+", "_", coalesce_text(lease_name).lower()).strip("_") or "lease"
     return root / f"{safe_name}.json"
@@ -681,6 +695,41 @@ class DistributedLeaseHeartbeat:
                 )
             except Exception:
                 continue
+
+
+@contextmanager
+def distributed_item_lease(
+    *,
+    root: Path,
+    lease_name: str,
+    cfg: dict[str, Any],
+    worker_id: str,
+    enabled: bool,
+    meta: dict[str, Any] | None = None,
+):
+    if not enabled:
+        yield True
+        return
+    ttl_seconds = distributed_lease_ttl_seconds(cfg)
+    interval_seconds = distributed_heartbeat_interval_seconds(cfg)
+    lease = acquire_distributed_lease(root, lease_name, worker_id, ttl_seconds, meta=meta)
+    if lease is None:
+        yield False
+        return
+    heartbeat = DistributedLeaseHeartbeat(
+        root=root,
+        lease_name=lease_name,
+        owner_id=worker_id,
+        ttl_seconds=ttl_seconds,
+        interval_seconds=interval_seconds,
+        meta_factory=lambda: meta or {},
+    )
+    heartbeat.start()
+    try:
+        yield True
+    finally:
+        heartbeat.stop()
+        release_distributed_lease(root, lease_name, worker_id)
 
 
 def runtime_venv_dir() -> Path:

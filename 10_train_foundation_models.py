@@ -11,6 +11,9 @@ import numpy as np
 from PIL import Image
 
 from pipeline_common import (
+    add_shared_worker_arguments,
+    distributed_item_lease,
+    distributed_step_runtime_root,
     LiveProgressReporter,
     coalesce_text,
     dominant_language,
@@ -28,6 +31,8 @@ from pipeline_common import (
     read_json,
     rerun_in_runtime,
     resolve_project_path,
+    shared_worker_id_for_args,
+    shared_workers_enabled_for_args,
     write_json,
 )
 
@@ -39,6 +44,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--limit-characters", type=int, default=0, help="Optionally train only the first N characters.")
     parser.add_argument("--character", help="Optionally train only one specific character.")
     parser.add_argument("--force", action="store_true", help="Intentionally retrain existing foundation packs.")
+    add_shared_worker_arguments(parser)
     return parser.parse_args()
 
 
@@ -260,6 +266,8 @@ def main() -> None:
     args = parse_args()
     headline("Train Foundation Models")
     cfg = load_config()
+    worker_id = shared_worker_id_for_args(args)
+    shared_workers = shared_workers_enabled_for_args(cfg, args)
     manifests = load_manifests(cfg, coalesce_text(args.character or ""), int(args.limit_characters or 0))
     if not manifests:
         info("No foundation manifests found. Run 09_prepare_foundation_training.py first.")
@@ -268,85 +276,98 @@ def main() -> None:
     checkpoint_root = resolve_project_path(cfg["paths"]["foundation_checkpoints"])
     checkpoint_root.mkdir(parents=True, exist_ok=True)
     summary: list[dict] = []
+    lease_root = distributed_step_runtime_root("10_train_foundation_models", "characters")
     reporter = LiveProgressReporter(
         script_name="10_train_foundation_models.py",
         total=len(manifests),
         phase_label="Train Foundation Packs",
     )
+    if shared_workers:
+        info(f"Shared NAS workers: enabled ({worker_id})")
     for index, manifest in enumerate(manifests, start=1):
         character_name = coalesce_text(manifest.get("name", ""))
         slug = str(manifest.get("slug", "") or "figur")
         autosave_target = slug
         pack_path = pack_path_for_manifest(cfg, manifest)
-        if not args.force and foundation_pack_completed(pack_path):
-            payload = read_json(pack_path, {})
-            info(f"Foundation pack already exists: {character_name}")
-        else:
-            info(f"Training local foundation pack: {character_name}")
-            mark_step_started(
-                "10_train_foundation_models",
-                autosave_target,
-                {"character": character_name, "pack_path": str(pack_path)},
-            )
-            try:
-                payload = build_training_pack(manifest, cfg)
-                pack_dir = checkpoint_root / str(payload.get("slug", "figur"))
-                pack_dir.mkdir(parents=True, exist_ok=True)
-                voice_model_path = voice_model_path_for_manifest(cfg, manifest)
-                voice_model_path.parent.mkdir(parents=True, exist_ok=True)
-                voice_model_payload = build_character_voice_model(manifest, payload)
-                write_json(voice_model_path, voice_model_payload)
-                payload["voice_model_path"] = str(voice_model_path)
-                payload["voice_languages"] = dict((payload.get("voice_pack", {}) or {}).get("language_counts", {}) or {})
-                payload["dominant_voice_language"] = coalesce_text((payload.get("voice_pack", {}) or {}).get("dominant_language", ""))
-                write_json(pack_path, payload)
-                mark_step_completed(
+        with distributed_item_lease(
+            root=lease_root,
+            lease_name=slug,
+            cfg=cfg,
+            worker_id=worker_id,
+            enabled=shared_workers,
+            meta={"step": "10_train_foundation_models", "character": character_name, "slug": slug, "worker_id": worker_id},
+        ) as acquired:
+            if not acquired:
+                continue
+            if not args.force and foundation_pack_completed(pack_path):
+                payload = read_json(pack_path, {})
+                info(f"Foundation pack already exists: {character_name}")
+            else:
+                info(f"Training local foundation pack: {character_name}")
+                mark_step_started(
                     "10_train_foundation_models",
-                    autosave_target,
-                    {
-                        "character": character_name,
-                        "pack_path": str(pack_path),
-                        "frame_samples": int(payload.get("image_pack", {}).get("sample_count", 0)),
-                        "video_samples": int(payload.get("video_pack", {}).get("sample_count", 0)),
-                        "voice_samples": int(payload.get("voice_pack", {}).get("sample_count", 0)),
-                        "voice_duration_seconds": float(payload.get("voice_pack", {}).get("duration_seconds_total", 0.0) or 0.0),
-                        "voice_quality_score": float(payload.get("voice_pack", {}).get("quality_score", 0.0) or 0.0),
-                        "voice_clone_ready": bool(payload.get("voice_pack", {}).get("clone_ready", False)),
-                        "voice_model_path": str(voice_model_path),
-                        "dominant_voice_language": coalesce_text((payload.get("voice_pack", {}) or {}).get("dominant_language", "")),
-                    },
-                )
-            except Exception as exc:
-                mark_step_failed(
-                    "10_train_foundation_models",
-                    str(exc),
                     autosave_target,
                     {"character": character_name, "pack_path": str(pack_path)},
                 )
-                raise
+                try:
+                    payload = build_training_pack(manifest, cfg)
+                    pack_dir = checkpoint_root / str(payload.get("slug", "figur"))
+                    pack_dir.mkdir(parents=True, exist_ok=True)
+                    voice_model_path = voice_model_path_for_manifest(cfg, manifest)
+                    voice_model_path.parent.mkdir(parents=True, exist_ok=True)
+                    voice_model_payload = build_character_voice_model(manifest, payload)
+                    write_json(voice_model_path, voice_model_payload)
+                    payload["voice_model_path"] = str(voice_model_path)
+                    payload["voice_languages"] = dict((payload.get("voice_pack", {}) or {}).get("language_counts", {}) or {})
+                    payload["dominant_voice_language"] = coalesce_text((payload.get("voice_pack", {}) or {}).get("dominant_language", ""))
+                    write_json(pack_path, payload)
+                    mark_step_completed(
+                        "10_train_foundation_models",
+                        autosave_target,
+                        {
+                            "character": character_name,
+                            "pack_path": str(pack_path),
+                            "frame_samples": int(payload.get("image_pack", {}).get("sample_count", 0)),
+                            "video_samples": int(payload.get("video_pack", {}).get("sample_count", 0)),
+                            "voice_samples": int(payload.get("voice_pack", {}).get("sample_count", 0)),
+                            "voice_duration_seconds": float(payload.get("voice_pack", {}).get("duration_seconds_total", 0.0) or 0.0),
+                            "voice_quality_score": float(payload.get("voice_pack", {}).get("quality_score", 0.0) or 0.0),
+                            "voice_clone_ready": bool(payload.get("voice_pack", {}).get("clone_ready", False)),
+                            "voice_model_path": str(voice_model_path),
+                            "dominant_voice_language": coalesce_text((payload.get("voice_pack", {}) or {}).get("dominant_language", "")),
+                        },
+                    )
+                except Exception as exc:
+                    mark_step_failed(
+                        "10_train_foundation_models",
+                        str(exc),
+                        autosave_target,
+                        {"character": character_name, "pack_path": str(pack_path)},
+                    )
+                    raise
 
-        summary.append(
-            {
-                "character": payload.get("character", character_name),
-                "pack_path": str(pack_path),
-                "frame_samples": int(payload.get("image_pack", {}).get("sample_count", 0)),
-                "video_samples": int(payload.get("video_pack", {}).get("sample_count", 0)),
-                "voice_samples": int(payload.get("voice_pack", {}).get("sample_count", 0)),
-                "voice_duration_seconds": float(payload.get("voice_pack", {}).get("duration_seconds_total", 0.0) or 0.0),
-                "voice_quality_score": float(payload.get("voice_pack", {}).get("quality_score", 0.0) or 0.0),
-                "voice_clone_ready": bool(payload.get("voice_pack", {}).get("clone_ready", False)),
-                "voice_model_path": coalesce_text(payload.get("voice_model_path", "")),
-                "voice_languages": dict((payload.get("voice_pack", {}) or {}).get("language_counts", {}) or {}),
-                "dominant_voice_language": coalesce_text((payload.get("voice_pack", {}) or {}).get("dominant_language", "")),
-                "original_voice_sample_count": int((payload.get("voice_pack", {}) or {}).get("original_voice_sample_count", 0) or 0),
-                "autosave": load_step_autosave("10_train_foundation_models", autosave_target),
-            }
-        )
-        reporter.update(
-            index,
-            current_label=character_name,
-            extra_label=f"Trained packs so far: {len(summary)}",
-        )
+            summary.append(
+                {
+                    "character": payload.get("character", character_name),
+                    "pack_path": str(pack_path),
+                    "frame_samples": int(payload.get("image_pack", {}).get("sample_count", 0)),
+                    "video_samples": int(payload.get("video_pack", {}).get("sample_count", 0)),
+                    "voice_samples": int(payload.get("voice_pack", {}).get("sample_count", 0)),
+                    "voice_duration_seconds": float(payload.get("voice_pack", {}).get("duration_seconds_total", 0.0) or 0.0),
+                    "voice_quality_score": float(payload.get("voice_pack", {}).get("quality_score", 0.0) or 0.0),
+                    "voice_clone_ready": bool(payload.get("voice_pack", {}).get("clone_ready", False)),
+                    "voice_model_path": coalesce_text(payload.get("voice_model_path", "")),
+                    "voice_languages": dict((payload.get("voice_pack", {}) or {}).get("language_counts", {}) or {}),
+                    "dominant_voice_language": coalesce_text((payload.get("voice_pack", {}) or {}).get("dominant_language", "")),
+                    "original_voice_sample_count": int((payload.get("voice_pack", {}) or {}).get("original_voice_sample_count", 0) or 0),
+                    "autosave": load_step_autosave("10_train_foundation_models", autosave_target),
+                }
+            )
+            reporter.update(
+                index,
+                current_label=character_name,
+                extra_label=f"Trained packs so far: {len(summary)}",
+            )
     reporter.finish(current_label="Foundation Training", extra_label=f"Total trained packs: {len(summary)}")
 
     summary_path = checkpoint_root / "foundation_training_summary.json"

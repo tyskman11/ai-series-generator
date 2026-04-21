@@ -13,6 +13,9 @@ from collections import defaultdict
 from pathlib import Path
 
 from pipeline_common import (
+    add_shared_worker_arguments,
+    distributed_item_lease,
+    distributed_step_runtime_root,
     LiveProgressReporter,
     SCRIPT_DIR,
     coalesce_text,
@@ -35,6 +38,8 @@ from pipeline_common import (
     normalize_language_code,
     resolve_project_path,
     runtime_python,
+    shared_worker_id_for_args,
+    shared_workers_enabled_for_args,
     write_json,
     write_text,
 )
@@ -52,6 +57,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--force", action="store_true", help="Recreate existing exports and manifests.")
     parser.add_argument("--episode", help="Optionally include only one specific source episode.")
     parser.add_argument("--limit-characters", type=int, default=0, help="Optionally limit the number of candidates.")
+    add_shared_worker_arguments(parser)
     return parser.parse_args()
 
 
@@ -768,6 +774,8 @@ def main() -> None:
     args = parse_args()
     headline("Prepare Foundation Training")
     cfg = load_config()
+    worker_id = shared_worker_id_for_args(args)
+    shared_workers = shared_workers_enabled_for_args(cfg, args)
     autosave_target = coalesce_text(args.episode or "global") or "global"
     mark_step_started("09_prepare_foundation_training", autosave_target, {"episode_filter": coalesce_text(args.episode or "")})
     foundation_cfg = cfg.get("foundation_training", {}) if isinstance(cfg.get("foundation_training"), dict) else {}
@@ -790,24 +798,37 @@ def main() -> None:
         manifests: list[dict] = []
         manifest_root = resolve_project_path(cfg["paths"]["foundation_manifests"])
         manifest_root.mkdir(parents=True, exist_ok=True)
+        lease_root = distributed_step_runtime_root("09_prepare_foundation_training", autosave_target)
         reporter = LiveProgressReporter(
             script_name="09_prepare_foundation_training.py",
             total=len(candidates),
             phase_label="Prepare Foundation Data",
         )
+        if shared_workers:
+            info(f"Shared NAS workers: enabled ({worker_id})")
         for index, character in enumerate(candidates, start=1):
             character_rows = collect_character_rows(rows, character["name"], known_clusters)
             if not character_rows:
                 continue
-            info(f"Bereite Trainingsdaten vor: {character['name']}")
-            manifest = prepare_character_dataset(ffmpeg_path, character, character_rows, cfg, force=args.force)
-            manifests.append(manifest)
-            write_json(manifest_root / f"{character['slug']}_manifest.json", manifest)
-            reporter.update(
-                index,
-                current_label=str(character.get("name", "")),
-                extra_label=f"Manifests so far: {len(manifests)}",
-            )
+            with distributed_item_lease(
+                root=lease_root,
+                lease_name=str(character.get("slug", "")),
+                cfg=cfg,
+                worker_id=worker_id,
+                enabled=shared_workers,
+                meta={"step": "09_prepare_foundation_training", "character": character["name"], "slug": character["slug"], "worker_id": worker_id},
+            ) as acquired:
+                if not acquired:
+                    continue
+                info(f"Bereite Trainingsdaten vor: {character['name']}")
+                manifest = prepare_character_dataset(ffmpeg_path, character, character_rows, cfg, force=args.force)
+                manifests.append(manifest)
+                write_json(manifest_root / f"{character['slug']}_manifest.json", manifest)
+                reporter.update(
+                    index,
+                    current_label=str(character.get("name", "")),
+                    extra_label=f"Manifests so far: {len(manifests)}",
+                )
         reporter.finish(current_label="Foundation Training", extra_label=f"Total manifests: {len(manifests)}")
 
         download_targets = build_download_targets(cfg)

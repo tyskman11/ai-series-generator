@@ -6,6 +6,9 @@ import shutil
 from pathlib import Path
 
 from pipeline_common import (
+    add_shared_worker_arguments,
+    distributed_item_lease,
+    distributed_step_runtime_root,
     error,
     headline,
     info,
@@ -20,6 +23,8 @@ from pipeline_common import (
     ok,
     rerun_in_runtime,
     resolve_project_path,
+    shared_worker_id_for_args,
+    shared_workers_enabled_for_args,
     write_json,
 )
 
@@ -31,6 +36,7 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Import all episodes currently present in the inbox folder instead of only the next one.",
     )
+    add_shared_worker_arguments(parser)
     return parser.parse_args()
 
 
@@ -131,6 +137,8 @@ def main() -> None:
     args = parse_args()
     headline("Import New Episode")
     cfg = load_config()
+    worker_id = shared_worker_id_for_args(args)
+    shared_workers = shared_workers_enabled_for_args(cfg, args)
     inbox_dir = resolve_project_path(cfg["paths"]["inbox_episodes"])
     episodes_dir = resolve_project_path(cfg["paths"]["episodes"])
     metadata_dir = resolve_project_path(cfg["paths"]["metadata"])
@@ -143,6 +151,10 @@ def main() -> None:
     removed_duplicates = purge_already_processed_inbox_videos(inbox_dir, episodes_dir, scene_root, metadata_dir)
     if removed_duplicates:
         info(f"{removed_duplicates} already processed inbox files removed.")
+    if shared_workers:
+        info(f"Shared NAS workers: enabled ({worker_id})")
+
+    lease_root = distributed_step_runtime_root("02_import_episode", "inbox")
 
     imported = 0
     if args.all:
@@ -153,8 +165,18 @@ def main() -> None:
         for video in pending_videos:
             if not video.exists():
                 continue
-            import_single_episode(video, episodes_dir, metadata_dir)
-            imported += 1
+            with distributed_item_lease(
+                root=lease_root,
+                lease_name=video.name,
+                cfg=cfg,
+                worker_id=worker_id,
+                enabled=shared_workers,
+                meta={"step": "02_import_episode", "video": video.name, "episode_id": video.stem, "worker_id": worker_id},
+            ) as acquired:
+                if not acquired or not video.exists():
+                    continue
+                import_single_episode(video, episodes_dir, metadata_dir)
+                imported += 1
         ok(f"Import finished: {imported} episodes imported.")
         return
 
@@ -162,7 +184,18 @@ def main() -> None:
     if video is None:
         info("No new episode found in the inbox folder.")
         return
-    import_single_episode(video, episodes_dir, metadata_dir)
+    with distributed_item_lease(
+        root=lease_root,
+        lease_name=video.name,
+        cfg=cfg,
+        worker_id=worker_id,
+        enabled=shared_workers,
+        meta={"step": "02_import_episode", "video": video.name, "episode_id": video.stem, "worker_id": worker_id},
+    ) as acquired:
+        if not acquired or not video.exists():
+            info("The next inbox episode is already being imported by another worker.")
+            return
+        import_single_episode(video, episodes_dir, metadata_dir)
 
 
 if __name__ == "__main__":

@@ -6,6 +6,9 @@ import time
 from pathlib import Path
 
 from pipeline_common import (
+    add_shared_worker_arguments,
+    distributed_item_lease,
+    distributed_step_runtime_root,
     LiveProgressReporter,
     adapter_summary_path,
     coalesce_text,
@@ -22,6 +25,8 @@ from pipeline_common import (
     read_json,
     rerun_in_runtime,
     resolve_project_path,
+    shared_worker_id_for_args,
+    shared_workers_enabled_for_args,
     write_json,
 )
 
@@ -33,6 +38,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--limit-characters", type=int, default=0, help="Optionally train only the first N characters.")
     parser.add_argument("--character", help="Optionally train only one specific character.")
     parser.add_argument("--force", action="store_true", help="Intentionally retrain existing fine-tune profiles.")
+    add_shared_worker_arguments(parser)
     return parser.parse_args()
 
 
@@ -98,6 +104,8 @@ def main() -> None:
     args = parse_args()
     headline("Train Local Fine-Tune Profiles")
     cfg = load_config()
+    worker_id = shared_worker_id_for_args(args)
+    shared_workers = shared_workers_enabled_for_args(cfg, args)
     adapter_rows = load_adapter_summary(cfg)
     if not adapter_rows:
         info("No adapter summary found. Run 11_train_adapter_models.py first.")
@@ -116,11 +124,14 @@ def main() -> None:
         return
 
     summary_rows: list[dict] = []
+    lease_root = distributed_step_runtime_root("12_train_fine_tune_models", "characters")
     reporter = LiveProgressReporter(
         script_name="12_train_fine_tune_models.py",
         total=len(filtered_rows),
         phase_label="Train Fine-Tune Profiles",
     )
+    if shared_workers:
+        info(f"Shared NAS workers: enabled ({worker_id})")
     for index, row in enumerate(filtered_rows, start=1):
         character_name = coalesce_text(row.get("character", ""))
         profile_path = Path(str(row.get("profile_path", "") or ""))
@@ -128,61 +139,70 @@ def main() -> None:
         slug = str(adapter_payload.get("slug", "") or coalesce_text(character_name).lower().replace(" ", "_") or "figur")
         autosave_target = slug
         output_path = fine_tune_profile_path(cfg, slug)
-
-        if not args.force and fine_tune_profile_completed(output_path):
-            payload = read_json(output_path, {})
-            info(f"Fine-tune profile already exists: {character_name}")
-        else:
-            info(f"Training local fine-tune profile: {character_name}")
-            mark_step_started(
-                "12_train_fine_tune_models",
-                autosave_target,
-                {"character": character_name, "fine_tune_path": str(output_path)},
-            )
-            try:
-                payload = build_fine_tune_profile(row, adapter_payload, cfg)
-                output_path.parent.mkdir(parents=True, exist_ok=True)
-                write_json(output_path, payload)
-                mark_step_completed(
+        with distributed_item_lease(
+            root=lease_root,
+            lease_name=slug,
+            cfg=cfg,
+            worker_id=worker_id,
+            enabled=shared_workers,
+            meta={"step": "12_train_fine_tune_models", "character": character_name, "slug": slug, "worker_id": worker_id},
+        ) as acquired:
+            if not acquired:
+                continue
+            if not args.force and fine_tune_profile_completed(output_path):
+                payload = read_json(output_path, {})
+                info(f"Fine-tune profile already exists: {character_name}")
+            else:
+                info(f"Training local fine-tune profile: {character_name}")
+                mark_step_started(
                     "12_train_fine_tune_models",
-                    autosave_target,
-                    {
-                        "character": character_name,
-                        "fine_tune_path": str(output_path),
-                        "modalities_ready": payload.get("modalities_ready", []),
-                        "training_ready": bool(payload.get("training_ready", False)),
-                    },
-                )
-            except Exception as exc:
-                mark_step_failed(
-                    "12_train_fine_tune_models",
-                    str(exc),
                     autosave_target,
                     {"character": character_name, "fine_tune_path": str(output_path)},
                 )
-                raise
+                try:
+                    payload = build_fine_tune_profile(row, adapter_payload, cfg)
+                    output_path.parent.mkdir(parents=True, exist_ok=True)
+                    write_json(output_path, payload)
+                    mark_step_completed(
+                        "12_train_fine_tune_models",
+                        autosave_target,
+                        {
+                            "character": character_name,
+                            "fine_tune_path": str(output_path),
+                            "modalities_ready": payload.get("modalities_ready", []),
+                            "training_ready": bool(payload.get("training_ready", False)),
+                        },
+                    )
+                except Exception as exc:
+                    mark_step_failed(
+                        "12_train_fine_tune_models",
+                        str(exc),
+                        autosave_target,
+                        {"character": character_name, "fine_tune_path": str(output_path)},
+                    )
+                    raise
 
-        summary_rows.append(
-            {
-                "character": payload.get("character", character_name),
-                "fine_tune_path": str(output_path),
-                "training_ready": bool(payload.get("training_ready", False)),
-                "modalities_ready": list(payload.get("modalities_ready", []) or []),
-                "target_steps": dict(payload.get("target_steps", {}) or {}),
-                "completed_steps": dict(payload.get("completed_steps", {}) or {}),
-                "voice_quality_score": float(payload.get("voice_quality_score", 0.0) or 0.0),
-                "voice_duration_seconds": float(payload.get("voice_duration_seconds", 0.0) or 0.0),
-                "voice_clone_ready": bool(payload.get("voice_clone_ready", False)),
-                "voice_model_path": coalesce_text(payload.get("voice_model_path", "")),
-                "dominant_voice_language": coalesce_text(payload.get("dominant_voice_language", "")),
-                "autosave": load_step_autosave("12_train_fine_tune_models", autosave_target),
-            }
-        )
-        reporter.update(
-            index,
-            current_label=character_name,
-            extra_label=f"Fine-tune profiles so far: {len(summary_rows)}",
-        )
+            summary_rows.append(
+                {
+                    "character": payload.get("character", character_name),
+                    "fine_tune_path": str(output_path),
+                    "training_ready": bool(payload.get("training_ready", False)),
+                    "modalities_ready": list(payload.get("modalities_ready", []) or []),
+                    "target_steps": dict(payload.get("target_steps", {}) or {}),
+                    "completed_steps": dict(payload.get("completed_steps", {}) or {}),
+                    "voice_quality_score": float(payload.get("voice_quality_score", 0.0) or 0.0),
+                    "voice_duration_seconds": float(payload.get("voice_duration_seconds", 0.0) or 0.0),
+                    "voice_clone_ready": bool(payload.get("voice_clone_ready", False)),
+                    "voice_model_path": coalesce_text(payload.get("voice_model_path", "")),
+                    "dominant_voice_language": coalesce_text(payload.get("dominant_voice_language", "")),
+                    "autosave": load_step_autosave("12_train_fine_tune_models", autosave_target),
+                }
+            )
+            reporter.update(
+                index,
+                current_label=character_name,
+                extra_label=f"Fine-tune profiles so far: {len(summary_rows)}",
+            )
     reporter.finish(current_label="Fine-Tune Training", extra_label=f"Total fine-tune profiles: {len(summary_rows)}")
 
     summary_path = fine_tune_summary_path(cfg)

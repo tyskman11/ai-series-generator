@@ -8,7 +8,7 @@ Starting from real episode files, the pipeline can:
 
 - import and split source episodes into scenes
 - transcribe dialogue and build speaker clusters
-- let multiple PCs cooperate on the same NAS-backed transcription step by leasing scenes dynamically, so step `04` can split one episode across several workers and automatically recover when one worker disappears
+- let multiple PCs cooperate on the same NAS-backed pipeline through shared leases, so batch steps can divide episodes, characters, or scenes across workers and automatically recover when one worker disappears
 - detect the spoken language automatically per source segment instead of forcing one fixed transcription language
 - detect faces and link recurring characters to speakers
 - build a local series dataset and heuristic series model
@@ -40,7 +40,7 @@ All scripts in this repository are AI-generated and maintained with `GPT-5.4`.
 
 - full local preprocessing from inbox episode to linked scene data
 - batch processing over multiple new source episodes
-- NAS-based shared-worker processing for `04_diarize_and_transcribe.py`, so several PCs can transcribe different scenes of the same episode in parallel with lease/heartbeat takeover
+- NAS-based shared-worker processing across the numbered pipeline, so several PCs can cooperate on inbox imports, per-episode steps, per-character training stages, storyboard scene work, and selected orchestration paths without duplicating the same target
 - synthetic episode generation from the trained local model
 - automatic language detection during transcription, so mixed-language material no longer depends on one hard-coded transcription language
 - model-native storyboard planning per scene, with multi-reference slots, continuity anchors, and camera/control hints for later image-model backends
@@ -65,6 +65,7 @@ All scripts in this repository are AI-generated and maintained with `GPT-5.4`.
 - auto-merge already known faces before manual review so review mostly sees true unknowns
 - keep the default path robust, local, and free of unnecessary license prompts
 - harden the end-to-end batch pipeline for large inbox runs
+- keep the new NAS/shared-worker mode stable across all numbered batch steps, including graceful takeover when one PC disappears
 - improve the voice path so future local cloning backends can replace simple fallback TTS where appropriate
 - keep the voice path centered on original per-character dialogue material instead of generic online voice base models
 - improve the model-side storyboard planning so future image/video backends can use original-series references without relying on any graphical node editor or UI-specific workflow
@@ -76,7 +77,9 @@ All scripts in this repository are AI-generated and maintained with `GPT-5.4`.
 - `06_review_unknowns.py` keeps iterating after each manual naming step, so newly named characters immediately help resolve more open clusters
 - `04_diarize_and_transcribe.py` now applies extra rescue passes for remaining `speaker_unknown` segments using neighborhood and embedding agreement
 - `04_diarize_and_transcribe.py` now also auto-detects spoken language per transcription run and stores that language on the emitted source segments
-- `04_diarize_and_transcribe.py` now also supports shared NAS workers, leasing scenes dynamically so multiple PCs can help on the same episode and stale leases get reclaimed automatically
+- the numbered batch scripts now support shared NAS workers through lease files under `ai_series_project/runtime/distributed`, with step-specific work units such as inbox files, episodes, characters, scenes, or full orchestration scopes
+- `04_diarize_and_transcribe.py` still has the deepest split, leasing scenes dynamically so multiple PCs can help on the same episode and stale leases get reclaimed automatically
+- `19_generate_finished_episodes.py`, `20_refresh_after_manual_review.py`, `18_build_series_bible.py`, and `99_process_next_episode.py` now use shared-worker leases mainly to prevent conflicting duplicate orchestration runs, while the underlying numbered worker steps do the actual distributed work
 - `99_process_next_episode.py` is being hardened for real inbox batch workflows with autosaves, resumable checkpoints, and live status files
 - `17_render_episode.py` continues to improve long Windows render runs, especially for large segment stacks
 - the new training chain around `09` through `13` is being observed on real project data, especially where voice material is still weak
@@ -232,6 +235,7 @@ Also keep the `In Progress` and `Planned` sections current. If priorities change
 - enough disk space for scenes, audio, model assets, renders, and the local FFmpeg download
 - patience: `04`, `05`, and the training stages can take a long time
 - for NAS-based shared-worker mode in `04`, all participating PCs must see the same project path and the same `ai_series_project/runtime/distributed` lease files
+- for project-wide NAS/shared-worker mode, all participating PCs must see the same project path and the same `ai_series_project/runtime/distributed` lease files
 - optional NVIDIA GPU for faster transcription, embeddings, and rendering
 
 `00_prepare_runtime.py` prepares the runtime. Depending on availability, the stack may include:
@@ -279,11 +283,11 @@ Ensures that the expected folder structure and config file exist.
 
 ### 02 - Import Episode
 
-Imports the next unprocessed source episode from the inbox into `data/raw/episodes`, writes metadata, and removes the inbox source after the working copy has been safely created.
+Imports the next unprocessed source episode from the inbox into `data/raw/episodes`, writes metadata, and removes the inbox source after the working copy has been safely created. In shared NAS mode, inbox files are leased one by one so multiple PCs can import different source episodes without colliding.
 
 ### 03 - Split Scenes
 
-Splits imported episodes into scene clips, writes a scene index CSV, and now works through the available batch instead of only one episode.
+Splits imported episodes into scene clips, writes a scene index CSV, and now works through the available batch instead of only one episode. In shared NAS mode, whole episodes are leased so several PCs can split different imported episodes in parallel.
 
 ### 04 - Diarize And Transcribe
 
@@ -303,7 +307,7 @@ Useful flags:
 
 ### 05 - Link Faces And Speakers
 
-Detects faces, clusters them, links visible faces to dialogue segments, and writes linked segment outputs. One-off background faces are filtered more aggressively so recurring characters are easier to review.
+Detects faces, clusters them, links visible faces to dialogue segments, and writes linked segment outputs. One-off background faces are filtered more aggressively so recurring characters are easier to review. In shared NAS mode, whole episodes are leased so several PCs can link different episodes in parallel.
 
 ### 06 - Review Unknowns
 
@@ -311,7 +315,7 @@ Interactive review stage for unknown or auto-named face clusters. It now tries t
 
 ### 07 - Build Dataset
 
-Builds the consolidated training dataset from linked segments and reviewed character data.
+Builds the consolidated training dataset from linked segments and reviewed character data. In shared NAS mode, whole episodes are leased so several PCs can build different dataset episodes in parallel.
 
 ### 08 - Train Series Model
 
@@ -319,23 +323,23 @@ Builds the local heuristic series model from the reviewed datasets. This is not 
 
 ### 09 - Prepare Foundation Training
 
-Prepares 720p frame, clip, and voice assets for later training stages. It can also manage model downloads and update checks for configured base assets, but now skips online voice-base downloads by default when local character voice models are enabled. The voice preparation path now prioritizes original per-character dialogue recordings from the reviewed dataset, keeps their detected languages, and writes those language-aware original voice references into the training manifests and markdown summary.
+Prepares 720p frame, clip, and voice assets for later training stages. It can also manage model downloads and update checks for configured base assets, but now skips online voice-base downloads by default when local character voice models are enabled. The voice preparation path now prioritizes original per-character dialogue recordings from the reviewed dataset, keeps their detected languages, and writes those language-aware original voice references into the training manifests and markdown summary. In shared NAS mode, characters are leased individually so several PCs can prepare different character manifests in parallel.
 
 ### 10 - Train Foundation Models
 
-Builds local foundation packs from the prepared assets and now also writes one local per-character voice-model profile under `characters/voice_models`, using original dialogue material, detected language counts, dominant language, and reference-audio paths.
+Builds local foundation packs from the prepared assets and now also writes one local per-character voice-model profile under `characters/voice_models`, using original dialogue material, detected language counts, dominant language, and reference-audio paths. In shared NAS mode, characters are leased individually so several PCs can train different foundation packs in parallel.
 
 ### 11 - Train Adapter Models
 
-Builds local adapter profiles for image, voice, and clip dynamics. The voice branch now carries the local voice-model path plus dominant-language metadata forward from the foundation stage.
+Builds local adapter profiles for image, voice, and clip dynamics. The voice branch now carries the local voice-model path plus dominant-language metadata forward from the foundation stage. In shared NAS mode, characters are leased individually so several PCs can train different adapter profiles in parallel.
 
 ### 12 - Train Fine-Tune Models
 
-Builds local fine-tune profiles on top of the adapter stage and keeps the per-character voice-model path and dominant language available for downstream backends.
+Builds local fine-tune profiles on top of the adapter stage and keeps the per-character voice-model path and dominant language available for downstream backends. In shared NAS mode, characters are leased individually so several PCs can train different fine-tune profiles in parallel.
 
 ### 13 - Run Backend Finetunes
 
-Turns the local fine-tune profiles into backend-oriented fine-tune runs and materialized local backend artifacts, now including the per-character voice-model path and dominant language for the voice backend.
+Turns the local fine-tune profiles into backend-oriented fine-tune runs and materialized local backend artifacts, now including the per-character voice-model path and dominant language for the voice backend. In shared NAS mode, characters are leased individually so several PCs can prepare different backend runs in parallel.
 
 ### 14 - Generate Episode From Trained Model
 
@@ -353,11 +357,11 @@ When no explicit episode ID is provided, the downstream storyboard, backend, ren
 
 ### 15 - Generate Storyboard Assets
 
-Builds scene-level storyboard asset files from the exported storyboard requests. This step prepares `generation/storyboard_assets/<episode>` so later render passes can already reuse scene frames when they exist.
+Builds scene-level storyboard asset files from the exported storyboard requests. This step prepares `generation/storyboard_assets/<episode>` so later render passes can already reuse scene frames when they exist. In shared NAS mode, scenes are leased individually so several PCs can build different storyboard scene assets for the same episode.
 
 ### 16 - Run Storyboard Backend
 
-Materializes local backend-style scene frames from the per-scene backend input payloads written by `15`. This is the bridge between the seed-package export and later render reuse.
+Materializes local backend-style scene frames from the per-scene backend input payloads written by `15`. This is the bridge between the seed-package export and later render reuse. In shared NAS mode, scenes are leased individually so several PCs can materialize different backend frames for the same episode.
 
 ### 17 - Render Episode
 
@@ -388,17 +392,19 @@ At the same time, `17` now exports `generation/final_episode_packages/<episode>/
 - lip-sync composites per scene
 - one stable target path contract that later local backends can fill without changing the numbered pipeline order
 
+`17` uses a shared NAS lease at episode level. That means only one worker renders one specific episode at a time, but different PCs can still render different episodes without colliding.
+
 ### 18 - Build Series Bible
 
-Rebuilds the compact series bible from the trained series model and current reviewed data, including an English-first markdown summary for downstream review output. It now also appends the most recent generated episodes with their render mode, production-readiness label, final render path, full generated episode master, production package, render manifest, scene-output counters, coverage ratios, and remaining backend tasks so the bible doubles as a lightweight production snapshot.
+Rebuilds the compact series bible from the trained series model and current reviewed data, including an English-first markdown summary for downstream review output. It now also appends the most recent generated episodes with their render mode, production-readiness label, final render path, full generated episode master, production package, render manifest, scene-output counters, coverage ratios, and remaining backend tasks so the bible doubles as a lightweight production snapshot. In shared NAS mode, this step uses an exclusive global lease so the bible is not rewritten concurrently by several PCs.
 
 ### 19 - Generate Finished Episodes
 
-Runs a full visible multi-episode generation flow, including rebuild, training, generation, storyboard backend materialization, and render stages. It now targets finished episodes instead of merely preview-labeled batches, rebuilds the series bible once after the full batch instead of repeating that step after every generated episode, records the planned/completed batch-step order in its step metadata for easier resume/debug inspection, stores the concrete output bundle per generated episode from step `17` for easier follow-up automation, respects the same optional foundation/adapter/fine-tune/backend training toggles used by the other orchestration scripts, supports `--skip-downloads` for the foundation-prepare step, and can also run endlessly with `--count 0` or `--endless`. In endless mode it updates the series bible after each new rendered episode because there is no final batch end.
+Runs a full visible multi-episode generation flow, including rebuild, training, generation, storyboard backend materialization, and render stages. It now targets finished episodes instead of merely preview-labeled batches, rebuilds the series bible once after the full batch instead of repeating that step after every generated episode, records the planned/completed batch-step order in its step metadata for easier resume/debug inspection, stores the concrete output bundle per generated episode from step `17` for easier follow-up automation, respects the same optional foundation/adapter/fine-tune/backend training toggles used by the other orchestration scripts, supports `--skip-downloads` for the foundation-prepare step, and can also run endlessly with `--count 0` or `--endless`. In endless mode it updates the series bible after each new rendered episode because there is no final batch end. In shared NAS mode, `19` uses an orchestration lease so the same endless/batch run is not started twice by different PCs.
 
 ### 20 - Refresh After Manual Review
 
-One-command rebuild path after manual character cleanup. This is the preferred way to rebuild dependent outputs after heavy review work, including refreshed storyboard assets, backend frames, render output, and the final series bible update. Its planned-step list now keeps the same train-then-generate/render ordering as the other orchestration scripts, `--stop-after-training` cuts the run cleanly after the active training block, and the refresh path now respects the same optional foundation/adapter/fine-tune/backend stage toggles as the other numbered orchestrators instead of always forcing `09` through `13`.
+One-command rebuild path after manual character cleanup. This is the preferred way to rebuild dependent outputs after heavy review work, including refreshed storyboard assets, backend frames, render output, and the final series bible update. Its planned-step list now keeps the same train-then-generate/render ordering as the other orchestration scripts, `--stop-after-training` cuts the run cleanly after the active training block, and the refresh path now respects the same optional foundation/adapter/fine-tune/backend stage toggles as the other numbered orchestrators instead of always forcing `09` through `13`. In shared NAS mode, `20` uses an orchestration lease so the same rebuild run is not started twice by different PCs.
 
 ### 99 - Full Pipeline
 
@@ -415,7 +421,7 @@ Runs the main end-to-end flow:
 9. rebuild the bible
 
 The pipeline now writes autosaves, resumable checkpoints, and live status files for long-running batch work.
-It also supports `--skip-downloads` for the foundation-prepare stage when existing model downloads should be reused, stores the planned/completed global step order in the autosave state so resume and status output reflect the real run plan, and now carries the latest generated episode output bundle through those status files so the current final render, full generated episode master, render manifest, production package, production-readiness label, coverage ratios, and remaining backend tasks are visible without digging through folders.
+It also supports `--skip-downloads` for the foundation-prepare stage when existing model downloads should be reused, stores the planned/completed global step order in the autosave state so resume and status output reflect the real run plan, and now carries the latest generated episode output bundle through those status files so the current final render, full generated episode master, render manifest, production package, production-readiness label, coverage ratios, and remaining backend tasks are visible without digging through folders. In shared NAS mode, `99` uses an exclusive orchestration lease so there is only one full end-to-end coordinator at a time while the underlying numbered worker scripts still distribute the actual step work.
 
 ## Testing And Smoke Runs
 
@@ -461,6 +467,11 @@ python 04_diarize_and_transcribe.py --worker-id pc2
 
 Both workers will cooperate on the same pending episodes. They do not double-process the same scene unless a stale lease has to be recovered after a worker disappears.
 
+Project-wide shared-worker flags:
+
+- `--worker-id <name>`: optional readable worker id on NAS runs
+- `--no-shared-workers`: disable NAS leasing for the current run
+
 After major manual review work:
 
 ```powershell
@@ -479,6 +490,7 @@ python 20_refresh_after_manual_review.py --skip-downloads
 - XTTS requires explicit installation, explicit license acceptance, and sufficient voice reference quality
 - `large-v3` on CPU is possible but slow
 - shared-worker mode in `04` parallelizes at scene level, not inside one single scene; one especially long scene is still handled by one worker at a time
+- orchestration-heavy scripts such as `18`, `19`, `20`, and `99` mostly use exclusive leases to prevent conflicting duplicate runs; the fine-grained parallelism lives in the worker-heavy numbered steps underneath
 
 ## Maintenance Checklist
 

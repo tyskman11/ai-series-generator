@@ -5,6 +5,9 @@ import argparse
 import subprocess
 
 from pipeline_common import (
+    add_shared_worker_arguments,
+    distributed_item_lease,
+    distributed_step_runtime_root,
     open_face_review_item_count,
     LiveProgressReporter,
     SCRIPT_DIR,
@@ -18,6 +21,8 @@ from pipeline_common import (
     ok,
     rerun_in_runtime,
     runtime_python,
+    shared_worker_id_for_args,
+    shared_workers_enabled_for_args,
 )
 
 
@@ -40,6 +45,7 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Allow the rebuild even if step 06 still has open review cases.",
     )
+    add_shared_worker_arguments(parser)
     return parser.parse_args()
 
 
@@ -111,7 +117,12 @@ def main() -> None:
     rerun_in_runtime()
     args = parse_args()
     headline("Rebuild After Manual Character Review")
+    cfg = load_config()
+    worker_id = shared_worker_id_for_args(args)
+    shared_workers = shared_workers_enabled_for_args(cfg, args)
     autosave_target = "global"
+    if shared_workers:
+        info(f"Shared NAS workers: enabled ({worker_id})")
     mark_step_started(
         "20_refresh_after_manual_review",
         autosave_target,
@@ -121,8 +132,20 @@ def main() -> None:
             "stop_after_training": bool(args.stop_after_training),
         },
     )
+    lease_manager = distributed_item_lease(
+        root=distributed_step_runtime_root("20_refresh_after_manual_review", autosave_target),
+        lease_name=autosave_target,
+        cfg=cfg,
+        worker_id=worker_id,
+        enabled=shared_workers,
+        meta={"step": "20_refresh_after_manual_review", "scope": autosave_target, "worker_id": worker_id},
+    )
+    acquired = lease_manager.__enter__()
+    if not acquired:
+        info("This rebuild run is already active on another worker.")
+        lease_manager.__exit__(None, None, None)
+        return
     try:
-        cfg = load_config()
         if not args.allow_open_review:
             review_count = open_face_review_item_count(cfg)
             if review_count > 0:
@@ -172,6 +195,8 @@ def main() -> None:
             },
         )
         raise
+    finally:
+        lease_manager.__exit__(None, None, None)
 
 
 if __name__ == "__main__":

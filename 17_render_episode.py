@@ -14,6 +14,12 @@ from pathlib import Path
 from PIL import Image, ImageColor, ImageDraw, ImageFont, ImageOps
 
 from pipeline_common import (
+    DistributedLeaseHeartbeat,
+    acquire_distributed_lease,
+    add_shared_worker_arguments,
+    distributed_heartbeat_interval_seconds,
+    distributed_lease_ttl_seconds,
+    distributed_step_runtime_root,
     LiveProgressReporter,
     PROJECT_ROOT,
     detect_tool,
@@ -32,6 +38,9 @@ from pipeline_common import (
     rerun_in_runtime,
     resolve_project_path,
     resolve_stored_project_path,
+    release_distributed_lease,
+    shared_worker_id_for_args,
+    shared_workers_enabled_for_args,
     write_json,
     write_text,
 )
@@ -43,6 +52,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--episode-id", help="Target a specific episode ID such as episode_09 or folge_09.")
     parser.add_argument("--force", action="store_true", help="Recreate existing draft and final renders.")
+    add_shared_worker_arguments(parser)
     return parser.parse_args()
 
 
@@ -1690,6 +1700,8 @@ def main() -> None:
     args = parse_args()
     headline("Render Episode")
     cfg = load_config()
+    worker_id = shared_worker_id_for_args(args)
+    shared_workers = shared_workers_enabled_for_args(cfg, args)
     shotlist_dir = resolve_project_path("generation/shotlists")
     shotlist_path = (shotlist_dir / f"{args.episode_id}.json") if args.episode_id else find_latest_shotlist(shotlist_dir)
     if shotlist_path is None or not shotlist_path.exists():
@@ -1735,13 +1747,38 @@ def main() -> None:
 
     autosave_target = episode_id
     mark_step_started("18_render_episode", autosave_target, {"episode_id": episode_id, "shotlist": str(shotlist_path)})
+    if shared_workers:
+        info(f"Shared NAS workers: enabled ({worker_id})")
     reporter = LiveProgressReporter(
         script_name="17_render_episode.py",
         total=len(scenes) + 3,
         phase_label="Render Episode",
         parent_label=episode_id,
     )
+    lease_root = distributed_step_runtime_root("17_render_episode", "episodes")
+    lease_heartbeat = None
     try:
+        if shared_workers:
+            lease_meta = {"step": "17_render_episode", "episode_id": episode_id, "worker_id": worker_id}
+            acquired = acquire_distributed_lease(
+                lease_root,
+                episode_id,
+                worker_id,
+                distributed_lease_ttl_seconds(cfg),
+                meta=lease_meta,
+            )
+            if acquired is None:
+                info("This episode is already being rendered by another worker.")
+                return
+            lease_heartbeat = DistributedLeaseHeartbeat(
+                root=lease_root,
+                lease_name=episode_id,
+                owner_id=worker_id,
+                ttl_seconds=distributed_lease_ttl_seconds(cfg),
+                interval_seconds=distributed_heartbeat_interval_seconds(cfg),
+                meta_factory=lambda: lease_meta,
+            )
+            lease_heartbeat.start()
         if draft_path.exists() and final_path.exists() and production_package_path.exists() and not args.force:
             reporter.finish(current_label=episode_id, extra_label="Draft, final render, and production package already exist")
             mark_step_completed(
@@ -2009,6 +2046,10 @@ def main() -> None:
     except Exception as exc:
         mark_step_failed("18_render_episode", str(exc), autosave_target, {"episode_id": episode_id})
         raise
+    finally:
+        if lease_heartbeat is not None:
+            lease_heartbeat.stop()
+            release_distributed_lease(lease_root, episode_id, worker_id)
 
 
 if __name__ == "__main__":

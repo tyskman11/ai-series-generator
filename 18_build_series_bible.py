@@ -1,7 +1,12 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import argparse
+
 from pipeline_common import (
+    add_shared_worker_arguments,
+    distributed_item_lease,
+    distributed_step_runtime_root,
     error,
     headline,
     info,
@@ -15,9 +20,17 @@ from pipeline_common import (
     read_json,
     rerun_in_runtime,
     resolve_project_path,
+    shared_worker_id_for_args,
+    shared_workers_enabled_for_args,
     write_json,
     write_text,
 )
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Build the current series bible snapshot")
+    add_shared_worker_arguments(parser)
+    return parser.parse_args()
 
 
 def build_series_bible_payload(model: dict, generated_episodes: list[dict]) -> tuple[dict, str]:
@@ -89,48 +102,65 @@ def build_series_bible_payload(model: dict, generated_episodes: list[dict]) -> t
 
 def main() -> None:
     rerun_in_runtime()
+    args = parse_args()
     headline("Build Series Bible")
     cfg = load_config()
+    worker_id = shared_worker_id_for_args(args)
+    shared_workers = shared_workers_enabled_for_args(cfg, args)
     mark_step_started("17_build_series_bible", "global")
+    lease_root = distributed_step_runtime_root("18_build_series_bible", "global")
+    if shared_workers:
+        info(f"Shared NAS workers: enabled ({worker_id})")
     reporter = LiveProgressReporter(
         script_name="18_build_series_bible.py",
         total=3,
         phase_label="Build Series Bible",
         parent_label="global",
     )
-    model_path = resolve_project_path(cfg["paths"]["series_model"])
-    reporter.update(0, current_label="Load Series Model", extra_label="Running now: load the trained model for the series bible", force=True)
-    model = read_json(model_path, {})
-    if not model:
-        reporter.finish(current_label="Series Model", extra_label="Stopped: no trained model found")
-        info("No trained series model was found.")
-        return
+    with distributed_item_lease(
+        root=lease_root,
+        lease_name="global",
+        cfg=cfg,
+        worker_id=worker_id,
+        enabled=shared_workers,
+        meta={"step": "18_build_series_bible", "scope": "global", "worker_id": worker_id},
+    ) as acquired:
+        if not acquired:
+            info("The series bible is already being rebuilt by another worker.")
+            return
+        model_path = resolve_project_path(cfg["paths"]["series_model"])
+        reporter.update(0, current_label="Load Series Model", extra_label="Running now: load the trained model for the series bible", force=True)
+        model = read_json(model_path, {})
+        if not model:
+            reporter.finish(current_label="Series Model", extra_label="Stopped: no trained model found")
+            info("No trained series model was found.")
+            return
 
-    reporter.update(1, current_label="Generate Bible Content", extra_label="Running now: collect main characters, themes and reference scenes")
-    generated_episodes = list_generated_episode_artifacts(cfg, limit=10)
-    bible_json, bible_markdown = build_series_bible_payload(model, generated_episodes)
+        reporter.update(1, current_label="Generate Bible Content", extra_label="Running now: collect main characters, themes and reference scenes")
+        generated_episodes = list_generated_episode_artifacts(cfg, limit=10)
+        bible_json, bible_markdown = build_series_bible_payload(model, generated_episodes)
 
-    try:
-        bible_json_path = resolve_project_path(cfg["paths"]["series_bible_json"])
-        bible_markdown_path = resolve_project_path(cfg["paths"]["series_bible_markdown"])
-        reporter.update(2, current_label="Write Files", extra_label="Running now: save JSON and Markdown series bible")
-        write_json(bible_json_path, bible_json)
-        write_text(bible_markdown_path, bible_markdown)
-        reporter.finish(current_label="Series Bible", extra_label=f"Written: {bible_json_path.name} and {bible_markdown_path.name}")
-        mark_step_completed(
-            "17_build_series_bible",
-            "global",
-            {
-                "series_bible_json": str(bible_json_path),
-                "series_bible_markdown": str(bible_markdown_path),
-                "generated_episode_count": len(generated_episodes),
-                "latest_generated_episode": generated_episodes[0] if generated_episodes else {},
-            },
-        )
-        ok("Series Bible was updated.")
-    except Exception as exc:
-        mark_step_failed("17_build_series_bible", str(exc), "global")
-        raise
+        try:
+            bible_json_path = resolve_project_path(cfg["paths"]["series_bible_json"])
+            bible_markdown_path = resolve_project_path(cfg["paths"]["series_bible_markdown"])
+            reporter.update(2, current_label="Write Files", extra_label="Running now: save JSON and Markdown series bible")
+            write_json(bible_json_path, bible_json)
+            write_text(bible_markdown_path, bible_markdown)
+            reporter.finish(current_label="Series Bible", extra_label=f"Written: {bible_json_path.name} and {bible_markdown_path.name}")
+            mark_step_completed(
+                "17_build_series_bible",
+                "global",
+                {
+                    "series_bible_json": str(bible_json_path),
+                    "series_bible_markdown": str(bible_markdown_path),
+                    "generated_episode_count": len(generated_episodes),
+                    "latest_generated_episode": generated_episodes[0] if generated_episodes else {},
+                },
+            )
+            ok("Series Bible was updated.")
+        except Exception as exc:
+            mark_step_failed("17_build_series_bible", str(exc), "global")
+            raise
 
 
 if __name__ == "__main__":

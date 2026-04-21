@@ -7,6 +7,9 @@ from collections import defaultdict
 from pathlib import Path
 
 from pipeline_common import (
+    add_shared_worker_arguments,
+    distributed_item_lease,
+    distributed_step_runtime_root,
     LiveProgressReporter,
     completed_step_state,
     error,
@@ -24,6 +27,8 @@ from pipeline_common import (
     rerun_in_runtime,
     resolve_project_path,
     save_step_autosave,
+    shared_worker_id_for_args,
+    shared_workers_enabled_for_args,
     write_json,
 )
 
@@ -34,6 +39,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Build Training Dataset")
     parser.add_argument("--episode", help="Name of the scene folder under data/processed/scene_clips.")
     parser.add_argument("--force", action="store_true", help="Rebuild existing datasets intentionally.")
+    add_shared_worker_arguments(parser)
     return parser.parse_args()
 
 
@@ -278,6 +284,8 @@ def main() -> None:
     args = parse_args()
     headline("Build Training Dataset")
     cfg = load_config()
+    worker_id = shared_worker_id_for_args(args)
+    shared_workers = shared_workers_enabled_for_args(cfg, args)
     scene_root = resolve_project_path(cfg["paths"]["scene_clips"])
     episode_dirs = resolve_episode_dirs_for_processing(scene_root, args.episode, cfg, args.force)
     if not episode_dirs:
@@ -289,6 +297,9 @@ def main() -> None:
 
     processed_count = 0
     total = len(episode_dirs)
+    lease_root = distributed_step_runtime_root("07_build_dataset", "episodes")
+    if shared_workers:
+        info(f"Shared NAS workers: enabled ({worker_id})")
     live_reporter = LiveProgressReporter(
         script_name="07_build_dataset.py",
         total=max(1, total),
@@ -296,25 +307,35 @@ def main() -> None:
         parent_label="Batch",
     )
     for index, episode_dir in enumerate(episode_dirs, start=1):
-        if process_episode_dir(
-            episode_dir,
-            cfg,
-            force=args.force,
-            live_reporter=live_reporter,
-            episode_index=index,
-            episode_total=total,
-        ):
-            processed_count += 1
-            live_reporter.update(
-                index,
-                current_label=episode_dir.name,
-                parent_label=episode_dir.name,
-                extra_label=f"Episode completed: {episode_dir.name}",
-                scope_current=1,
-                scope_total=1,
-                scope_started_at=time.time(),
-                scope_label=f"Episode {index}/{total}",
-            )
+        with distributed_item_lease(
+            root=lease_root,
+            lease_name=episode_dir.name,
+            cfg=cfg,
+            worker_id=worker_id,
+            enabled=shared_workers,
+            meta={"step": "07_build_dataset", "episode_id": episode_dir.name, "worker_id": worker_id},
+        ) as acquired:
+            if not acquired:
+                continue
+            if process_episode_dir(
+                episode_dir,
+                cfg,
+                force=args.force,
+                live_reporter=live_reporter,
+                episode_index=index,
+                episode_total=total,
+            ):
+                processed_count += 1
+                live_reporter.update(
+                    index,
+                    current_label=episode_dir.name,
+                    parent_label=episode_dir.name,
+                    extra_label=f"Episode completed: {episode_dir.name}",
+                    scope_current=1,
+                    scope_total=1,
+                    scope_started_at=time.time(),
+                    scope_label=f"Episode {index}/{total}",
+                )
 
     live_reporter.finish(current_label="Batch", extra_label=f"Episodes processed: {processed_count}")
     ok(f"Batch completed: {processed_count} episodes processed in 07.")

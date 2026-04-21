@@ -8,6 +8,9 @@ from pathlib import Path
 from PIL import Image, ImageDraw, ImageEnhance, ImageFilter, ImageOps
 
 from pipeline_common import (
+    add_shared_worker_arguments,
+    distributed_item_lease,
+    distributed_step_runtime_root,
     LiveProgressReporter,
     error,
     headline,
@@ -21,6 +24,8 @@ from pipeline_common import (
     read_json,
     rerun_in_runtime,
     resolve_project_path,
+    shared_worker_id_for_args,
+    shared_workers_enabled_for_args,
     write_json,
 )
 
@@ -31,6 +36,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--episode-id", help="Target a specific episode ID such as episode_09 or folge_09.")
     parser.add_argument("--force", action="store_true", help="Recreate already materialized backend frames.")
+    add_shared_worker_arguments(parser)
     return parser.parse_args()
 
 
@@ -244,6 +250,8 @@ def main() -> None:
     args = parse_args()
     headline("Run Storyboard Backend")
     cfg = load_config()
+    worker_id = shared_worker_id_for_args(args)
+    shared_workers = shared_workers_enabled_for_args(cfg, args)
     shotlist_dir = resolve_project_path("generation/shotlists")
     shotlist_path = (shotlist_dir / f"{args.episode_id}.json") if args.episode_id else find_latest_shotlist(shotlist_dir)
     if shotlist_path is None or not shotlist_path.exists():
@@ -273,19 +281,42 @@ def main() -> None:
         phase_label="Storyboard Backend",
         parent_label=episode_id,
     )
+    scene_lease_root = distributed_step_runtime_root("16_run_storyboard_backend", episode_id) / "scenes"
+    if shared_workers:
+        info(f"Shared NAS workers: enabled ({worker_id})")
     try:
         rows: list[dict] = []
         completed_count = 0
         for index, backend_input_path in enumerate(backend_inputs, start=1):
             payload = read_json(backend_input_path, {})
             scene_id = str(payload.get("scene_id", backend_input_path.stem.replace("_backend_input", ""))).strip() or f"scene_{index:04d}"
-            reporter.update(index - 1, current_label=scene_id, extra_label="Running now: materialize backend frame", force=True)
-            row = materialize_scene_backend_frame(assets_root, payload, width, height, args.force)
-            row["backend_input_path"] = str(backend_input_path)
-            rows.append(row)
-            if row.get("status") == "completed":
-                completed_count += 1
-            reporter.update(index, current_label=scene_id, extra_label=f"Status: {row.get('status', 'unknown')}")
+            with distributed_item_lease(
+                root=scene_lease_root,
+                lease_name=scene_id,
+                cfg=cfg,
+                worker_id=worker_id,
+                enabled=shared_workers,
+                meta={"step": "16_run_storyboard_backend", "episode_id": episode_id, "scene_id": scene_id, "worker_id": worker_id},
+            ) as acquired:
+                if not acquired:
+                    continue
+                reporter.update(index - 1, current_label=scene_id, extra_label="Running now: materialize backend frame", force=True)
+                row = materialize_scene_backend_frame(assets_root, payload, width, height, args.force)
+                row["backend_input_path"] = str(backend_input_path)
+                rows.append(row)
+                if row.get("status") == "completed":
+                    completed_count += 1
+                reporter.update(index, current_label=scene_id, extra_label=f"Status: {row.get('status', 'unknown')}")
+        if shared_workers and len(rows) < len(backend_inputs):
+            rows = []
+            completed_count = 0
+            for backend_input_path in backend_inputs:
+                payload = read_json(backend_input_path, {})
+                row = materialize_scene_backend_frame(assets_root, payload, width, height, False)
+                row["backend_input_path"] = str(backend_input_path)
+                rows.append(row)
+                if row.get("status") == "completed":
+                    completed_count += 1
 
         manifest_path = assets_root / f"{episode_id}_storyboard_backend_manifest.json"
         write_json(

@@ -10,6 +10,9 @@ from pathlib import Path
 from PIL import Image, ImageEnhance, ImageFilter, ImageOps
 
 from pipeline_common import (
+    add_shared_worker_arguments,
+    distributed_item_lease,
+    distributed_step_runtime_root,
     LiveProgressReporter,
     PROJECT_ROOT,
     detect_tool,
@@ -27,6 +30,8 @@ from pipeline_common import (
     resolve_stored_project_path,
     rerun_in_runtime,
     resolve_project_path,
+    shared_worker_id_for_args,
+    shared_workers_enabled_for_args,
     write_json,
 )
 
@@ -35,6 +40,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Generate storyboard scene assets from exported storyboard requests")
     parser.add_argument("--episode-id", help="Target a specific episode ID such as episode_09 or folge_09.")
     parser.add_argument("--force", action="store_true", help="Recreate existing storyboard scene assets.")
+    add_shared_worker_arguments(parser)
     return parser.parse_args()
 
 
@@ -314,6 +320,8 @@ def main() -> None:
     args = parse_args()
     headline("Generate Storyboard Assets")
     cfg = load_config()
+    worker_id = shared_worker_id_for_args(args)
+    shared_workers = shared_workers_enabled_for_args(cfg, args)
     shotlist_dir = resolve_project_path("generation/shotlists")
     shotlist_path = (shotlist_dir / f"{args.episode_id}.json") if args.episode_id else find_latest_shotlist(shotlist_dir)
     if shotlist_path is None or not shotlist_path.exists():
@@ -346,18 +354,36 @@ def main() -> None:
         phase_label="Generate Storyboard Assets",
         parent_label=episode_id,
     )
+    scene_lease_root = distributed_step_runtime_root("15_generate_storyboard_assets", episode_id) / "scenes"
+    if shared_workers:
+        info(f"Shared NAS workers: enabled ({worker_id})")
     try:
         generated_assets: list[dict] = []
         for index, scene_request in enumerate(scene_requests, start=1):
             scene_id = str(scene_request.get("scene_id", "")).strip() or f"scene_{index:04d}"
-            reporter.update(index - 1, current_label=scene_id, extra_label="Running now: build or reuse storyboard scene frame", force=True)
-            asset_row = build_scene_asset(ffmpeg, assets_root, episode_id, scene_request, backend_index, width, height, args.force)
-            generated_assets.append(asset_row)
-            backend_label = asset_row.get("backend_ready_image_characters", []) or asset_row.get("backend_ready_video_characters", [])
-            if backend_label:
-                reporter.update(index, current_label=scene_id, extra_label=f"Source: {asset_row['source_type']} | Backends: {', '.join(backend_label)}")
-            else:
-                reporter.update(index, current_label=scene_id, extra_label=f"Source: {asset_row['source_type']}")
+            with distributed_item_lease(
+                root=scene_lease_root,
+                lease_name=scene_id,
+                cfg=cfg,
+                worker_id=worker_id,
+                enabled=shared_workers,
+                meta={"step": "15_generate_storyboard_assets", "episode_id": episode_id, "scene_id": scene_id, "worker_id": worker_id},
+            ) as acquired:
+                if not acquired:
+                    continue
+                reporter.update(index - 1, current_label=scene_id, extra_label="Running now: build or reuse storyboard scene frame", force=True)
+                asset_row = build_scene_asset(ffmpeg, assets_root, episode_id, scene_request, backend_index, width, height, args.force)
+                generated_assets.append(asset_row)
+                backend_label = asset_row.get("backend_ready_image_characters", []) or asset_row.get("backend_ready_video_characters", [])
+                if backend_label:
+                    reporter.update(index, current_label=scene_id, extra_label=f"Source: {asset_row['source_type']} | Backends: {', '.join(backend_label)}")
+                else:
+                    reporter.update(index, current_label=scene_id, extra_label=f"Source: {asset_row['source_type']}")
+        if shared_workers and len(generated_assets) < len(scene_requests):
+            generated_assets = [
+                build_scene_asset(ffmpeg, assets_root, episode_id, scene_request, backend_index, width, height, False)
+                for scene_request in scene_requests
+            ]
 
         manifest_path = assets_root / f"{episode_id}_storyboard_assets_manifest.json"
         write_json(

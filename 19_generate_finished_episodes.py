@@ -7,6 +7,9 @@ import subprocess
 from pathlib import Path
 
 from pipeline_common import (
+    add_shared_worker_arguments,
+    distributed_item_lease,
+    distributed_step_runtime_root,
     open_face_review_item_count,
     LiveProgressReporter,
     SCRIPT_DIR,
@@ -21,6 +24,8 @@ from pipeline_common import (
     ok,
     rerun_in_runtime,
     runtime_python,
+    shared_worker_id_for_args,
+    shared_workers_enabled_for_args,
 )
 
 
@@ -42,6 +47,7 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Skip model downloads in 09 and only use existing downloads/updates.",
     )
+    add_shared_worker_arguments(parser)
     return parser.parse_args()
 
 
@@ -171,17 +177,34 @@ def main() -> None:
     endless = preview_endless_mode(args)
     count = 0 if endless else max(1, int(args.count))
     cfg = load_config()
+    worker_id = shared_worker_id_for_args(args)
+    shared_workers = shared_workers_enabled_for_args(cfg, args)
     training_rows = training_plan_rows(cfg, skip_downloads=bool(args.skip_downloads))
 
     headline("Generate Multiple Finished Episodes")
     generated: list[str] = []
     generated_outputs: list[dict[str, object]] = []
     autosave_target = "endless" if endless else f"count_{count}"
+    if shared_workers:
+        info(f"Shared NAS workers: enabled ({worker_id})")
     mark_step_started(
         "19_generate_finished_episodes",
         autosave_target,
         {"requested_count": count, "endless": endless, "skip_downloads": bool(args.skip_downloads)},
     )
+    lease_manager = distributed_item_lease(
+        root=distributed_step_runtime_root("19_generate_finished_episodes", autosave_target),
+        lease_name=autosave_target,
+        cfg=cfg,
+        worker_id=worker_id,
+        enabled=shared_workers,
+        meta={"step": "19_generate_finished_episodes", "scope": autosave_target, "worker_id": worker_id},
+    )
+    acquired = lease_manager.__enter__()
+    if not acquired:
+        info("This finished-episode batch is already being processed by another worker.")
+        lease_manager.__exit__(None, None, None)
+        return
     try:
         review_count = open_face_review_item_count(cfg)
         if review_count > 0:
@@ -385,6 +408,8 @@ def main() -> None:
             },
         )
         raise
+    finally:
+        lease_manager.__exit__(None, None, None)
 
 
 if __name__ == "__main__":

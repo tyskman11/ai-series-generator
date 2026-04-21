@@ -11,6 +11,9 @@ import numpy as np
 from PIL import Image
 
 from pipeline_common import (
+    add_shared_worker_arguments,
+    distributed_item_lease,
+    distributed_step_runtime_root,
     LiveProgressReporter,
     adapter_summary_path,
     coalesce_text,
@@ -26,6 +29,8 @@ from pipeline_common import (
     read_json,
     rerun_in_runtime,
     resolve_project_path,
+    shared_worker_id_for_args,
+    shared_workers_enabled_for_args,
     write_json,
 )
 
@@ -37,6 +42,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--limit-characters", type=int, default=0, help="Optionally train only the first N characters.")
     parser.add_argument("--character", help="Optionally train only one specific character.")
     parser.add_argument("--force", action="store_true", help="Intentionally retrain existing adapter profiles.")
+    add_shared_worker_arguments(parser)
     return parser.parse_args()
 
 
@@ -289,6 +295,8 @@ def main() -> None:
     args = parse_args()
     headline("Train Local Adapter Profiles")
     cfg = load_config()
+    worker_id = shared_worker_id_for_args(args)
+    shared_workers = shared_workers_enabled_for_args(cfg, args)
     manifests = load_manifests(cfg, coalesce_text(args.character or ""), int(args.limit_characters or 0))
     if not manifests:
         info("No foundation manifests found. Run 09_prepare_foundation_training.py first.")
@@ -299,11 +307,14 @@ def main() -> None:
     adapter_root.mkdir(parents=True, exist_ok=True)
 
     summary_rows: list[dict] = []
+    lease_root = distributed_step_runtime_root("11_train_adapter_models", "characters")
     reporter = LiveProgressReporter(
         script_name="11_train_adapter_models.py",
         total=len(manifests),
         phase_label="Train Adapter Profiles",
     )
+    if shared_workers:
+        info(f"Shared NAS workers: enabled ({worker_id})")
     for index, manifest in enumerate(manifests, start=1):
         character_name = coalesce_text(manifest.get("name", ""))
         slug = str(manifest.get("slug", "") or "figur")
@@ -313,63 +324,72 @@ def main() -> None:
         pack_payload = read_json(foundation_pack_path, {}) if foundation_pack_path.exists() else {}
         manifest["_manifest_path"] = str(resolve_project_path(cfg["paths"]["foundation_manifests"]) / f"{slug}_manifest.json")
         manifest["_foundation_pack_path"] = str(foundation_pack_path)
-
-        if not args.force and adapter_profile_completed(profile_path):
-            payload = read_json(profile_path, {})
-            info(f"Adapter profile already exists: {character_name}")
-        else:
-            info(f"Training local adapter profile: {character_name}")
-            mark_step_started(
-                "11_train_adapter_models",
-                autosave_target,
-                {"character": character_name, "profile_path": str(profile_path)},
-            )
-            try:
-                payload = build_adapter_profile(manifest, pack_payload, cfg)
-                profile_dir = profile_path.parent
-                profile_dir.mkdir(parents=True, exist_ok=True)
-                write_json(profile_path, payload)
-                mark_step_completed(
+        with distributed_item_lease(
+            root=lease_root,
+            lease_name=slug,
+            cfg=cfg,
+            worker_id=worker_id,
+            enabled=shared_workers,
+            meta={"step": "11_train_adapter_models", "character": character_name, "slug": slug, "worker_id": worker_id},
+        ) as acquired:
+            if not acquired:
+                continue
+            if not args.force and adapter_profile_completed(profile_path):
+                payload = read_json(profile_path, {})
+                info(f"Adapter profile already exists: {character_name}")
+            else:
+                info(f"Training local adapter profile: {character_name}")
+                mark_step_started(
                     "11_train_adapter_models",
-                    autosave_target,
-                    {
-                        "character": character_name,
-                        "profile_path": str(profile_path),
-                        "modalities_ready": payload.get("modalities_ready", []),
-                        "training_ready": bool(payload.get("training_ready", False)),
-                    },
-                )
-            except Exception as exc:
-                mark_step_failed(
-                    "11_train_adapter_models",
-                    str(exc),
                     autosave_target,
                     {"character": character_name, "profile_path": str(profile_path)},
                 )
-                raise
+                try:
+                    payload = build_adapter_profile(manifest, pack_payload, cfg)
+                    profile_dir = profile_path.parent
+                    profile_dir.mkdir(parents=True, exist_ok=True)
+                    write_json(profile_path, payload)
+                    mark_step_completed(
+                        "11_train_adapter_models",
+                        autosave_target,
+                        {
+                            "character": character_name,
+                            "profile_path": str(profile_path),
+                            "modalities_ready": payload.get("modalities_ready", []),
+                            "training_ready": bool(payload.get("training_ready", False)),
+                        },
+                    )
+                except Exception as exc:
+                    mark_step_failed(
+                        "11_train_adapter_models",
+                        str(exc),
+                        autosave_target,
+                        {"character": character_name, "profile_path": str(profile_path)},
+                    )
+                    raise
 
-        summary_rows.append(
-            {
-                "character": payload.get("character", character_name),
-                "profile_path": str(profile_path),
-                "training_ready": bool(payload.get("training_ready", False)),
-                "modalities_ready": list(payload.get("modalities_ready", []) or []),
-                "image_samples": int((payload.get("modalities", {}).get("image", {}) or {}).get("sample_count", 0) or 0),
-                "voice_samples": int((payload.get("modalities", {}).get("voice", {}) or {}).get("sample_count", 0) or 0),
-                "voice_duration_seconds": float((payload.get("modalities", {}).get("voice", {}) or {}).get("duration_seconds_total", 0.0) or 0.0),
-                "voice_quality_score": float((payload.get("modalities", {}).get("voice", {}) or {}).get("quality_score", 0.0) or 0.0),
-                "voice_clone_ready": bool((payload.get("modalities", {}).get("voice", {}) or {}).get("clone_ready", False)),
-                "voice_model_path": coalesce_text(payload.get("voice_model_path", "")),
-                "dominant_voice_language": coalesce_text(payload.get("dominant_voice_language", "")),
-                "video_samples": int((payload.get("modalities", {}).get("video", {}) or {}).get("sample_count", 0) or 0),
-                "autosave": load_step_autosave("11_train_adapter_models", autosave_target),
-            }
-        )
-        reporter.update(
-            index,
-            current_label=character_name,
-            extra_label=f"Adapter profiles so far: {len(summary_rows)}",
-        )
+            summary_rows.append(
+                {
+                    "character": payload.get("character", character_name),
+                    "profile_path": str(profile_path),
+                    "training_ready": bool(payload.get("training_ready", False)),
+                    "modalities_ready": list(payload.get("modalities_ready", []) or []),
+                    "image_samples": int((payload.get("modalities", {}).get("image", {}) or {}).get("sample_count", 0) or 0),
+                    "voice_samples": int((payload.get("modalities", {}).get("voice", {}) or {}).get("sample_count", 0) or 0),
+                    "voice_duration_seconds": float((payload.get("modalities", {}).get("voice", {}) or {}).get("duration_seconds_total", 0.0) or 0.0),
+                    "voice_quality_score": float((payload.get("modalities", {}).get("voice", {}) or {}).get("quality_score", 0.0) or 0.0),
+                    "voice_clone_ready": bool((payload.get("modalities", {}).get("voice", {}) or {}).get("clone_ready", False)),
+                    "voice_model_path": coalesce_text(payload.get("voice_model_path", "")),
+                    "dominant_voice_language": coalesce_text(payload.get("dominant_voice_language", "")),
+                    "video_samples": int((payload.get("modalities", {}).get("video", {}) or {}).get("sample_count", 0) or 0),
+                    "autosave": load_step_autosave("11_train_adapter_models", autosave_target),
+                }
+            )
+            reporter.update(
+                index,
+                current_label=character_name,
+                extra_label=f"Adapter profiles so far: {len(summary_rows)}",
+            )
     reporter.finish(current_label="Adapter Training", extra_label=f"Total adapter profiles: {len(summary_rows)}")
 
     summary_path = adapter_summary_path(cfg)
