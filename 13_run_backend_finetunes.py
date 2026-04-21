@@ -25,7 +25,7 @@ from pipeline_common import (
     write_json,
 )
 
-PROCESS_VERSION = 1
+PROCESS_VERSION = 2
 
 
 def parse_args() -> argparse.Namespace:
@@ -152,6 +152,10 @@ def build_backend_run_profile(row: dict, fine_tune_payload: dict, cfg: dict) -> 
     voice_quality_score = float(row.get("voice_quality_score", fine_tune_payload.get("voice_quality_score", 0.0)) or 0.0)
     voice_duration_seconds = float(row.get("voice_duration_seconds", fine_tune_payload.get("voice_duration_seconds", 0.0)) or 0.0)
     voice_clone_ready = bool(row.get("voice_clone_ready", fine_tune_payload.get("voice_clone_ready", False)))
+    voice_model_path = coalesce_text(row.get("voice_model_path", "") or fine_tune_payload.get("voice_model_path", ""))
+    dominant_voice_language = coalesce_text(
+        row.get("dominant_voice_language", "") or fine_tune_payload.get("dominant_voice_language", "")
+    )
     backends = {
         modality: {
             "backend": backend_name_for_modality(modality, cfg),
@@ -177,6 +181,8 @@ def build_backend_run_profile(row: dict, fine_tune_payload: dict, cfg: dict) -> 
         backends["voice"]["voice_quality_score"] = round(voice_quality_score, 4)
         backends["voice"]["voice_duration_seconds"] = round(voice_duration_seconds, 3)
         backends["voice"]["voice_clone_ready"] = voice_clone_ready
+        backends["voice"]["voice_model_path"] = voice_model_path
+        backends["voice"]["dominant_voice_language"] = dominant_voice_language
         backends["voice"]["ready"] = bool(backends["voice"]["ready"] and voice_clone_ready)
     return {
         "process_version": PROCESS_VERSION,
@@ -189,6 +195,8 @@ def build_backend_run_profile(row: dict, fine_tune_payload: dict, cfg: dict) -> 
         "voice_quality_score": round(voice_quality_score, 4),
         "voice_duration_seconds": round(voice_duration_seconds, 3),
         "voice_clone_ready": voice_clone_ready,
+        "voice_model_path": voice_model_path,
+        "dominant_voice_language": dominant_voice_language,
         "backends": backends,
         "training_ready": bool(backends) and all(backend_payload.get("ready", False) for backend_payload in backends.values()),
     }
@@ -275,6 +283,8 @@ def main() -> None:
                 "voice_quality_score": float(payload.get("voice_quality_score", 0.0) or 0.0),
                 "voice_duration_seconds": float(payload.get("voice_duration_seconds", 0.0) or 0.0),
                 "voice_clone_ready": bool(payload.get("voice_clone_ready", False)),
+                "voice_model_path": coalesce_text(payload.get("voice_model_path", "")),
+                "dominant_voice_language": coalesce_text(payload.get("dominant_voice_language", "")),
                 "backends": dict(payload.get("backends", {}) or {}),
                 "autosave": load_step_autosave("13_run_backend_finetunes", autosave_target),
             }

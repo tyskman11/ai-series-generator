@@ -8,9 +8,11 @@ Starting from real episode files, the pipeline can:
 
 - import and split source episodes into scenes
 - transcribe dialogue and build speaker clusters
+- detect the spoken language automatically per source segment instead of forcing one fixed transcription language
 - detect faces and link recurring characters to speakers
 - build a local series dataset and heuristic series model
 - train local foundation, adapter, fine-tune, and backend preparation artifacts
+- train per-character local voice models from original dialogue recordings so later voice cloning can follow the real character voices and their detected languages
 - generate new synthetic episodes as markdown and shotlists
 - render draft previews and final voiced storyboard episodes
 - export backend-ready production packages for fully generated episodes with new frames, cloned voices, and lip-sync
@@ -38,7 +40,9 @@ All scripts in this repository are AI-generated and maintained with `GPT-5.4`.
 - full local preprocessing from inbox episode to linked scene data
 - batch processing over multiple new source episodes
 - synthetic episode generation from the trained local model
+- automatic language detection during transcription, so mixed-language material no longer depends on one hard-coded transcription language
 - model-native storyboard planning per scene, with multi-reference slots, continuity anchors, and camera/control hints for later image-model backends
+- voice-training preparation now prioritizes original per-character dialogue segments from the source material and writes language-aware local voice-model profiles for each trained character
 - storyboard scene asset generation now writes backend-ready per-scene seed packages and can reuse moved training artifacts after workspace path changes
 - local storyboard backend materialization can turn those seed packages into reusable per-scene backend frames before render
 - real episode titles for generated outputs instead of raw `folge_0x` placeholders
@@ -60,6 +64,7 @@ All scripts in this repository are AI-generated and maintained with `GPT-5.4`.
 - keep the default path robust, local, and free of unnecessary license prompts
 - harden the end-to-end batch pipeline for large inbox runs
 - improve the voice path so future local cloning backends can replace simple fallback TTS where appropriate
+- keep the voice path centered on original per-character dialogue material instead of generic online voice base models
 - improve the model-side storyboard planning so future image/video backends can use original-series references without relying on any graphical node editor or UI-specific workflow
 - move the path after `17_render_episode.py` from voiced storyboard previews toward truly newly generated episodes with new frames, new shot video, original-voice cloning, and lip-sync
 
@@ -68,6 +73,7 @@ All scripts in this repository are AI-generated and maintained with `GPT-5.4`.
 - `06_review_unknowns.py` now tries to re-identify known faces before manual naming, using multi-reference matching per character
 - `06_review_unknowns.py` keeps iterating after each manual naming step, so newly named characters immediately help resolve more open clusters
 - `04_diarize_and_transcribe.py` now applies extra rescue passes for remaining `speaker_unknown` segments using neighborhood and embedding agreement
+- `04_diarize_and_transcribe.py` now also auto-detects spoken language per transcription run and stores that language on the emitted source segments
 - `99_process_next_episode.py` is being hardened for real inbox batch workflows with autosaves, resumable checkpoints, and live status files
 - `17_render_episode.py` continues to improve long Windows render runs, especially for large segment stacks
 - the new training chain around `09` through `13` is being observed on real project data, especially where voice material is still weak
@@ -92,6 +98,9 @@ All scripts in this repository are AI-generated and maintained with `GPT-5.4`.
 - `00_prepare_runtime.py` now installs the torch stack before torch-dependent packages like Whisper, SpeechBrain, facenet-pytorch, and optional XTTS, which avoids Linux install failures caused by dependency resolution in the wrong order
 - `00_prepare_runtime.py` now uses the active `python3` interpreter on Linux/NAS and installs with `python3 -m pip install --break-system-packages` instead of relying on a separate venv there, which avoids Synology-style runtime installs silently landing outside the usable environment
 - `00_prepare_runtime.py` now also downloads and installs the matching FFmpeg build for the current OS into `ai_series_project/tools/ffmpeg/bin`, and `pipeline_common.py` only resolves the platform-valid binary there so Linux never tries to launch a Windows `.exe`
+- `09_prepare_foundation_training.py` now skips online voice-base downloads by default when local character voice models are enabled, extracts original per-character dialogue segments from the reviewed dataset, and prepares language-aware voice manifests from those original recordings
+- `10_train_foundation_models.py`, `11_train_adapter_models.py`, `12_train_fine_tune_models.py`, and `13_run_backend_finetunes.py` now carry per-character voice-model paths plus dominant-language metadata through the full training chain, so the downstream render/backends can follow original-character voices instead of one generic voice language
+- `17_render_episode.py` now carries those character-language and voice-model hints into the production package and uses detected character language when choosing fallback system voices
 - `03_split_scenes.py`, `04_diarize_and_transcribe.py`, `05_link_faces_and_speakers.py`, and `07_build_dataset.py` now also use English-first live progress scope labels and segment/cluster counters so long batch runs read consistently across the early numbered pipeline
 - `05_link_faces_and_speakers.py` now also derives its live face-cluster counter directly from each processed scene payload, so long linking runs no longer break on the progress display after scene analysis starts
 - `17_render_episode.py` now also turns the timed dialogue voice-plan into a final dialogue audio track and muxes it into the final storyboard episode, while keeping the draft render as a lighter silent check
@@ -206,6 +215,7 @@ Also keep the `In Progress` and `Planned` sections current. If priorities change
 - `ai_series_project/generation/final_episode_packages/<episode>/master/scenes/*_master.mp4`: per-scene mastered clips that combine each scene video with its own dialogue track when available
 - `ai_series_project/generation/final_episode_packages/<episode>/master/*_production_package.json`: master production package for a later full generated episode
 - `ai_series_project/generation/final_episode_packages/<episode>/master/*_full_generated_episode.mp4`: full episode master that `17_render_episode.py` now writes from generated scene clips when available, with storyboard-card fallback for missing scenes
+- `ai_series_project/characters/voice_models/*_voice_model.json`: local per-character voice-model profiles with reference audio, language counts, dominant language, and original source segments
 - `ai_series_project/series_bible/episode_summaries`: generated series bible files
 - `ai_series_project/runtime/autosaves`: autosaves and resumable run state
 - `ai_series_project/tools/ffmpeg/bin`: OS-specific local FFmpeg binaries used by split, transcription, training prep, storyboard asset generation, and render steps
@@ -272,7 +282,7 @@ Splits imported episodes into scene clips, writes a scene index CSV, and now wor
 
 ### 04 - Diarize And Transcribe
 
-Extracts audio, runs Whisper, builds speaker segments, computes speaker embeddings, and clusters speakers. It now also includes additional rescue passes for unresolved `speaker_unknown` cases.
+Extracts audio, runs Whisper, auto-detects the spoken language unless a fixed language is explicitly configured, builds speaker segments, computes speaker embeddings, and clusters speakers. It now also includes additional rescue passes for unresolved `speaker_unknown` cases.
 
 ### 05 - Link Faces And Speakers
 
@@ -292,23 +302,23 @@ Builds the local heuristic series model from the reviewed datasets. This is not 
 
 ### 09 - Prepare Foundation Training
 
-Prepares 720p frame, clip, and voice assets for later training stages. It can also manage model downloads and update checks for configured base assets, and now writes its training-plan markdown summary with English-first labels.
+Prepares 720p frame, clip, and voice assets for later training stages. It can also manage model downloads and update checks for configured base assets, but now skips online voice-base downloads by default when local character voice models are enabled. The voice preparation path now prioritizes original per-character dialogue recordings from the reviewed dataset, keeps their detected languages, and writes those language-aware original voice references into the training manifests and markdown summary.
 
 ### 10 - Train Foundation Models
 
-Builds local foundation packs from the prepared assets.
+Builds local foundation packs from the prepared assets and now also writes one local per-character voice-model profile under `characters/voice_models`, using original dialogue material, detected language counts, dominant language, and reference-audio paths.
 
 ### 11 - Train Adapter Models
 
-Builds local adapter profiles for image, voice, and clip dynamics.
+Builds local adapter profiles for image, voice, and clip dynamics. The voice branch now carries the local voice-model path plus dominant-language metadata forward from the foundation stage.
 
 ### 12 - Train Fine-Tune Models
 
-Builds local fine-tune profiles on top of the adapter stage.
+Builds local fine-tune profiles on top of the adapter stage and keeps the per-character voice-model path and dominant language available for downstream backends.
 
 ### 13 - Run Backend Finetunes
 
-Turns the local fine-tune profiles into backend-oriented fine-tune runs and materialized local backend artifacts.
+Turns the local fine-tune profiles into backend-oriented fine-tune runs and materialized local backend artifacts, now including the per-character voice-model path and dominant language for the voice backend.
 
 ### 14 - Generate Episode From Trained Model
 
@@ -345,7 +355,7 @@ Renders a draft local preview plus a final voiced storyboard episode. The curren
 - uses FFmpeg concat lists to avoid long Windows command line failures
 - keeps the draft render as a fast silent preview
 - reuses matching original dialogue segments from stored source audio or scene clips whenever they exist
-- fills only the remaining missing lines with local `pyttsx3` speech synthesis
+- fills only the remaining missing lines with local `pyttsx3` speech synthesis while preferring the detected dominant language of each character when selecting a system voice
 - muxes that mixed dialogue track into the final episode render when local audio assembly succeeds
 - falls back to a silent final video only if local audio synthesis fails
 - also writes a timed dialogue voice-plan JSON plus an `.srt` subtitle preview beside the final outputs

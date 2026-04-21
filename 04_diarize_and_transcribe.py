@@ -22,6 +22,7 @@ from pipeline_common import (
     info,
     limited_items,
     load_config,
+    normalize_language_code,
     ok,
     preferred_compute_label,
     preferred_execution_label,
@@ -39,7 +40,7 @@ from pipeline_common import (
     write_json,
 )
 
-PROCESS_VERSION = 6
+PROCESS_VERSION = 7
 
 
 def parse_args() -> argparse.Namespace:
@@ -359,17 +360,26 @@ def merge_segments(
     return merged
 
 
-def transcribe_scene(model, scene_wav: Path, cfg: dict, use_fp16: bool) -> list[dict[str, float | str]]:
+def transcribe_language_hint(cfg: dict) -> str:
+    transcription_cfg = cfg.get("transcription", {}) if isinstance(cfg.get("transcription", {}), dict) else {}
+    configured = normalize_language_code(transcription_cfg.get("language", ""))
+    return "" if configured in {"", "auto", "detect"} else configured
+
+
+def transcribe_scene(model, scene_wav: Path, cfg: dict, use_fp16: bool) -> dict[str, object]:
     full_duration = wav_duration_seconds(scene_wav)
-    result = model.transcribe(
-        str(scene_wav),
-        language=cfg["transcription"]["language"],
-        task=cfg["transcription"]["task"],
-        condition_on_previous_text=False,
-        temperature=0.0,
-        verbose=False,
-        fp16=use_fp16,
-    )
+    transcribe_kwargs = {
+        "task": cfg["transcription"]["task"],
+        "condition_on_previous_text": False,
+        "temperature": 0.0,
+        "verbose": False,
+        "fp16": use_fp16,
+    }
+    language_hint = transcribe_language_hint(cfg)
+    if language_hint:
+        transcribe_kwargs["language"] = language_hint
+    result = model.transcribe(str(scene_wav), **transcribe_kwargs)
+    detected_language = normalize_language_code(result.get("language", ""), language_hint)
     raw_segments = result.get("segments") or []
     segments = []
     for item in raw_segments:
@@ -378,17 +388,27 @@ def transcribe_scene(model, scene_wav: Path, cfg: dict, use_fp16: bool) -> list[
         end_sec = max(start_sec + 0.15, float(item.get("end", start_sec + 0.15)))
         if not text and end_sec - start_sec < 0.35:
             continue
-        segments.append({"start": start_sec, "end": end_sec, "text": text})
+        segments.append(
+            {
+                "start": start_sec,
+                "end": end_sec,
+                "text": text,
+                "language": normalize_language_code(item.get("language", ""), detected_language),
+            }
+        )
     if not segments:
         text = coalesce_text(result.get("text", ""))
         if text or full_duration > 0.1:
-            segments = [{"start": 0.0, "end": max(full_duration, 0.15), "text": text}]
-    return merge_segments(
+            segments = [{"start": 0.0, "end": max(full_duration, 0.15), "text": text, "language": detected_language}]
+    merged_segments = merge_segments(
         segments,
         float(cfg["transcription"].get("merge_gap_seconds", 0.35)),
         float(cfg["transcription"].get("min_segment_seconds", 0.6)),
         full_duration,
     )
+    for segment in merged_segments:
+        segment["language"] = normalize_language_code(segment.get("language", ""), detected_language)
+    return {"segments": merged_segments, "detected_language": detected_language}
 
 
 def compute_voice_embedding(
@@ -464,7 +484,9 @@ def process_scene(
         write_json(cache_file, rows)
         return rows
 
-    segments = transcribe_scene(model, scene_wav, cfg, use_fp16)
+    transcription_payload = transcribe_scene(model, scene_wav, cfg, use_fp16)
+    segments = transcription_payload.get("segments", []) if isinstance(transcription_payload.get("segments", []), list) else []
+    detected_language = normalize_language_code(transcription_payload.get("detected_language", ""))
     rows = []
     for index, segment in enumerate(segments, start=1):
         start_sec = float(segment["start"])
@@ -481,6 +503,7 @@ def process_scene(
                 "end": round(end_sec, 3),
                 "audio_file": str(segment_wav),
                 "text": coalesce_text(str(segment.get("text", ""))),
+                "language": normalize_language_code(segment.get("language", ""), detected_language),
                 "voice_embedding": compute_voice_embedding(
                     scene_wav,
                     start_sec,

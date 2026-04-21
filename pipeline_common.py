@@ -140,7 +140,7 @@ DEFAULT_CONFIG = {
     "transcription": {
         "model_name": "large-v3",
         "cpu_model_name": "large-v3",
-        "language": "de",
+        "language": "auto",
         "task": "transcribe",
         "merge_gap_seconds": 0.35,
         "min_segment_seconds": 0.6,
@@ -221,6 +221,7 @@ DEFAULT_CONFIG = {
         "image_base_model": "stabilityai/stable-diffusion-xl-base-1.0",
         "video_base_model": "Lightricks/LTX-Video",
         "voice_base_model": "openbmb/VoxCPM2",
+        "use_local_character_voice_models": True,
         "min_voice_duration_seconds_total": 8.0,
         "target_voice_duration_seconds_total": 18.0,
         "min_voice_samples_for_clone": 4,
@@ -263,8 +264,9 @@ DEFAULT_CONFIG = {
         "require_trained_voice_models": True,
         "allow_system_tts_fallback": True,
         "xtts_model_name": "tts_models/multilingual/multi-dataset/xtts_v2",
-        "xtts_language": "de",
+        "xtts_language": "auto",
         "xtts_license_accepted": False,
+        "prefer_detected_character_language": True,
         "voice_reference_max_segments": 4,
         "voice_reference_target_seconds": 16.0,
         "reference_audio_sample_rate": 24000,
@@ -1625,6 +1627,69 @@ def extract_keywords(texts: Iterable[str], limit: int = 20) -> list[str]:
 
 def coalesce_text(text: str) -> str:
     return re.sub(r"\s+", " ", (text or "").strip())
+
+
+LANGUAGE_ALIASES = {
+    "auto": "",
+    "detect": "",
+    "und": "",
+    "unknown": "",
+    "german": "de",
+    "deutsch": "de",
+    "english": "en",
+    "englisch": "en",
+    "french": "fr",
+    "francais": "fr",
+    "spanish": "es",
+    "espanol": "es",
+    "italian": "it",
+    "portuguese": "pt",
+    "dutch": "nl",
+    "turkish": "tr",
+    "polish": "pl",
+    "russian": "ru",
+    "japanese": "ja",
+    "korean": "ko",
+    "chinese": "zh",
+}
+
+
+def normalize_language_code(value: object, fallback: str = "") -> str:
+    raw = coalesce_text(str(value or "")).lower().replace("_", "-")
+    if not raw:
+        return coalesce_text(fallback).lower()
+    raw = raw.split(",", 1)[0].split(";", 1)[0].strip()
+    raw = LANGUAGE_ALIASES.get(raw, raw)
+    if not raw:
+        return coalesce_text(fallback).lower()
+    return raw
+
+
+def merge_language_counts(*mappings: object) -> dict[str, int]:
+    merged: dict[str, int] = {}
+    for mapping in mappings:
+        if not isinstance(mapping, dict):
+            continue
+        for key, value in mapping.items():
+            language = normalize_language_code(key)
+            if not language:
+                continue
+            try:
+                count = int(value or 0)
+            except (TypeError, ValueError):
+                continue
+            if count <= 0:
+                continue
+            merged[language] = merged.get(language, 0) + count
+    return dict(sorted(merged.items(), key=lambda item: (-item[1], item[0])))
+
+
+def dominant_language(language_counts: object, fallback: str = "") -> str:
+    if isinstance(language_counts, dict):
+        merged = merge_language_counts(language_counts)
+        if merged:
+            return next(iter(merged.keys()))
+    return normalize_language_code(fallback)
 
 
 def foundation_summary_path(cfg: dict[str, Any]) -> Path:

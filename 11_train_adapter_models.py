@@ -29,7 +29,7 @@ from pipeline_common import (
     write_json,
 )
 
-PROCESS_VERSION = 1
+PROCESS_VERSION = 2
 
 
 def parse_args() -> argparse.Namespace:
@@ -238,6 +238,10 @@ def build_voice_adapter(manifest: dict, pack_payload: dict, cfg: dict) -> dict:
         "quality_score": round(foundation_quality_score, 4),
         "clone_ready": clone_ready,
         "ready": clone_ready,
+        "voice_model_path": coalesce_text(pack_payload.get("voice_model_path", "")),
+        "dominant_language": coalesce_text(pack_payload.get("dominant_voice_language", "") or source_voice_pack.get("dominant_language", "")),
+        "language_counts": dict(source_voice_pack.get("language_counts", {}) or {}),
+        "original_voice_sample_count": int(source_voice_pack.get("original_voice_sample_count", 0) or 0),
     }
 
 
@@ -274,6 +278,8 @@ def build_adapter_profile(manifest: dict, pack_payload: dict, cfg: dict) -> dict
         "base_models": dict(pack_payload.get("base_models", {}) or {}),
         "modalities": modalities,
         "modalities_ready": modalities_ready,
+        "voice_model_path": coalesce_text((modalities.get("voice", {}) or {}).get("voice_model_path", "")),
+        "dominant_voice_language": coalesce_text((modalities.get("voice", {}) or {}).get("dominant_language", "")),
         "training_ready": bool(modalities_ready),
     }
 
@@ -353,6 +359,8 @@ def main() -> None:
                 "voice_duration_seconds": float((payload.get("modalities", {}).get("voice", {}) or {}).get("duration_seconds_total", 0.0) or 0.0),
                 "voice_quality_score": float((payload.get("modalities", {}).get("voice", {}) or {}).get("quality_score", 0.0) or 0.0),
                 "voice_clone_ready": bool((payload.get("modalities", {}).get("voice", {}) or {}).get("clone_ready", False)),
+                "voice_model_path": coalesce_text(payload.get("voice_model_path", "")),
+                "dominant_voice_language": coalesce_text(payload.get("dominant_voice_language", "")),
                 "video_samples": int((payload.get("modalities", {}).get("video", {}) or {}).get("sample_count", 0) or 0),
                 "autosave": load_step_autosave("11_train_adapter_models", autosave_target),
             }

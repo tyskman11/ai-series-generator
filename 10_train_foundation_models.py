@@ -13,6 +13,7 @@ from PIL import Image
 from pipeline_common import (
     LiveProgressReporter,
     coalesce_text,
+    dominant_language,
     error,
     headline,
     info,
@@ -21,6 +22,8 @@ from pipeline_common import (
     mark_step_completed,
     mark_step_failed,
     mark_step_started,
+    merge_language_counts,
+    normalize_language_code,
     ok,
     read_json,
     rerun_in_runtime,
@@ -28,7 +31,7 @@ from pipeline_common import (
     write_json,
 )
 
-PROCESS_VERSION = 1
+PROCESS_VERSION = 2
 
 
 def parse_args() -> argparse.Namespace:
@@ -89,11 +92,50 @@ def wav_duration_seconds(path: Path) -> float:
     return frame_count / frame_rate if frame_rate else 0.0
 
 
-def voice_stats(paths: list[Path], cfg: dict) -> dict:
+def voice_stats(entries: list[dict], cfg: dict) -> dict:
     foundation_cfg = cfg.get("foundation_training", {}) if isinstance(cfg.get("foundation_training"), dict) else {}
-    durations = [wav_duration_seconds(path) for path in paths if path.exists()]
+    durations = []
+    language_counts: dict[str, int] = {}
+    original_voice_sample_count = 0
+    sample_paths: list[str] = []
+    reference_segments: list[dict] = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        path = Path(str(entry.get("path", "")))
+        if not path.exists():
+            continue
+        durations.append(wav_duration_seconds(path))
+        sample_paths.append(str(path))
+        if entry.get("source_type") == "original_segment":
+            original_voice_sample_count += 1
+        language = normalize_language_code(entry.get("language", ""))
+        if language:
+            language_counts[language] = language_counts.get(language, 0) + 1
+        if entry.get("source_type") == "original_segment":
+            reference_segments.append(
+                {
+                    "path": str(path),
+                    "episode_id": coalesce_text(entry.get("episode_id", "")),
+                    "scene_id": coalesce_text(entry.get("scene_id", "")),
+                    "segment_id": coalesce_text(entry.get("segment_id", "")),
+                    "language": language,
+                    "duration_seconds": round(float(entry.get("duration_seconds", 0.0) or 0.0), 3),
+                    "text": coalesce_text(entry.get("text", "")),
+                }
+            )
     if not durations:
-        return {"sample_count": 0, "duration_seconds_total": 0.0, "quality_score": 0.0, "clone_ready": False}
+        return {
+            "sample_count": 0,
+            "duration_seconds_total": 0.0,
+            "quality_score": 0.0,
+            "clone_ready": False,
+            "language_counts": {},
+            "dominant_language": "",
+            "original_voice_sample_count": 0,
+            "sample_paths": [],
+            "reference_segments": [],
+        }
     total_duration = sum(durations)
     min_total_duration = float(foundation_cfg.get("min_voice_duration_seconds_total", 8.0) or 8.0)
     target_total_duration = float(foundation_cfg.get("target_voice_duration_seconds_total", 18.0) or 18.0)
@@ -110,6 +152,11 @@ def voice_stats(paths: list[Path], cfg: dict) -> dict:
         "duration_seconds_max": round(max(durations), 3),
         "quality_score": quality_score,
         "clone_ready": clone_ready,
+        "language_counts": merge_language_counts(language_counts),
+        "dominant_language": dominant_language(language_counts),
+        "original_voice_sample_count": original_voice_sample_count,
+        "sample_paths": sample_paths,
+        "reference_segments": reference_segments[: max(1, int(foundation_cfg.get("min_voice_samples_for_clone", 4) or 4) * 2)],
     }
 
 
@@ -132,9 +179,11 @@ def video_stats(entries: list[dict]) -> dict:
 
 def build_training_pack(manifest: dict, cfg: dict) -> dict:
     frame_paths = [Path(str(entry.get("path", ""))) for entry in manifest.get("frame_samples", [])]
-    voice_paths = [Path(str(entry.get("path", ""))) for entry in manifest.get("voice_samples", [])]
+    voice_entries = list(manifest.get("voice_samples", []) or [])
     video_entries = manifest.get("video_samples", []) or []
     foundation_cfg = cfg.get("foundation_training", {}) if isinstance(cfg.get("foundation_training"), dict) else {}
+    use_local_voice_models = bool(foundation_cfg.get("use_local_character_voice_models", True))
+    voice_pack = voice_stats(voice_entries, cfg)
     return {
         "process_version": PROCESS_VERSION,
         "trained_at": time.strftime("%Y-%m-%d %H:%M:%S"),
@@ -146,13 +195,46 @@ def build_training_pack(manifest: dict, cfg: dict) -> dict:
         "base_models": {
             "image": coalesce_text(foundation_cfg.get("image_base_model", "")),
             "video": coalesce_text(foundation_cfg.get("video_base_model", "")),
-            "voice": coalesce_text(foundation_cfg.get("voice_base_model", "")),
+            "voice": "local_character_voice_model"
+            if use_local_voice_models
+            else coalesce_text(foundation_cfg.get("voice_base_model", "")),
         },
         "image_pack": image_stats(frame_paths),
         "video_pack": video_stats(video_entries),
-        "voice_pack": voice_stats(voice_paths, cfg),
-        "training_ready": bool(frame_paths or voice_paths or video_entries),
+        "voice_pack": voice_pack,
+        "training_ready": bool(frame_paths or voice_entries or video_entries),
         "target_inference_minutes": [float(cfg.get("generation", {}).get("target_episode_minutes_min", 20.0)), float(cfg.get("generation", {}).get("target_episode_minutes_max", 24.0))],
+    }
+
+
+def voice_model_path_for_manifest(cfg: dict, manifest: dict) -> Path:
+    voice_models_root = resolve_project_path(cfg["paths"]["voice_models"])
+    slug = str(manifest.get("slug", "") or "figur")
+    return voice_models_root / f"{slug}_voice_model.json"
+
+
+def build_character_voice_model(manifest: dict, pack_payload: dict) -> dict:
+    voice_pack = pack_payload.get("voice_pack", {}) if isinstance(pack_payload.get("voice_pack", {}), dict) else {}
+    sample_paths = list(voice_pack.get("sample_paths", []) or [])
+    reference_audio = sample_paths[0] if sample_paths else ""
+    return {
+        "process_version": PROCESS_VERSION,
+        "trained_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "character": manifest.get("name", ""),
+        "slug": manifest.get("slug", ""),
+        "priority": bool(manifest.get("priority", False)),
+        "model_kind": "local_character_voice_profile",
+        "training_source": "original_character_voices",
+        "dominant_language": coalesce_text(voice_pack.get("dominant_language", "")),
+        "language_counts": dict(voice_pack.get("language_counts", {}) or {}),
+        "sample_count": int(voice_pack.get("sample_count", 0) or 0),
+        "original_voice_sample_count": int(voice_pack.get("original_voice_sample_count", 0) or 0),
+        "duration_seconds_total": float(voice_pack.get("duration_seconds_total", 0.0) or 0.0),
+        "quality_score": float(voice_pack.get("quality_score", 0.0) or 0.0),
+        "clone_ready": bool(voice_pack.get("clone_ready", False)),
+        "reference_audio": reference_audio,
+        "sample_paths": sample_paths,
+        "reference_segments": list(voice_pack.get("reference_segments", []) or []),
     }
 
 
@@ -210,6 +292,13 @@ def main() -> None:
                 payload = build_training_pack(manifest, cfg)
                 pack_dir = checkpoint_root / str(payload.get("slug", "figur"))
                 pack_dir.mkdir(parents=True, exist_ok=True)
+                voice_model_path = voice_model_path_for_manifest(cfg, manifest)
+                voice_model_path.parent.mkdir(parents=True, exist_ok=True)
+                voice_model_payload = build_character_voice_model(manifest, payload)
+                write_json(voice_model_path, voice_model_payload)
+                payload["voice_model_path"] = str(voice_model_path)
+                payload["voice_languages"] = dict((payload.get("voice_pack", {}) or {}).get("language_counts", {}) or {})
+                payload["dominant_voice_language"] = coalesce_text((payload.get("voice_pack", {}) or {}).get("dominant_language", ""))
                 write_json(pack_path, payload)
                 mark_step_completed(
                     "10_train_foundation_models",
@@ -223,6 +312,8 @@ def main() -> None:
                         "voice_duration_seconds": float(payload.get("voice_pack", {}).get("duration_seconds_total", 0.0) or 0.0),
                         "voice_quality_score": float(payload.get("voice_pack", {}).get("quality_score", 0.0) or 0.0),
                         "voice_clone_ready": bool(payload.get("voice_pack", {}).get("clone_ready", False)),
+                        "voice_model_path": str(voice_model_path),
+                        "dominant_voice_language": coalesce_text((payload.get("voice_pack", {}) or {}).get("dominant_language", "")),
                     },
                 )
             except Exception as exc:
@@ -244,6 +335,10 @@ def main() -> None:
                 "voice_duration_seconds": float(payload.get("voice_pack", {}).get("duration_seconds_total", 0.0) or 0.0),
                 "voice_quality_score": float(payload.get("voice_pack", {}).get("quality_score", 0.0) or 0.0),
                 "voice_clone_ready": bool(payload.get("voice_pack", {}).get("clone_ready", False)),
+                "voice_model_path": coalesce_text(payload.get("voice_model_path", "")),
+                "voice_languages": dict((payload.get("voice_pack", {}) or {}).get("language_counts", {}) or {}),
+                "dominant_voice_language": coalesce_text((payload.get("voice_pack", {}) or {}).get("dominant_language", "")),
+                "original_voice_sample_count": int((payload.get("voice_pack", {}) or {}).get("original_voice_sample_count", 0) or 0),
                 "autosave": load_step_autosave("10_train_foundation_models", autosave_target),
             }
         )

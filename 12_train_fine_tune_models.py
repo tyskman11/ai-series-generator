@@ -25,7 +25,7 @@ from pipeline_common import (
     write_json,
 )
 
-PROCESS_VERSION = 1
+PROCESS_VERSION = 2
 
 
 def parse_args() -> argparse.Namespace:
@@ -87,6 +87,8 @@ def build_fine_tune_profile(adapter_row: dict, adapter_payload: dict, cfg: dict)
         "voice_quality_score": float((adapter_row.get("voice_quality_score", 0.0) or voice_payload.get("quality_score", 0.0) or 0.0)),
         "voice_duration_seconds": float((adapter_row.get("voice_duration_seconds", 0.0) or voice_payload.get("duration_seconds_total", 0.0) or 0.0)),
         "voice_clone_ready": bool(adapter_row.get("voice_clone_ready", voice_payload.get("clone_ready", False))),
+        "voice_model_path": coalesce_text(adapter_row.get("voice_model_path", "") or adapter_payload.get("voice_model_path", "")),
+        "dominant_voice_language": coalesce_text(adapter_row.get("dominant_voice_language", "") or adapter_payload.get("dominant_voice_language", "") or voice_payload.get("dominant_language", "")),
         "training_ready": len(modalities_ready) >= min_modalities,
     }
 
@@ -171,6 +173,8 @@ def main() -> None:
                 "voice_quality_score": float(payload.get("voice_quality_score", 0.0) or 0.0),
                 "voice_duration_seconds": float(payload.get("voice_duration_seconds", 0.0) or 0.0),
                 "voice_clone_ready": bool(payload.get("voice_clone_ready", False)),
+                "voice_model_path": coalesce_text(payload.get("voice_model_path", "")),
+                "dominant_voice_language": coalesce_text(payload.get("dominant_voice_language", "")),
                 "autosave": load_step_autosave("12_train_fine_tune_models", autosave_target),
             }
         )

@@ -26,6 +26,7 @@ from pipeline_common import (
     mark_step_completed,
     mark_step_failed,
     mark_step_started,
+    normalize_language_code,
     ok,
     read_json,
     rerun_in_runtime,
@@ -411,6 +412,7 @@ def build_original_line_library(cfg: dict) -> dict[str, list[dict]]:
                     "text": text,
                     "audio_path": clean_text(row.get("audio_file", "")),
                     "scene_clip_path": str(scene_clip_path) if scene_id else "",
+                    "language": normalize_language_code(row.get("language", "")),
                     "start": float(row.get("start", 0.0) or 0.0),
                     "end": float(row.get("end", 0.0) or 0.0),
                 }
@@ -420,6 +422,7 @@ def build_original_line_library(cfg: dict) -> dict[str, list[dict]]:
 
 def build_voice_lookup(cfg: dict) -> dict[str, dict]:
     voice_map = read_json(resolve_project_path(cfg["paths"]["voice_map"]), {"clusters": {}, "aliases": {}})
+    voice_models_root = resolve_project_path(str((cfg.get("paths", {}) if isinstance(cfg.get("paths", {}), dict) else {}).get("voice_models", "characters/voice_models")))
     lookup: dict[str, dict] = {}
     for cluster_id, payload in (voice_map.get("clusters", {}) or {}).items():
         if not isinstance(payload, dict):
@@ -427,6 +430,9 @@ def build_voice_lookup(cfg: dict) -> dict[str, dict]:
         speaker_name = clean_text(payload.get("name", ""))
         if not speaker_name:
             continue
+        speaker_slug = production_scene_slug(speaker_name.lower())
+        voice_model_path = voice_models_root / f"{speaker_slug}_voice_model.json"
+        voice_model = read_json(voice_model_path, {}) if voice_model_path.exists() else {}
         lookup.setdefault(
             speaker_name,
             {
@@ -434,6 +440,10 @@ def build_voice_lookup(cfg: dict) -> dict[str, dict]:
                 "name": speaker_name,
                 "linked_face_cluster": clean_text(payload.get("linked_face_cluster", "")),
                 "auto_named": bool(payload.get("auto_named", False)),
+                "voice_model_path": str(voice_model_path) if voice_model_path.exists() else "",
+                "dominant_language": normalize_language_code(voice_model.get("dominant_language", "")),
+                "language_counts": dict(voice_model.get("language_counts", {}) or {}),
+                "reference_audio": clean_text(voice_model.get("reference_audio", "")),
             },
         )
     return lookup
@@ -518,6 +528,11 @@ def build_scene_voice_plan(
         end_seconds = round(min(scene_end, cursor + duration), 3)
         retrieval_segment = row["retrieval_segment"] if isinstance(row["retrieval_segment"], dict) else {}
         voice_profile = row["voice_profile"] if isinstance(row["voice_profile"], dict) else {}
+        line_language = normalize_language_code(
+            clean_text((row["source"] or {}).get("language", ""))
+            or retrieval_segment.get("language", "")
+            or voice_profile.get("dominant_language", "")
+        )
         plan.append(
             {
                 "line_index": int(row["line_index"]),
@@ -529,11 +544,16 @@ def build_scene_voice_plan(
                 "audio_strategy": "reuse_original_segment" if retrieval_segment else "synthesize_preview_tts",
                 "source_type": clean_text((row["source"] or {}).get("type", "")) or "generated",
                 "source_segment_id": clean_text((row["source"] or {}).get("segment_id", "")),
+                "language": line_language,
                 "voice_profile": {
                     "cluster_id": clean_text(voice_profile.get("cluster_id", "")),
                     "name": clean_text(voice_profile.get("name", "")),
                     "linked_face_cluster": clean_text(voice_profile.get("linked_face_cluster", "")),
                     "auto_named": bool(voice_profile.get("auto_named", False)),
+                    "voice_model_path": clean_text(voice_profile.get("voice_model_path", "")),
+                    "dominant_language": normalize_language_code(voice_profile.get("dominant_language", "")),
+                    "language_counts": dict(voice_profile.get("language_counts", {}) or {}),
+                    "reference_audio": clean_text(voice_profile.get("reference_audio", "")),
                 },
                 "retrieval_segment": retrieval_segment,
             }
@@ -649,6 +669,7 @@ def build_voice_clone_line_package(cfg: dict, episode_package_root: Path, line: 
         "line_index": int(line.get("line_index", 0) or 0),
         "speaker_name": speaker_name,
         "text": clean_text(line.get("text", "")),
+        "language": normalize_language_code(line.get("language", "") or voice_profile.get("dominant_language", "")),
         "start_seconds": float(line.get("start_seconds", 0.0) or 0.0),
         "end_seconds": float(line.get("end_seconds", 0.0) or 0.0),
         "estimated_duration_seconds": float(line.get("estimated_duration_seconds", 0.0) or 0.0),
@@ -656,12 +677,17 @@ def build_voice_clone_line_package(cfg: dict, episode_package_root: Path, line: 
             "cluster_id": cluster_id,
             "linked_face_cluster": clean_text(voice_profile.get("linked_face_cluster", "")),
             "auto_named": bool(voice_profile.get("auto_named", False)),
+            "voice_model_path": clean_text(voice_profile.get("voice_model_path", "")),
+            "dominant_language": normalize_language_code(voice_profile.get("dominant_language", "")),
+            "language_counts": dict(voice_profile.get("language_counts", {}) or {}),
+            "reference_audio": clean_text(voice_profile.get("reference_audio", "")),
         },
         "original_voice_reference": {
             "audio_path": clean_text(retrieval_segment.get("audio_path", "")),
             "scene_clip_path": clean_text(retrieval_segment.get("scene_clip_path", "")),
             "segment_id": clean_text(retrieval_segment.get("segment_id", "")),
             "match_score": float(retrieval_segment.get("match_score", 0.0) or 0.0),
+            "language": normalize_language_code(retrieval_segment.get("language", "")),
         },
         "candidate_sample_dirs": [path for path in candidate_sample_dirs if path],
         "candidate_model_dirs": [path for path in candidate_model_dirs if path],
@@ -939,15 +965,36 @@ def write_episode_production_package(
     }
 
 
-def resolve_system_voice_id(default_voice_id: str, voices: list[dict], require_german: bool = True) -> str:
-    if not require_german:
+def voice_supports_language(voice: dict, language_code: str) -> bool:
+    normalized = normalize_language_code(language_code)
+    if not normalized:
+        return False
+    languages = [normalize_language_code(value) for value in voice.get("languages", [])] if isinstance(voice.get("languages", []), list) else []
+    if any(language == normalized or language.startswith(f"{normalized}-") for language in languages):
+        return True
+    voice_name = str(voice.get("name", "") or "").lower()
+    aliases = {
+        "de": ("german", "deutsch"),
+        "en": ("english", "englisch"),
+        "fr": ("french", "francais"),
+        "es": ("spanish", "espanol"),
+        "it": ("italian",),
+        "pt": ("portuguese",),
+    }
+    return any(alias in voice_name for alias in aliases.get(normalized, ()))
+
+
+def resolve_system_voice_id(default_voice_id: str, voices: list[dict], preferred_language: str = "", require_german: bool = True) -> str:
+    target_language = normalize_language_code(preferred_language)
+    if not target_language and require_german:
+        target_language = "de"
+    if not target_language:
         return default_voice_id
     for voice in voices:
-        if str(voice.get("id", "")) == default_voice_id and bool(voice.get("is_german", False)):
+        if str(voice.get("id", "")) == default_voice_id and voice_supports_language(voice, target_language):
             return default_voice_id
     for voice in voices:
-        languages = [str(value).lower() for value in voice.get("languages", [])] if isinstance(voice.get("languages", []), list) else []
-        if bool(voice.get("is_german", False)) or any(language.startswith("de") for language in languages):
+        if voice_supports_language(voice, target_language):
             return str(voice.get("id", default_voice_id))
     return default_voice_id
 
@@ -1010,13 +1057,13 @@ def synthesize_voice_lines(temp_root: Path, voice_plan_lines: list[dict], render
     voices = describe_system_voices(engine)
     configured_voice_id = clean_text(render_cfg.get("voice_id", ""))
     default_voice_id = configured_voice_id or clean_text(engine.getProperty("voice"))
-    voice_id = resolve_system_voice_id(default_voice_id, voices, require_german=bool(render_cfg.get("prefer_german_voice", True)))
     voice_rate = int(render_cfg.get("voice_rate", 175) or 175)
     voice_volume = float(render_cfg.get("voice_volume", 1.0) or 1.0)
     output_map: dict[int, Path] = {}
+    line_voice_ids: dict[int, str] = {}
+    line_languages: dict[int, str] = {}
+    prefer_character_language = bool(render_cfg.get("prefer_detected_character_language", True))
     try:
-        if voice_id:
-            engine.setProperty("voice", voice_id)
         engine.setProperty("rate", voice_rate)
         engine.setProperty("volume", max(0.0, min(1.0, voice_volume)))
         for line in voice_plan_lines:
@@ -1024,9 +1071,25 @@ def synthesize_voice_lines(temp_root: Path, voice_plan_lines: list[dict], render
             text = clean_text(line.get("text", ""))
             if not text:
                 continue
+            voice_profile = line.get("voice_profile", {}) if isinstance(line.get("voice_profile", {}), dict) else {}
+            preferred_language = ""
+            if prefer_character_language:
+                preferred_language = normalize_language_code(
+                    line.get("language", "") or voice_profile.get("dominant_language", "")
+                )
+            voice_id = resolve_system_voice_id(
+                default_voice_id,
+                voices,
+                preferred_language=preferred_language,
+                require_german=bool(render_cfg.get("prefer_german_voice", True)),
+            )
+            if voice_id:
+                engine.setProperty("voice", voice_id)
             target = temp_root / f"line_{line_index:04d}_raw.wav"
             engine.save_to_file(text, str(target))
             output_map[line_index] = target
+            line_voice_ids[line_index] = voice_id
+            line_languages[line_index] = preferred_language
         engine.runAndWait()
     finally:
         try:
@@ -1037,7 +1100,16 @@ def synthesize_voice_lines(temp_root: Path, voice_plan_lines: list[dict], render
     missing = [index for index, path in output_map.items() if not path.exists() or path.stat().st_size <= 0]
     if missing:
         raise RuntimeError(f"Voice synthesis failed for {len(missing)} dialogue lines.")
-    return output_map, {"backend": "pyttsx3", "voice_id": voice_id, "sample_rate": sample_rate, "voices": voices}
+    return {
+        **output_map,
+    }, {
+        "backend": "pyttsx3",
+        "voice_id": line_voice_ids.get(next(iter(line_voice_ids), -1), default_voice_id) if line_voice_ids else default_voice_id,
+        "sample_rate": sample_rate,
+        "voices": voices,
+        "line_voice_ids": line_voice_ids,
+        "line_languages": line_languages,
+    }
 
 
 def create_silence_audio(ffmpeg: Path, duration_seconds: float, output_path: Path, sample_rate: int) -> None:
@@ -1633,6 +1705,10 @@ def main() -> None:
 
     render_cfg = cfg.get("render", {}) if isinstance(cfg.get("render"), dict) else {}
     cloning_cfg = cfg.get("cloning", {}) if isinstance(cfg.get("cloning"), dict) else {}
+    render_cfg.setdefault(
+        "prefer_detected_character_language",
+        bool(cloning_cfg.get("prefer_detected_character_language", True)),
+    )
     width = int(render_cfg.get("width", 1280))
     height = int(render_cfg.get("height", 720))
     fps = max(12, int(render_cfg.get("fps", 30)))

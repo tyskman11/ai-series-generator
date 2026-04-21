@@ -17,6 +17,8 @@ from pipeline_common import (
     SCRIPT_DIR,
     coalesce_text,
     detect_tool,
+    dominant_language,
+    merge_language_counts,
     error,
     has_primary_person_name,
     headline,
@@ -30,13 +32,14 @@ from pipeline_common import (
     pip_install_command,
     read_json,
     rerun_in_runtime,
+    normalize_language_code,
     resolve_project_path,
     runtime_python,
     write_json,
     write_text,
 )
 
-PROCESS_VERSION = 1
+PROCESS_VERSION = 2
 DOWNLOAD_METADATA_FILE = ".foundation_download.json"
 
 
@@ -61,12 +64,15 @@ def slugify(value: str) -> str:
 
 def build_download_targets(cfg: dict) -> list[dict]:
     foundation_cfg = cfg.get("foundation_training", {}) if isinstance(cfg.get("foundation_training"), dict) else {}
+    use_local_voice_models = bool(foundation_cfg.get("use_local_character_voice_models", True))
     targets: list[dict] = []
     for kind, key in (
         ("image", "image_base_model"),
         ("video", "video_base_model"),
         ("voice", "voice_base_model"),
     ):
+        if kind == "voice" and use_local_voice_models:
+            continue
         model_id = coalesce_text(foundation_cfg.get(key, ""))
         if not model_id:
             continue
@@ -290,6 +296,47 @@ def scene_character_names(row: dict, known_clusters: dict[str, str]) -> set[str]
 
 def collect_character_rows(rows: list[dict], character_name: str, known_clusters: dict[str, str]) -> list[dict]:
     return [row for row in rows if character_name in scene_character_names(row, known_clusters)]
+
+
+def original_voice_candidates(rows: list[dict], character_name: str) -> list[dict]:
+    candidates: list[dict] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        episode_id = coalesce_text(row.get("episode_id", ""))
+        scene_id = coalesce_text(row.get("scene_id", ""))
+        for index, segment in enumerate(row.get("transcript_segments", []) or []):
+            if not isinstance(segment, dict):
+                continue
+            speaker_name = coalesce_text(segment.get("speaker_name", ""))
+            if speaker_name.lower() != character_name.lower():
+                continue
+            audio_path = Path(str(segment.get("audio_file", "")))
+            if not audio_path.exists():
+                continue
+            start_seconds = float(segment.get("start", 0.0) or 0.0)
+            end_seconds = float(segment.get("end", start_seconds) or start_seconds)
+            duration_seconds = max(0.0, end_seconds - start_seconds)
+            candidates.append(
+                {
+                    "episode_id": episode_id,
+                    "scene_id": scene_id,
+                    "segment_id": coalesce_text(segment.get("segment_id", "")) or f"{scene_id}_voice_{index + 1:03d}",
+                    "audio_path": audio_path,
+                    "duration_seconds": duration_seconds,
+                    "language": normalize_language_code(segment.get("language", ""), row.get("language", "")),
+                    "text": coalesce_text(segment.get("text", "")),
+                }
+            )
+    candidates.sort(
+        key=lambda row: (
+            -float(row.get("duration_seconds", 0.0) or 0.0),
+            row.get("episode_id", ""),
+            row.get("scene_id", ""),
+            row.get("segment_id", ""),
+        )
+    )
+    return candidates
 
 
 def voice_reference_candidates(cfg: dict, character_name: str) -> list[Path]:
@@ -583,11 +630,62 @@ def prepare_character_dataset(
             break
 
     voice_samples: list[dict] = []
-    for index, source in enumerate(voice_reference_candidates(cfg, character["name"])[:max_voice], start=1):
-        target = voice_root / f"{character['slug']}_{index:03d}{source.suffix.lower() or '.wav'}"
+    seen_sources: set[str] = set()
+    original_candidates = original_voice_candidates(rows, character["name"])
+    for index, source in enumerate(original_candidates[:max_voice], start=1):
+        source_path = Path(str(source.get("audio_path", "")))
+        source_key = str(source_path.resolve()) if source_path.exists() else str(source_path)
+        if not source_path.exists() or source_key in seen_sources:
+            continue
+        target = voice_root / f"{character['slug']}_{index:03d}{source_path.suffix.lower() or '.wav'}"
         if not target.exists() or force:
-            shutil.copy2(source, target)
-        voice_samples.append({"path": str(target), "source": str(source)})
+            shutil.copy2(source_path, target)
+        voice_samples.append(
+            {
+                "path": str(target),
+                "source": str(source_path),
+                "source_type": "original_segment",
+                "episode_id": coalesce_text(source.get("episode_id", "")),
+                "scene_id": coalesce_text(source.get("scene_id", "")),
+                "segment_id": coalesce_text(source.get("segment_id", "")),
+                "language": normalize_language_code(source.get("language", "")),
+                "duration_seconds": round(float(source.get("duration_seconds", 0.0) or 0.0), 3),
+                "text": coalesce_text(source.get("text", "")),
+            }
+        )
+        seen_sources.add(source_key)
+
+    next_index = len(voice_samples) + 1
+    if len(voice_samples) < max_voice:
+        for source in voice_reference_candidates(cfg, character["name"]):
+            if len(voice_samples) >= max_voice:
+                break
+            source_key = str(source.resolve()) if source.exists() else str(source)
+            if not source.exists() or source_key in seen_sources:
+                continue
+            target = voice_root / f"{character['slug']}_{next_index:03d}{source.suffix.lower() or '.wav'}"
+            if not target.exists() or force:
+                shutil.copy2(source, target)
+            voice_samples.append(
+                {
+                    "path": str(target),
+                    "source": str(source),
+                    "source_type": "curated_reference",
+                    "language": "",
+                    "duration_seconds": 0.0,
+                    "text": "",
+                }
+            )
+            seen_sources.add(source_key)
+            next_index += 1
+
+    voice_language_counts = merge_language_counts(
+        {
+            normalize_language_code(sample.get("language", "")): 1
+            for sample in voice_samples
+            if normalize_language_code(sample.get("language", ""))
+        }
+    )
 
     return {
         "name": character["name"],
@@ -598,6 +696,9 @@ def prepare_character_dataset(
         "frame_samples": frame_samples,
         "video_samples": video_samples,
         "voice_samples": voice_samples,
+        "voice_language_counts": voice_language_counts,
+        "dominant_language": dominant_language(voice_language_counts),
+        "original_voice_sample_count": sum(1 for sample in voice_samples if sample.get("source_type") == "original_segment"),
     }
 
 
@@ -642,6 +743,8 @@ def write_training_plan(
                 f"- Exported frames: {len(manifest.get('frame_samples', []))}",
                 f"- Exported clips: {len(manifest.get('video_samples', []))}",
                 f"- Reference voices: {len(manifest.get('voice_samples', []))}",
+                f"- Original voice segments: {int(manifest.get('original_voice_sample_count', 0) or 0)}",
+                f"- Dominant voice language: {coalesce_text(manifest.get('dominant_language', '')) or 'auto-detected later'}",
                 "",
             ]
         )
