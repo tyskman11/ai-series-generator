@@ -78,6 +78,7 @@ All scripts in this repository are AI-generated and maintained with `GPT-5.4`.
 - `04_diarize_and_transcribe.py` now applies extra rescue passes for remaining `speaker_unknown` segments using neighborhood and embedding agreement
 - `04_diarize_and_transcribe.py` now also auto-detects spoken language per transcription run and stores that language on the emitted source segments
 - the numbered batch scripts now support shared NAS workers through lease files under `ai_series_project/runtime/distributed`, with step-specific work units such as inbox files, episodes, characters, scenes, or full orchestration scopes
+- `00_prepare_runtime.py`, `01_setup_project.py`, `06_review_unknowns.py`, `08_train_series_model.py`, and `14_generate_episode_from_trained_model.py` now also use the same shared-worker lease layer, but intentionally as exclusive leases because concurrent writes there would be unsafe or ambiguous
 - `04_diarize_and_transcribe.py` still has the deepest split, leasing scenes dynamically so multiple PCs can help on the same episode and stale leases get reclaimed automatically
 - `19_generate_finished_episodes.py`, `20_refresh_after_manual_review.py`, `18_build_series_bible.py`, and `99_process_next_episode.py` now use shared-worker leases mainly to prevent conflicting duplicate orchestration runs, while the underlying numbered worker steps do the actual distributed work
 - `99_process_next_episode.py` is being hardened for real inbox batch workflows with autosaves, resumable checkpoints, and live status files
@@ -277,9 +278,13 @@ Creates `runtime/venv_<os>_<arch>_<bitness>` on Windows, updates packaging tools
 
 The default path stays license-light. Optional XTTS / Coqui is only prepared when explicitly enabled. XTTS must never be enabled implicitly through a hidden license acceptance.
 
+In shared NAS mode, this step uses one exclusive global lease so multiple PCs do not try to recreate the same runtime or tool folder at the same time.
+
 ### 01 - Set Up Project
 
 Ensures that the expected folder structure and config file exist.
+
+In shared NAS mode, this step uses one exclusive global lease so several PCs cannot rewrite the same project structure simultaneously.
 
 ### 02 - Import Episode
 
@@ -313,6 +318,8 @@ Detects faces, clusters them, links visible faces to dialogue segments, and writ
 
 Interactive review stage for unknown or auto-named face clusters. It now tries to recognize already known characters first, supports stronger role hints, propagates new manual names back into open review state, and keeps its CLI/help and interactive prompts aligned with the English-first numbered pipeline.
 
+In shared NAS mode, this step uses one exclusive global lease because face review changes the shared character and voice maps directly.
+
 ### 07 - Build Dataset
 
 Builds the consolidated training dataset from linked segments and reviewed character data. In shared NAS mode, whole episodes are leased so several PCs can build different dataset episodes in parallel.
@@ -320,6 +327,8 @@ Builds the consolidated training dataset from linked segments and reviewed chara
 ### 08 - Train Series Model
 
 Builds the local heuristic series model from the reviewed datasets. This is not a large neural model; it is a structured local model used for preview generation, and its fallback summaries and beat templates now follow the same English-first output style as the downstream steps.
+
+In shared NAS mode, this step uses one exclusive global lease so the shared `series_model.json` is only written by one worker at a time.
 
 ### 09 - Prepare Foundation Training
 
@@ -354,6 +363,8 @@ Generates a new synthetic episode blueprint from the trained local model. It res
 In addition, `14` now exports backend-ready storyboard request files under `generation/storyboard_requests/<episode>`, including one episode-level request, one scene-level request per scene, and a prompt preview text file.
 
 When no explicit episode ID is provided, the downstream storyboard, backend, render, and multi-episode helpers now select the newest matching generated artifact by timestamp rather than relying on a `folge_*` filename prefix.
+
+In shared NAS mode, this step uses one exclusive lease per requested episode target. `--episode-id <id>` leases that concrete episode; the default `auto_next` mode is also protected so two PCs do not generate the same next episode simultaneously.
 
 ### 15 - Generate Storyboard Assets
 

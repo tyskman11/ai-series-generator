@@ -10,8 +10,11 @@ from collections import Counter, defaultdict
 from pathlib import Path
 
 from pipeline_common import (
+    add_shared_worker_arguments,
     coalesce_text,
     display_person_name,
+    distributed_item_lease,
+    distributed_step_runtime_root,
     error,
     extract_keywords,
     has_primary_person_name,
@@ -27,6 +30,8 @@ from pipeline_common import (
     read_json,
     rerun_in_runtime,
     resolve_project_path,
+    shared_worker_id_for_args,
+    shared_workers_enabled_for_args,
     tokens_from_text,
     write_json,
     write_text,
@@ -141,6 +146,7 @@ def parse_episode_index(episode_id: str) -> int:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train the series model from the available datasets")
+    add_shared_worker_arguments(parser)
     return parser.parse_args()
 
 
@@ -1157,16 +1163,34 @@ def generate_episode_package(model: dict, cfg: dict, episode_index: int = 1) -> 
 
 def main() -> None:
     rerun_in_runtime()
-    parse_args()
+    args = parse_args()
     headline("Train Series Model")
     cfg = load_config()
+    worker_id = shared_worker_id_for_args(args)
+    shared_workers = shared_workers_enabled_for_args(cfg, args)
     mark_step_started("08_train_series_model", "global")
+    if shared_workers:
+        info(f"Shared NAS workers: enabled ({worker_id})")
+    lease_manager = distributed_item_lease(
+        root=distributed_step_runtime_root("08_train_series_model", "global"),
+        lease_name="global",
+        cfg=cfg,
+        worker_id=worker_id,
+        enabled=shared_workers,
+        meta={"step": "08_train_series_model", "scope": "global", "worker_id": worker_id},
+    )
+    acquired = lease_manager.__enter__()
+    if not acquired:
+        info("Series model training is already running on another worker.")
+        lease_manager.__exit__(None, None, None)
+        return
     dataset_root = resolve_project_path(cfg["paths"]["datasets_video_training"])
     dataset_files = sorted(dataset_root.glob("*_dataset.json"))
-    if not dataset_files:
-        info("No datasets found.")
-        return
     try:
+        if not dataset_files:
+            info("No datasets found.")
+            mark_step_completed("08_train_series_model", "global", {"series_model": "", "dataset_count": 0})
+            return
         char_map = read_json(resolve_project_path(cfg["paths"]["character_map"]), {"clusters": {}, "aliases": {}})
         model = build_series_model(dataset_files, cfg, char_map)
         model_path = resolve_project_path(cfg["paths"]["series_model"])
@@ -1181,6 +1205,8 @@ def main() -> None:
     except Exception as exc:
         mark_step_failed("08_train_series_model", str(exc), "global", {"dataset_count": len(dataset_files)})
         raise
+    finally:
+        lease_manager.__exit__(None, None, None)
 
 
 if __name__ == "__main__":

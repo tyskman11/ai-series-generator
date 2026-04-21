@@ -6,10 +6,13 @@ import math
 from pathlib import Path
 
 from pipeline_common import (
+    add_shared_worker_arguments,
     canonical_person_name,
     cosine_similarity,
     current_os,
     display_person_name,
+    distributed_item_lease,
+    distributed_step_runtime_root,
     error,
     has_manual_person_name,
     headline,
@@ -17,11 +20,16 @@ from pipeline_common import (
     is_background_person_name,
     is_interactive_session,
     load_config,
+    mark_step_completed,
+    mark_step_failed,
+    mark_step_started,
     open_review_item_count,
     ok,
     read_json,
     rerun_in_runtime,
     resolve_project_path,
+    shared_worker_id_for_args,
+    shared_workers_enabled_for_args,
     write_json,
 )
 
@@ -73,6 +81,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--limit", type=int, default=20, help="Maximum number of clusters to process per start. Default: 20")
     parser.add_argument("--all", action="store_true", help="Process every currently open face cluster.")
     parser.add_argument("--open-previews", action="store_true", help="Open the contact sheet during interactive review.")
+    add_shared_worker_arguments(parser)
     return parser.parse_args()
 
 
@@ -1713,92 +1722,125 @@ def main() -> None:
     effective_limit = 0 if args.all else max(0, args.limit)
     headline("Review Open Assignments")
     cfg = load_config()
+    worker_id = shared_worker_id_for_args(args)
+    shared_workers = shared_workers_enabled_for_args(cfg, args)
+    mark_step_started("06_review_unknowns", "global")
+    if shared_workers:
+        info(f"Shared NAS workers: enabled ({worker_id})")
+    lease_manager = distributed_item_lease(
+        root=distributed_step_runtime_root("06_review_unknowns", "global"),
+        lease_name="global",
+        cfg=cfg,
+        worker_id=worker_id,
+        enabled=shared_workers,
+        meta={"step": "06_review_unknowns", "scope": "global", "worker_id": worker_id},
+    )
+    acquired = lease_manager.__enter__()
+    if not acquired:
+        info("Review is already active on another worker.")
+        lease_manager.__exit__(None, None, None)
+        return
     char_map = read_json(resolve_project_path(cfg["paths"]["character_map"]), {"clusters": {}, "aliases": {}})
     voice_map = read_json(resolve_project_path(cfg["paths"]["voice_map"]), {"clusters": {}, "aliases": {}})
-    char_map.setdefault("clusters", {})
-    char_map.setdefault("aliases", {})
-    voice_map.setdefault("clusters", {})
-    voice_map.setdefault("aliases", {})
-    normalized_faces, normalized_voices = normalize_placeholder_maps(char_map, voice_map)
-    if normalized_faces or normalized_voices:
-        info(
-            f"Normalized existing maps: {normalized_faces} face entries, "
-            f"{normalized_voices} speaker entries."
+    action = "interactive_review"
+    completion_payload: dict[str, object] = {}
+    try:
+        char_map.setdefault("clusters", {})
+        char_map.setdefault("aliases", {})
+        voice_map.setdefault("clusters", {})
+        voice_map.setdefault("aliases", {})
+        normalized_faces, normalized_voices = normalize_placeholder_maps(char_map, voice_map)
+        if normalized_faces or normalized_voices:
+            info(
+                f"Normalized existing maps: {normalized_faces} face entries, "
+                f"{normalized_voices} speaker entries."
+            )
+        hydrated = hydrate_face_clusters_from_previews(cfg, char_map)
+        if hydrated:
+            info(f"{hydrated} face clusters hydrated from existing preview folders.")
+        auto_matched = auto_learn_remaining_reviews(cfg, char_map, voice_map)
+        if auto_matched.get("matched_faces", 0) or auto_matched.get("matched_speakers", 0):
+            info(
+                f"Before review, {auto_matched['matched_faces']} unknown face clusters "
+                f"and {auto_matched['matched_speakers']} speaker assignments were applied automatically."
+            )
+        if normalized_faces or normalized_voices or hydrated or auto_matched.get("matched_faces", 0) or auto_matched.get("matched_speakers", 0):
+            changed_linked_files, review_count = persist_updates(cfg, char_map, voice_map)
+            info(
+                f"Maps synchronized: {changed_linked_files + int(auto_matched.get('linked_files', 0))} linked-segment files updated, "
+                f"{review_count} open review cases."
+            )
+
+        if args.assign_face:
+            assigned_name = "noface" if args.ignore else (args.name or "").strip()
+            if not assigned_name:
+                raise ValueError("Please provide --name or use --ignore.")
+            assign_single_face(cfg, char_map, voice_map, args.assign_face, assigned_name, priority=args.priority)
+            action = "assign_face"
+            completion_payload = {"cluster_id": args.assign_face, "assigned_name": assigned_name}
+        elif args.rename_face:
+            new_name = (args.rename_to or "").strip()
+            if not new_name:
+                raise ValueError("Please provide --rename-to.")
+            rename_face(cfg, char_map, voice_map, args.rename_face, new_name, priority=args.priority)
+            action = "rename_face"
+            completion_payload = {"reference": args.rename_face, "new_name": new_name}
+        elif args.set_priority:
+            update_face_priority(cfg, char_map, voice_map, args.set_priority, True)
+            action = "set_priority"
+            completion_payload = {"reference": args.set_priority, "priority": True}
+        elif args.clear_priority:
+            update_face_priority(cfg, char_map, voice_map, args.clear_priority, False)
+            action = "clear_priority"
+            completion_payload = {"reference": args.clear_priority, "priority": False}
+        elif args.review_faces:
+            interactive_face_review(
+                cfg,
+                char_map,
+                voice_map,
+                include_named=args.include_named,
+                limit=effective_limit,
+                open_previews=args.open_previews,
+            )
+            action = "review_faces"
+            completion_payload = {"include_named": bool(args.include_named), "open_previews": bool(args.open_previews)}
+        elif args.list_faces:
+            list_faces(char_map, effective_limit, args.include_named)
+            action = "list_faces"
+            completion_payload = {"limit": effective_limit, "include_named": bool(args.include_named)}
+        elif args.created:
+            print_created_face_names(char_map)
+            action = "created_faces"
+        elif args.show_queue:
+            show_review_queue(cfg)
+            action = "show_queue"
+        elif not is_interactive_session():
+            info("No interactive console detected. Showing unnamed face clusters with preview paths instead.")
+            list_faces(char_map, effective_limit, args.include_named)
+            action = "list_faces_noninteractive"
+            completion_payload = {"limit": effective_limit, "include_named": bool(args.include_named)}
+        else:
+            interactive_face_review(
+                cfg,
+                char_map,
+                voice_map,
+                include_named=args.include_named,
+                limit=effective_limit,
+                open_previews=True,
+            )
+            action = "interactive_review"
+            completion_payload = {"limit": effective_limit, "include_named": bool(args.include_named)}
+
+        mark_step_completed(
+            "06_review_unknowns",
+            "global",
+            {"action": action, **completion_payload},
         )
-    hydrated = hydrate_face_clusters_from_previews(cfg, char_map)
-    if hydrated:
-        info(f"{hydrated} face clusters hydrated from existing preview folders.")
-    auto_matched = auto_learn_remaining_reviews(cfg, char_map, voice_map)
-    if auto_matched.get("matched_faces", 0) or auto_matched.get("matched_speakers", 0):
-        info(
-            f"Before review, {auto_matched['matched_faces']} unknown face clusters "
-            f"and {auto_matched['matched_speakers']} speaker assignments were applied automatically."
-        )
-    if normalized_faces or normalized_voices or hydrated or auto_matched.get("matched_faces", 0) or auto_matched.get("matched_speakers", 0):
-        changed_linked_files, review_count = persist_updates(cfg, char_map, voice_map)
-        info(
-            f"Maps synchronized: {changed_linked_files + int(auto_matched.get('linked_files', 0))} linked-segment files updated, "
-            f"{review_count} open review cases."
-        )
-
-    if args.assign_face:
-        assigned_name = "noface" if args.ignore else (args.name or "").strip()
-        if not assigned_name:
-            raise ValueError("Please provide --name or use --ignore.")
-        assign_single_face(cfg, char_map, voice_map, args.assign_face, assigned_name, priority=args.priority)
-        return
-
-    if args.rename_face:
-        new_name = (args.rename_to or "").strip()
-        if not new_name:
-            raise ValueError("Please provide --rename-to.")
-        rename_face(cfg, char_map, voice_map, args.rename_face, new_name, priority=args.priority)
-        return
-
-    if args.set_priority:
-        update_face_priority(cfg, char_map, voice_map, args.set_priority, True)
-        return
-
-    if args.clear_priority:
-        update_face_priority(cfg, char_map, voice_map, args.clear_priority, False)
-        return
-
-    if args.review_faces:
-        interactive_face_review(
-            cfg,
-            char_map,
-            voice_map,
-            include_named=args.include_named,
-            limit=effective_limit,
-            open_previews=args.open_previews,
-        )
-        return
-
-    if args.list_faces:
-        list_faces(char_map, effective_limit, args.include_named)
-        return
-
-    if args.created:
-        print_created_face_names(char_map)
-        return
-
-    if args.show_queue:
-        show_review_queue(cfg)
-        return
-
-    if not is_interactive_session():
-        info("No interactive console detected. Showing unnamed face clusters with preview paths instead.")
-        list_faces(char_map, effective_limit, args.include_named)
-        return
-
-    interactive_face_review(
-        cfg,
-        char_map,
-        voice_map,
-        include_named=args.include_named,
-        limit=effective_limit,
-        open_previews=True,
-    )
+    except Exception as exc:
+        mark_step_failed("06_review_unknowns", str(exc), "global")
+        raise
+    finally:
+        lease_manager.__exit__(None, None, None)
 
 
 if __name__ == "__main__":

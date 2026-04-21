@@ -6,9 +6,12 @@ import importlib.util
 from pathlib import Path
 
 from pipeline_common import (
+    add_shared_worker_arguments,
     LiveProgressReporter,
     adapter_training_status,
     backend_fine_tune_status,
+    distributed_item_lease,
+    distributed_step_runtime_root,
     ensure_adapter_training_ready,
     ensure_backend_fine_tune_ready,
     ensure_fine_tune_training_ready,
@@ -25,6 +28,8 @@ from pipeline_common import (
     read_json,
     rerun_in_runtime,
     resolve_project_path,
+    shared_worker_id_for_args,
+    shared_workers_enabled_for_args,
     write_json,
     write_text,
 )
@@ -45,6 +50,7 @@ STEP08 = load_step08()
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Generate a new episode from the trained series model")
     parser.add_argument("--episode-id", help="Target a specific episode ID such as episode_09 or folge_09.")
+    add_shared_worker_arguments(parser)
     return parser.parse_args()
 
 
@@ -112,6 +118,8 @@ def main() -> None:
     args = parse_args()
     headline("Generate New Episode From Trained Model")
     cfg = load_config()
+    worker_id = shared_worker_id_for_args(args)
+    shared_workers = shared_workers_enabled_for_args(cfg, args)
     model_path = resolve_project_path(cfg["paths"]["series_model"])
     if not model_path.exists():
         info("No trained series model found. Run 08_train_series_model.py first.")
@@ -119,6 +127,21 @@ def main() -> None:
 
     autosave_target = (args.episode_id or "").strip() or "auto_next"
     mark_step_started("14_generate_episode_from_trained_model", autosave_target, {"series_model": str(model_path)})
+    if shared_workers:
+        info(f"Shared NAS workers: enabled ({worker_id})")
+    lease_manager = distributed_item_lease(
+        root=distributed_step_runtime_root("14_generate_episode_from_trained_model", autosave_target),
+        lease_name=autosave_target,
+        cfg=cfg,
+        worker_id=worker_id,
+        enabled=shared_workers,
+        meta={"step": "14_generate_episode_from_trained_model", "scope": autosave_target, "worker_id": worker_id},
+    )
+    acquired = lease_manager.__enter__()
+    if not acquired:
+        info(f"Episode generation for '{autosave_target}' is already running on another worker.")
+        lease_manager.__exit__(None, None, None)
+        return
     reporter = LiveProgressReporter(
         script_name="14_generate_episode_from_trained_model.py",
         total=5,
@@ -188,6 +211,8 @@ def main() -> None:
     except Exception as exc:
         mark_step_failed("14_generate_episode_from_trained_model", str(exc), autosave_target, {"series_model": str(model_path)})
         raise
+    finally:
+        lease_manager.__exit__(None, None, None)
 
 
 if __name__ == "__main__":

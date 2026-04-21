@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import subprocess
@@ -15,9 +16,12 @@ from pathlib import Path
 from pipeline_common import (
     PROJECT_ROOT,
     SCRIPT_DIR,
+    add_shared_worker_arguments,
     current_architecture,
     current_os,
     detect_tool,
+    distributed_item_lease,
+    distributed_step_runtime_root,
     ensure_project_structure,
     error,
     headline,
@@ -33,9 +37,18 @@ from pipeline_common import (
     runtime_python,
     runtime_settings,
     runtime_venv_dir,
+    shared_worker_id_for_args,
+    shared_workers_enabled_for_args,
     warn,
     write_json,
 )
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Prepare runtime dependencies and tools")
+    add_shared_worker_arguments(parser)
+    parsed_args, _unknown_args = parser.parse_known_args(argv)
+    return parsed_args
 
 
 def venv_python() -> Path:
@@ -322,101 +335,122 @@ def install_torch_stack(py: Path, cfg: dict) -> tuple[bool, dict]:
 
 
 def main() -> None:
+    args = parse_args()
     headline("Prepare Runtime")
-    mark_step_started("00_prepare_runtime", "global")
     cfg = ensure_project_structure(write_config_file=True)
-    py = ensure_venv()
-    info(f"Runtime-Tag: {runtime_environment_tag()}")
-    info(f"Using Python: {py}")
-    run(runtime_pip_install_command(py, "--upgrade", "pip", "setuptools<81", "wheel"), check=False)
-    ffmpeg_info = install_ffmpeg_binaries()
-    clone_cfg = cfg.get("cloning", {}) if isinstance(cfg.get("cloning"), dict) else {}
-    requested_voice_engine = str(clone_cfg.get("voice_clone_engine", "pyttsx3") or "pyttsx3").strip().lower()
-    optional_tts_requested = requested_voice_engine in {"auto", "xtts"} or str(
-        os.environ.get("SERIES_ENABLE_OPTIONAL_TTS", "")
-    ).strip().lower() in {"1", "true", "yes", "y"}
+    worker_id = shared_worker_id_for_args(args)
+    shared_workers = shared_workers_enabled_for_args(cfg, args)
+    mark_step_started("00_prepare_runtime", "global")
+    if shared_workers:
+        info(f"Shared NAS workers: enabled ({worker_id})")
+    lease_manager = distributed_item_lease(
+        root=distributed_step_runtime_root("00_prepare_runtime", "global"),
+        lease_name="global",
+        cfg=cfg,
+        worker_id=worker_id,
+        enabled=shared_workers,
+        meta={"step": "00_prepare_runtime", "scope": "global", "worker_id": worker_id},
+    )
+    acquired = lease_manager.__enter__()
+    if not acquired:
+        info("Runtime preparation is already running on another worker.")
+        lease_manager.__exit__(None, None, None)
+        return
+    try:
+        py = ensure_venv()
+        info(f"Runtime-Tag: {runtime_environment_tag()}")
+        info(f"Using Python: {py}")
+        run(runtime_pip_install_command(py, "--upgrade", "pip", "setuptools<81", "wheel"), check=False)
+        ffmpeg_info = install_ffmpeg_binaries()
+        clone_cfg = cfg.get("cloning", {}) if isinstance(cfg.get("cloning"), dict) else {}
+        requested_voice_engine = str(clone_cfg.get("voice_clone_engine", "pyttsx3") or "pyttsx3").strip().lower()
+        optional_tts_requested = requested_voice_engine in {"auto", "xtts"} or str(
+            os.environ.get("SERIES_ENABLE_OPTIONAL_TTS", "")
+        ).strip().lower() in {"1", "true", "yes", "y"}
 
-    core_ok = install_group(
-        py,
-        "core_ai",
-        ["numpy", "PIL", "cv2", "librosa"],
-        ["numpy", "Pillow", "opencv-python", "librosa"],
-    )
-    scene_ok = install_group(py, "scene_detection", ["scenedetect"], ["scenedetect[opencv]"])
-    tts_ok = install_group(py, "render_tts", ["pyttsx3"], ["pyttsx3"])
-    torch_ok, torch_info = install_torch_stack(py, cfg)
-    whisper_ok = install_group(
-        py,
-        "speech_to_text",
-        ["whisper"],
-        ["openai-whisper"],
-    )
-    facenet_ok = install_group(
-        py,
-        "face_recognition",
-        ["facenet_pytorch"],
-        ["facenet-pytorch"],
-        required=False,
-        pip_extra_args=["--no-deps"],
-    )
-    speaker_embeddings_ok = install_group(
-        py,
-        "speaker_embeddings",
-        ["speechbrain"],
-        ["speechbrain"],
-        required=False,
-    )
-    voice_clone_ok = False
-    if optional_tts_requested:
-        voice_clone_ok = install_group(
+        core_ok = install_group(
             py,
-            "voice_cloning",
-            ["pkg_resources", "TTS.api"],
-            ["setuptools<81", "TTS"],
+            "core_ai",
+            ["numpy", "PIL", "cv2", "librosa"],
+            ["numpy", "Pillow", "opencv-python", "librosa"],
+        )
+        scene_ok = install_group(py, "scene_detection", ["scenedetect"], ["scenedetect[opencv]"])
+        tts_ok = install_group(py, "render_tts", ["pyttsx3"], ["pyttsx3"])
+        torch_ok, torch_info = install_torch_stack(py, cfg)
+        whisper_ok = install_group(
+            py,
+            "speech_to_text",
+            ["whisper"],
+            ["openai-whisper"],
+        )
+        facenet_ok = install_group(
+            py,
+            "face_recognition",
+            ["facenet_pytorch"],
+            ["facenet-pytorch"],
+            required=False,
+            pip_extra_args=["--no-deps"],
+        )
+        speaker_embeddings_ok = install_group(
+            py,
+            "speaker_embeddings",
+            ["speechbrain"],
+            ["speechbrain"],
             required=False,
         )
-    else:
-        info("Optional XTTS/Coqui packages are not installed automatically in the license-free default path.")
+        voice_clone_ok = False
+        if optional_tts_requested:
+            voice_clone_ok = install_group(
+                py,
+                "voice_cloning",
+                ["pkg_resources", "TTS.api"],
+                ["setuptools<81", "TTS"],
+                required=False,
+            )
+        else:
+            info("Optional XTTS/Coqui packages are not installed automatically in the license-free default path.")
 
-    write_json(
-        SCRIPT_DIR / "runtime" / "package_status.json",
-        {
-            "python": str(py),
-            "runtime_tag": runtime_environment_tag(),
-            "runtime_dir": str(runtime_venv_dir()),
-            "ffmpeg": ffmpeg_info,
-            "torch": torch_ok,
-            "torch_info": torch_info,
-            "nvidia_gpu_detected": nvidia_gpu_available(),
-            "core_ai": core_ok,
-            "scene_detection": scene_ok,
-            "speech_to_text": whisper_ok,
-            "facenet_pytorch": facenet_ok,
-            "speaker_embeddings": speaker_embeddings_ok,
-            "render_tts": tts_ok,
-            "voice_cloning": voice_clone_ok,
-            "updated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
-        },
-    )
-    if torch_info.get("cuda_available"):
-        device_names = ", ".join(torch_info.get("device_names") or [])
-        ok(f"GPU ready for torch: {device_names}")
-    elif nvidia_gpu_available():
-        warn("NVIDIA GPU detected, but torch does not report CUDA yet. CPU fallback remains active.")
-    mark_step_completed(
-        "00_prepare_runtime",
-        "global",
-        {
-            "python": str(py),
-            "runtime_tag": runtime_environment_tag(),
-            "runtime_dir": str(runtime_venv_dir()),
-            "ffmpeg": ffmpeg_info.get("ffmpeg", ""),
-            "torch": bool(torch_ok),
-            "cuda_available": bool(torch_info.get("cuda_available", False)),
-            "voice_cloning": bool(voice_clone_ok),
-        },
-    )
-    ok("Runtime is ready.")
+        write_json(
+            SCRIPT_DIR / "runtime" / "package_status.json",
+            {
+                "python": str(py),
+                "runtime_tag": runtime_environment_tag(),
+                "runtime_dir": str(runtime_venv_dir()),
+                "ffmpeg": ffmpeg_info,
+                "torch": torch_ok,
+                "torch_info": torch_info,
+                "nvidia_gpu_detected": nvidia_gpu_available(),
+                "core_ai": core_ok,
+                "scene_detection": scene_ok,
+                "speech_to_text": whisper_ok,
+                "facenet_pytorch": facenet_ok,
+                "speaker_embeddings": speaker_embeddings_ok,
+                "render_tts": tts_ok,
+                "voice_cloning": voice_clone_ok,
+                "updated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+            },
+        )
+        if torch_info.get("cuda_available"):
+            device_names = ", ".join(torch_info.get("device_names") or [])
+            ok(f"GPU ready for torch: {device_names}")
+        elif nvidia_gpu_available():
+            warn("NVIDIA GPU detected, but torch does not report CUDA yet. CPU fallback remains active.")
+        mark_step_completed(
+            "00_prepare_runtime",
+            "global",
+            {
+                "python": str(py),
+                "runtime_tag": runtime_environment_tag(),
+                "runtime_dir": str(runtime_venv_dir()),
+                "ffmpeg": ffmpeg_info.get("ffmpeg", ""),
+                "torch": bool(torch_ok),
+                "cuda_available": bool(torch_info.get("cuda_available", False)),
+                "voice_cloning": bool(voice_clone_ok),
+            },
+        )
+        ok("Runtime is ready.")
+    finally:
+        lease_manager.__exit__(None, None, None)
 
 
 if __name__ == "__main__":
