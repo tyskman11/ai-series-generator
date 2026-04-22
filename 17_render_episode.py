@@ -709,20 +709,105 @@ def scene_asset_sidecar_frames(asset_source_path: Path) -> list[tuple[str, Path]
     return candidates
 
 
-def derive_scene_visual_beats(scene: dict, scene_voice_plan: list[dict], generation_plan: dict) -> list[str]:
+def derive_scene_visual_beats(
+    scene: dict,
+    scene_voice_plan: list[dict],
+    generation_plan: dict,
+    scene_duration_seconds: float,
+    scene_start_seconds: float = 0.0,
+) -> list[dict]:
+    scene_start = float(scene_start_seconds or 0.0)
+    scene_duration = max(0.25, float(scene_duration_seconds or 0.0))
+    scene_end = scene_start + scene_duration
     camera_plan = generation_plan.get("camera_plan", []) if isinstance(generation_plan.get("camera_plan", []), list) else []
-    beat_count = max(1, min(5, max(len(scene_voice_plan), len(camera_plan), 2)))
-    beats = ["wide_intro"]
-    for index in range(max(0, beat_count - 2)):
-        line = scene_voice_plan[index] if index < len(scene_voice_plan) and isinstance(scene_voice_plan[index], dict) else {}
-        speaker_name = clean_text(line.get("speaker_name", "")).lower()
-        if speaker_name:
-            beats.append("speaker_left" if index % 2 == 0 else "speaker_right")
-        else:
-            beats.append("push_in" if index % 2 == 0 else "reaction")
-    if beat_count > 1:
-        beats.append("reaction")
-    return beats[:beat_count]
+    beats: list[dict] = []
+
+    def append_beat(
+        beat_name: str,
+        start_seconds: float,
+        end_seconds: float,
+        *,
+        speaker_name: str = "",
+        focus: str = "",
+        camera_hint: str = "",
+        source: str = "",
+        dialogue_text: str = "",
+    ) -> None:
+        start_value = max(scene_start, float(start_seconds or scene_start))
+        end_value = min(scene_end, max(start_value + 0.01, float(end_seconds or start_value + 0.01)))
+        duration_value = round(max(0.01, end_value - start_value), 3)
+        beat_index = len(beats) + 1
+        beats.append(
+            {
+                "beat_index": beat_index,
+                "beat_name": beat_name,
+                "start_seconds": round(start_value, 3),
+                "end_seconds": round(end_value, 3),
+                "duration_seconds": duration_value,
+                "relative_start_seconds": round(start_value - scene_start, 3),
+                "relative_end_seconds": round(end_value - scene_start, 3),
+                "speaker_name": clean_text(speaker_name),
+                "focus": clean_text(focus),
+                "camera_hint": clean_text(camera_hint),
+                "source": clean_text(source),
+                "dialogue_text": clean_text(dialogue_text)[:160],
+            }
+        )
+
+    prepared_lines = [line for line in scene_voice_plan if isinstance(line, dict)]
+    if not prepared_lines:
+        first_split = scene_start + (scene_duration * 0.55)
+        if scene_duration <= 1.2:
+            append_beat("wide_intro", scene_start, scene_end, focus=clean_text(scene.get("title", "")), source="scene_summary")
+            return beats
+        append_beat("wide_intro", scene_start, first_split, focus=clean_text(scene.get("title", "")), source="scene_summary")
+        append_beat("reaction", first_split, scene_end, focus=clean_text(scene.get("summary", "")), source="scene_summary")
+        return beats
+
+    cursor = scene_start
+    for index, line in enumerate(prepared_lines):
+        line_start = max(scene_start, min(scene_end, float(line.get("start_seconds", cursor) or cursor)))
+        line_end = max(line_start + 0.01, min(scene_end, float(line.get("end_seconds", line_start + 0.01) or (line_start + 0.01))))
+        gap = line_start - cursor
+        camera_entry = camera_plan[index] if index < len(camera_plan) and isinstance(camera_plan[index], dict) else {}
+        focus = clean_text(camera_entry.get("focus", "")) or clean_text(line.get("speaker_name", ""))
+        camera_hint = clean_text(camera_entry.get("camera", "")) or ("wide" if index == 0 else "dialogue")
+        if gap >= 0.18:
+            append_beat(
+                "wide_intro" if not beats else ("push_in" if index % 2 == 0 else "reaction"),
+                cursor,
+                line_start,
+                focus=focus or clean_text(scene.get("title", "")),
+                camera_hint=camera_hint,
+                source="dialogue_gap",
+            )
+        speaker_name = clean_text(line.get("speaker_name", ""))
+        beat_name = "speaker_left" if index % 2 == 0 else "speaker_right"
+        if not speaker_name:
+            beat_name = "push_in" if index % 2 == 0 else "reaction"
+        append_beat(
+            "wide_intro" if not beats and line_start <= scene_start + 0.05 else beat_name,
+            line_start,
+            line_end,
+            speaker_name=speaker_name,
+            focus=focus or speaker_name,
+            camera_hint=camera_hint,
+            source="dialogue_line",
+            dialogue_text=clean_text(line.get("text", "")),
+        )
+        cursor = line_end
+
+    if scene_end - cursor >= 0.16:
+        append_beat(
+            "reaction",
+            cursor,
+            scene_end,
+            focus=clean_text(scene.get("summary", "")) or clean_text(scene.get("title", "")),
+            camera_hint=clean_text((camera_plan[-1] if camera_plan and isinstance(camera_plan[-1], dict) else {}).get("camera", "")),
+            source="scene_outro",
+        )
+
+    return beats
 
 
 def image_variant_for_beat(source_image: Image.Image, beat_name: str, accent: tuple[int, int, int], index: int) -> Image.Image:
@@ -847,6 +932,35 @@ def build_scene_production_package(
     image_output_root = episode_package_root / "images" / scene_slug
     video_output_root = episode_package_root / "videos" / scene_slug
     lipsync_output_root = episode_package_root / "lipsync" / scene_slug
+    current_generated_outputs = scene_manifest.get("current_generated_outputs", {}) if isinstance(scene_manifest.get("current_generated_outputs", {}), dict) else {}
+    manifest_visual_beats = scene_manifest.get("scene_visual_beats", []) if isinstance(scene_manifest.get("scene_visual_beats", []), list) else []
+    visual_beats: list[dict] = []
+    for beat in manifest_visual_beats:
+        if not isinstance(beat, dict):
+            continue
+        visual_beats.append(
+            {
+                "beat_index": int(beat.get("beat_index", len(visual_beats) + 1) or (len(visual_beats) + 1)),
+                "beat_name": clean_text(beat.get("beat_name", "")),
+                "start_seconds": round(float(beat.get("start_seconds", 0.0) or 0.0), 3),
+                "end_seconds": round(float(beat.get("end_seconds", 0.0) or 0.0), 3),
+                "duration_seconds": round(float(beat.get("duration_seconds", 0.0) or 0.0), 3),
+                "relative_start_seconds": round(float(beat.get("relative_start_seconds", 0.0) or 0.0), 3),
+                "relative_end_seconds": round(float(beat.get("relative_end_seconds", 0.0) or 0.0), 3),
+                "speaker_name": clean_text(beat.get("speaker_name", "")),
+                "focus": clean_text(beat.get("focus", "")),
+                "camera_hint": clean_text(beat.get("camera_hint", "")),
+                "source": clean_text(beat.get("source", "")),
+                "dialogue_text": clean_text(beat.get("dialogue_text", "")),
+                "reference_image_path": clean_text(beat.get("reference_image_path", "")),
+                "frame_source_type": clean_text(beat.get("frame_source_type", "")),
+                "frame_source_path": clean_text(beat.get("frame_source_path", "")),
+            }
+        )
+    beat_reference_images = [clean_text(beat.get("reference_image_path", "")) for beat in visual_beats if clean_text(beat.get("reference_image_path", ""))]
+    current_video_source_type = clean_text(scene_manifest.get("video_source_type", "")) or clean_text(current_generated_outputs.get("video_source_type", ""))
+    local_composed_scene_video = current_video_source_type in {"local_motion_fallback", "storyboard_motion_fallback", "generated_episode_frame"}
+    compose_strategy = "reuse_generated_scene_video" if current_video_source_type in {"generated_scene_video", "generated_lipsync_video"} else "compose_local_scene_video_from_visual_beats"
     voice_lines = [
         build_voice_clone_line_package(cfg, episode_package_root, line)
         for line in (scene_voice_plan.get("lines", []) if isinstance(scene_voice_plan.get("lines", []), list) else [])
@@ -875,14 +989,18 @@ def build_scene_production_package(
             "preview_frame_path": clean_text(scene_manifest.get("frame_path", "")),
         },
         "current_generated_outputs": {
-            "video_source_type": clean_text(scene_manifest.get("video_source_type", "")),
-            "video_source_path": clean_text(scene_manifest.get("video_source_path", "")),
+            "video_source_type": current_video_source_type,
+            "video_source_path": clean_text(scene_manifest.get("video_source_path", "")) or clean_text(current_generated_outputs.get("video_source_path", "")),
             "final_clip_path": clean_text(scene_manifest.get("final_clip_path", "")),
             "scene_dialogue_audio": clean_text(scene_manifest.get("scene_dialogue_audio", "")),
             "scene_master_clip": clean_text(scene_manifest.get("scene_master_clip", "")),
-            "has_generated_scene_video": bool(clean_text(scene_manifest.get("video_source_type", ""))),
+            "has_generated_scene_video": bool(current_video_source_type),
             "has_scene_dialogue_audio": bool(clean_text(scene_manifest.get("scene_dialogue_audio", ""))),
             "has_scene_master_clip": bool(clean_text(scene_manifest.get("scene_master_clip", ""))),
+            "scene_visual_beat_count": len(visual_beats),
+            "beat_reference_images": beat_reference_images,
+            "has_visual_beat_reference_images": bool(beat_reference_images),
+            "local_composed_scene_video": local_composed_scene_video,
         },
         "storyboard": {
             "requires_new_storyboard_frames": True,
@@ -912,6 +1030,14 @@ def build_scene_production_package(
             "camera_plan": generation_plan.get("camera_plan", []) if isinstance(generation_plan.get("camera_plan", []), list) else [],
             "control_hints": generation_plan.get("control_hints", []) if isinstance(generation_plan.get("control_hints", []), list) else [],
             "continuity": continuity,
+            "compose_strategy": compose_strategy,
+            "local_video_plan": {
+                "mode": "dialogue_timed_multi_shot_scene_video",
+                "fallback_active": not current_video_source_type or local_composed_scene_video,
+                "beat_reference_root": str(video_output_root / "beat_references"),
+                "beat_count": len(visual_beats),
+                "beats": visual_beats,
+            },
             "target_outputs": {
                 "scene_video": str(scene_video_output_path(episode_package_root, scene_id)),
                 "preview_frame": str(scene_video_preview_output_path(episode_package_root, scene_id)),
@@ -996,6 +1122,18 @@ def build_episode_production_package_payload(
         and isinstance(scene.get("current_generated_outputs", {}), dict)
         and bool(scene["current_generated_outputs"].get("has_scene_master_clip", False))
     )
+    local_composed_scene_video_count = sum(
+        1
+        for scene in scene_packages
+        if isinstance(scene, dict)
+        and isinstance(scene.get("current_generated_outputs", {}), dict)
+        and bool(scene["current_generated_outputs"].get("local_composed_scene_video", False))
+    )
+    visual_beat_count = sum(
+        int(scene.get("current_generated_outputs", {}).get("scene_visual_beat_count", 0) or 0)
+        for scene in scene_packages
+        if isinstance(scene, dict) and isinstance(scene.get("current_generated_outputs", {}), dict)
+    )
     completion_status = generated_episode_completion_summary(
         scene_count=len(scene_packages),
         generated_scene_video_count=generated_scene_video_count,
@@ -1028,6 +1166,11 @@ def build_episode_production_package_payload(
             "lip_sync": total_line_count > 0,
         },
         "completion_status": completion_status,
+        "local_composition_status": {
+            "scene_visual_beat_count": visual_beat_count,
+            "scene_count_with_local_composed_video": local_composed_scene_video_count,
+            "scene_count_with_generated_or_lipsync_video": generated_scene_video_count,
+        },
         "target_master_outputs": {
             "image_root": str(package_root / "images"),
             "video_root": str(package_root / "videos"),
@@ -1051,11 +1194,19 @@ def render_production_prompt_preview(scene_packages: list[dict]) -> str:
         scene_id = clean_text(scene.get("scene_id", ""))
         image_generation = scene.get("image_generation", {}) if isinstance(scene.get("image_generation", {}), dict) else {}
         video_generation = scene.get("video_generation", {}) if isinstance(scene.get("video_generation", {}), dict) else {}
+        local_video_plan = video_generation.get("local_video_plan", {}) if isinstance(video_generation.get("local_video_plan", {}), dict) else {}
+        beat_names = [
+            clean_text(beat.get("beat_name", ""))
+            for beat in local_video_plan.get("beats", [])
+            if isinstance(beat, dict) and clean_text(beat.get("beat_name", ""))
+        ]
         lines.extend(
             [
                 f"[{scene_id}] {clean_text(scene.get('title', ''))}",
                 f"image_prompt = {clean_text(image_generation.get('prompt', ''))}",
                 f"video_prompt = {clean_text(video_generation.get('prompt', ''))}",
+                f"compose_strategy = {clean_text(video_generation.get('compose_strategy', ''))}",
+                f"visual_beats = {', '.join(beat_names[:8]) if beat_names else 'n/a'}",
                 "",
             ]
         )
@@ -1794,11 +1945,10 @@ def materialize_scene_motion_video(
     ffmpeg: Path,
     package_root: Path,
     scene_id: str,
-    duration_seconds: float,
     fallback_frame_path: Path,
     asset_source_path: Path | None,
     scene: dict,
-    scene_voice_plan: list[dict],
+    visual_beats: list[dict],
     fps: int,
     width: int,
     height: int,
@@ -1827,25 +1977,30 @@ def materialize_scene_motion_video(
     output_path = scene_video_output_path(package_root, scene_id)
     preview_path = scene_video_preview_output_path(package_root, scene_id)
     poster_path = scene_video_poster_output_path(package_root, scene_id)
+    beat_reference_root = output_path.parent / "beat_references"
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    beat_reference_root.mkdir(parents=True, exist_ok=True)
     write_scene_video_reference_images(frame_sources[0][1], preview_path, poster_path, width, height)
-    generation_plan = scene.get("generation_plan", {}) if isinstance(scene.get("generation_plan", {}), dict) else {}
-    visual_beats = derive_scene_visual_beats(scene, scene_voice_plan, generation_plan)
+    if not visual_beats:
+        generation_plan = scene.get("generation_plan", {}) if isinstance(scene.get("generation_plan", {}), dict) else {}
+        visual_beats = derive_scene_visual_beats(scene, [], generation_plan, safe_duration_seconds(scene))
     with tempfile.TemporaryDirectory(prefix=f"scene_motion_{production_scene_slug(scene_id)}_", dir=str(output_path.parent)) as temp_dir:
         temp_root = Path(temp_dir)
         clip_paths: list[Path] = []
-        beat_count = max(1, len(visual_beats))
-        accent = theme_color(scene, max(0, len(scene_voice_plan)))
-        remaining_duration = max(0.01, float(duration_seconds or 0.0))
-        for index, beat_name in enumerate(visual_beats, start=1):
+        accent = theme_color(scene, max(0, len(visual_beats)))
+        for index, beat in enumerate(visual_beats, start=1):
+            beat_name = clean_text(beat.get("beat_name", "")) or ("speaker_left" if index % 2 else "speaker_right")
             source_path = frame_sources[(index - 1) % len(frame_sources)][1]
             source_image = fit_image(source_path, width, height)
             variant_image = image_variant_for_beat(source_image, beat_name, accent, index - 1)
             variant_path = temp_root / f"variant_{index:04d}.png"
             variant_image.save(variant_path, quality=95)
-            remaining_beats = max(1, beat_count - index + 1)
-            clip_duration = max(0.01, remaining_duration / remaining_beats)
-            remaining_duration = max(0.0, remaining_duration - clip_duration)
+            reference_path = beat_reference_root / f"beat_{index:04d}_{beat_name}.png"
+            variant_image.save(reference_path, quality=95)
+            beat["reference_image_path"] = str(reference_path)
+            beat["frame_source_type"] = frame_sources[(index - 1) % len(frame_sources)][0]
+            beat["frame_source_path"] = str(source_path)
+            clip_duration = max(0.01, float(beat.get("duration_seconds", 0.01) or 0.01))
             clip_path = temp_root / f"{index:04d}.mp4"
             try:
                 encode_motion_still_clip(ffmpeg, variant_path, clip_duration, clip_path, fps, width, height, crf)
@@ -2090,6 +2245,14 @@ def main() -> None:
                 cloning_cfg,
                 render_cfg,
             )
+            scene_generation_plan = scene.get("generation_plan", {}) if isinstance(scene.get("generation_plan", {}), dict) else {}
+            scene_visual_beats = derive_scene_visual_beats(
+                scene,
+                scene_voice_plan,
+                scene_generation_plan,
+                duration,
+                timeline_cursor,
+            )
             final_clip_path = temp_clip_root / f"{index:04d}_{scene_id}.mp4"
             scene_video_source = first_existing_production_scene_video(package_root, scene_id)
             if scene_video_source is None:
@@ -2097,11 +2260,10 @@ def main() -> None:
                     ffmpeg,
                     package_root,
                     scene_id,
-                    duration,
                     frame_path,
                     resolve_stored_project_path(scene_meta.get("asset_source_path", "")),
                     scene,
-                    scene_voice_plan,
+                    scene_visual_beats,
                     fps,
                     width,
                     height,
@@ -2141,7 +2303,8 @@ def main() -> None:
                     "final_clip_path": str(final_clip_path),
                     "characters": scene.get("characters", []) if isinstance(scene.get("characters", []), list) else [],
                     "summary": scene.get("summary", ""),
-                    "generation_plan": scene.get("generation_plan", {}) if isinstance(scene.get("generation_plan", {}), dict) else {},
+                    "generation_plan": scene_generation_plan,
+                    "scene_visual_beats": scene_visual_beats,
                     "voice_line_count": len(scene_voice_plan),
                 }
             )
