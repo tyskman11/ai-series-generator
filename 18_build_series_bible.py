@@ -107,7 +107,7 @@ def main() -> None:
     cfg = load_config()
     worker_id = shared_worker_id_for_args(args)
     shared_workers = shared_workers_enabled_for_args(cfg, args)
-    mark_step_started("17_build_series_bible", "global")
+    mark_step_started("18_build_series_bible", "global")
     lease_root = distributed_step_runtime_root("18_build_series_bible", "global")
     if shared_workers:
         info(f"Shared NAS workers: enabled ({worker_id})")
@@ -148,7 +148,7 @@ def main() -> None:
             write_text(bible_markdown_path, bible_markdown)
             reporter.finish(current_label="Series Bible", extra_label=f"Written: {bible_json_path.name} and {bible_markdown_path.name}")
             mark_step_completed(
-                "17_build_series_bible",
+                "18_build_series_bible",
                 "global",
                 {
                     "series_bible_json": str(bible_json_path),
@@ -159,7 +159,7 @@ def main() -> None:
             )
             ok("Series Bible was updated.")
         except Exception as exc:
-            mark_step_failed("17_build_series_bible", str(exc), "global")
+            mark_step_failed("18_build_series_bible", str(exc), "global")
             raise
 
 

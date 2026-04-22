@@ -1746,7 +1746,7 @@ def main() -> None:
     full_generated_episode_path = episode_production_package_root(cfg, episode_id) / "master" / f"{episode_id}_full_generated_episode.mp4"
 
     autosave_target = episode_id
-    mark_step_started("18_render_episode", autosave_target, {"episode_id": episode_id, "shotlist": str(shotlist_path)})
+    mark_step_started("17_render_episode", autosave_target, {"episode_id": episode_id, "shotlist": str(shotlist_path)})
     if shared_workers:
         info(f"Shared NAS workers: enabled ({worker_id})")
     reporter = LiveProgressReporter(
@@ -1782,7 +1782,7 @@ def main() -> None:
         if draft_path.exists() and final_path.exists() and production_package_path.exists() and not args.force:
             reporter.finish(current_label=episode_id, extra_label="Draft, final render, and production package already exist")
             mark_step_completed(
-                "18_render_episode",
+                "17_render_episode",
                 autosave_target,
                 {
                     "episode_id": episode_id,
@@ -2030,7 +2030,7 @@ def main() -> None:
 
         reporter.finish(current_label=episode_id, extra_label=f"Rendered {len(scenes)} scenes and exported the full-episode production package")
         mark_step_completed(
-            "18_render_episode",
+            "17_render_episode",
             autosave_target,
             {
                 "episode_id": episode_id,
@@ -2044,7 +2044,7 @@ def main() -> None:
         )
         ok(f"Episode rendered: {episode_id}")
     except Exception as exc:
-        mark_step_failed("18_render_episode", str(exc), autosave_target, {"episode_id": episode_id})
+        mark_step_failed("17_render_episode", str(exc), autosave_target, {"episode_id": episode_id})
         raise
     finally:
         if lease_heartbeat is not None:

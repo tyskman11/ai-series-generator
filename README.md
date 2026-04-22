@@ -131,6 +131,7 @@ All scripts in this repository are AI-generated and maintained with `GPT-5.4`.
 - `18_build_series_bible.py` now also pulls in the most recent generated-episode outputs, so the bible itself reflects the current finished-episode production state instead of only the trained model summary
 - `pipeline_common.py`, `17_render_episode.py`, and `18_build_series_bible.py` now also derive and expose a central production-readiness summary with coverage ratios and remaining backend tasks per generated episode
 - `99_process_next_episode.py` now also shows that same production-readiness summary directly in its live markdown status, so the full pipeline dashboard reveals how close the latest generated episode is to a fully generated master
+- `17_render_episode.py` and `18_build_series_bible.py` now also write their autosave/status metadata under the correct numbered step names again, so render and bible runs no longer appear swapped in shared runtime state
 
 ## Planned
 
