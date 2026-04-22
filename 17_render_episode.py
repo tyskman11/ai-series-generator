@@ -11,7 +11,7 @@ import tempfile
 import textwrap
 from pathlib import Path
 
-from PIL import Image, ImageColor, ImageDraw, ImageFont, ImageOps
+from PIL import Image, ImageColor, ImageDraw, ImageEnhance, ImageFilter, ImageFont, ImageOps
 
 from pipeline_common import (
     DistributedLeaseHeartbeat,
@@ -684,6 +684,77 @@ def write_scene_video_reference_images(source_image_path: Path, preview_path: Pa
     poster_path.parent.mkdir(parents=True, exist_ok=True)
     image.save(poster_path)
     image.convert("RGB").save(preview_path, quality=92)
+
+
+def scene_asset_sidecar_frames(asset_source_path: Path) -> list[tuple[str, Path]]:
+    if not renderable_image_path(asset_source_path):
+        return []
+    parent = asset_source_path.parent
+    candidates: list[tuple[str, Path]] = []
+    candidate_roots = [parent]
+    sibling_scene_root = parent / asset_source_path.stem
+    if sibling_scene_root not in candidate_roots:
+        candidate_roots.append(sibling_scene_root)
+    for root in candidate_roots:
+        for name in ("frame.png", "frame.jpg", "preview.jpg", "preview.png", "poster.png", "poster.jpg"):
+            candidate = root / name
+            if candidate != asset_source_path and renderable_image_path(candidate):
+                candidates.append(("asset_sidecar_frame", candidate))
+        alternates_root = root / "alternates"
+        if alternates_root.exists():
+            for pattern in ("*.png", "*.jpg", "*.jpeg", "*.webp", "*.bmp"):
+                for candidate in sorted(alternates_root.glob(pattern)):
+                    if renderable_image_path(candidate):
+                        candidates.append(("asset_alternate_frame", candidate))
+    return candidates
+
+
+def derive_scene_visual_beats(scene: dict, scene_voice_plan: list[dict], generation_plan: dict) -> list[str]:
+    camera_plan = generation_plan.get("camera_plan", []) if isinstance(generation_plan.get("camera_plan", []), list) else []
+    beat_count = max(1, min(5, max(len(scene_voice_plan), len(camera_plan), 2)))
+    beats = ["wide_intro"]
+    for index in range(max(0, beat_count - 2)):
+        line = scene_voice_plan[index] if index < len(scene_voice_plan) and isinstance(scene_voice_plan[index], dict) else {}
+        speaker_name = clean_text(line.get("speaker_name", "")).lower()
+        if speaker_name:
+            beats.append("speaker_left" if index % 2 == 0 else "speaker_right")
+        else:
+            beats.append("push_in" if index % 2 == 0 else "reaction")
+    if beat_count > 1:
+        beats.append("reaction")
+    return beats[:beat_count]
+
+
+def image_variant_for_beat(source_image: Image.Image, beat_name: str, accent: tuple[int, int, int], index: int) -> Image.Image:
+    width, height = source_image.size
+    crop_box = (0, 0, width, height)
+    if beat_name == "speaker_left":
+        crop_box = (0, 0, int(width * 0.84), height)
+    elif beat_name == "speaker_right":
+        crop_box = (int(width * 0.16), 0, width, height)
+    elif beat_name == "push_in":
+        crop_box = (int(width * 0.08), int(height * 0.08), int(width * 0.92), int(height * 0.92))
+    elif beat_name == "reaction":
+        crop_box = (int(width * 0.06), int(height * 0.02), int(width * 0.94), int(height * 0.90))
+    elif beat_name == "detail":
+        crop_box = (int(width * 0.14), int(height * 0.12), int(width * 0.86), int(height * 0.84))
+    variant = ImageOps.fit(source_image.crop(crop_box), (width, height), method=Image.Resampling.LANCZOS)
+    if beat_name == "speaker_right" and index % 2 == 1:
+        variant = ImageOps.mirror(variant)
+    variant = ImageEnhance.Contrast(variant).enhance(1.04 + (0.03 * (index % 3)))
+    variant = ImageEnhance.Color(variant).enhance(1.02 + (0.02 * ((index + 1) % 3)))
+    overlay = Image.new("RGBA", variant.size, accent + (24 + min(28, index * 6),))
+    mask = Image.new("L", variant.size, 0)
+    mask_draw = ImageDraw.Draw(mask)
+    if beat_name in {"speaker_left", "wide_intro"}:
+        mask_draw.rectangle((0, 0, int(width * 0.58), height), fill=190)
+    elif beat_name == "speaker_right":
+        mask_draw.rectangle((int(width * 0.42), 0, width, height), fill=190)
+    else:
+        mask_draw.ellipse((int(width * 0.08), int(height * 0.06), int(width * 0.92), int(height * 0.94)), fill=180)
+    overlay.putalpha(mask.filter(ImageFilter.GaussianBlur(max(14, int(min(width, height) * 0.025)))))
+    variant = Image.alpha_composite(variant.convert("RGBA"), overlay).convert("RGB")
+    return variant
 
 
 def build_video_generation_prompt(scene: dict, generation_plan: dict) -> str:
@@ -1725,12 +1796,32 @@ def materialize_scene_motion_video(
     scene_id: str,
     duration_seconds: float,
     fallback_frame_path: Path,
+    asset_source_path: Path | None,
+    scene: dict,
+    scene_voice_plan: list[dict],
     fps: int,
     width: int,
     height: int,
     crf: int,
 ) -> tuple[str, Path] | None:
     frame_sources = collect_scene_motion_frames(package_root, scene_id, fallback_frame_path)
+    if asset_source_path is not None:
+        for source_type, candidate in scene_asset_sidecar_frames(asset_source_path):
+            if renderable_image_path(candidate):
+                frame_sources.append((source_type, candidate))
+        if renderable_image_path(asset_source_path):
+            frame_sources.insert(0, ("asset_source_frame", asset_source_path))
+    if not frame_sources:
+        return None
+    deduped_frame_sources: list[tuple[str, Path]] = []
+    seen_paths: set[str] = set()
+    for source_type, candidate in frame_sources:
+        resolved = str(candidate.resolve())
+        if resolved in seen_paths or not renderable_image_path(candidate):
+            continue
+        seen_paths.add(resolved)
+        deduped_frame_sources.append((source_type, candidate))
+    frame_sources = deduped_frame_sources
     if not frame_sources:
         return None
     output_path = scene_video_output_path(package_root, scene_id)
@@ -1738,31 +1829,33 @@ def materialize_scene_motion_video(
     poster_path = scene_video_poster_output_path(package_root, scene_id)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     write_scene_video_reference_images(frame_sources[0][1], preview_path, poster_path, width, height)
-    if len(frame_sources) == 1:
-        try:
-            encode_motion_still_clip(ffmpeg, frame_sources[0][1], duration_seconds, output_path, fps, width, height, crf)
-        except RuntimeError:
-            encode_still_clip(ffmpeg, frame_sources[0][1], duration_seconds, output_path, fps, width, height, crf)
-        return "auto_generated_motion_video", output_path
+    generation_plan = scene.get("generation_plan", {}) if isinstance(scene.get("generation_plan", {}), dict) else {}
+    visual_beats = derive_scene_visual_beats(scene, scene_voice_plan, generation_plan)
     with tempfile.TemporaryDirectory(prefix=f"scene_motion_{production_scene_slug(scene_id)}_", dir=str(output_path.parent)) as temp_dir:
         temp_root = Path(temp_dir)
         clip_paths: list[Path] = []
-        source_count = len(frame_sources)
-        for index, (_, source_path) in enumerate(frame_sources, start=1):
-            clip_duration = max(0.75, float(duration_seconds or 0.0) / max(1, source_count))
-            if index == source_count:
-                consumed_duration = clip_duration * (source_count - 1)
-                clip_duration = max(0.75, max(float(duration_seconds or 0.0) - consumed_duration, 0.75))
+        beat_count = max(1, len(visual_beats))
+        accent = theme_color(scene, max(0, len(scene_voice_plan)))
+        remaining_duration = max(0.01, float(duration_seconds or 0.0))
+        for index, beat_name in enumerate(visual_beats, start=1):
+            source_path = frame_sources[(index - 1) % len(frame_sources)][1]
+            source_image = fit_image(source_path, width, height)
+            variant_image = image_variant_for_beat(source_image, beat_name, accent, index - 1)
+            variant_path = temp_root / f"variant_{index:04d}.png"
+            variant_image.save(variant_path, quality=95)
+            remaining_beats = max(1, beat_count - index + 1)
+            clip_duration = max(0.01, remaining_duration / remaining_beats)
+            remaining_duration = max(0.0, remaining_duration - clip_duration)
             clip_path = temp_root / f"{index:04d}.mp4"
             try:
-                encode_motion_still_clip(ffmpeg, source_path, clip_duration, clip_path, fps, width, height, crf)
+                encode_motion_still_clip(ffmpeg, variant_path, clip_duration, clip_path, fps, width, height, crf)
             except RuntimeError:
-                encode_still_clip(ffmpeg, source_path, clip_duration, clip_path, fps, width, height, crf)
+                encode_still_clip(ffmpeg, variant_path, clip_duration, clip_path, fps, width, height, crf)
             clip_paths.append(clip_path)
         concat_path = temp_root / "concat.txt"
         build_clip_concat_file(clip_paths, concat_path)
         encode_clip_sequence(ffmpeg, concat_path, output_path, crf)
-    return "auto_generated_motion_video", output_path
+    return "auto_generated_multishot_video", output_path
 
 
 def encode_video(ffmpeg: Path, concat_path: Path, output_path: Path, fps: int, width: int, height: int, crf: int) -> None:
@@ -1988,6 +2081,15 @@ def main() -> None:
             scene_image.save(frame_path, quality=95)
             duration = safe_duration_seconds(scene)
             entries.append((frame_path, duration))
+            scene_voice_plan = build_scene_voice_plan(
+                scene,
+                duration,
+                timeline_cursor,
+                original_line_library,
+                voice_lookup,
+                cloning_cfg,
+                render_cfg,
+            )
             final_clip_path = temp_clip_root / f"{index:04d}_{scene_id}.mp4"
             scene_video_source = first_existing_production_scene_video(package_root, scene_id)
             if scene_video_source is None:
@@ -1997,6 +2099,9 @@ def main() -> None:
                     scene_id,
                     duration,
                     frame_path,
+                    resolve_stored_project_path(scene_meta.get("asset_source_path", "")),
+                    scene,
+                    scene_voice_plan,
                     fps,
                     width,
                     height,
@@ -2012,15 +2117,6 @@ def main() -> None:
                 encode_still_clip(ffmpeg, frame_path, duration, final_clip_path, fps, width, height, crf=20)
             scene_clip_paths.append(final_clip_path)
             final_clip_paths.append(final_clip_path)
-            scene_voice_plan = build_scene_voice_plan(
-                scene,
-                duration,
-                timeline_cursor,
-                original_line_library,
-                voice_lookup,
-                cloning_cfg,
-                render_cfg,
-            )
             voice_plan_scenes.append(
                 {
                     "scene_id": scene_id,

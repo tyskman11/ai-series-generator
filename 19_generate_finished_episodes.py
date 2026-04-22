@@ -12,6 +12,7 @@ from pipeline_common import (
     distributed_step_runtime_root,
     open_face_review_item_count,
     LiveProgressReporter,
+    PROJECT_ROOT,
     SCRIPT_DIR,
     error,
     generated_episode_artifacts,
@@ -177,6 +178,32 @@ def completed_step_labels(planned_steps: list[str], completed_count: int) -> lis
     return list(planned_steps[:limit])
 
 
+def output_path_ready(value: object) -> bool:
+    text = str(value or "").strip()
+    if not text:
+        return False
+    candidate = Path(text)
+    if candidate.exists() and candidate.is_file():
+        return True
+    try:
+        candidate.resolve(strict=False).relative_to(PROJECT_ROOT.resolve(strict=False))
+    except ValueError:
+        return True
+    except OSError:
+        return False
+    return False
+
+
+def ensure_finished_episode_outputs(episode_id: str, episode_outputs: dict[str, object]) -> dict[str, object]:
+    required_fields = ("final_render", "full_generated_episode", "production_package", "render_manifest")
+    missing = [field for field in required_fields if not output_path_ready(episode_outputs.get(field))]
+    if missing:
+        raise RuntimeError(
+            f"Episode {episode_id} did not produce a complete finished-episode bundle. Missing outputs: {', '.join(missing)}"
+        )
+    return episode_outputs
+
+
 def main() -> None:
     rerun_in_runtime()
     args = parse_args()
@@ -313,11 +340,13 @@ def main() -> None:
             completed_steps += 1
             episode_outputs = generated_episode_artifacts(cfg, episode_id)
             if episode_outputs:
-                generated_outputs.append(episode_outputs)
+                generated_outputs.append(ensure_finished_episode_outputs(episode_id, episode_outputs))
+            else:
+                raise RuntimeError(f"Episode {episode_id} finished rendering without a recorded output bundle.")
             reporter.update(
                 preview_reporter_current(reporter, completed_steps),
                 current_label=episode_id,
-                extra_label=f"Episode render complete: {episode_id}",
+                extra_label=f"Finished episode bundle ready: {episode_id}",
                 scope_current=len(generated) + 1,
                 scope_total=preview_scope_total(count, endless, len(generated)),
                 scope_label="Episodes",
