@@ -81,6 +81,7 @@ All scripts in this repository are AI-generated and maintained with `GPT-5.4`.
 - `00_prepare_runtime.py`, `01_setup_project.py`, `06_review_unknowns.py`, `08_train_series_model.py`, and `14_generate_episode_from_trained_model.py` now also use the same shared-worker lease layer, but intentionally as exclusive leases because concurrent writes there would be unsafe or ambiguous
 - `04_diarize_and_transcribe.py` still has the deepest split, leasing scenes dynamically so multiple PCs can help on the same episode and stale leases get reclaimed automatically
 - `19_generate_finished_episodes.py`, `20_refresh_after_manual_review.py`, `18_build_series_bible.py`, and `99_process_next_episode.py` now use shared-worker leases mainly to prevent conflicting duplicate orchestration runs, while the underlying numbered worker steps do the actual distributed work
+- the orchestration scripts now also forward `--worker-id` and `--no-shared-workers` into the numbered child steps, so one NAS run keeps one consistent worker identity and an explicitly local-only run stays local-only all the way down
 - `99_process_next_episode.py` is being hardened for real inbox batch workflows with autosaves, resumable checkpoints, and live status files
 - `17_render_episode.py` continues to improve long Windows render runs, especially for large segment stacks
 - the new training chain around `09` through `13` is being observed on real project data, especially where voice material is still weak
@@ -413,9 +414,13 @@ Rebuilds the compact series bible from the trained series model and current revi
 
 Runs a full visible multi-episode generation flow, including rebuild, training, generation, storyboard backend materialization, and render stages. It now targets finished episodes instead of merely preview-labeled batches, rebuilds the series bible once after the full batch instead of repeating that step after every generated episode, records the planned/completed batch-step order in its step metadata for easier resume/debug inspection, stores the concrete output bundle per generated episode from step `17` for easier follow-up automation, respects the same optional foundation/adapter/fine-tune/backend training toggles used by the other orchestration scripts, supports `--skip-downloads` for the foundation-prepare step, and can also run endlessly with `--count 0` or `--endless`. In endless mode it updates the series bible after each new rendered episode because there is no final batch end. In shared NAS mode, `19` uses an orchestration lease so the same endless/batch run is not started twice by different PCs.
 
+Its shared-worker flags are now propagated into every child step as well, so `--worker-id <name>` stays consistent across the whole batch and `--no-shared-workers` really disables NAS leasing for the complete nested run.
+
 ### 20 - Refresh After Manual Review
 
 One-command rebuild path after manual character cleanup. This is the preferred way to rebuild dependent outputs after heavy review work, including refreshed storyboard assets, backend frames, render output, and the final series bible update. Its planned-step list now keeps the same train-then-generate/render ordering as the other orchestration scripts, `--stop-after-training` cuts the run cleanly after the active training block, and the refresh path now respects the same optional foundation/adapter/fine-tune/backend stage toggles as the other numbered orchestrators instead of always forcing `09` through `13`. In shared NAS mode, `20` uses an orchestration lease so the same rebuild run is not started twice by different PCs.
+
+Its shared-worker flags are also forwarded into the nested numbered steps, so `--worker-id` and `--no-shared-workers` apply to the whole rebuild, not only to the coordinator itself.
 
 ### 99 - Full Pipeline
 
@@ -433,6 +438,8 @@ Runs the main end-to-end flow:
 
 The pipeline now writes autosaves, resumable checkpoints, and live status files for long-running batch work.
 It also supports `--skip-downloads` for the foundation-prepare stage when existing model downloads should be reused, stores the planned/completed global step order in the autosave state so resume and status output reflect the real run plan, and now carries the latest generated episode output bundle through those status files so the current final render, full generated episode master, render manifest, production package, production-readiness label, coverage ratios, and remaining backend tasks are visible without digging through folders. In shared NAS mode, `99` uses an exclusive orchestration lease so there is only one full end-to-end coordinator at a time while the underlying numbered worker scripts still distribute the actual step work.
+
+The coordinator now also forwards the shared-worker flags into setup, per-episode processing, and all later global steps. That means one `99` run keeps one stable NAS worker identity across its child steps, and `--no-shared-workers` truly forces the entire nested pipeline into local single-worker mode.
 
 ## Testing And Smoke Runs
 

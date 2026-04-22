@@ -26,6 +26,7 @@ from pipeline_common import (
     rerun_in_runtime,
     resolve_project_path,
     runtime_python,
+    shared_worker_cli_args,
     shared_worker_id_for_args,
     shared_workers_enabled_for_args,
 )
@@ -66,9 +67,14 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def run_step(script_name: str, title: str, extra_args: list[str] | None = None) -> None:
+def run_step(
+    script_name: str,
+    title: str,
+    extra_args: list[str] | None = None,
+    shared_args: list[str] | None = None,
+) -> None:
     headline(title)
-    command = [str(runtime_python()), str(SCRIPT_DIR / script_name), *(extra_args or [])]
+    command = [str(runtime_python()), str(SCRIPT_DIR / script_name), *(extra_args or []), *(shared_args or [])]
     result = subprocess.run(command)
     if result.returncode != 0:
         raise SystemExit(result.returncode)
@@ -532,6 +538,7 @@ def main() -> None:
     cfg = load_config()
     worker_id = shared_worker_id_for_args(args)
     shared_workers = shared_workers_enabled_for_args(cfg, args)
+    child_shared_args = shared_worker_cli_args(cfg, args)
     if shared_workers:
         info(f"Shared NAS workers: enabled ({worker_id})")
     inbox_dir = resolve_project_path(cfg["paths"]["inbox_episodes"])
@@ -571,7 +578,7 @@ def main() -> None:
             state["current_phase"] = "setup"
             state["current_step"] = SETUP_STEP
             save_autosave(cfg, state, "setup_started", inbox_dir)
-            run_step(SETUP_STEP, "Set Up Project Structure")
+            run_step(SETUP_STEP, "Set Up Project Structure", shared_args=child_shared_args)
             state["setup_completed"] = True
             state["current_phase"] = None
             state["current_step"] = None
@@ -628,6 +635,7 @@ def main() -> None:
                     script_name,
                     step_title,
                     episode_step_args(script_name, next_video_name, episode_name),
+                    shared_args=child_shared_args,
                 )
                 mark_episode_step_completed(state, episode_name, script_name)
                 finished_steps.add(script_name)
@@ -702,7 +710,7 @@ def main() -> None:
                 scope_started_at=global_step_started_at,
                 scope_label="Global Steps",
             )
-            run_step(script_name, step_title, step_args)
+            run_step(script_name, step_title, step_args, shared_args=child_shared_args)
             mark_global_step_completed(state, script_name)
             completed_global_steps.add(script_name)
             state["global_completed_step_labels"] = completed_global_step_labels(state["global_planned_steps"], completed_global_steps)

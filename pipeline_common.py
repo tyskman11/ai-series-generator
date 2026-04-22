@@ -572,6 +572,14 @@ def shared_workers_enabled_for_args(cfg: dict[str, Any], args) -> bool:
     return distributed_runtime_enabled(cfg) and not bool(getattr(args, "no_shared_workers", False))
 
 
+def shared_worker_cli_args(cfg: dict[str, Any], args) -> list[str]:
+    if bool(getattr(args, "no_shared_workers", False)):
+        return ["--no-shared-workers"]
+    if not distributed_runtime_enabled(cfg):
+        return []
+    return ["--worker-id", shared_worker_id_for_args(args)]
+
+
 def distributed_lease_path(root: Path, lease_name: str) -> Path:
     safe_name = re.sub(r"[^a-z0-9]+", "_", coalesce_text(lease_name).lower()).strip("_") or "lease"
     return root / f"{safe_name}.json"
