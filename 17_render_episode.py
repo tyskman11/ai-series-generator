@@ -80,23 +80,25 @@ def episode_production_package_root(cfg: dict, episode_id: str) -> Path:
 
 
 def production_scene_frame_candidates(package_root: Path, scene_id: str) -> list[tuple[str, Path]]:
+    scene_slug = production_scene_slug(scene_id)
     return [
-        ("generated_episode_frame", package_root / "images" / scene_id / "frame_0001.png"),
-        ("generated_episode_frame", package_root / "images" / scene_id / "frame.png"),
-        ("generated_episode_frame", package_root / "images" / scene_id / "keyframe.png"),
-        ("generated_episode_frame", package_root / "videos" / scene_id / "poster.png"),
-        ("generated_episode_frame", package_root / "videos" / scene_id / "preview.jpg"),
-        ("generated_episode_frame", package_root / "lipsync" / scene_id / "poster.png"),
+        ("generated_episode_frame", package_root / "images" / scene_slug / "frame_0001.png"),
+        ("generated_episode_frame", package_root / "images" / scene_slug / "frame.png"),
+        ("generated_episode_frame", package_root / "images" / scene_slug / "keyframe.png"),
+        ("generated_episode_frame", package_root / "videos" / scene_slug / "poster.png"),
+        ("generated_episode_frame", package_root / "videos" / scene_slug / "preview.jpg"),
+        ("generated_episode_frame", package_root / "lipsync" / scene_slug / "poster.png"),
     ]
 
 
 def production_scene_video_candidates(package_root: Path, scene_id: str) -> list[tuple[str, Path]]:
+    scene_slug = production_scene_slug(scene_id)
     return [
-        ("generated_lipsync_video", package_root / "lipsync" / scene_id / f"{scene_id}_lipsync.mp4"),
-        ("generated_lipsync_video", package_root / "lipsync" / scene_id / "lipsync.mp4"),
-        ("generated_scene_video", package_root / "videos" / scene_id / f"{scene_id}.mp4"),
-        ("generated_scene_video", package_root / "videos" / scene_id / "scene.mp4"),
-        ("generated_scene_video", package_root / "videos" / scene_id / "clip.mp4"),
+        ("generated_lipsync_video", package_root / "lipsync" / scene_slug / f"{scene_slug}_lipsync.mp4"),
+        ("generated_lipsync_video", package_root / "lipsync" / scene_slug / "lipsync.mp4"),
+        ("generated_scene_video", package_root / "videos" / scene_slug / f"{scene_slug}.mp4"),
+        ("generated_scene_video", package_root / "videos" / scene_slug / "scene.mp4"),
+        ("generated_scene_video", package_root / "videos" / scene_slug / "clip.mp4"),
     ]
 
 
@@ -627,8 +629,61 @@ def scene_master_clip_output_path(episode_package_root: Path, scene_id: str) -> 
     return episode_package_root / "master" / "scenes" / f"{scene_slug}_master.mp4"
 
 
+def scene_video_output_path(episode_package_root: Path, scene_id: str) -> Path:
+    scene_slug = production_scene_slug(scene_id)
+    return episode_package_root / "videos" / scene_slug / f"{scene_slug}.mp4"
+
+
+def scene_video_preview_output_path(episode_package_root: Path, scene_id: str) -> Path:
+    scene_slug = production_scene_slug(scene_id)
+    return episode_package_root / "videos" / scene_slug / "preview.jpg"
+
+
+def scene_video_poster_output_path(episode_package_root: Path, scene_id: str) -> Path:
+    scene_slug = production_scene_slug(scene_id)
+    return episode_package_root / "videos" / scene_slug / "poster.png"
+
+
 def valid_media_source_path(path: Path) -> bool:
     return bool(str(path).strip()) and path.exists() and path.is_file()
+
+
+def renderable_image_path(path: Path) -> bool:
+    if not valid_media_source_path(path):
+        return False
+    return path.suffix.lower() in {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
+
+
+def collect_scene_motion_frames(package_root: Path, scene_id: str, fallback_frame_path: Path) -> list[tuple[str, Path]]:
+    frames: list[tuple[str, Path]] = []
+    seen: set[str] = set()
+
+    def add_frame(source_type: str, candidate: Path) -> None:
+        if not renderable_image_path(candidate):
+            return
+        resolved = str(candidate.resolve())
+        if resolved in seen:
+            return
+        seen.add(resolved)
+        frames.append((source_type, candidate))
+
+    for source_type, candidate in production_scene_frame_candidates(package_root, scene_id):
+        add_frame(source_type, candidate)
+    alternate_root = package_root / "images" / production_scene_slug(scene_id) / "alternates"
+    if alternate_root.exists():
+        for pattern in ("*.png", "*.jpg", "*.jpeg", "*.webp", "*.bmp"):
+            for candidate in sorted(alternate_root.glob(pattern)):
+                add_frame("generated_alternate_frame", candidate)
+    add_frame("storyboard_card_frame", fallback_frame_path)
+    return frames
+
+
+def write_scene_video_reference_images(source_image_path: Path, preview_path: Path, poster_path: Path, width: int, height: int) -> None:
+    image = fit_image(source_image_path, width, height)
+    preview_path.parent.mkdir(parents=True, exist_ok=True)
+    poster_path.parent.mkdir(parents=True, exist_ok=True)
+    image.save(poster_path)
+    image.convert("RGB").save(preview_path, quality=92)
 
 
 def build_video_generation_prompt(scene: dict, generation_plan: dict) -> str:
@@ -787,9 +842,9 @@ def build_scene_production_package(
             "control_hints": generation_plan.get("control_hints", []) if isinstance(generation_plan.get("control_hints", []), list) else [],
             "continuity": continuity,
             "target_outputs": {
-                "scene_video": str(video_output_root / f"{scene_slug}.mp4"),
-                "preview_frame": str(video_output_root / "preview.jpg"),
-                "poster_frame": str(video_output_root / "poster.png"),
+                "scene_video": str(scene_video_output_path(episode_package_root, scene_id)),
+                "preview_frame": str(scene_video_preview_output_path(episode_package_root, scene_id)),
+                "poster_frame": str(scene_video_poster_output_path(episode_package_root, scene_id)),
             },
         },
         "voice_clone": {
@@ -1549,6 +1604,53 @@ def choose_render_mode(scene_count: int, generated_scene_video_count: int, audio
     return "voiced_storyboard_episode" if audio_available else "silent_storyboard_preview_fallback"
 
 
+def encode_motion_still_clip(
+    ffmpeg: Path,
+    image_path: Path,
+    duration_seconds: float,
+    output_path: Path,
+    fps: int,
+    width: int,
+    height: int,
+    crf: int,
+) -> None:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    frame_count = max(1, int(round(max(0.01, float(duration_seconds or 0.0)) * max(1, int(fps or 1)))))
+    command = [
+        str(ffmpeg),
+        "-hide_banner",
+        "-y",
+        "-loop",
+        "1",
+        "-i",
+        str(image_path),
+        "-frames:v",
+        str(frame_count),
+        "-vf",
+        (
+            "zoompan="
+            f"z='if(eq(on,0),1.0,min(zoom+0.0012,1.12))':"
+            "x='iw/2-(iw/zoom/2)':"
+            "y='ih/2-(ih/zoom/2)':"
+            f"d={frame_count}:s={width}x{height}:fps={fps},"
+            "format=yuv420p"
+        ),
+        "-an",
+        "-c:v",
+        "libx264",
+        "-preset",
+        "medium",
+        "-crf",
+        str(crf),
+        "-movflags",
+        "+faststart",
+        str(output_path),
+    ]
+    result = subprocess.run(command, check=False, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    if result.returncode != 0 or not render_output_ready(output_path):
+        raise RuntimeError(f"Could not encode motion clip {output_path.name}: {(result.stdout or '').strip()[-600:]}")
+
+
 def encode_still_clip(ffmpeg: Path, image_path: Path, duration_seconds: float, output_path: Path, fps: int, width: int, height: int, crf: int) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     command = [
@@ -1615,6 +1717,52 @@ def normalize_scene_video_clip(
     result = subprocess.run(command, check=False, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     if result.returncode != 0 or not render_output_ready(output_path):
         raise RuntimeError(f"Could not normalize generated scene clip {input_path.name}: {(result.stdout or '').strip()[-600:]}")
+
+
+def materialize_scene_motion_video(
+    ffmpeg: Path,
+    package_root: Path,
+    scene_id: str,
+    duration_seconds: float,
+    fallback_frame_path: Path,
+    fps: int,
+    width: int,
+    height: int,
+    crf: int,
+) -> tuple[str, Path] | None:
+    frame_sources = collect_scene_motion_frames(package_root, scene_id, fallback_frame_path)
+    if not frame_sources:
+        return None
+    output_path = scene_video_output_path(package_root, scene_id)
+    preview_path = scene_video_preview_output_path(package_root, scene_id)
+    poster_path = scene_video_poster_output_path(package_root, scene_id)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    write_scene_video_reference_images(frame_sources[0][1], preview_path, poster_path, width, height)
+    if len(frame_sources) == 1:
+        try:
+            encode_motion_still_clip(ffmpeg, frame_sources[0][1], duration_seconds, output_path, fps, width, height, crf)
+        except RuntimeError:
+            encode_still_clip(ffmpeg, frame_sources[0][1], duration_seconds, output_path, fps, width, height, crf)
+        return "auto_generated_motion_video", output_path
+    with tempfile.TemporaryDirectory(prefix=f"scene_motion_{production_scene_slug(scene_id)}_", dir=str(output_path.parent)) as temp_dir:
+        temp_root = Path(temp_dir)
+        clip_paths: list[Path] = []
+        source_count = len(frame_sources)
+        for index, (_, source_path) in enumerate(frame_sources, start=1):
+            clip_duration = max(0.75, float(duration_seconds or 0.0) / max(1, source_count))
+            if index == source_count:
+                consumed_duration = clip_duration * (source_count - 1)
+                clip_duration = max(0.75, max(float(duration_seconds or 0.0) - consumed_duration, 0.75))
+            clip_path = temp_root / f"{index:04d}.mp4"
+            try:
+                encode_motion_still_clip(ffmpeg, source_path, clip_duration, clip_path, fps, width, height, crf)
+            except RuntimeError:
+                encode_still_clip(ffmpeg, source_path, clip_duration, clip_path, fps, width, height, crf)
+            clip_paths.append(clip_path)
+        concat_path = temp_root / "concat.txt"
+        build_clip_concat_file(clip_paths, concat_path)
+        encode_clip_sequence(ffmpeg, concat_path, output_path, crf)
+    return "auto_generated_motion_video", output_path
 
 
 def encode_video(ffmpeg: Path, concat_path: Path, output_path: Path, fps: int, width: int, height: int, crf: int) -> None:
@@ -1842,6 +1990,18 @@ def main() -> None:
             entries.append((frame_path, duration))
             final_clip_path = temp_clip_root / f"{index:04d}_{scene_id}.mp4"
             scene_video_source = first_existing_production_scene_video(package_root, scene_id)
+            if scene_video_source is None:
+                scene_video_source = materialize_scene_motion_video(
+                    ffmpeg,
+                    package_root,
+                    scene_id,
+                    duration,
+                    frame_path,
+                    fps,
+                    width,
+                    height,
+                    crf=20,
+                )
             if scene_video_source is not None:
                 generated_scene_video_count += 1
                 scene_video_source_type, scene_video_source_path = scene_video_source
