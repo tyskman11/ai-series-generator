@@ -32,12 +32,12 @@ from pipeline_common import (
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Generate multiple finished episodes in one run.")
+    parser = argparse.ArgumentParser(description="Generate finished episodes in one run.")
     parser.add_argument(
         "--count",
         type=int,
-        default=0,
-        help="Number of new episodes. Use 0 for endless generation. Default: 0 (endless)",
+        default=1,
+        help="Number of new episodes. Default: 1. Use 0 for endless generation.",
     )
     parser.add_argument(
         "--endless",

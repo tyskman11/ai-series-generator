@@ -107,6 +107,20 @@ def autosave_filename() -> str:
     return f"autosave_{datetime.utcnow().strftime('%Y%m%d_%H%M%S_%f')}.json"
 
 
+def next_autosave_path(root: Path) -> Path:
+    base_name = autosave_filename()
+    target = root / base_name
+    if not target.exists():
+        return target
+    stem = target.stem
+    suffix = target.suffix
+    for index in range(1, 1000):
+        candidate = root / f"{stem}_{index:03d}{suffix}"
+        if not candidate.exists():
+            return candidate
+    raise RuntimeError("Could not create a unique autosave filename.")
+
+
 def autosave_files(cfg: dict) -> list[Path]:
     root = autosave_dir(cfg)
     if not root.exists():
@@ -343,7 +357,7 @@ def save_autosave(cfg: dict, state: dict, reason: str, inbox_dir: Path | None = 
     root.mkdir(parents=True, exist_ok=True)
     state["updated_at"] = utc_timestamp()
     state["autosave_reason"] = reason
-    target = root / autosave_filename()
+    target = next_autosave_path(root)
     target.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
     prune_autosaves(cfg)
     write_status_files(cfg, build_status_snapshot(cfg, state, inbox_dir))

@@ -193,6 +193,7 @@ All scripts in this repository are AI-generated and maintained with `GPT-5.4`.
 - `19_generate_finished_episodes.py` now also supports `--skip-downloads` for step `09`, so multi-episode rebuild runs can reuse existing model downloads like the manual refresh path
 - `99_process_next_episode.py` now also supports `--skip-downloads` for step `09`, so the full end-to-end inbox pipeline can reuse existing model downloads without changing the train-then-generate/render order
 - `99_process_next_episode.py` now also stores explicit planned/completed global step metadata in its autosaves and status files, so resume state and live status stay aligned with the real train-then-generate/render plan
+- `99_process_next_episode.py` now chooses collision-free autosave filenames even when several checkpoints are written within the same clock tick, so long finished-episode runs no longer risk overwriting a fresh resume snapshot
 - `19_generate_finished_episodes.py`, `20_refresh_after_manual_review.py`, and `99_process_next_episode.py` now block only on actionable open face-review clusters from step `06`, while `06_review_unknowns.py` explicitly points to `--show-queue` when only speaker/segment review_queue entries remain
 - `pipeline_common.py`, `19_generate_finished_episodes.py`, and `99_process_next_episode.py` now also collect the real render/package outputs written by `17_render_episode.py`, so batch metadata and live status files point directly to the latest final render, full generated episode master, render manifest, and production package
 - `18_build_series_bible.py` now also pulls in the most recent generated-episode outputs, so the bible itself reflects the current finished-episode production state instead of only the trained model summary
@@ -504,7 +505,7 @@ Rebuilds the compact series bible from the trained series model and current revi
 
 ### 19 - Generate Finished Episodes
 
-Runs a full visible multi-episode generation flow, including rebuild, training, generation, storyboard backend materialization, and render stages. It now targets finished episodes instead of merely preview-labeled batches, rebuilds the series bible once after the full batch instead of repeating that step after every generated episode, records the planned/completed batch-step order in its step metadata for easier resume/debug inspection, stores the concrete output bundle per generated episode from step `17` for easier follow-up automation, respects the same optional foundation/adapter/fine-tune/backend training toggles used by the other orchestration scripts, supports `--skip-downloads` for the foundation-prepare step, and can also run endlessly with `--count 0` or `--endless`. In endless mode it updates the series bible after each new rendered episode because there is no final batch end. In shared NAS mode, `19` uses an orchestration lease so the same endless/batch run is not started twice by different PCs.
+Runs a full visible finished-episode generation flow, including rebuild, training, generation, storyboard backend materialization, and render stages. Without `--count`, it now generates exactly one finished episode, so a normal `python 19_generate_finished_episodes.py` run does not accidentally continue forever. It still supports multi-episode batches with `--count N` and endless generation only when requested with `--count 0` or `--endless`. It targets finished episodes instead of merely preview-labeled batches, rebuilds the series bible once after the full batch instead of repeating that step after every generated episode, records the planned/completed batch-step order in its step metadata for easier resume/debug inspection, stores the concrete output bundle per generated episode from step `17` for easier follow-up automation, respects the same optional foundation/adapter/fine-tune/backend training toggles used by the other orchestration scripts, and supports `--skip-downloads` for the foundation-prepare step. In endless mode it updates the series bible after each new rendered episode because there is no final batch end. In shared NAS mode, `19` uses an orchestration lease so the same endless/batch run is not started twice by different PCs.
 
 `19` now also validates that every generated episode actually produced the local finished-episode bundle written by `17`:
 
@@ -540,7 +541,7 @@ Runs the main end-to-end flow:
 9. rebuild the bible
 
 The pipeline now writes autosaves, resumable checkpoints, and live status files for long-running batch work.
-It also supports `--skip-downloads` for the foundation-prepare stage when existing model downloads should be reused, stores the planned/completed global step order in the autosave state so resume and status output reflect the real run plan, and now carries the latest generated episode output bundle through those status files so the current final render, full generated episode master, render manifest, production package, production-readiness label, coverage ratios, and remaining backend tasks are visible without digging through folders. In shared NAS mode, `99` uses an exclusive orchestration lease so there is only one full end-to-end coordinator at a time while the underlying numbered worker scripts still distribute the actual step work.
+It also supports `--skip-downloads` for the foundation-prepare stage when existing model downloads should be reused, stores the planned/completed global step order in the autosave state so resume and status output reflect the real run plan, writes collision-free autosave snapshot filenames for fast consecutive checkpoints, and now carries the latest generated episode output bundle through those status files so the current final render, full generated episode master, render manifest, production package, production-readiness label, coverage ratios, and remaining backend tasks are visible without digging through folders. In shared NAS mode, `99` uses an exclusive orchestration lease so there is only one full end-to-end coordinator at a time while the underlying numbered worker scripts still distribute the actual step work.
 
 The coordinator now also forwards the shared-worker flags into setup, per-episode processing, and all later global steps. That means one `99` run keeps one stable NAS worker identity across its child steps, and `--no-shared-workers` truly forces the entire nested pipeline into local single-worker mode.
 
@@ -583,6 +584,12 @@ One-command finished-episode run from already reviewed data:
 
 ```powershell
 python 19_generate_finished_episodes.py --count 1 --skip-downloads
+```
+
+Because `--count` now defaults to `1`, this shorter command also generates one finished episode:
+
+```powershell
+python 19_generate_finished_episodes.py --skip-downloads
 ```
 
 Shared NAS transcription example:
@@ -674,6 +681,6 @@ python 19_generate_finished_episodes.py --count 2 --skip-downloads
 Endless mode:
 
 ```powershell
-python 19_generate_finished_episodes.py
 python 19_generate_finished_episodes.py --endless --skip-downloads
+python 19_generate_finished_episodes.py --count 0 --skip-downloads
 ```
