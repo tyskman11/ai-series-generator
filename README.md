@@ -100,7 +100,7 @@ All scripts in this repository are AI-generated and maintained with `GPT-5.4`.
 - real episode titles for generated outputs instead of raw `folge_0x` placeholders
 - draft previews and local finished-episode rendering
 - full-episode production packages with per-scene image generation, video generation, voice clone, and lip-sync plans for later real episode backends
-- mixed final-audio rendering that already reuses matching original dialogue segments and materializes per-line/per-scene audio into the full-episode package
+- mixed final-audio rendering that already reuses matching original dialogue segments, smooths every rendered line with loudness normalization and short fades, and materializes per-line/per-scene audio into the full-episode package
 - final-episode composition that already prefers generated scene videos and lip-sync clips from the production package over static storyboard cards whenever those scene outputs exist
 - local multi-shot scene-video materialization from generated frames, alternates, posters, or storyboard frames, so missing backend video shots still become moving scene clips
 - exported local scene-video composition plans per scene, including timed visual beats, compose strategy, and beat reference images for reproducible fallback scene generation
@@ -173,6 +173,7 @@ All scripts in this repository are AI-generated and maintained with `GPT-5.4`.
 - `17_render_episode.py` now also turns the timed dialogue voice-plan into a final dialogue audio track and muxes it into the final storyboard episode, while keeping the draft render as a lighter silent check
 - `17_render_episode.py` now also exports a full generated-episode production package under `generation/final_episode_packages/<episode>`, with stable per-scene targets for image generation, shot video generation, voice cloning, and lip-sync backends
 - `17_render_episode.py` now also reuses original dialogue segments in the final episode audio when matching source audio or scene clips are available, materializes per-speaker line audio into `generation/final_episode_packages/<episode>/audio/<speaker>/`, and writes per-scene dialogue tracks beside the production package
+- `17_render_episode.py` now normalizes reused and synthesized dialogue lines to a consistent target loudness, trims/pads them to the planned timing, and adds short fade-in/fade-out edges before assembling scene and episode audio
 - `17_render_episode.py` now also normalizes already generated per-scene video or lip-sync clips from `generation/final_episode_packages/<episode>` into one full final episode and falls back scene-by-scene to storyboard cards only where real generated video is still missing
 - `17_render_episode.py` now also auto-materializes dialogue-aware multi-shot fallback scene videos into `generation/final_episode_packages/<episode>/videos/<scene>` from generated keyframes, alternates, posters, or the current storyboard frame, so finished-episode renders can move beyond purely static cards even before a dedicated video backend exists
 - `17_render_episode.py` now varies those local fallback scene videos by visual beats from the scene plan and dialogue timing, writes beat-specific reference stills into the package, and assembles those short motion clips into a more complete scene video before the final episode master is built
@@ -211,7 +212,7 @@ All scripts in this repository are AI-generated and maintained with `GPT-5.4`.
 - expand the fine-tune and backend stages from local preparation artifacts into real model-weight training later on
 - connect the new backend-ready storyboard seed packages from `15_generate_storyboard_assets.py` and the full generated-episode production packages from `17_render_episode.py` to actual local image/video/voice/lip-sync model runners later on
 - improve render quality, character consistency, and synthetic episode quality after the review and training loop stabilizes
-- improve the new voiced storyboard episode path so it sounds more natural and character-specific until the full generated-episode backends replace the fallback render
+- continue improving the new voiced storyboard episode path so it sounds more natural and character-specific until the full generated-episode backends replace the fallback render
 - only let the full generated-episode path become the default once image/video generation and lip-sync actually look series-quality
 
 ## Documentation Rule
@@ -483,6 +484,7 @@ Renders a draft local preview plus a final voiced storyboard episode. The curren
 - keeps the draft render as a fast silent preview
 - reuses matching original dialogue segments from stored source audio or scene clips whenever they exist
 - fills only the remaining missing lines with local `pyttsx3` speech synthesis while preferring the detected dominant language of each character when selecting a system voice
+- normalizes every reused or synthesized dialogue line with target loudness, exact trim/pad timing, and short fade-in/fade-out edges before scene and episode assembly
 - muxes that mixed dialogue track into the final episode render when local audio assembly succeeds
 - falls back to a silent final video only if local audio synthesis fails
 - also writes a timed dialogue voice-plan JSON plus an `.srt` subtitle preview beside the final outputs

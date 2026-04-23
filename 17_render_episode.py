@@ -1635,6 +1635,21 @@ def create_silence_audio(ffmpeg: Path, duration_seconds: float, output_path: Pat
         raise RuntimeError(f"Could not create silence audio segment {output_path.name}.")
 
 
+def dialogue_audio_filter(duration_seconds: float) -> str:
+    duration = max(0.01, float(duration_seconds or 0.0))
+    fade_duration = min(0.045, max(0.0, duration / 3.0))
+    filters = [
+        "apad",
+        f"atrim=0:{duration:.3f}",
+        "asetpts=N/SR/TB",
+        "loudnorm=I=-18:TP=-2:LRA=11",
+    ]
+    if fade_duration >= 0.005:
+        filters.append(f"afade=t=in:st=0:d={fade_duration:.3f}")
+        filters.append(f"afade=t=out:st={max(0.0, duration - fade_duration):.3f}:d={fade_duration:.3f}")
+    return ",".join(filters)
+
+
 def normalize_line_audio(ffmpeg: Path, input_path: Path, duration_seconds: float, output_path: Path, sample_rate: int) -> None:
     command = [
         str(ffmpeg),
@@ -1643,7 +1658,7 @@ def normalize_line_audio(ffmpeg: Path, input_path: Path, duration_seconds: float
         "-i",
         str(input_path),
         "-af",
-        "apad",
+        dialogue_audio_filter(duration_seconds),
         "-t",
         f"{max(0.01, float(duration_seconds or 0.0)):.3f}",
         "-ac",
@@ -1674,7 +1689,7 @@ def extract_clip_audio(
         "-i",
         str(input_path),
         "-af",
-        "apad",
+        dialogue_audio_filter(duration_seconds),
         "-t",
         f"{max(0.01, float(duration_seconds or 0.0)):.3f}",
         "-ac",
