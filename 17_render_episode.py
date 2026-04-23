@@ -24,6 +24,7 @@ from pipeline_common import (
     PROJECT_ROOT,
     detect_tool,
     error,
+    external_tool_command,
     generated_episode_completion_summary,
     headline,
     info,
@@ -356,7 +357,17 @@ def safe_duration_seconds(scene: dict) -> float:
 
 
 def render_output_ready(path: Path) -> bool:
-    return path.exists() and path.stat().st_size > 0
+    return path.exists() and path.is_file() and path.stat().st_size > 0
+
+
+def run_media_command(command: list[object]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        external_tool_command(command),
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
 
 
 def scene_dialogue_source(scene: dict, line_index: int) -> dict:
@@ -1619,7 +1630,7 @@ def create_silence_audio(ffmpeg: Path, duration_seconds: float, output_path: Pat
         str(sample_rate),
         str(output_path),
     ]
-    result = subprocess.run(command, check=False, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    result = run_media_command(command)
     if result.returncode != 0 or not render_output_ready(output_path):
         raise RuntimeError(f"Could not create silence audio segment {output_path.name}.")
 
@@ -1641,7 +1652,7 @@ def normalize_line_audio(ffmpeg: Path, input_path: Path, duration_seconds: float
         str(sample_rate),
         str(output_path),
     ]
-    result = subprocess.run(command, check=False, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    result = run_media_command(command)
     if result.returncode != 0 or not render_output_ready(output_path):
         raise RuntimeError(f"Could not normalize dialogue audio {input_path.name}.")
 
@@ -1672,7 +1683,7 @@ def extract_clip_audio(
         str(sample_rate),
         str(output_path),
     ]
-    result = subprocess.run(command, check=False, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    result = run_media_command(command)
     if result.returncode != 0 or not render_output_ready(output_path):
         raise RuntimeError(f"Could not extract dialogue audio from {input_path.name}.")
 
@@ -1725,7 +1736,7 @@ def concat_audio_segments(ffmpeg: Path, segment_paths: list[Path], output_path: 
         str(output_path),
     ]
     try:
-        result = subprocess.run(command, check=False, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        result = run_media_command(command)
         if result.returncode != 0 or not render_output_ready(output_path):
             raise RuntimeError(f"Could not assemble final episode audio {output_path.name}.")
     finally:
@@ -1758,7 +1769,7 @@ def mux_episode_audio(ffmpeg: Path, video_path: Path, audio_path: Path, output_p
         "-shortest",
         str(output_path),
     ]
-    result = subprocess.run(command, check=False, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    result = run_media_command(command)
     if result.returncode != 0 or not render_output_ready(output_path):
         raise RuntimeError(f"Could not mux final voiced episode {output_path.name}.")
 
@@ -1981,7 +1992,7 @@ def run_ffmpeg_with_codec_fallback(command_factory, video_codec: str, output_pat
             continue
         attempted.append(codec)
         command = command_factory(codec)
-        result = subprocess.run(command, check=False, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        result = run_media_command(command)
         if result.returncode == 0 and render_output_ready(output_path):
             return codec
     raise RuntimeError(f"FFmpeg render failed for {output_path.name}")
@@ -2071,7 +2082,7 @@ def encode_motion_still_clip(
         "+faststart",
         str(output_path),
     ]
-    result = subprocess.run(command, check=False, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    result = run_media_command(command)
     if result.returncode != 0 or not render_output_ready(output_path):
         raise RuntimeError(f"Could not encode motion clip {output_path.name}: {(result.stdout or '').strip()[-600:]}")
 
@@ -2101,7 +2112,7 @@ def encode_still_clip(ffmpeg: Path, image_path: Path, duration_seconds: float, o
         "+faststart",
         str(output_path),
     ]
-    result = subprocess.run(command, check=False, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    result = run_media_command(command)
     if result.returncode != 0 or not render_output_ready(output_path):
         raise RuntimeError(f"Could not encode still clip {output_path.name}: {(result.stdout or '').strip()[-600:]}")
 
@@ -2139,7 +2150,7 @@ def normalize_scene_video_clip(
         "+faststart",
         str(output_path),
     ]
-    result = subprocess.run(command, check=False, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    result = run_media_command(command)
     if result.returncode != 0 or not render_output_ready(output_path):
         raise RuntimeError(f"Could not normalize generated scene clip {input_path.name}: {(result.stdout or '').strip()[-600:]}")
 
@@ -2241,7 +2252,7 @@ def encode_video(ffmpeg: Path, concat_path: Path, output_path: Path, fps: int, w
         "+faststart",
         str(output_path),
     ]
-    result = subprocess.run(command, check=False, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    result = run_media_command(command)
     if result.returncode != 0:
         raise RuntimeError(f"FFmpeg render failed for {output_path.name}: {(result.stdout or '').strip()[-600:]}")
 
@@ -2269,9 +2280,34 @@ def encode_clip_sequence(ffmpeg: Path, concat_path: Path, output_path: Path, crf
         "+faststart",
         str(output_path),
     ]
-    result = subprocess.run(command, check=False, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    result = run_media_command(command)
     if result.returncode != 0 or not render_output_ready(output_path):
         raise RuntimeError(f"FFmpeg clip concat failed for {output_path.name}: {(result.stdout or '').strip()[-600:]}")
+
+
+def encode_full_generated_episode_master(
+    ffmpeg: Path,
+    concat_path: Path,
+    output_path: Path,
+    dialogue_audio_path: Path,
+    crf: int,
+) -> dict[str, object]:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    if render_output_ready(dialogue_audio_path):
+        video_only_path = output_path.with_name(f"{output_path.stem}_video_only{output_path.suffix}")
+        encode_clip_sequence(ffmpeg, concat_path, video_only_path, crf)
+        mux_episode_audio(ffmpeg, video_only_path, dialogue_audio_path, output_path)
+        return {
+            "audio_muxed": True,
+            "video_only_path": str(video_only_path),
+            "audio_source": str(dialogue_audio_path),
+        }
+    encode_clip_sequence(ffmpeg, concat_path, output_path, crf)
+    return {
+        "audio_muxed": False,
+        "video_only_path": "",
+        "audio_source": "",
+    }
 
 
 def build_concat_file(entries: list[tuple[Path, float]], output_path: Path) -> None:
@@ -2411,6 +2447,7 @@ def main() -> None:
         render_mode = "voiced_storyboard_episode"
         audio_track_meta: dict[str, object] = {}
         audio_render_error = ""
+        full_generated_episode_master_meta: dict[str, object] = {}
         package_root = episode_production_package_root(cfg, episode_id)
 
         if include_title_cards and title_card_seconds > 0.0:
@@ -2583,7 +2620,13 @@ def main() -> None:
             package_master_clip_paths.append(scene_master_path if render_output_ready(scene_master_path) else scene_clip_path)
         package_master_clip_paths.extend(closing_clip_paths)
         build_clip_concat_file(package_master_clip_paths, clip_concat_path)
-        encode_clip_sequence(ffmpeg, clip_concat_path, full_generated_episode_path, crf=20)
+        full_generated_episode_master_meta = encode_full_generated_episode_master(
+            ffmpeg,
+            clip_concat_path,
+            full_generated_episode_path,
+            dialogue_audio_path if audio_track_meta else Path(),
+            crf=20,
+        )
 
         voice_plan_payload = {
             "episode_id": episode_id,
@@ -2597,6 +2640,7 @@ def main() -> None:
             "line_count": len(voice_plan_lines),
             "generated_scene_video_count": generated_scene_video_count,
             "scene_master_clip_count": len(scene_master_outputs),
+            "full_generated_episode_audio_muxed": bool(full_generated_episode_master_meta.get("audio_muxed", False)),
             "scenes": voice_plan_scenes,
         }
         write_json(voice_plan_path, voice_plan_payload)
@@ -2627,6 +2671,7 @@ def main() -> None:
             "generated_scene_video_count": generated_scene_video_count,
             "scene_master_clip_count": len(scene_master_outputs),
             "full_generated_episode": str(full_generated_episode_path),
+            "full_generated_episode_master_meta": full_generated_episode_master_meta,
             "scene_count": len(scenes),
             "scenes": manifest_scenes,
         }

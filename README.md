@@ -105,6 +105,7 @@ All scripts in this repository are AI-generated and maintained with `GPT-5.4`.
 - local multi-shot scene-video materialization from generated frames, alternates, posters, or storyboard frames, so missing backend video shots still become moving scene clips
 - exported local scene-video composition plans per scene, including timed visual beats, compose strategy, and beat reference images for reproducible fallback scene generation
 - per-scene mastered episode clips inside the production package, so each scene already has a reusable endclip with its local dialogue timing
+- full generated episode masters now keep the assembled dialogue track, so delivery bundles prefer a watchable voiced master instead of accidentally selecting a silent package video
 - dedicated delivery bundles under `generation/renders/deliveries/<episode>`, so the finished watchable episode, subtitle file, dialogue audio, render manifest, and production package snapshot are grouped into one final handoff folder
 - a stable `generation/renders/deliveries/latest` folder that always mirrors the newest finished episode with generic filenames plus a `README_finished_episode.md` summary
 - scene and master package JSONs that now track the real already-generated outputs, not only planned target paths
@@ -175,6 +176,8 @@ All scripts in this repository are AI-generated and maintained with `GPT-5.4`.
 - `17_render_episode.py` now varies those local fallback scene videos by visual beats from the scene plan and dialogue timing, writes beat-specific reference stills into the package, and assembles those short motion clips into a more complete scene video before the final episode master is built
 - `17_render_episode.py` now also writes those timed local scene-video composition plans directly into the per-scene production packages and the backend prompt preview, so the package captures not just output paths but the actual local shot/beat structure used for finished-episode fallback composition
 - `17_render_episode.py` now also writes per-scene mastered clips under `generation/final_episode_packages/<episode>/master/scenes`, muxing each scene clip with its own scene dialogue track when available before assembling the package-level full episode master
+- `17_render_episode.py` now muxes the full dialogue track into the package-level `*_full_generated_episode.mp4` master whenever dialogue audio exists, so the final delivery copy stays voiced even when it prefers the full generated master over the storyboard render
+- `17_render_episode.py` now routes FFmpeg subprocess arguments through the shared external-tool path normalizer, so render/mastering calls also avoid Windows extended UNC paths that can confuse external binaries on NAS workspaces
 - `17_render_episode.py` now also writes the real generated-output state back into the scene package JSONs and the episode master package, including ready counts for scene videos, scene dialogue tracks, and scene master clips
 - `17_render_episode.py` now also writes a dedicated delivery bundle under `generation/renders/deliveries/<episode>`, copying the main finished episode, subtitle preview, dialogue audio, render manifest, voice plan, and production package snapshot into one stable handoff folder
 - `17_render_episode.py` now also refreshes `generation/renders/deliveries/latest` and writes `README_finished_episode.md` summaries into both the episode-specific and stable latest delivery folders, so the newest finished local episode always has one fixed handoff location
@@ -483,6 +486,7 @@ Renders a draft local preview plus a final voiced storyboard episode. The curren
 - writes beat-specific reference stills beside those local scene videos so later image/video backends can reuse the same local shot breakdown
 - writes `generation/final_episode_packages/<episode>/master/scenes/*_master.mp4` so every scene already has a reusable mastered clip for later assembly, replacement, or QA
 - updates the production-package JSONs with the real currently available outputs and ready-count summaries, so later runners can distinguish between planned targets and already materialized assets
+- muxes the assembled full dialogue track into `generation/final_episode_packages/<episode>/master/<episode>_full_generated_episode.mp4` whenever audio rendering succeeds, so the delivery bundle's preferred watch file is voiced
 
 At the same time, `17` now exports `generation/final_episode_packages/<episode>/master/<episode>_production_package.json` plus per-scene production JSONs. Those packages define the next stage for a real newly generated episode:
 
