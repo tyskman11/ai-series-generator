@@ -130,6 +130,7 @@ All scripts in this repository are AI-generated and maintained with `GPT-5.4`.
 
 - `06_review_unknowns.py` now tries to re-identify known faces before manual naming, using multi-reference matching per character
 - `06_review_unknowns.py` keeps iterating after each manual naming step, so newly named characters immediately help resolve more open clusters
+- `06_review_unknowns.py` now automatically marks very low-activity unknown face clusters as `statist` using conservative scene/detection/sample thresholds, so minor/background faces stay visible but stop blocking finished-episode generation as unresolved main-character review work
 - `04_diarize_and_transcribe.py` now applies extra rescue passes for remaining `speaker_unknown` segments using neighborhood and embedding agreement
 - `04_diarize_and_transcribe.py` now also auto-detects spoken language per transcription run and stores that language on the emitted source segments
 - the numbered batch scripts now support shared NAS workers through lease files under `ai_series_project/runtime/distributed`, with step-specific work units such as inbox files, episodes, characters, scenes, or full orchestration scopes
@@ -204,7 +205,6 @@ All scripts in this repository are AI-generated and maintained with `GPT-5.4`.
 ## Planned
 
 - finish naming main characters in `06_review_unknowns.py`
-- mark minor characters as `statist` where appropriate so they stay visible but do not become main roles
 - run `20_refresh_after_manual_review.py` on the fully reviewed set to rebuild datasets, model, training packs, generated episodes, bible, and renders
 - keep reducing `speaker_unknown` cases across full seasons
 - expand the fine-tune and backend stages from local preparation artifacts into real model-weight training later on
@@ -407,6 +407,8 @@ Detects faces, clusters them, links visible faces to dialogue segments, and writ
 ### 06 - Review Unknowns
 
 Interactive review stage for unknown or auto-named face clusters. It now tries to recognize already known characters first, supports stronger role hints, propagates new manual names back into open review state, and keeps its CLI/help and interactive prompts aligned with the English-first numbered pipeline.
+
+Before showing review cases, it now also applies a conservative automatic `statist` cleanup for very low-activity auto-named face clusters. These clusters remain visible as minor/background characters, but they no longer block downstream finished-episode generation as unresolved main-character review work. Use `--no-auto-mark-statists` to disable this cleanup for a run, or `--auto-mark-statists` to run only that cleanup and stop. The thresholds can be adjusted with `--statist-max-scenes`, `--statist-max-detections`, and `--statist-max-samples`.
 
 In shared NAS mode, this step uses one exclusive global lease because face review changes the shared character and voice maps directly.
 

@@ -81,6 +81,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--limit", type=int, default=20, help="Maximum number of clusters to process per start. Default: 20")
     parser.add_argument("--all", action="store_true", help="Process every currently open face cluster.")
     parser.add_argument("--open-previews", action="store_true", help="Open the contact sheet during interactive review.")
+    parser.add_argument(
+        "--auto-mark-statists",
+        action="store_true",
+        help="Mark safe low-activity unknown face clusters as 'statist' and stop.",
+    )
+    parser.add_argument(
+        "--no-auto-mark-statists",
+        action="store_true",
+        help="Disable the automatic low-activity 'statist' cleanup for this run.",
+    )
+    parser.add_argument("--statist-max-scenes", type=int, default=None, help="Maximum scenes for automatic 'statist' candidates.")
+    parser.add_argument("--statist-max-detections", type=int, default=None, help="Maximum detections for automatic 'statist' candidates.")
+    parser.add_argument("--statist-max-samples", type=int, default=None, help="Maximum preview samples for automatic 'statist' candidates.")
     add_shared_worker_arguments(parser)
     return parser.parse_args()
 
@@ -597,6 +610,72 @@ def suggested_face_action_hint(payload: dict) -> str:
     if role == "ignorieren":
         return "Hint: already ignored"
     return "Hint: use a real name or consider 'statist'"
+
+
+def auto_statist_thresholds(cfg: dict, args: argparse.Namespace | None = None) -> dict[str, int]:
+    face_cfg = cfg.get("character_detection", {}) if isinstance(cfg.get("character_detection"), dict) else {}
+
+    def threshold(name: str, fallback: int) -> int:
+        cli_value = getattr(args, name, None) if args is not None else None
+        if cli_value is not None:
+            return max(0, int(cli_value))
+        config_key = f"auto_statist_{name[8:]}"
+        return max(0, int(face_cfg.get(config_key, fallback) or fallback))
+
+    return {
+        "max_scenes": threshold("statist_max_scenes", 2),
+        "max_detections": threshold("statist_max_detections", 12),
+        "max_samples": threshold("statist_max_samples", 3),
+    }
+
+
+def is_auto_statist_candidate(payload: dict, thresholds: dict[str, int]) -> bool:
+    if is_ignored_face_payload(payload) or bool(payload.get("priority", False)):
+        return False
+    if not looks_auto_named(str(payload.get("name", ""))):
+        return False
+    if suggested_face_role(payload) != "statist-kandidat":
+        return False
+    return (
+        int(payload.get("scene_count", 0) or 0) <= int(thresholds.get("max_scenes", 2))
+        and int(payload.get("detection_count", 0) or 0) <= int(thresholds.get("max_detections", 12))
+        and int(payload.get("samples", 0) or 0) <= int(thresholds.get("max_samples", 3))
+    )
+
+
+def plan_auto_statist_candidates(char_map: dict, thresholds: dict[str, int], limit: int = 0) -> list[tuple[str, dict]]:
+    candidates = [
+        (cluster_id, payload)
+        for cluster_id, payload in char_map.get("clusters", {}).items()
+        if is_auto_statist_candidate(payload, thresholds)
+    ]
+    candidates.sort(
+        key=lambda item: (
+            int(item[1].get("scene_count", 0) or 0),
+            int(item[1].get("detection_count", 0) or 0),
+            int(item[1].get("samples", 0) or 0),
+            item[0],
+        )
+    )
+    if limit > 0:
+        return candidates[:limit]
+    return candidates
+
+
+def mark_auto_statist_candidates(char_map: dict, thresholds: dict[str, int], limit: int = 0) -> list[dict[str, object]]:
+    marked: list[dict[str, object]] = []
+    for cluster_id, payload in plan_auto_statist_candidates(char_map, thresholds, limit):
+        marked.append(
+            {
+                "cluster_id": cluster_id,
+                "previous_name": str(payload.get("name", cluster_id)),
+                "scene_count": int(payload.get("scene_count", 0) or 0),
+                "detection_count": int(payload.get("detection_count", 0) or 0),
+                "samples": int(payload.get("samples", 0) or 0),
+            }
+        )
+        assign_character_name(char_map, cluster_id, "statist", priority=False)
+    return marked
 
 
 def hydrate_face_clusters_from_previews(cfg: dict, char_map: dict) -> int:
@@ -1764,7 +1843,31 @@ def main() -> None:
                 f"Before review, {auto_matched['matched_faces']} unknown face clusters "
                 f"and {auto_matched['matched_speakers']} speaker assignments were applied automatically."
             )
-        if normalized_faces or normalized_voices or hydrated or auto_matched.get("matched_faces", 0) or auto_matched.get("matched_speakers", 0):
+        face_cfg = cfg.get("character_detection", {}) if isinstance(cfg.get("character_detection"), dict) else {}
+        auto_statists_enabled = (
+            bool(args.auto_mark_statists)
+            or (
+                not bool(args.no_auto_mark_statists)
+                and bool(face_cfg.get("auto_mark_statist_candidates", True))
+            )
+        )
+        auto_statist_marked: list[dict[str, object]] = []
+        if auto_statists_enabled:
+            auto_statist_marked = mark_auto_statist_candidates(
+                char_map,
+                auto_statist_thresholds(cfg, args),
+                effective_limit,
+            )
+            if auto_statist_marked:
+                info(f"Marked {len(auto_statist_marked)} low-activity face clusters as 'statist'.")
+        if (
+            normalized_faces
+            or normalized_voices
+            or hydrated
+            or auto_matched.get("matched_faces", 0)
+            or auto_matched.get("matched_speakers", 0)
+            or auto_statist_marked
+        ):
             changed_linked_files, review_count = persist_updates(cfg, char_map, voice_map)
             info(
                 f"Maps synchronized: {changed_linked_files + int(auto_matched.get('linked_files', 0))} linked-segment files updated, "
@@ -1793,6 +1896,16 @@ def main() -> None:
             update_face_priority(cfg, char_map, voice_map, args.clear_priority, False)
             action = "clear_priority"
             completion_payload = {"reference": args.clear_priority, "priority": False}
+        elif args.auto_mark_statists:
+            if auto_statist_marked:
+                ok(f"{len(auto_statist_marked)} low-activity face clusters were marked as 'statist'.")
+            else:
+                info("No safe low-activity face clusters matched the automatic 'statist' thresholds.")
+            action = "auto_mark_statists"
+            completion_payload = {
+                "marked": len(auto_statist_marked),
+                "clusters": [item["cluster_id"] for item in auto_statist_marked],
+            }
         elif args.review_faces:
             interactive_face_review(
                 cfg,

@@ -202,6 +202,10 @@ DEFAULT_CONFIG = {
         "review_known_face_identity_margin_bonus_max": 0.02,
         "review_known_face_identity_weak_threshold_penalty": 0.02,
         "review_known_face_identity_weak_margin_penalty": 0.01,
+        "auto_mark_statist_candidates": True,
+        "auto_statist_max_scenes": 2,
+        "auto_statist_max_detections": 12,
+        "auto_statist_max_samples": 3,
     },
     "generation": {
         "default_scene_count": 6,
