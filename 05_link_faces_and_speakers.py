@@ -50,7 +50,7 @@ from pipeline_common import (
     write_json,
 )
 
-PROCESS_VERSION = 6
+PROCESS_VERSION = 7
 EMPTY_CLUSTER_MAP = {"clusters": {}, "aliases": {}}
 IGNORED_FACE_NAMES = {
     "noface",
@@ -897,6 +897,25 @@ def resolve_voice_names(voice_map: dict, speaker_votes: dict[str, dict[str, floa
             payload["auto_named"] = True
 
 
+def rescue_unknown_speaker_from_single_visible_face(
+    char_map: dict,
+    visible_faces: list[str],
+) -> tuple[str, str] | None:
+    eligible: list[tuple[str, str]] = []
+    for face_cluster in visible_faces:
+        payload = char_map.get("clusters", {}).get(face_cluster, {})
+        if is_ignored_face_payload(payload):
+            continue
+        name = canonical_person_name(str(payload.get("name", "")))
+        if not has_manual_person_name(name) or is_background_person_name(name):
+            continue
+        eligible.append((face_cluster, name))
+    unique_names = sorted({name for _face_cluster, name in eligible})
+    if len(eligible) == 1 and len(unique_names) == 1:
+        return eligible[0]
+    return None
+
+
 def process_episode_dir(
     episode_dir: Path,
     cfg: dict,
@@ -1058,6 +1077,12 @@ def process_episode_dir(
             speaker_name = display_person_name(voice_payload.get("name", ""), row["speaker_cluster"])
             linked_face = voice_payload.get("linked_face_cluster")
             segment_linked_face = linked_face if linked_face in visible_faces else None
+            speaker_name_source = "voice_map"
+            if row.get("speaker_cluster") == "speaker_unknown":
+                unknown_rescue = rescue_unknown_speaker_from_single_visible_face(char_map, visible_faces)
+                if unknown_rescue is not None:
+                    segment_linked_face, speaker_name = unknown_rescue
+                    speaker_name_source = "single_visible_named_face"
             needs_preview = looks_auto_named(speaker_name)
             speaker_reference_frames: list[str] = []
             if needs_preview:
@@ -1079,6 +1104,7 @@ def process_episode_dir(
                 "end": row["end"],
                 "speaker_cluster": row["speaker_cluster"],
                 "speaker_name": speaker_name,
+                "speaker_name_source": speaker_name_source,
                 "speaker_face_cluster": segment_linked_face,
                 "text": coalesce_text(row.get("text", "")),
                 "visible_face_clusters": visible_faces,

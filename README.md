@@ -169,6 +169,7 @@ All scripts in this repository are AI-generated and maintained with `GPT-5.4`.
 - `17_render_episode.py` now carries those character-language and voice-model hints into the production package and uses detected character language when choosing fallback system voices
 - `03_split_scenes.py`, `04_diarize_and_transcribe.py`, `05_link_faces_and_speakers.py`, and `07_build_dataset.py` now also use English-first live progress scope labels and segment/cluster counters so long batch runs read consistently across the early numbered pipeline
 - `05_link_faces_and_speakers.py` now also derives its live face-cluster counter directly from each processed scene payload, so long linking runs no longer break on the progress display after scene analysis starts
+- `05_link_faces_and_speakers.py` now rescues remaining `speaker_unknown` linked rows when exactly one manually named primary character is visible, keeping the raw speaker cluster unchanged while giving downstream datasets, voice plans, and renders a usable character speaker name
 - `17_render_episode.py` now also turns the timed dialogue voice-plan into a final dialogue audio track and muxes it into the final storyboard episode, while keeping the draft render as a lighter silent check
 - `17_render_episode.py` now also exports a full generated-episode production package under `generation/final_episode_packages/<episode>`, with stable per-scene targets for image generation, shot video generation, voice cloning, and lip-sync backends
 - `17_render_episode.py` now also reuses original dialogue segments in the final episode audio when matching source audio or scene clips are available, materializes per-speaker line audio into `generation/final_episode_packages/<episode>/audio/<speaker>/`, and writes per-scene dialogue tracks beside the production package
@@ -206,7 +207,7 @@ All scripts in this repository are AI-generated and maintained with `GPT-5.4`.
 
 - finish naming main characters in `06_review_unknowns.py`
 - run `20_refresh_after_manual_review.py` on the fully reviewed set to rebuild datasets, model, training packs, generated episodes, bible, and renders
-- keep reducing `speaker_unknown` cases across full seasons
+- continue reducing harder `speaker_unknown` cases that cannot be safely inferred from a single visible named character
 - expand the fine-tune and backend stages from local preparation artifacts into real model-weight training later on
 - connect the new backend-ready storyboard seed packages from `15_generate_storyboard_assets.py` and the full generated-episode production packages from `17_render_episode.py` to actual local image/video/voice/lip-sync model runners later on
 - improve render quality, character consistency, and synthetic episode quality after the review and training loop stabilizes
@@ -403,6 +404,8 @@ Useful flags:
 ### 05 - Link Faces And Speakers
 
 Detects faces, clusters them, links visible faces to dialogue segments, and writes linked segment outputs. One-off background faces are filtered more aggressively so recurring characters are easier to review. In shared NAS mode, whole episodes are leased so several PCs can link different episodes in parallel.
+
+When a transcript row still has `speaker_unknown` after diarization, this step now performs one conservative visual rescue: if exactly one manually named primary character is visible in that segment, the linked row keeps `speaker_cluster: speaker_unknown` but receives that character as `speaker_name`, `speaker_face_cluster`, and `speaker_name_source: single_visible_named_face`. This reduces downstream unknown-speaker noise without pretending the raw diarization cluster was solved.
 
 ### 06 - Review Unknowns
 
