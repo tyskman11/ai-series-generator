@@ -787,22 +787,39 @@ def rerun_in_runtime(script_path: str | Path | None = None) -> None:
         raise SystemExit(subprocess.run([str(target), str(script), *sys.argv[1:]]).returncode)
 
 
+def external_tool_arg(value: object) -> str:
+    text = str(value)
+    if current_os() != "windows":
+        return text
+    if text.startswith("\\\\?\\UNC\\"):
+        return "\\\\" + text[len("\\\\?\\UNC\\") :]
+    if text.startswith("\\\\?\\") and len(text) > len("\\\\?\\"):
+        return text[len("\\\\?\\") :]
+    return text
+
+
+def external_tool_command(cmd: list[object]) -> list[str]:
+    return [external_tool_arg(part) for part in cmd]
+
+
 def run_command(
     cmd: list[str],
     quiet: bool = False,
     check: bool = True,
     cwd: Path | None = None,
 ) -> subprocess.CompletedProcess[str]:
+    normalized_cmd = external_tool_command(list(cmd))
+    normalized_cwd = external_tool_arg(cwd) if cwd else None
     if quiet:
         return subprocess.run(
-            cmd,
+            normalized_cmd,
             check=check,
-            cwd=str(cwd) if cwd else None,
+            cwd=normalized_cwd,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
         )
-    return subprocess.run(cmd, check=check, cwd=str(cwd) if cwd else None)
+    return subprocess.run(normalized_cmd, check=check, cwd=normalized_cwd)
 
 
 def create_tree(base: Path, tree: dict[str, Any]) -> None:
