@@ -1958,6 +1958,24 @@ def normalize_language_code(value: object, fallback: str = "") -> str:
     return raw
 
 
+def language_hint_from_name(*values: object) -> str:
+    alias_map = {
+        alias: code
+        for alias, code in LANGUAGE_ALIASES.items()
+        if code and len(alias) >= 3
+    }
+    for value in values:
+        text = coalesce_text(str(value or "")).lower()
+        if not text:
+            continue
+        tokens = [token for token in re.split(r"[^a-z0-9]+", text) if token]
+        for token in tokens:
+            language = alias_map.get(token, "")
+            if language:
+                return language
+    return ""
+
+
 def merge_language_counts(*mappings: object) -> dict[str, int]:
     merged: dict[str, int] = {}
     for mapping in mappings:

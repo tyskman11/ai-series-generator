@@ -29,7 +29,10 @@ from pipeline_common import (
     first_dir,
     headline,
     info,
+    language_hint_from_name,
     limited_items,
+    load_distributed_lease,
+    load_step_autosave,
     load_config,
     normalize_language_code,
     ok,
@@ -413,10 +416,41 @@ def merge_segments(
     return merged
 
 
-def transcribe_language_hint(cfg: dict) -> str:
+def transcribe_language_hint(cfg: dict, *source_names: object) -> str:
     transcription_cfg = cfg.get("transcription", {}) if isinstance(cfg.get("transcription", {}), dict) else {}
     configured = normalize_language_code(transcription_cfg.get("language", ""))
-    return "" if configured in {"", "auto", "detect"} else configured
+    if configured not in {"", "auto", "detect"}:
+        return configured
+    return language_hint_from_name(*source_names)
+
+
+def active_scene_lease_ids(scene_lease_root: Path) -> list[str]:
+    if not scene_lease_root.exists():
+        return []
+    active: list[str] = []
+    now = time.time()
+    for lease_file in scene_lease_root.glob("*.json"):
+        payload = load_distributed_lease(scene_lease_root, lease_file.stem)
+        if float(payload.get("expires_at", 0.0) or 0.0) > now:
+            active.append(lease_file.stem)
+    return sorted(active)
+
+
+def stale_shared_transcription_run(
+    autosave_state: dict,
+    *,
+    completed_scene_ids: list[str],
+    active_scene_leases: list[str],
+) -> bool:
+    if not isinstance(autosave_state, dict):
+        return False
+    if str(autosave_state.get("status", "")) != "in_progress":
+        return False
+    if completed_scene_ids:
+        return False
+    if active_scene_leases:
+        return False
+    return True
 
 
 def transcribe_scene(model, scene_wav: Path, cfg: dict, use_fp16: bool) -> dict[str, object]:
@@ -428,11 +462,11 @@ def transcribe_scene(model, scene_wav: Path, cfg: dict, use_fp16: bool) -> dict[
         "verbose": False,
         "fp16": use_fp16,
     }
-    language_hint = transcribe_language_hint(cfg)
+    language_hint = transcribe_language_hint(cfg, scene_wav.name, scene_wav.stem, scene_wav.parent.name)
     if language_hint:
         transcribe_kwargs["language"] = language_hint
     result = model.transcribe(str(scene_wav), **transcribe_kwargs)
-    detected_language = normalize_language_code(result.get("language", ""), language_hint)
+    detected_language = normalize_language_code(language_hint or result.get("language", ""), language_hint)
     raw_segments = result.get("segments") or []
     segments = []
     for item in raw_segments:
@@ -988,6 +1022,19 @@ def process_episode_dir(
     lease_ttl_seconds = distributed_lease_ttl_seconds(cfg)
     heartbeat_interval_seconds = distributed_heartbeat_interval_seconds(cfg)
     poll_interval_seconds = distributed_poll_interval_seconds(cfg)
+    completed_scene_ids: list[str] = sorted(completed_scene_cache_ids(scene_cache_dir))
+    autosave_state = load_step_autosave("04_diarize_and_transcribe", autosave_target)
+    active_leases = active_scene_lease_ids(scene_lease_root) if shared_workers else []
+    recovered_stale_run = stale_shared_transcription_run(
+        autosave_state,
+        completed_scene_ids=completed_scene_ids,
+        active_scene_leases=active_leases,
+    )
+    if recovered_stale_run:
+        warn(
+            "Recovering an abandoned shared-worker transcription run without scene-cache outputs. "
+            "A previous worker stopped before any scene cache was written."
+        )
     mark_step_started(
         "04_diarize_and_transcribe",
         autosave_target,
@@ -997,11 +1044,13 @@ def process_episode_dir(
             "scene_count": len(scenes),
             "device": device,
             "model_name": cfg["transcription"]["model_name"],
+            "completed_scene_ids": completed_scene_ids,
+            "active_scene_lease_count": len(active_leases),
+            "recovered_stale_run": recovered_stale_run,
             "worker_id": worker_id,
             "shared_workers": shared_workers,
         },
     )
-    completed_scene_ids: list[str] = sorted(completed_scene_cache_ids(scene_cache_dir))
     contributed = False
     try:
         episode_started_at = time.time()

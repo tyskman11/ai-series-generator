@@ -330,7 +330,7 @@ Splits imported episodes into scene clips, writes a scene index CSV, and now wor
 
 ### 04 - Diarize And Transcribe
 
-Extracts audio, runs Whisper, auto-detects the spoken language unless a fixed language is explicitly configured, builds speaker segments, computes speaker embeddings, and clusters speakers. It now also includes additional rescue passes for unresolved `speaker_unknown` cases.
+Extracts audio, runs Whisper, auto-detects the spoken language unless a fixed language is explicitly configured, builds speaker segments, computes speaker embeddings, and clusters speakers. If the language name is already present in the episode/scene filename such as `GERMAN` or `ENGLISH`, that filename hint now has priority over Whisper's guess. It now also includes additional rescue passes for unresolved `speaker_unknown` cases.
 
 On a NAS-backed workspace, multiple PCs can now run `04_diarize_and_transcribe.py` at the same time. They coordinate through shared lease files under `ai_series_project/runtime/distributed/04_diarize_and_transcribe/...`:
 
@@ -338,6 +338,7 @@ On a NAS-backed workspace, multiple PCs can now run `04_diarize_and_transcribe.p
 - several PCs can therefore split one episode across many scenes in parallel
 - if one PC exits or crashes, its lease expires and another PC can take over that scene automatically
 - the final speaker-clustering/merge step is also protected by a short shared finalize lease so only one worker writes the final episode outputs at a time
+- if a previous shared worker stopped before writing any scene-cache output, `04` now detects that stale in-progress state and resumes with an explicit recovery warning instead of silently looking "stuck"
 
 Useful flags:
 
