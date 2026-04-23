@@ -74,7 +74,7 @@ DEFAULT_STRUCTURE = {
         "storyboard_requests": {},
         "storyboard_assets": {},
         "final_episode_packages": {},
-        "renders": {"drafts": {}, "final": {}},
+        "renders": {"drafts": {}, "final": {}, "deliveries": {"latest": {}}},
     },
     "training": {
         "foundation": {
@@ -133,6 +133,7 @@ DEFAULT_CONFIG = {
         "storyboard_requests": "generation/storyboard_requests",
         "storyboard_assets": "generation/storyboard_assets",
         "final_episode_packages": "generation/final_episode_packages",
+        "episode_deliveries": "generation/renders/deliveries",
         "series_bible_json": "series_bible/episode_summaries/auto_series_bible.json",
         "series_bible_markdown": "series_bible/episode_summaries/auto_series_bible.md",
         "foundation_frames": "training/foundation/datasets/frames",
@@ -1127,6 +1128,24 @@ def generated_episode_artifacts(cfg: dict[str, Any], episode_id: str) -> dict[st
         (render_manifest.get("render_mode") if isinstance(render_manifest, dict) else "")
         or (shotlist.get("render_mode") if isinstance(shotlist, dict) else "")
     )
+    delivery_manifest_path = resolve_generated_output_path(
+        (shotlist.get("delivery_manifest") if isinstance(shotlist, dict) else "")
+        or (render_manifest.get("delivery_manifest") if isinstance(render_manifest, dict) else "")
+    )
+    delivery_manifest = read_json(delivery_manifest_path, {}) if delivery_manifest_path and delivery_manifest_path.exists() else {}
+    delivery_episode = coalesce_text(
+        (shotlist.get("delivery_episode") if isinstance(shotlist, dict) else "")
+        or (render_manifest.get("delivery_episode") if isinstance(render_manifest, dict) else "")
+        or (delivery_manifest.get("watch_episode") if isinstance(delivery_manifest, dict) else "")
+    )
+    latest_delivery_manifest_path = resolve_generated_output_path(
+        (delivery_manifest.get("latest_delivery_manifest") if isinstance(delivery_manifest, dict) else "")
+    )
+    latest_delivery_manifest = (
+        read_json(latest_delivery_manifest_path, {})
+        if latest_delivery_manifest_path and latest_delivery_manifest_path.exists()
+        else {}
+    )
     derived_completion_status = generated_episode_completion_summary(
         scene_count=scene_count,
         generated_scene_video_count=generated_scene_video_count,
@@ -1155,6 +1174,35 @@ def generated_episode_artifacts(cfg: dict[str, Any], episode_id: str) -> dict[st
             (shotlist.get("production_package_root") if isinstance(shotlist, dict) else "")
             or (render_manifest.get("production_package_root") if isinstance(render_manifest, dict) else "")
             or (production_package.get("package_root") if isinstance(production_package, dict) else "")
+        ),
+        "delivery_bundle_root": coalesce_text(
+            (shotlist.get("delivery_bundle_root") if isinstance(shotlist, dict) else "")
+            or (render_manifest.get("delivery_bundle_root") if isinstance(render_manifest, dict) else "")
+            or (delivery_manifest.get("delivery_root") if isinstance(delivery_manifest, dict) else "")
+        ),
+        "delivery_manifest": str(delivery_manifest_path) if delivery_manifest_path else "",
+        "delivery_episode": delivery_episode,
+        "delivery_summary": coalesce_text(
+            (shotlist.get("delivery_summary") if isinstance(shotlist, dict) else "")
+            or (render_manifest.get("delivery_summary") if isinstance(render_manifest, dict) else "")
+            or (delivery_manifest.get("delivery_summary") if isinstance(delivery_manifest, dict) else "")
+        ),
+        "latest_delivery_root": coalesce_text(
+            (shotlist.get("latest_delivery_root") if isinstance(shotlist, dict) else "")
+            or (render_manifest.get("latest_delivery_root") if isinstance(render_manifest, dict) else "")
+            or (delivery_manifest.get("latest_delivery_root") if isinstance(delivery_manifest, dict) else "")
+            or (latest_delivery_manifest.get("delivery_root") if isinstance(latest_delivery_manifest, dict) else "")
+        ),
+        "latest_delivery_manifest": coalesce_text(
+            (shotlist.get("latest_delivery_manifest") if isinstance(shotlist, dict) else "")
+            or (render_manifest.get("latest_delivery_manifest") if isinstance(render_manifest, dict) else "")
+            or (str(latest_delivery_manifest_path) if latest_delivery_manifest_path else "")
+        ),
+        "latest_delivery_episode": coalesce_text(
+            (shotlist.get("latest_delivery_episode") if isinstance(shotlist, dict) else "")
+            or (render_manifest.get("latest_delivery_episode") if isinstance(render_manifest, dict) else "")
+            or (delivery_manifest.get("latest_watch_episode") if isinstance(delivery_manifest, dict) else "")
+            or (latest_delivery_manifest.get("watch_episode") if isinstance(latest_delivery_manifest, dict) else "")
         ),
         "production_prompt_preview": coalesce_text(
             (shotlist.get("production_prompt_preview") if isinstance(shotlist, dict) else "")

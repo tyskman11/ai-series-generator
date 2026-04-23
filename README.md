@@ -16,6 +16,8 @@ Starting from real episode files, the pipeline can:
 - train per-character local voice models from original dialogue recordings so later voice cloning can follow the real character voices and their detected languages
 - generate new synthetic episodes as markdown and shotlists
 - render draft previews and locally finished episodes with voiced scene masters and a full generated-episode bundle
+- export a dedicated delivery bundle per generated episode so one finished watchable episode, subtitles, manifests, and production snapshots live in one clear output folder
+- refresh one stable `generation/renders/deliveries/latest` handoff folder after every finished render so the newest locally finished episode always has one fixed final target path
 - export backend-ready production packages for fully generated episodes with new frames, cloned voices, and lip-sync
 - reuse original dialogue segments in final episode audio whenever matching source material is available, while falling back to local TTS only for truly new missing lines
 - automatically compose a more complete final episode from already generated per-scene video or lip-sync clips whenever those backend outputs exist
@@ -57,6 +59,8 @@ All scripts in this repository are AI-generated and maintained with `GPT-5.4`.
 - local multi-shot scene-video materialization from generated frames, alternates, posters, or storyboard frames, so missing backend video shots still become moving scene clips
 - exported local scene-video composition plans per scene, including timed visual beats, compose strategy, and beat reference images for reproducible fallback scene generation
 - per-scene mastered episode clips inside the production package, so each scene already has a reusable endclip with its local dialogue timing
+- dedicated delivery bundles under `generation/renders/deliveries/<episode>`, so the finished watchable episode, subtitle file, dialogue audio, render manifest, and production package snapshot are grouped into one final handoff folder
+- a stable `generation/renders/deliveries/latest` folder that always mirrors the newest finished episode with generic filenames plus a `README_finished_episode.md` summary
 - scene and master package JSONs that now track the real already-generated outputs, not only planned target paths
 - autosaves and live progress dashboards for long-running pipelines, now including concrete finished-episode output paths, production-readiness labels, coverage ratios, and remaining backend tasks instead of only step completion flags
 - the series bible can now summarize the most recent generated episodes together with their final render, full generated master, and production-package progress
@@ -124,10 +128,14 @@ All scripts in this repository are AI-generated and maintained with `GPT-5.4`.
 - `17_render_episode.py` now also writes those timed local scene-video composition plans directly into the per-scene production packages and the backend prompt preview, so the package captures not just output paths but the actual local shot/beat structure used for finished-episode fallback composition
 - `17_render_episode.py` now also writes per-scene mastered clips under `generation/final_episode_packages/<episode>/master/scenes`, muxing each scene clip with its own scene dialogue track when available before assembling the package-level full episode master
 - `17_render_episode.py` now also writes the real generated-output state back into the scene package JSONs and the episode master package, including ready counts for scene videos, scene dialogue tracks, and scene master clips
+- `17_render_episode.py` now also writes a dedicated delivery bundle under `generation/renders/deliveries/<episode>`, copying the main finished episode, subtitle preview, dialogue audio, render manifest, voice plan, and production package snapshot into one stable handoff folder
+- `17_render_episode.py` now also refreshes `generation/renders/deliveries/latest` and writes `README_finished_episode.md` summaries into both the episode-specific and stable latest delivery folders, so the newest finished local episode always has one fixed handoff location
 - the numbered order now keeps all training in `07-13`, then generation/render in `14-17`, and only then rebuilds the series bible in `18`, so the pipeline follows the requested train-before-generate/render sequence more clearly
 - `19_generate_finished_episodes.py` now rebuilds the series bible once after the full generated/rendered batch instead of after every single episode, so multi-episode runs stay closer to the intended train-then-generate/render flow
 - `19_generate_finished_episodes.py` now also supports an endless generation mode: `--count 0` or `--endless` keeps generating episodes until stopped, and updates the series bible after each newly rendered episode in that mode
 - `19_generate_finished_episodes.py` now also treats the run as successful only when step `17` produced a full finished-episode bundle with `final_render`, `render_manifest`, `production_package`, and `*_full_generated_episode.mp4`
+- `19_generate_finished_episodes.py` now also carries the dedicated delivery bundle metadata from step `17`, so the latest finished episode points not only to raw render/package files but also to the final handoff folder
+- `19_generate_finished_episodes.py` keeps that delivery-bundle validation strict for current renders, but still accepts older finished-episode metadata snapshots that predate the dedicated delivery bundle fields
 - `20_refresh_after_manual_review.py` now derives its rebuild order from one explicit planned-step list, keeps the same train-then-generate/render-then-bible sequence, and now also respects the configured optional foundation/adapter/fine-tune/backend stages instead of always forcing `09` through `13`
 - `19_generate_finished_episodes.py` now also records explicit planned/completed batch-step lists in its completion metadata, so autosaves and orchestration logs keep the same ordering contract as the refreshed rebuild path
 - `19_generate_finished_episodes.py` now also uses the same configurable foundation/adapter/fine-tune/backend stage toggles as `99_process_next_episode.py` and `20_refresh_after_manual_review.py`, including the `prepare_after_batch` / `auto_train_after_prepare` split, so planned and executed batch steps stay aligned
@@ -192,7 +200,7 @@ Also keep the `In Progress` and `Planned` sections current. If priorities change
 - `14_generate_episode_from_trained_model.py`: generate a new synthetic episode blueprint
 - `15_generate_storyboard_assets.py`: build scene-level storyboard seed assets and backend-ready per-scene input payloads from exported storyboard requests
 - `16_run_storyboard_backend.py`: materialize local backend-style storyboard scene frames from the per-scene backend input payloads
-- `17_render_episode.py`: render a draft preview plus a final voiced episode from seed assets, backend frames, generated scene videos, auto-materialized motion fallback clips, or placeholder scene cards, reuse matching original dialogue where possible, and export/update a backend-ready production package for a fully generated episode
+- `17_render_episode.py`: render a draft preview plus a final voiced episode from seed assets, backend frames, generated scene videos, auto-materialized motion fallback clips, or placeholder scene cards, reuse matching original dialogue where possible, export/update a backend-ready production package for a fully generated episode, and write a final delivery bundle for the generated episode
 - `18_build_series_bible.py`: rebuild the series bible
 - `19_generate_finished_episodes.py`: generate multiple finished episodes in one run or keep generating endlessly until stopped
 - `20_refresh_after_manual_review.py`: rebuild the pipeline after manual character review
@@ -224,6 +232,8 @@ Also keep the `In Progress` and `Planned` sections current. If priorities change
 - `ai_series_project/generation/final_episode_packages/<episode>`: backend-ready full-episode package with per-scene image/video/voice/lip-sync plans and stable output targets for actual generated episodes
 - `ai_series_project/generation/renders/drafts`: draft renders
 - `ai_series_project/generation/renders/final`: final voiced storyboard episode renders
+- `ai_series_project/generation/renders/deliveries/<episode>`: final delivery bundle with one watchable episode master plus copied subtitles, dialogue audio, render manifest, voice plan, and production package snapshot
+- `ai_series_project/generation/renders/deliveries/latest`: stable latest-finished-episode handoff folder with generic filenames and `README_finished_episode.md`
 - `ai_series_project/generation/renders/final/*_dialogue_audio.wav`: assembled dialogue audio track for the voiced final episode
 - `ai_series_project/generation/renders/final/*_voice_plan.json`: timed dialogue and speaker plan for later voiced render backends
 - `ai_series_project/generation/renders/final/*_dialogue_preview.srt`: subtitle-style dialogue preview aligned to the silent storyboard render timeline
@@ -286,6 +296,12 @@ If you already have reviewed and trained data and want one directly usable local
 
 ```powershell
 python 19_generate_finished_episodes.py --count 1 --skip-downloads
+```
+
+The newest finished local episode is then always mirrored to:
+
+```text
+ai_series_project/generation/renders/deliveries/latest
 ```
 
 ## Workflow Summary
@@ -440,6 +456,8 @@ Runs a full visible multi-episode generation flow, including rebuild, training, 
 - render manifest
 - full production package JSON
 - package-level `*_full_generated_episode.mp4`
+- delivery manifest in `generation/renders/deliveries/<episode>`
+- delivery watchable episode copy
 
 If one of those outputs is missing, the batch fails fast instead of silently pretending the episode is complete.
 

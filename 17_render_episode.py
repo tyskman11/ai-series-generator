@@ -79,6 +79,20 @@ def episode_production_package_root(cfg: dict, episode_id: str) -> Path:
     return base_root / episode_id
 
 
+def episode_delivery_bundle_root(cfg: dict, episode_id: str) -> Path:
+    raw_root = str((cfg.get("paths", {}) if isinstance(cfg.get("paths", {}), dict) else {}).get("episode_deliveries", "generation/renders/deliveries"))
+    candidate = Path(raw_root)
+    base_root = candidate if candidate.is_absolute() else resolve_project_path(raw_root)
+    return base_root / episode_id
+
+
+def latest_episode_delivery_bundle_root(cfg: dict) -> Path:
+    raw_root = str((cfg.get("paths", {}) if isinstance(cfg.get("paths", {}), dict) else {}).get("episode_deliveries", "generation/renders/deliveries"))
+    candidate = Path(raw_root)
+    base_root = candidate if candidate.is_absolute() else resolve_project_path(raw_root)
+    return base_root / "latest"
+
+
 def production_scene_frame_candidates(package_root: Path, scene_id: str) -> list[tuple[str, Path]]:
     scene_slug = production_scene_slug(scene_id)
     return [
@@ -1211,6 +1225,173 @@ def render_production_prompt_preview(scene_packages: list[dict]) -> str:
             ]
         )
     return "\n".join(lines).strip() + ("\n" if lines else "")
+
+
+def copy_delivery_file(source_path: Path, target_path: Path) -> str:
+    if not render_output_ready(source_path):
+        return ""
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(source_path, target_path)
+    return str(target_path)
+
+
+def write_delivery_summary(
+    target_path: Path,
+    *,
+    delivery_payload: dict,
+    latest_delivery_root: Path,
+) -> str:
+    lines = [
+        "# Finished Episode Delivery Bundle",
+        "",
+        f"- Episode ID: {clean_text(delivery_payload.get('episode_id', '')) or '-'}",
+        f"- Display title: {clean_text(delivery_payload.get('display_title', '')) or '-'}",
+        f"- Episode title: {clean_text(delivery_payload.get('episode_title', '')) or '-'}",
+        f"- Render mode: {clean_text(delivery_payload.get('render_mode', '')) or '-'}",
+        f"- Production readiness: {clean_text(delivery_payload.get('production_readiness', '')) or '-'}",
+        "",
+        "## Main Outputs",
+        "",
+        f"- Watch episode: {clean_text(delivery_payload.get('watch_episode', '')) or '-'}",
+        f"- Storyboard render copy: {clean_text(delivery_payload.get('storyboard_render_copy', '')) or '-'}",
+        f"- Dialogue audio: {clean_text(delivery_payload.get('dialogue_audio', '')) or '-'}",
+        f"- Subtitle preview: {clean_text(delivery_payload.get('subtitle_preview', '')) or '-'}",
+        f"- Voice plan: {clean_text(delivery_payload.get('voice_plan', '')) or '-'}",
+        f"- Render manifest: {clean_text(delivery_payload.get('render_manifest', '')) or '-'}",
+        f"- Production package: {clean_text(delivery_payload.get('production_package', '')) or '-'}",
+        f"- Backend prompt preview: {clean_text(delivery_payload.get('production_prompt_preview', '')) or '-'}",
+        "",
+        "## Delivery Paths",
+        "",
+        f"- Episode delivery folder: {clean_text(delivery_payload.get('delivery_root', '')) or '-'}",
+        f"- Stable latest delivery folder: {latest_delivery_root}",
+        "",
+        "## Remaining Backend Tasks",
+        "",
+    ]
+    remaining_backend_tasks = delivery_payload.get("remaining_backend_tasks", [])
+    if isinstance(remaining_backend_tasks, list) and remaining_backend_tasks:
+        lines.extend(f"- {clean_text(task)}" for task in remaining_backend_tasks if clean_text(task))
+    else:
+        lines.append("- none")
+    lines.append("")
+    write_text(target_path, "\n".join(lines))
+    return str(target_path)
+
+
+def write_latest_episode_delivery_bundle(cfg: dict, episode_id: str, delivery_payload: dict) -> dict:
+    latest_root = latest_episode_delivery_bundle_root(cfg)
+    latest_root.mkdir(parents=True, exist_ok=True)
+    latest_episode_path = latest_root / "latest_finished_episode.mp4"
+    latest_storyboard_path = latest_root / "latest_storyboard_render.mp4"
+    latest_dialogue_audio_path = latest_root / "latest_dialogue_audio.wav"
+    latest_subtitle_path = latest_root / "latest_finished_episode.srt"
+    latest_voice_plan_path = latest_root / "latest_voice_plan.json"
+    latest_render_manifest_path = latest_root / "latest_render_manifest.json"
+    latest_production_package_path = latest_root / "latest_production_package.json"
+    latest_prompt_preview_path = latest_root / "latest_backend_prompts.txt"
+    latest_delivery_manifest_path = latest_root / "latest_delivery_manifest.json"
+    latest_delivery_summary_path = latest_root / "README_finished_episode.md"
+    latest_payload = {
+        "episode_id": episode_id,
+        "display_title": clean_text(delivery_payload.get("display_title", "")),
+        "episode_title": clean_text(delivery_payload.get("episode_title", "")),
+        "render_mode": clean_text(delivery_payload.get("render_mode", "")),
+        "production_readiness": clean_text(delivery_payload.get("production_readiness", "")),
+        "delivery_root": str(latest_root),
+        "watch_episode": copy_delivery_file(resolve_stored_project_path(delivery_payload.get("watch_episode", "")), latest_episode_path),
+        "storyboard_render_copy": copy_delivery_file(resolve_stored_project_path(delivery_payload.get("storyboard_render_copy", "")), latest_storyboard_path),
+        "dialogue_audio": copy_delivery_file(resolve_stored_project_path(delivery_payload.get("dialogue_audio", "")), latest_dialogue_audio_path),
+        "subtitle_preview": copy_delivery_file(resolve_stored_project_path(delivery_payload.get("subtitle_preview", "")), latest_subtitle_path),
+        "voice_plan": copy_delivery_file(resolve_stored_project_path(delivery_payload.get("voice_plan", "")), latest_voice_plan_path),
+        "render_manifest": copy_delivery_file(resolve_stored_project_path(delivery_payload.get("render_manifest", "")), latest_render_manifest_path),
+        "production_package": copy_delivery_file(resolve_stored_project_path(delivery_payload.get("production_package", "")), latest_production_package_path),
+        "production_prompt_preview": copy_delivery_file(resolve_stored_project_path(delivery_payload.get("production_prompt_preview", "")), latest_prompt_preview_path),
+        "source_outputs": dict(delivery_payload.get("source_outputs", {}) or {}),
+        "scene_master_root": clean_text(delivery_payload.get("scene_master_root", "")),
+        "remaining_backend_tasks": list(delivery_payload.get("remaining_backend_tasks", []) or []),
+    }
+    latest_payload["delivery_summary"] = write_delivery_summary(
+        latest_delivery_summary_path,
+        delivery_payload=latest_payload,
+        latest_delivery_root=latest_root,
+    )
+    write_json(latest_delivery_manifest_path, latest_payload)
+    latest_payload["delivery_manifest"] = str(latest_delivery_manifest_path)
+    return latest_payload
+
+
+def write_episode_delivery_bundle(
+    cfg: dict,
+    episode_id: str,
+    shotlist: dict,
+    manifest: dict,
+    production_package: dict,
+    final_render_path: Path,
+    full_generated_episode_path: Path,
+    dialogue_audio_path: Path,
+    subtitle_preview_path: Path,
+    voice_plan_path: Path,
+) -> dict:
+    delivery_root = episode_delivery_bundle_root(cfg, episode_id)
+    delivery_root.mkdir(parents=True, exist_ok=True)
+    package_path = resolve_stored_project_path(production_package.get("package_path", ""))
+    prompt_preview_path = resolve_stored_project_path(production_package.get("prompt_preview_path", ""))
+    render_manifest_path = resolve_stored_project_path(manifest.get("render_manifest_path", ""))
+    preferred_episode_video = full_generated_episode_path if render_output_ready(full_generated_episode_path) else final_render_path
+    delivery_episode_path = delivery_root / f"{episode_id}_finished_episode.mp4"
+    delivery_storyboard_fallback_path = delivery_root / f"{episode_id}_storyboard_render.mp4"
+    delivery_dialogue_audio_path = delivery_root / f"{episode_id}_dialogue_audio.wav"
+    delivery_subtitle_path = delivery_root / f"{episode_id}.srt"
+    delivery_voice_plan_path = delivery_root / f"{episode_id}_voice_plan.json"
+    delivery_manifest_path = delivery_root / f"{episode_id}_delivery_manifest.json"
+    delivery_production_package_path = delivery_root / f"{episode_id}_production_package.json"
+    delivery_prompt_preview_path = delivery_root / f"{episode_id}_backend_prompts.txt"
+    delivery_summary_path = delivery_root / "README_finished_episode.md"
+
+    copied_episode_path = copy_delivery_file(preferred_episode_video, delivery_episode_path)
+    copied_storyboard_path = ""
+    if render_output_ready(final_render_path) and final_render_path.resolve() != preferred_episode_video.resolve():
+        copied_storyboard_path = copy_delivery_file(final_render_path, delivery_storyboard_fallback_path)
+    elif render_output_ready(final_render_path):
+        copied_storyboard_path = copy_delivery_file(final_render_path, delivery_storyboard_fallback_path)
+
+    delivery_payload = {
+        "episode_id": episode_id,
+        "display_title": clean_text(shotlist.get("display_title", episode_id)),
+        "episode_title": clean_text(shotlist.get("episode_title", "")),
+        "render_mode": clean_text(manifest.get("render_mode", "")),
+        "production_readiness": clean_text((production_package.get("completion_status", {}) if isinstance(production_package.get("completion_status", {}), dict) else {}).get("production_readiness", "")),
+        "delivery_root": str(delivery_root),
+        "watch_episode": copied_episode_path,
+        "storyboard_render_copy": copied_storyboard_path,
+        "dialogue_audio": copy_delivery_file(dialogue_audio_path, delivery_dialogue_audio_path),
+        "subtitle_preview": copy_delivery_file(subtitle_preview_path, delivery_subtitle_path),
+        "voice_plan": copy_delivery_file(voice_plan_path, delivery_voice_plan_path),
+        "render_manifest": copy_delivery_file(render_manifest_path, delivery_root / f"{episode_id}_render_manifest.json"),
+        "production_package": copy_delivery_file(package_path, delivery_production_package_path),
+        "production_prompt_preview": copy_delivery_file(prompt_preview_path, delivery_prompt_preview_path),
+        "source_outputs": {
+            "final_render": str(final_render_path) if render_output_ready(final_render_path) else "",
+            "full_generated_episode": str(full_generated_episode_path) if render_output_ready(full_generated_episode_path) else "",
+            "render_manifest": str(render_manifest_path) if render_output_ready(render_manifest_path) else "",
+            "production_package": str(package_path) if render_output_ready(package_path) else "",
+        },
+        "scene_master_root": clean_text(((production_package.get("target_master_outputs", {}) if isinstance(production_package.get("target_master_outputs", {}), dict) else {}).get("scene_master_root", ""))),
+        "remaining_backend_tasks": (production_package.get("completion_status", {}) if isinstance(production_package.get("completion_status", {}), dict) else {}).get("remaining_backend_tasks", []),
+    }
+    latest_delivery_payload = write_latest_episode_delivery_bundle(cfg, episode_id, delivery_payload)
+    delivery_payload["delivery_summary"] = write_delivery_summary(
+        delivery_summary_path,
+        delivery_payload=delivery_payload,
+        latest_delivery_root=latest_episode_delivery_bundle_root(cfg),
+    )
+    delivery_payload["latest_delivery_root"] = latest_delivery_payload.get("delivery_root", "")
+    delivery_payload["latest_delivery_manifest"] = latest_delivery_payload.get("delivery_manifest", "")
+    delivery_payload["latest_watch_episode"] = latest_delivery_payload.get("watch_episode", "")
+    write_json(delivery_manifest_path, delivery_payload)
+    delivery_payload["delivery_manifest"] = str(delivery_manifest_path)
+    return delivery_payload
 
 
 def write_episode_production_package(
@@ -2430,10 +2611,29 @@ def main() -> None:
         manifest["render_manifest_path"] = str(manifest_path)
         write_json(manifest_path, manifest)
         production_package = write_episode_production_package(cfg, episode_id, shotlist, manifest, voice_plan_payload)
+        delivery_bundle = write_episode_delivery_bundle(
+            cfg,
+            episode_id,
+            shotlist,
+            manifest,
+            production_package,
+            final_path,
+            full_generated_episode_path,
+            dialogue_audio_path,
+            subtitle_preview_path,
+            voice_plan_path,
+        )
         manifest["production_package_root"] = production_package["package_root"]
         manifest["production_package"] = production_package["package_path"]
         manifest["production_prompt_preview"] = production_package["prompt_preview_path"]
         manifest["scene_production_packages"] = production_package["scene_package_paths"]
+        manifest["delivery_bundle_root"] = delivery_bundle["delivery_root"]
+        manifest["delivery_manifest"] = delivery_bundle["delivery_manifest"]
+        manifest["delivery_episode"] = delivery_bundle["watch_episode"]
+        manifest["delivery_summary"] = delivery_bundle.get("delivery_summary", "")
+        manifest["latest_delivery_root"] = delivery_bundle.get("latest_delivery_root", "")
+        manifest["latest_delivery_manifest"] = delivery_bundle.get("latest_delivery_manifest", "")
+        manifest["latest_delivery_episode"] = delivery_bundle.get("latest_watch_episode", "")
         write_json(manifest_path, manifest)
         shotlist["render_manifest"] = str(manifest_path)
         shotlist["draft_render"] = str(draft_path)
@@ -2445,6 +2645,13 @@ def main() -> None:
         shotlist["production_package_root"] = production_package["package_root"]
         shotlist["production_package"] = production_package["package_path"]
         shotlist["production_prompt_preview"] = production_package["prompt_preview_path"]
+        shotlist["delivery_bundle_root"] = delivery_bundle["delivery_root"]
+        shotlist["delivery_manifest"] = delivery_bundle["delivery_manifest"]
+        shotlist["delivery_episode"] = delivery_bundle["watch_episode"]
+        shotlist["delivery_summary"] = delivery_bundle.get("delivery_summary", "")
+        shotlist["latest_delivery_root"] = delivery_bundle.get("latest_delivery_root", "")
+        shotlist["latest_delivery_manifest"] = delivery_bundle.get("latest_delivery_manifest", "")
+        shotlist["latest_delivery_episode"] = delivery_bundle.get("latest_watch_episode", "")
         write_json(shotlist_path, shotlist)
 
         reporter.finish(current_label=episode_id, extra_label=f"Rendered {len(scenes)} scenes and exported the full-episode production package")
@@ -2459,6 +2666,11 @@ def main() -> None:
                 "render_mode": render_mode,
                 "manifest": str(manifest_path),
                 "production_package": production_package["package_path"],
+                "delivery_manifest": delivery_bundle["delivery_manifest"],
+                "delivery_episode": delivery_bundle["watch_episode"],
+                "delivery_summary": delivery_bundle.get("delivery_summary", ""),
+                "latest_delivery_manifest": delivery_bundle.get("latest_delivery_manifest", ""),
+                "latest_delivery_episode": delivery_bundle.get("latest_watch_episode", ""),
             },
         )
         ok(f"Episode rendered: {episode_id}")

@@ -195,8 +195,30 @@ def output_path_ready(value: object) -> bool:
 
 
 def ensure_finished_episode_outputs(episode_id: str, episode_outputs: dict[str, object]) -> dict[str, object]:
-    required_fields = ("final_render", "full_generated_episode", "production_package", "render_manifest")
-    missing = [field for field in required_fields if not output_path_ready(episode_outputs.get(field))]
+    core_required_fields = (
+        "final_render",
+        "full_generated_episode",
+        "production_package",
+        "render_manifest",
+    )
+    missing = [field for field in core_required_fields if not output_path_ready(episode_outputs.get(field))]
+    delivery_required_fields = (
+        "delivery_manifest",
+        "delivery_episode",
+    )
+    missing_delivery = [field for field in delivery_required_fields if not output_path_ready(episode_outputs.get(field))]
+    delivery_metadata_keys = (
+        "delivery_bundle_root",
+        "delivery_manifest",
+        "delivery_episode",
+        "delivery_summary",
+        "latest_delivery_root",
+        "latest_delivery_manifest",
+        "latest_delivery_episode",
+    )
+    has_any_delivery_metadata = any(str(episode_outputs.get(field) or "").strip() for field in delivery_metadata_keys)
+    if has_any_delivery_metadata:
+        missing.extend(missing_delivery)
     if missing:
         raise RuntimeError(
             f"Episode {episode_id} did not produce a complete finished-episode bundle. Missing outputs: {', '.join(missing)}"
@@ -346,7 +368,7 @@ def main() -> None:
             reporter.update(
                 preview_reporter_current(reporter, completed_steps),
                 current_label=episode_id,
-                extra_label=f"Finished episode bundle ready: {episode_id}",
+                extra_label=f"Finished episode delivery bundle ready: {episode_id}",
                 scope_current=len(generated) + 1,
                 scope_total=preview_scope_total(count, endless, len(generated)),
                 scope_label="Episodes",
