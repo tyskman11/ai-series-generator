@@ -139,6 +139,28 @@ def first_existing_production_scene_video(package_root: Path, scene_id: str) -> 
     return None
 
 
+def storyboard_backend_scene_video_candidates(assets_root: Path, scene_id: str) -> list[tuple[str, Path]]:
+    return [
+        ("storyboard_backend_scene_video", assets_root / scene_id / "clip.mp4"),
+        ("storyboard_backend_scene_video", assets_root / scene_id / f"{scene_id}.mp4"),
+        ("storyboard_backend_scene_video", assets_root / scene_id / "scene.mp4"),
+    ]
+
+
+def first_existing_storyboard_backend_scene_video(assets_root: Path, scene_id: str) -> tuple[str, Path] | None:
+    for source_type, candidate in storyboard_backend_scene_video_candidates(assets_root, scene_id):
+        if candidate.exists() and candidate.stat().st_size > 0:
+            return source_type, candidate
+    return None
+
+
+def first_existing_scene_video_source(package_root: Path, assets_root: Path, scene_id: str) -> tuple[str, Path] | None:
+    return first_existing_production_scene_video(package_root, scene_id) or first_existing_storyboard_backend_scene_video(
+        assets_root,
+        scene_id,
+    )
+
+
 def generated_storyboard_scene_frame(cfg: dict, episode_id: str, scene_id: str) -> Path | None:
     assets_root = storyboard_assets_root(cfg, episode_id)
     match = first_existing_scene_frame(assets_root, scene_id)
@@ -2435,7 +2457,7 @@ def main() -> None:
                 timeline_cursor,
             )
             final_clip_path = temp_clip_root / f"{index:04d}_{scene_id}.mp4"
-            scene_video_source = first_existing_production_scene_video(package_root, scene_id)
+            scene_video_source = first_existing_scene_video_source(package_root, assets_root, scene_id)
             if scene_video_source is None:
                 scene_video_source = materialize_scene_motion_video(
                     ffmpeg,

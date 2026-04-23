@@ -50,7 +50,7 @@ All scripts in this repository are AI-generated and maintained with `GPT-5.4`.
 - model-native storyboard planning per scene, with multi-reference slots, continuity anchors, and camera/control hints for later image-model backends
 - voice-training preparation now prioritizes original per-character dialogue segments from the source material and writes language-aware local voice-model profiles for each trained character
 - storyboard scene asset generation now writes backend-ready per-scene seed packages and can reuse moved training artifacts after workspace path changes
-- local storyboard backend materialization can turn those seed packages into reusable per-scene backend frames before render
+- local storyboard backend materialization can turn those seed packages into reusable per-scene backend frames, alternates, posters, and local scene clips before render
 - real episode titles for generated outputs instead of raw `folge_0x` placeholders
 - draft previews and local finished-episode rendering
 - full-episode production packages with per-scene image generation, video generation, voice clone, and lip-sync plans for later real episode backends
@@ -94,10 +94,11 @@ All scripts in this repository are AI-generated and maintained with `GPT-5.4`.
 - `17_render_episode.py` continues to improve long Windows render runs, especially for large segment stacks
 - the new training chain around `09` through `13` is being observed on real project data, especially where voice material is still weak
 - `14_generate_episode_from_trained_model.py` now writes per-scene multi-reference storyboard plans inspired by shot-by-shot image-edit workflows, but stays model-only and does not depend on any GUI workflow
-- `16_run_storyboard_backend.py` can now materialize local backend-style scene frames from the seed payloads emitted by `15_generate_storyboard_assets.py`
+- `16_run_storyboard_backend.py` can now materialize local backend-style scene packs from the seed payloads emitted by `15_generate_storyboard_assets.py`, including graded keyframes, alternates, posters, and optional local scene clips
 - `17_render_episode.py` now carries storyboard plans into the render manifest, reuses backend frames from `16` when they exist, and falls back to seed assets or generated placeholder cards when needed
 - `14_generate_episode_from_trained_model.py` now also exports backend-ready storyboard request files per episode and per scene under `generation/storyboard_requests`
 - `17_render_episode.py` now automatically picks up already generated storyboard scene frames from `generation/storyboard_assets/<episode>` when they exist, so local backend materialization and later model backends can feed visuals back into the render path without changing script order
+- `17_render_episode.py` now also picks up local storyboard-backend scene clips from `generation/storyboard_assets/<episode>/<scene>/clip.mp4` before falling back to its own emergency motion composition, so step `16` can feed finished-episode video directly into the final render
 - `15_generate_storyboard_assets.py` now emits backend-ready scene input payloads beside each generated seed frame and rebases older stored artifact paths after project moves, so NAS relocations do not silently break later backend use
 - `15_generate_storyboard_assets.py`, `16_run_storyboard_backend.py`, `17_render_episode.py`, and `19_generate_finished_episodes.py` now resolve the newest generated artifact by timestamp instead of assuming a `folge_*` filename pattern
 - `06_review_unknowns.py`, `18_build_series_bible.py`, and `99_process_next_episode.py` continue to standardize user-facing CLI help, review prompts, and progress output in English so the numbered pipeline reads consistently end to end
@@ -199,7 +200,7 @@ Also keep the `In Progress` and `Planned` sections current. If priorities change
 - `13_run_backend_finetunes.py`: materialize backend-oriented fine-tune runs
 - `14_generate_episode_from_trained_model.py`: generate a new synthetic episode blueprint
 - `15_generate_storyboard_assets.py`: build scene-level storyboard seed assets and backend-ready per-scene input payloads from exported storyboard requests
-- `16_run_storyboard_backend.py`: materialize local backend-style storyboard scene frames from the per-scene backend input payloads
+- `16_run_storyboard_backend.py`: materialize local backend-style storyboard scene packs from the per-scene backend input payloads, including keyframes, alternates, posters, and optional scene clips
 - `17_render_episode.py`: render a draft preview plus a final voiced episode from seed assets, backend frames, generated scene videos, auto-materialized motion fallback clips, or placeholder scene cards, reuse matching original dialogue where possible, export/update a backend-ready production package for a fully generated episode, and write a final delivery bundle for the generated episode
 - `18_build_series_bible.py`: rebuild the series bible
 - `19_generate_finished_episodes.py`: generate multiple finished episodes in one run or keep generating endlessly until stopped
@@ -229,6 +230,9 @@ Also keep the `In Progress` and `Planned` sections current. If priorities change
 - `ai_series_project/generation/storyboard_requests`: backend-ready storyboard request payloads per episode and per scene
 - `ai_series_project/generation/storyboard_assets`: optional generated scene frames that the render step can reuse
 - `ai_series_project/generation/storyboard_assets/<episode>/*_backend_input.json`: per-scene backend-ready seed payloads for later local image/video model runners
+- `ai_series_project/generation/storyboard_assets/<episode>/<scene>/frame.png`: local backend-style keyframe generated by step `16`
+- `ai_series_project/generation/storyboard_assets/<episode>/<scene>/alternates/*.png`: local shot alternates generated by step `16` for more varied scene composition
+- `ai_series_project/generation/storyboard_assets/<episode>/<scene>/clip.mp4`: optional local scene clip generated by step `16` and consumed directly by step `17`
 - `ai_series_project/generation/final_episode_packages/<episode>`: backend-ready full-episode package with per-scene image/video/voice/lip-sync plans and stable output targets for actual generated episodes
 - `ai_series_project/generation/renders/drafts`: draft renders
 - `ai_series_project/generation/renders/final`: final voiced storyboard episode renders
@@ -407,15 +411,15 @@ Builds scene-level storyboard asset files from the exported storyboard requests.
 
 ### 16 - Run Storyboard Backend
 
-Materializes local backend-style scene frames from the per-scene backend input payloads written by `15`. This is the bridge between the seed-package export and later render reuse. In shared NAS mode, scenes are leased individually so several PCs can materialize different backend frames for the same episode.
+Materializes local backend-style scene packs from the per-scene backend input payloads written by `15`. Each pack now includes a graded keyframe, poster, preview, alternate shot stills, and, when FFmpeg is available, a short local scene clip that `17` can use directly before falling back to emergency motion composition. This is the bridge between the seed-package export and later render reuse. In shared NAS mode, scenes are leased individually so several PCs can materialize different backend scene packs for the same episode.
 
 ### 17 - Render Episode
 
-Builds the draft render from storyboard cards and the final episode from the best currently available scene material in this order: generated lip-sync clips, generated scene videos, locally materialized multi-shot scene videos, backend/seed storyboard frames, and only then placeholder cards. It reuses matching original dialogue segments when available, fills only missing lines with local fallback TTS, writes per-line and per-scene audio into the production package, muxes the full dialogue track into the final render, and now also writes per-scene mastered clips plus a `*_full_generated_episode.mp4` master into `generation/final_episode_packages/<episode>/master`.
+Builds the draft render from storyboard cards and the final episode from the best currently available scene material in this order: generated lip-sync clips, generated scene videos, local storyboard-backend scene clips from `16`, locally materialized multi-shot scene videos, backend/seed storyboard frames, and only then placeholder cards. It reuses matching original dialogue segments when available, fills only missing lines with local fallback TTS, writes per-line and per-scene audio into the production package, muxes the full dialogue track into the final render, and now also writes per-scene mastered clips plus a `*_full_generated_episode.mp4` master into `generation/final_episode_packages/<episode>/master`.
 
 Renders a draft local preview plus a final voiced storyboard episode. The current default path:
 
-- reuses materialized backend frames from `16_run_storyboard_backend.py` when they exist
+- reuses materialized backend scene clips or frames from `16_run_storyboard_backend.py` when they exist
 - otherwise reuses generated storyboard seed assets from `generation/storyboard_assets/<episode>`
 - generates readable placeholder scene cards when no visual asset exists yet
 - preserves the per-scene storyboard plan in the render manifest for future model backends

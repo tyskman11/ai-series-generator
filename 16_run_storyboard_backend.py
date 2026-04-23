@@ -3,12 +3,15 @@ from __future__ import annotations
 
 import argparse
 import os
+import subprocess
+import tempfile
 from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageEnhance, ImageFilter, ImageOps
 
 from pipeline_common import (
     add_shared_worker_arguments,
+    detect_tool,
     distributed_item_lease,
     distributed_step_runtime_root,
     LiveProgressReporter,
@@ -26,7 +29,9 @@ from pipeline_common import (
     resolve_project_path,
     shared_worker_id_for_args,
     shared_workers_enabled_for_args,
+    warn,
     write_json,
+    write_text,
 )
 
 
@@ -128,6 +133,30 @@ def fit_rgb_image(path: Path, width: int, height: int) -> Image.Image:
     return ImageOps.fit(image, (width, height), method=Image.Resampling.LANCZOS)
 
 
+def scene_output_root(assets_root: Path, scene_id: str) -> Path:
+    return assets_root / scene_id
+
+
+def scene_frame_output_path(assets_root: Path, scene_id: str) -> Path:
+    return scene_output_root(assets_root, scene_id) / "frame.png"
+
+
+def scene_preview_output_path(assets_root: Path, scene_id: str) -> Path:
+    return scene_output_root(assets_root, scene_id) / "preview.jpg"
+
+
+def scene_poster_output_path(assets_root: Path, scene_id: str) -> Path:
+    return scene_output_root(assets_root, scene_id) / "poster.png"
+
+
+def scene_clip_output_path(assets_root: Path, scene_id: str) -> Path:
+    return scene_output_root(assets_root, scene_id) / "clip.mp4"
+
+
+def scene_alternates_root(assets_root: Path, scene_id: str) -> Path:
+    return scene_output_root(assets_root, scene_id) / "alternates"
+
+
 def apply_backend_grade(
     image: Image.Image,
     payload: dict,
@@ -170,17 +199,110 @@ def apply_backend_grade(
     return merged.convert("RGB")
 
 
+def backend_variant_labels(payload: dict) -> list[str]:
+    labels: list[str] = []
+    camera_plan = payload.get("camera_plan", {}) if isinstance(payload.get("camera_plan", {}), dict) else {}
+    for raw_value in (camera_plan.get("lens", ""), camera_plan.get("movement", "")):
+        cleaned = str(raw_value or "").strip().lower()
+        if cleaned:
+            labels.append(cleaned)
+    labels.extend(["hero", "close", "wide", "reaction"])
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for label in labels:
+        safe = "".join(char if char.isalnum() else "_" for char in label).strip("_") or "variant"
+        if safe in seen:
+            continue
+        seen.add(safe)
+        deduped.append(safe)
+    return deduped[:4]
+
+
+def variant_image(image: Image.Image, accent: tuple[int, int, int], index: int) -> Image.Image:
+    working = image.convert("RGB")
+    if index % 4 == 1:
+        working = ImageEnhance.Contrast(working).enhance(1.08)
+        working = ImageEnhance.Color(working).enhance(1.05)
+    elif index % 4 == 2:
+        working = ImageOps.mirror(working)
+        working = ImageEnhance.Sharpness(working).enhance(1.18)
+    elif index % 4 == 3:
+        bordered = ImageOps.expand(working, border=max(12, working.width // 24), fill=accent)
+        working = ImageOps.fit(bordered, working.size, method=Image.Resampling.LANCZOS)
+        working = ImageEnhance.Brightness(working).enhance(1.03)
+    else:
+        overlay = Image.new("RGBA", working.size, accent + (24,))
+        working = Image.alpha_composite(working.convert("RGBA"), overlay).convert("RGB")
+    return working
+
+
+def build_concat_file(entries: list[tuple[Path, float]], output_path: Path) -> None:
+    lines: list[str] = []
+    for frame_path, duration in entries:
+        escaped = str(frame_path).replace("'", "''")
+        lines.append(f"file '{escaped}'")
+        lines.append(f"duration {duration:.3f}")
+    if entries:
+        escaped = str(entries[-1][0]).replace("'", "''")
+        lines.append(f"file '{escaped}'")
+    write_text(output_path, "\n".join(lines) + ("\n" if lines else ""))
+
+
+def encode_scene_video(
+    ffmpeg_path: Path,
+    concat_path: Path,
+    output_path: Path,
+    fps: int,
+    width: int,
+    height: int,
+    crf: int,
+) -> None:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    command = [
+        str(ffmpeg_path),
+        "-hide_banner",
+        "-y",
+        "-f",
+        "concat",
+        "-safe",
+        "0",
+        "-i",
+        str(concat_path),
+        "-vf",
+        f"fps={fps},scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:black,format=yuv420p",
+        "-an",
+        "-c:v",
+        "libx264",
+        "-preset",
+        "medium",
+        "-crf",
+        str(crf),
+        "-movflags",
+        "+faststart",
+        str(output_path),
+    ]
+    result = subprocess.run(command, check=False, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    if result.returncode != 0 or not output_path.exists() or output_path.stat().st_size <= 0:
+        raise RuntimeError(f"Could not encode local backend scene clip {output_path.name}: {(result.stdout or '').strip()[-600:]}")
+
+
 def materialize_scene_backend_frame(
     assets_root: Path,
     payload: dict,
     width: int,
     height: int,
+    fps: int,
+    crf: int,
+    ffmpeg_path: Path | None,
     force: bool,
 ) -> dict:
     scene_id = str(payload.get("scene_id", "")).strip() or "scene"
-    scene_root = assets_root / scene_id
-    frame_path = scene_root / "frame.png"
-    preview_path = scene_root / "preview.jpg"
+    scene_root = scene_output_root(assets_root, scene_id)
+    frame_path = scene_frame_output_path(assets_root, scene_id)
+    preview_path = scene_preview_output_path(assets_root, scene_id)
+    poster_path = scene_poster_output_path(assets_root, scene_id)
+    clip_path = scene_clip_output_path(assets_root, scene_id)
+    alternates_root = scene_alternates_root(assets_root, scene_id)
     manifest_path = scene_root / "backend_frame_manifest.json"
 
     if frame_path.exists() and frame_path.stat().st_size > 0 and not force:
@@ -188,10 +310,13 @@ def materialize_scene_backend_frame(
             "scene_id": scene_id,
             "output_path": str(frame_path),
             "preview_path": str(preview_path) if preview_path.exists() else "",
+            "poster_path": str(poster_path) if poster_path.exists() else "",
+            "clip_path": str(clip_path) if clip_path.exists() else "",
+            "alternate_root": str(alternates_root) if alternates_root.exists() else "",
             "manifest_path": str(manifest_path) if manifest_path.exists() else "",
             "status": "existing",
             "source_type": "existing_backend_frame",
-            "backend_mode": "materialized_local_backend_frame",
+            "backend_mode": "materialized_local_backend_scene_pack",
         }
 
     source_path = first_existing_path(candidate_image_paths(assets_root, scene_id, payload))
@@ -200,10 +325,13 @@ def materialize_scene_backend_frame(
             "scene_id": scene_id,
             "output_path": str(frame_path),
             "preview_path": str(preview_path),
+            "poster_path": str(poster_path),
+            "clip_path": str(clip_path),
+            "alternate_root": str(alternates_root),
             "manifest_path": str(manifest_path),
             "status": "missing_source",
             "source_type": "missing",
-            "backend_mode": "materialized_local_backend_frame",
+            "backend_mode": "materialized_local_backend_scene_pack",
         }
 
     backend_candidates = payload.get("backend_candidates", {}) if isinstance(payload.get("backend_candidates"), dict) else {}
@@ -214,20 +342,47 @@ def materialize_scene_backend_frame(
     previous_frame = preferred_previous_frame(assets_root, payload)
 
     scene_root.mkdir(parents=True, exist_ok=True)
+    alternates_root.mkdir(parents=True, exist_ok=True)
     working = fit_rgb_image(source_path, width, height)
     rendered = apply_backend_grade(working, payload, accent, previous_frame, backend_strength)
     rendered.save(frame_path, quality=95)
+    rendered.save(poster_path, quality=95)
 
     preview = rendered.copy()
     preview.thumbnail((960, 540), Image.Resampling.LANCZOS)
     preview.save(preview_path, quality=90)
 
+    variant_paths: list[Path] = []
+    for index, label in enumerate(backend_variant_labels(payload), start=1):
+        variant_path = alternates_root / f"{index:02d}_{label}.png"
+        variant_image(rendered, accent, index).save(variant_path, quality=95)
+        variant_paths.append(variant_path)
+
+    clip_status = "not_requested"
+    clip_duration_seconds = max(3.2, min(8.0, 1.2 * max(1, len(variant_paths))))
+    if ffmpeg_path is not None and variant_paths:
+        try:
+            with tempfile.TemporaryDirectory(prefix=f"backend_scene_{scene_id}_", dir=str(scene_root)) as temp_dir:
+                concat_path = Path(temp_dir) / "concat.txt"
+                per_frame_duration = clip_duration_seconds / max(1, len(variant_paths))
+                build_concat_file([(path, per_frame_duration) for path in variant_paths], concat_path)
+                encode_scene_video(ffmpeg_path, concat_path, clip_path, fps, width, height, crf)
+            clip_status = "completed"
+        except Exception:
+            clip_status = "failed"
+
     manifest = {
         "scene_id": scene_id,
-        "backend_mode": "materialized_local_backend_frame",
+        "backend_mode": "materialized_local_backend_scene_pack",
         "status": "completed",
         "output_path": str(frame_path),
         "preview_path": str(preview_path),
+        "poster_path": str(poster_path),
+        "clip_path": str(clip_path) if clip_path.exists() else "",
+        "clip_status": clip_status,
+        "alternate_root": str(alternates_root),
+        "alternate_frames": [str(path) for path in variant_paths],
+        "scene_video_duration_seconds": round(clip_duration_seconds, 3),
         "source_path": str(source_path),
         "source_type": "seed_asset" if source_path.parent == assets_root else "reference_image",
         "previous_frame": str(previous_frame) if previous_frame else "",
@@ -263,10 +418,18 @@ def main() -> None:
     render_cfg = cfg.get("render", {}) if isinstance(cfg.get("render"), dict) else {}
     width = int(render_cfg.get("width", 1280))
     height = int(render_cfg.get("height", 720))
+    fps = max(12, int(render_cfg.get("fps", 30)))
+    crf = int(render_cfg.get("crf", 23))
     assets_root = resolve_project_path(cfg["paths"].get("storyboard_assets", "generation/storyboard_assets")) / episode_id
     if not assets_root.exists():
         info("No storyboard asset root found yet. Run 15_generate_storyboard_assets.py first.")
         return
+
+    ffmpeg: Path | None = None
+    try:
+        ffmpeg = detect_tool(resolve_project_path("tools/ffmpeg/bin"), "ffmpeg")
+    except Exception:
+        warn("No FFmpeg found. The storyboard backend will still write frames and alternates, but no local backend scene videos.")
 
     backend_inputs = sorted(assets_root.glob("*_backend_input.json"))
     if not backend_inputs:
@@ -300,8 +463,8 @@ def main() -> None:
             ) as acquired:
                 if not acquired:
                     continue
-                reporter.update(index - 1, current_label=scene_id, extra_label="Running now: materialize backend frame", force=True)
-                row = materialize_scene_backend_frame(assets_root, payload, width, height, args.force)
+                reporter.update(index - 1, current_label=scene_id, extra_label="Running now: materialize backend scene pack", force=True)
+                row = materialize_scene_backend_frame(assets_root, payload, width, height, fps, crf, ffmpeg, args.force)
                 row["backend_input_path"] = str(backend_input_path)
                 rows.append(row)
                 if row.get("status") == "completed":
@@ -312,11 +475,13 @@ def main() -> None:
             completed_count = 0
             for backend_input_path in backend_inputs:
                 payload = read_json(backend_input_path, {})
-                row = materialize_scene_backend_frame(assets_root, payload, width, height, False)
+                row = materialize_scene_backend_frame(assets_root, payload, width, height, fps, crf, ffmpeg, False)
                 row["backend_input_path"] = str(backend_input_path)
                 rows.append(row)
                 if row.get("status") == "completed":
                     completed_count += 1
+
+        completed_scene_video_count = sum(1 for row in rows if str(row.get("clip_status", "")) == "completed")
 
         manifest_path = assets_root / f"{episode_id}_storyboard_backend_manifest.json"
         write_json(
@@ -324,23 +489,29 @@ def main() -> None:
             {
                 "episode_id": episode_id,
                 "asset_root": str(assets_root),
-                "backend_mode": "materialized_local_backend_frame",
+                "backend_mode": "materialized_local_backend_scene_pack",
                 "scene_runs": rows,
                 "completed_scene_count": completed_count,
+                "completed_scene_video_count": completed_scene_video_count,
                 "requested_scene_count": len(backend_inputs),
             },
         )
         shotlist["storyboard_backend_manifest"] = str(manifest_path)
-        shotlist["storyboard_backend_mode"] = "materialized_local_backend_frame"
+        shotlist["storyboard_backend_mode"] = "materialized_local_backend_scene_pack"
         write_json(shotlist_path, shotlist)
         reporter.finish(
             current_label=episode_id,
-            extra_label=f"Storyboard backend ready: {completed_count}/{len(backend_inputs)} scenes",
+            extra_label=f"Storyboard backend ready: {completed_count}/{len(backend_inputs)} scenes | local scene videos: {completed_scene_video_count}",
         )
         mark_step_completed(
             "16_run_storyboard_backend",
             autosave_target,
-            {"episode_id": episode_id, "manifest": str(manifest_path), "completed_scene_count": completed_count},
+            {
+                "episode_id": episode_id,
+                "manifest": str(manifest_path),
+                "completed_scene_count": completed_count,
+                "completed_scene_video_count": completed_scene_video_count,
+            },
         )
         ok(f"Storyboard backend materialized: {episode_id}")
     except Exception as exc:
