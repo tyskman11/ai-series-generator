@@ -234,7 +234,7 @@ This file is mandatory documentation.
 
 Whenever you change any of the following, update `README.md` in the same task:
 
-- `00_prepare_runtime.py` through `77_restore_project.py`
+- `00_prepare_runtime.py` through `57_restore_project.py`
 - `99_process_next_episode.py`
 - `99_sync_to_github.py`
 - `pipeline_common.py`
@@ -249,7 +249,7 @@ Also keep the `In Progress` and `Planned` sections current. If priorities change
 
 ## Project Layout
 
-### Root Scripts
+### Root Scripts (00-06)
 
 - `00_prepare_runtime.py`: create the runtime and install the required packages
 - `01_setup_project.py`: create the project structure and config
@@ -259,52 +259,79 @@ Also keep the `In Progress` and `Planned` sections current. If priorities change
 - `05_link_faces_and_speakers.py`: detect faces and link them to speakers
 - `06_review_unknowns.py`: review unknown face clusters and character assignments
 
-### Training Pipeline (14-19)
+### Training Pipeline (07-12)
 
-- `14_build_dataset.py`: build the local training dataset
-- `15_train_series_model.py`: train the local heuristic series model
-- `16_prepare_foundation_training.py`: prepare training assets and plans for later fine-tuning
-- `17_train_foundation_models.py`: train local foundation packs
-- `18_train_adapter_models.py`: train local adapter profiles
-- `19_train_fine_tune_models.py`: train local fine-tune profiles
+- `07_build_dataset.py`: build the local training dataset
+- `08_train_series_model.py`: train the local heuristic series model
+- `09_prepare_foundation_training.py`: prepare training assets and plans for later fine-tuning
+- `10_train_foundation_models.py`: train local foundation packs
+- `11_train_adapter_models.py`: train local adapter profiles
+- `12_train_fine_tune_models.py`: train local fine-tune profiles
 
-### Generation Pipeline (21-24)
+### Generation Pipeline (13-16)
 
-- `21_generate_episode.py`: generate a new synthetic episode blueprint
-- `22_generate_storyboard_assets.py`: build scene-level storyboard seed assets and backend-ready per-scene input payloads
-- `24_render_episode.py`: render a draft preview plus a final voiced episode
-- `30_generate_finished_episodes.py`: generate multiple finished episodes in one run or keep generating endlessly until stopped
+- `13_generate_episode.py`: generate a new synthetic episode blueprint
+- `14_generate_storyboard_assets.py`: build scene-level storyboard seed assets and backend-ready per-scene input payloads
+- `15_render_episode.py`: render a draft preview plus a final voiced episode
+- `16_generate_finished_episodes.py`: generate multiple finished episodes in one run or keep generating endlessly until stopped
 
-### Analysis (26-35)
+### Analysis (17-24)
 
-- `26_build_series_bible.py`: rebuild the series bible
-- `27_analyze_patterns.py`: analyze recurring patterns in series
-- `28_character_timeline.py`: show character appearances across episodes
-- `31_mood_analyzer.py`: analyze mood/emotions across episodes
-- `32_merge_episodes.py`: merge multiple episodes into one season
-- `33_subtitle_generator.py`: generate subtitles from dialog
-- `34_multi_language_subtitle.py`: translate subtitles to multiple languages
-- `35_chapter_marker.py`: auto-detect chapter markers from content
+- `17_build_series_bible.py`: rebuild the series bible
+- `18_analyze_patterns.py`: analyze recurring patterns in series
+- `19_character_timeline.py`: show character appearances across episodes
+- `20_mood_analyzer.py`: analyze mood/emotions across episodes
+- `21_merge_episodes.py`: merge multiple episodes into one season
+- `22_subtitle_generator.py`: generate subtitles from dialog
+- `23_multi_language_subtitle.py`: translate subtitles to multiple languages
+- `24_chapter_marker.py`: auto-detect chapter markers from content
 
-### Media Output (41-44)
+### Media Output (25-28)
 
-- `41_trailer_generator.py`: generate trailer from episode footage
-- `42_recap_generator.py`: generate recap episode from season
-- `43_batch_exporter.py`: export multiple formats in parallel
-- `44_highlights_extractor.py`: extract best scenes from episodes
+- `25_trailer_generator.py`: generate trailer from episode footage
+- `26_recap_generator.py`: generate recap episode from season
+- `27_batch_exporter.py`: export multiple formats in parallel
+- `28_highlights_extractor.py`: extract best scenes from episodes
 
-### Intelligence (47-69)
+### Intelligence (29-49)
 
-- `47_voice_clone_detector.py`: detect voice clones across episodes
-- `50_multi_season_tracker.py`: track characters across multiple seasons
-- `51_metadata_generator.py`: generate platform metadata
-- `52_auto_editor.py`: auto-edit based on mood
-- `53_script_writer.py`: generate episode scripts
-- `54_adaptive_scene_pacing.py`: adaptive pacing analysis
-- `55_emotion_detector.py`: detect emotions in scenes
-- `56_style_scoring.py`: style consistency scoring
-- `57_music_cue_sheet.py`: generate music cue points for scenes
-- `58_podcast_export.py`: export audio-only for podcast feeds
+- `29_voice_clone_detector.py`: detect voice clones across episodes
+- `30_multi_season_tracker.py`: track characters across multiple seasons
+- `31_metadata_generator.py`: generate platform metadata
+- `32_auto_editor.py`: auto-edit based on mood
+- `33_script_writer.py`: generate episode scripts
+- `34_adaptive_scene_pacing.py`: adaptive pacing analysis
+- `35_emotion_detector.py`: detect emotions in scenes
+- `36_style_scoring.py`: style consistency scoring
+- `37_music_cue_sheet.py`: generate music cue points for scenes
+- `38_podcast_export.py`: export audio-only for podcast feeds
+- `39_character_outfit.py`: track character outfits across episodes
+- `40_relationship_tracker.py`: track character relationships
+- `41_similar_scene_finder.py`: find similar scenes for reuse
+- `42_trend_analyzer.py`: analyze series trends
+- `43_review_queue.py`: review workflow queue system
+- `44_scene_transition_selector.py`: select optimal scene transitions
+- `45_weather_detector.py`: detect weather conditions in scenes
+- `46_episode_archive.py`: archive old episodes with retention
+- `47_training_optimizer.py`: optimize training parameters
+- `48_voice_emotion_cloning.py`: clone voice with emotion
+- `49_social_media_clips.py`: generate social media clips (TikTok, Reels, Shorts)
+
+### Post-Process Pipeline (50-57)
+
+- `50_refresh_after_manual_review.py`: rebuild the pipeline after manual character review
+- `51_run_backend_finetunes.py`: materialize backend-oriented fine-tune runs
+- `52_export_package.py`: export finished episode package for external tools
+- `53_quality_gate.py`: automatic quality check before release
+- `54_compare_scenes.py`: compare two scenes visually for QA
+- `55_run_storyboard_backend.py`: materialize local backend-style storyboard scene packs
+- `56_backup_project.py`: backup project to cloud/NAS
+- `57_restore_project.py`: restore project from backup
+
+### End-to-End (99)
+
+- `99_process_next_episode.py`: run the full end-to-end workflow
+- `99_sync_to_github.py`: sync local changes to GitHub (last step)
 - `59_character_outfit.py`: track character outfits across episodes
 - `60_relationship_tracker.py`: track character relationships
 - `61_similar_scene_finder.py`: find similar scenes for reuse
