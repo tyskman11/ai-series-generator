@@ -255,9 +255,13 @@ Only untouched follow-up work stays here. If implementation has started or parti
 - add voice emotion cloning (preserve emotion from source)
 - add multi-season continuity tracking
 
-### Infrastructure
+### Scene Intelligence
 
-- add multi-series/project support for managing several series from one installation (implemented)
+- add similar scene finder (content-based matching)
+- add character outfit tracker (appearance consistency)
+- add weather detection and prompt modification
+- add scene transition selector (fade, dissolve, wipe, zoom)
+- add character relationship tracking (ally, enemy, friend, family)
 
 ## Planned
 

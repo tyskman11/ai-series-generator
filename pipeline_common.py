@@ -2910,6 +2910,191 @@ def load_season_continuity(project_root: Path, season_id: str) -> dict[str, Any]
     return {}
 
 
+def find_similar_scenes(
+    target_scene: dict[str, Any],
+    scene_library: list[dict[str, Any]],
+    similarity_threshold: float = 0.75,
+) -> list[dict[str, Any]]:
+    target_tags = set(target_scene.get("tags", []) or [])
+    target_location = target_scene.get("location", "")
+    target_characters = set(target_scene.get("characters", []) or [])
+    similar: list[dict[str, Any]] = []
+    for scene in scene_library:
+        if scene is target_scene:
+            continue
+        score = 0.0
+        scene_tags = set(scene.get("tags", []) or [])
+        if scene_tags & target_tags:
+            score += 0.3 * len(scene_tags & target_tags) / max(1, len(scene_tags | target_tags))
+        if scene.get("location") == target_location:
+            score += 0.25
+        scene_chars = set(scene.get("characters", []) or [])
+        if scene_chars & target_characters:
+            score += 0.45 * len(scene_chars & target_characters) / max(1, len(scene_chars | target_characters))
+        if score >= similarity_threshold:
+            similar.append({"scene": scene, "score": round(score, 3)})
+    similar.sort(key=lambda x: x.get("score", 0), reverse=True)
+    return similar[:5]
+
+
+OUTFIT_TRACKER_KEYS = ["shirt", "pants", "jacket", "dress", "shoes", "accessories"]
+
+
+def track_character_outfit(
+    project_root: Path,
+    character_name: str,
+    episode_id: str,
+    outfit_items: dict[str, str],
+) -> None:
+    from pathlib import Path
+    outfit_path = project_root / "characters" / "outfits" / f"{character_name}_outfits.json"
+    if outfit_path.exists():
+        try:
+            outfit_data = json.loads(outfit_path.read_text(encoding="utf-8"))
+        except Exception:
+            outfit_data = {}
+    else:
+        outfit_data = {}
+    if character_name not in outfit_data:
+        outfit_data[character_name] = {"episodes": {}, "current_outfit": {}}
+    char_data = outfit_data[character_name]
+    char_data["episodes"][episode_id] = outfit_items
+    for key in OUTFIT_TRACKER_KEYS:
+        if outfit_items.get(key):
+            char_data["current_outfit"][key] = outfit_items[key]
+    char_data["last_updated"] = datetime.now().isoformat()
+    outfit_path.parent.mkdir(parents=True, exist_ok=True)
+    outfit_path.write_text(json.dumps(outfit_data, indent=2), encoding="utf-8")
+
+
+def get_character_outfit(project_root: Path, character_name: str) -> dict[str, str]:
+    outfit_path = project_root / "characters" / "outfits" / f"{character_name}_outfits.json"
+    if outfit_path.exists():
+        try:
+            outfit_data = json.loads(outfit_path.read_text(encoding="utf-8"))
+            return outfit_data.get(character_name, {}).get("current_outfit", {})
+        except Exception:
+            pass
+    return {}
+
+
+WEATHER_KEYWORDS = {
+    "sunny": ["sun", "bright", "clear", "sunny", "day"],
+    "cloudy": ["cloud", "overcast", "gray", "cloudy"],
+    "rain": ["rain", "raining", "wet", "rainy", "drizzle"],
+    "night": ["night", "dark", "evening", "moon", "stars"],
+    "fog": ["fog", "foggy", "mist", "misty"],
+    "snow": ["snow", "snowing", "cold", "winter"],
+}
+
+
+def detect_scene_weather(scene_description: str) -> str:
+    desc_lower = scene_description.lower()
+    for weather, keywords in WEATHER_KEYWORDS.items():
+        if any(kw in desc_lower for kw in keywords):
+            return weather
+    return "indoor"
+
+
+def apply_weather_to_prompt(base_prompt: str, weather: str) -> str:
+    weather_overlays = {
+        "sunny": "natural sunlight, bright atmosphere",
+        "cloudy": "soft diffused light, overcast sky",
+        "rain": "rainy atmosphere, wet surfaces, droplets",
+        "night": "nighttime lighting, moonlight, stars visible",
+        "fog": "foggy atmosphere, misty, ethereal",
+        "snow": "snowy setting, cold atmosphere, winter",
+        "indoor": "indoor lighting, interior atmosphere",
+    }
+    if weather in weather_overlays:
+        return f"{base_prompt}, {weather_overlays[weather]}"
+    return base_prompt
+
+
+SCENE_TRANSITIONS = [
+    {"name": "fade", "duration_ms": 500, "effect": "fade"},
+    {"name": "dissolve", "duration_ms": 300, "effect": "crossfade"},
+    {"name": "wipe_left", "duration_ms": 400, "effect": "directional_wipe"},
+    {"name": "wipe_right", "duration_ms": 400, "effect": "directional_wipe"},
+    {"name": "zoom_in", "duration_ms": 350, "effect": "scale"},
+    {"name": "zoom_out", "duration_ms": 350, "effect": "scale"},
+    {"name": "slide_up", "duration_ms": 400, "effect": "directional"},
+    {"name": "slide_down", "duration_ms": 400, "effect": "directional"},
+]
+
+
+def select_scene_transition(
+    previous_scene: dict[str, Any],
+    current_scene: dict[str, Any],
+) -> dict[str, Any]:
+    prev_location = previous_scene.get("location", "")
+    curr_location = current_scene.get("location", "")
+    if prev_location != curr_location:
+        return SCENE_TRANSITIONS[1]
+    prev_chars = set(previous_scene.get("characters", []) or [])
+    curr_chars = set(current_scene.get("characters", []) or [])
+    if not prev_chars & curr_chars:
+        return SCENE_TRANSITIONS[0]
+    return SCENE_TRANSITIONS[0]
+
+
+CHARACTER_RELATION_KEYS = ["ally", "enemy", "friend", "family", "romantic", "authority"]
+
+
+def track_character_relationship(
+    project_root: Path,
+    character_a: str,
+    character_b: str,
+    relationship_type: str,
+    episode_id: str,
+) -> None:
+    rel_path = project_root / "characters" / "relationships.json"
+    if rel_path.exists():
+        try:
+            rel_data = json.loads(rel_path.read_text(encoding="utf-8"))
+        except Exception:
+            rel_data = {}
+    else:
+        rel_data = {}
+    pair_key = "_".join(sorted([character_a, character_b]))
+    rel_data[pair_key] = {
+        "characters": [character_a, character_b],
+        "relationship": relationship_type,
+        "first_seen": rel_data.get(pair_key, {}).get("first_seen", episode_id),
+        "episode": episode_id,
+    }
+    rel_data["last_updated"] = datetime.now().isoformat()
+    rel_path.parent.mkdir(parents=True, exist_ok=True)
+    rel_path.write_text(json.dumps(rel_data, indent=2), encoding="utf-8")
+
+
+def get_character_relationship(
+    project_root: Path,
+    character_a: str,
+    character_b: str,
+) -> str | None:
+    rel_path = project_root / "characters" / "relationships.json"
+    if rel_path.exists():
+        try:
+            rel_data = json.loads(rel_path.read_text(encoding="utf-8"))
+            pair_key = "_".join(sorted([character_a, character_b]))
+            return rel_data.get(pair_key, {}).get("relationship")
+        except Exception:
+            pass
+    return None
+
+
+def get_character_outfit(project_root: Path, character_name: str) -> dict[str, str]:
+    outfit_path = project_root / "characters" / "outfits" / f"{character_name}_outfits.json"
+    if outfit_path.exists():
+        try:
+            outfit_data = json.loads(outfit_path.read_text(encoding="utf-8"))
+            return outfit_data.get(character_name, {}).get("current_outfit", {})
+        except Exception:
+            pass
+    return {}
+
+
 def evaluate_training_quality(
     training_results: dict[str, Any],
     required_modalities: list[str],
