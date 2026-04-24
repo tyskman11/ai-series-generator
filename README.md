@@ -228,30 +228,6 @@ All scripts in this repository are AI-generated and maintained with `GPT-5.4`.
 
 Only untouched follow-up work stays here. If implementation has started or partial code already exists, it belongs in `In Progress` instead.
 
-### Training Enhancements
-
-- add lip sync model configuration (wav2lip, quality threshold, framesync)
-- add image training optimization (batch size, learning rate, epochs, mixed precision)
-- add voice training optimization (batch size, learning rate, epochs, AMP)
-- add video training optimization (batch size, learning rate, frame skip)
-- add training quality evaluation function
-
-### Emotion & Continuity
-
-- add emotion-aware generation (detect dialog emotion, modify prompts)
-- add adaptive scene pacing (dialog-based duration adjustment)
-- add style consistency scoring (frame analysis)
-- add voice emotion cloning (preserve emotion from source)
-- add multi-season continuity tracking
-
-### Scene Intelligence
-
-- add similar scene finder (content-based matching)
-- add character outfit tracker (appearance consistency)
-- add weather detection and prompt modification
-- add scene transition selector (fade, dissolve, wipe, zoom)
-- add character relationship tracking (ally, enemy, friend, family)
-
 ## Documentation Rule
 
 This file is mandatory documentation.
