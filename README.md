@@ -341,7 +341,11 @@ Also keep the `In Progress` and `Planned` sections current. If priorities change
 - `41_highlights_extractor.py`: extract best scenes from episodes
 - `42_batch_exporter.py`: export multiple formats in parallel
 - `43_mood_analyzer.py`: analyze mood/emotions across episodes
-- `44_sync_to_github.py`: sync local changes to GitHub (last step)
+- `45_script_writer.py`: generate dialog suggestions
+- `46_voice_clone_detector.py`: detect voice clones across episodes
+- `47_trend_analyzer.py`: analyze series trends
+- `48_metadata_generator.py`: generate platform metadata
+- `50_sync_to_github.py`: sync local changes to GitHub (last step)
 - `99_process_next_episode.py`: run the full end-to-end workflow
 - `pipeline_common.py`: shared helpers for paths, config, runtime, progress reporting, and status handling
 
