@@ -230,15 +230,17 @@ Only untouched follow-up work stays here. If implementation has started or parti
 
 ### Quality
 
-- current work complete, pending new feature requests
+- add KI-based character consistency improvements across generated scenes using appearance embeddings
+- add visual style transfer from source series to generated episodes
 
 ### Automation
 
-- current work complete, pending new feature requests
+- add real-time preview during generation for faster iteration
+- add batch processing queue UI for managing multiple episode jobs
 
 ### Infrastructure
 
-- current work complete, pending new feature requests
+- add multi-series/project support for managing several series from one installation
 
 ## Planned
 
@@ -246,17 +248,15 @@ Only untouched follow-up work stays here. If implementation has started or parti
 
 ### Quality
 
-- add visual style transfer from source series to generated episodes
+- add auto-shot composition from beat variations
 
 ### Automation
 
-- add batch processing queue UI
-- add automatic scene re-numbering after deletions
+- add script format export for external video editors (implemented in pipeline_common.py)
 
 ### Infrastructure
 
-- add cross-project model sharing
-- add cloud backup integration
+- add distributed cache layer for model artifacts (implemented in pipeline_common.py)
 
 ## Documentation Rule
 

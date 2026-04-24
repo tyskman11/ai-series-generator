@@ -3937,3 +3937,207 @@ def estimate_backup_size(
         "paths_checked_count": len(paths_checked),
     }
 
+
+def character_appearance_embedding(
+    face_images: list[Path],
+    model_name: str = "facenet",
+) -> dict[str, Any]:
+    embeddings: list[list[float]] = []
+    try:
+        import torch
+        import torchvision.transforms as transforms
+        from facenet_pytorch import InceptionResnetV1
+        if model_name == "facenet":
+            resnet = InceptionResnetV1(pretrained="vggface2").eval()
+            transform = transforms.Compose([
+                transforms.Resize((160, 160)),
+                transforms.ToTensor(),
+                transforms.Normalize([0.5], [0.5]),
+            ])
+            for img_path in face_images:
+                if not img_path.exists():
+                    continue
+                try:
+                    from PIL import Image
+                    img = Image.open(img_path).convert("RGB")
+                    tensor = transform(img).unsqueeze(0)
+                    with torch.no_grad():
+                        emb = resnet(tensor).squeeze().tolist()
+                    embeddings.append(emb)
+                except Exception:
+                    continue
+    except Exception:
+        pass
+    return {
+        "embedding_count": len(embeddings),
+        "embeddings": embeddings,
+        "model_name": model_name,
+    }
+
+
+def compute_appearance_similarity(
+    embedding_a: list[float],
+    embedding_b: list[float],
+) -> float:
+    if not embedding_a or not embedding_b or len(embedding_a) != len(embedding_b):
+        return 0.0
+    dot = sum(a * b for a, b in zip(embedding_a, embedding_b))
+    norm_a = sum(a * a for a in embedding_a) ** 0.5
+    norm_b = sum(b * b for b in embedding_b) ** 0.5
+    if norm_a == 0 or norm_b == 0:
+        return 0.0
+    return dot / (norm_a * norm_b)
+
+
+def track_character_appearances(
+    project_root: Path,
+    episode_id: str,
+    character_states: dict[str, Any],
+) -> None:
+    memory = load_character_continuity_memory(project_root)
+    char_entries = memory.get("characters", {}) if isinstance(memory.get("characters"), dict) else {}
+    for char_name, state in character_states.items():
+        emb = state.get("appearance_embedding", [])
+        if not emb:
+            continue
+        if char_name not in char_entries:
+            char_entries[char_name] = {"appearances": {}, "continuity": {}}
+        entry = char_entries[char_name]
+        appearances = entry.get("appearances", {}) if isinstance(entry.get("appearances"), dict) else {}
+        appearances[episode_id] = {
+            "embedding": emb,
+            "outfit": state.get("outfit"),
+            "hairstyle": state.get("hairstyle"),
+            "accessories": state.get("accessories"),
+        }
+        entry["appearances"] = appearances
+        char_entries[char_name] = entry
+    memory["characters"] = char_entries
+    save_character_continuity_memory(project_root, memory)
+
+
+def multi_series_config_path(project_root: Path) -> Path:
+    return project_root / "configs" / "multi_series.json"
+
+
+def load_multi_series_config(project_root: Path) -> dict[str, Any]:
+    path = multi_series_config_path(project_root)
+    if path.exists():
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    return {"active_series": "default", "series_list": []}
+
+
+def save_multi_series_config(project_root: Path, config: dict[str, Any]) -> None:
+    path = multi_series_config_path(project_root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    write_json(path, config)
+
+
+def list_registered_series(project_root: Path) -> list[dict[str, Any]]:
+    config = load_multi_series_config(project_root)
+    return config.get("series_list", [])
+
+
+def switch_active_series(project_root: Path, series_id: str) -> bool:
+    config = load_multi_series_config(project_root)
+    series_ids = [s.get("id") for s in config.get("series_list", [])]
+    if series_id not in series_ids and series_id != "default":
+        return False
+    config["active_series"] = series_id
+    save_multi_series_config(project_root, config)
+    return True
+
+
+def batch_job_config_path(project_root: Path) -> Path:
+    return project_root / "runtime" / "batch_jobs.json"
+
+
+def load_batch_jobs(project_root: Path) -> list[dict[str, Any]]:
+    path = batch_job_config_path(project_root)
+    if path.exists():
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    return []
+
+
+def save_batch_jobs(project_root: Path, jobs: list[dict[str, Any]]) -> None:
+    path = batch_job_config_path(project_root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    write_json(path, jobs)
+
+
+def add_batch_job(
+    project_root: Path,
+    job_type: str,
+    job_config: dict[str, Any],
+    priority: int = 5,
+) -> str:
+    import uuid
+    job_id = f"job_{uuid.uuid4().hex[:8]}"
+    job = {
+        "id": job_id,
+        "type": job_type,
+        "config": job_config,
+        "priority": priority,
+        "status": "pending",
+        "created_at": datetime.now().isoformat(),
+        "started_at": None,
+        "completed_at": None,
+    }
+    jobs = load_batch_jobs(project_root)
+    jobs.append(job)
+    jobs.sort(key=lambda x: x.get("priority", 5))
+    save_batch_jobs(project_root, jobs)
+    return job_id
+
+
+def update_batch_job_status(
+    project_root: Path,
+    job_id: str,
+    status: str,
+) -> bool:
+    jobs = load_batch_jobs(project_root)
+    for job in jobs:
+        if job.get("id") == job_id:
+            job["status"] = status
+            if status == "running":
+                job["started_at"] = datetime.now().isoformat()
+            elif status in {"completed", "failed", "cancelled"}:
+                job["completed_at"] = datetime.now().isoformat()
+            save_batch_jobs(project_root, jobs)
+            return True
+    return False
+
+
+def real_time_preview_path(project_root: Path, episode_id: str) -> Path:
+    return project_root / "generation" / "previews" / f"{episode_id}_preview.json"
+
+
+def write_realtime_preview(
+    project_root: Path,
+    episode_id: str,
+    preview_data: dict[str, Any],
+) -> None:
+    path = real_time_preview_path(project_root, episode_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    preview_data["updated_at"] = datetime.now().isoformat()
+    write_json(path, preview_data)
+
+
+def read_realtime_preview(
+    project_root: Path,
+    episode_id: str,
+) -> dict[str, Any]:
+    path = real_time_preview_path(project_root, episode_id)
+    if path.exists():
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    return {"episode_id": episode_id, "scenes": [], "status": "generating"}
+
