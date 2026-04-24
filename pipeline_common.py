@@ -3478,3 +3478,172 @@ def derive_prompt_constraints_from_bible(
             constraints["guidance"]["angle"] = frame["preferred_angle"]
     return constraints
 
+
+def generate_status_dashboard_html(
+    status_data: dict[str, Any],
+    title: str = "AI Series Pipeline Status",
+) -> str:
+    html_parts = [
+        "<!DOCTYPE html>",
+        "<html><head>",
+        "<meta charset='utf-8'>",
+        "<title>" + title + "</title>",
+        "<style>",
+        "body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; margin: 0; padding: 20px; background: #1a1a2e; color: #eee; }",
+        "h1 { color: #00d4ff; border-bottom: 2px solid #00d4ff; padding-bottom: 10px; }",
+        "h2 { color: #ff6b6b; margin-top: 30px; }",
+        ".card { background: #16213e; border-radius: 8px; padding: 20px; margin: 15px 0; }",
+        ".status-ok { color: #00ff88; }",
+        ".status-warn { color: #ffaa00; }",
+        ".status-err { color: #ff4444; }",
+        "table { width: 100%; border-collapse: collapse; }",
+        "th, td { padding: 10px; text-align: left; border-bottom: 1px solid #333; }",
+        "th { background: #0f3460; }",
+        ".metric { font-size: 24px; font-weight: bold; color: #00d4ff; }",
+        ".timestamp { color: #888; font-size: 12px; }",
+        "</style></head><body>",
+        "<h1>" + title + "</h1>",
+        "<div class='timestamp'>Generated: " + datetime.now().strftime("%Y-%m-%d %H:%M:%S") + "</timestamp>",
+    ]
+    current_step = status_data.get("current_step", "unknown")
+    step_label = f"Step {current_step}" if current_step else "Unknown"
+    status_label = status_data.get("status", "unknown")
+    status_class = "status-ok" if status_label in {"ready", "complete", "success"} else ("status-warn" if status_label in {"running", "processing"} else "status-err")
+    html_parts.append(f"<div class='card'><h2>Pipeline Status</h2>")
+    html_parts.append(f"<p>Current Step: <span class='metric'>{step_label}</span></p>")
+    html_parts.append(f"<p>Status: <span class='{status_class}'>{status_label}</span></p></div>")
+    latest_episode = status_data.get("latest_generated_episode", {})
+    if latest_episode:
+        html_parts.append("<div class='card'><h2>Latest Generated Episode</h2>")
+        html_parts.append(f"<p>Episode ID: {latest_episode.get('episode_id', 'N/A')}</p>")
+        html_parts.append(f"<p>Quality: {latest_episode.get('quality_percent', 0)}% ({latest_episode.get('quality_label', 'N/A')})</p>")
+        html_parts.append(f"<p>Scenes: {latest_episode.get('scene_count', 0)}</p>")
+        html_parts.append("</div>")
+    review_status = status_data.get("review_status", {})
+    if review_status:
+        html_parts.append("<div class='card'><h2>Review Queue</h2>")
+        html_parts.append(f"<p>Pending Characters: {review_status.get('pending_characters', 0)}</p>")
+        html_parts.append(f"<p>Total Clusters: {review_status.get('total_clusters', 0)}</p>")
+        html_parts.append("</div>")
+    html_parts.extend(["</body></html>"])
+    return "\n".join(html_parts)
+
+
+def write_status_dashboard(project_root: Path, status_data: dict[str, Any]) -> Path:
+    import io
+    html = generate_status_dashboard_html(status_data, "AI Series Training Pipeline")
+    output_path = project_root / "runtime" / "status_dashboard.html"
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(html, encoding="utf-8")
+    return output_path
+
+
+def detect_gpu_availability() -> dict[str, Any]:
+    gpu_info: dict[str, Any] = {"available": False, "devices": [], "preferred_index": None, "memory_total_mb": 0}
+    try:
+        import torch
+        if torch.cuda.is_available():
+            gpu_info["available"] = True
+            device_count = torch.cuda.device_count()
+            for i in range(device_count):
+                device_name = torch.cuda.get_device_name(i)
+                mem_total = torch.cuda.get_device_properties(i).total_memory / (1024 * 1024)
+                gpu_info["devices"].append({
+                    "index": i,
+                    "name": device_name,
+                    "memory_mb": int(mem_total),
+                })
+                gpu_info["memory_total_mb"] += int(mem_total)
+            if device_count > 0:
+                gpu_info["preferred_index"] = 0
+    except Exception:
+        pass
+    return gpu_info
+
+
+def estimate_step_duration(step_name: str, episode_count: int = 1, scene_count: int = 0, character_count: int = 0) -> dict[str, Any]:
+    estimates: dict[str, tuple[float, float]] = {
+        "00": (2.0, 5.0),
+        "01": (0.5, 1.0),
+        "02": (5.0 * episode_count, 15.0 * episode_count),
+        "03": (10.0 * episode_count, 30.0 * episode_count),
+        "04": (15.0 * episode_count, 45.0 * episode_count),
+        "05": (10.0 * episode_count, 30.0 * episode_count),
+        "06": (5.0, 20.0),
+        "07": (3.0 * episode_count, 8.0 * episode_count),
+        "08": (2.0, 5.0),
+        "09": (10.0 * character_count, 30.0 * character_count),
+        "10": (15.0 * character_count, 45.0 * character_count),
+        "11": (20.0 * character_count, 60.0 * character_count),
+        "12": (25.0 * character_count, 75.0 * character_count),
+        "13": (30.0 * character_count, 90.0 * character_count),
+        "14": (2.0 * episode_count, 8.0 * episode_count),
+        "15": (5.0 * scene_count, 20.0 * scene_count),
+        "16": (10.0 * scene_count, 40.0 * scene_count),
+        "17": (15.0 * episode_count, 45.0 * episode_count),
+        "18": (2.0, 5.0),
+        "19": (60.0 * episode_count, 180.0 * episode_count),
+        "20": (45.0, 120.0),
+    }
+    min_minutes, max_minutes = estimates.get(step_name, (5.0, 15.0))
+    return {
+        "step": step_name,
+        "estimated_minutes_min": min_minutes,
+        "estimated_minutes_max": max_minutes,
+        "estimated_hours_min": round(min_minutes / 60.0, 2),
+        "estimated_hours_max": round(max_minutes / 60.0, 2),
+    }
+
+
+def compare_backend_runners(
+    runner_configs: list[dict[str, Any]],
+    test_scene: dict[str, Any],
+) -> list[dict[str, Any]]:
+    results: list[dict[str, Any]] = []
+    for runner in runner_configs:
+        if not isinstance(runner, dict):
+            continue
+        runner_name = runner.get("name", "unknown")
+        enabled = runner.get("enabled", False)
+        success_outputs = runner.get("success_outputs", [])
+        result = {
+            "runner_name": runner_name,
+            "enabled": enabled,
+            "estimated_quality": 0.0,
+            "estimated_speed": 0.0,
+            "recommended": False,
+        }
+        if enabled and success_outputs:
+            result["estimated_quality"] = 0.7
+            result["estimated_speed"] = 0.6
+            result["recommended"] = True
+        results.append(result)
+    results.sort(key=lambda x: x.get("estimated_quality", 0.0), reverse=True)
+    return results
+
+
+def schedule_worker_task(
+    available_workers: list[dict[str, Any]],
+    task_requirements: dict[str, Any],
+) -> dict[str, Any]:
+    gpu_required = task_requirements.get("gpu_required", False)
+    min_memory_mb = task_requirements.get("min_memory_mb", 0)
+    preferred_step = task_requirements.get("preferred_step", "")
+    selected = None
+    for worker in available_workers:
+        if not isinstance(worker, dict):
+            continue
+        if gpu_required and not worker.get("has_gpu", False):
+            continue
+        if min_memory_mb > 0 and worker.get("available_memory_mb", 0) < min_memory_mb:
+            continue
+        selected = worker
+        break
+    if not selected and available_workers:
+        selected = available_workers[0]
+    return {
+        "scheduled": selected is not None,
+        "worker": selected,
+        "task_requirements": task_requirements,
+    }
+
