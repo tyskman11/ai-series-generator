@@ -3828,3 +3828,112 @@ def estimate_processing_cost(
         "potential_savings_usd": round(savings, 2),
     }
 
+
+def renumber_scenes_after_deletion(
+    episode_manifest: dict[str, Any],
+    deleted_scene_ids: list[str],
+) -> dict[str, Any]:
+    scenes = episode_manifest.get("scenes", []) if isinstance(episode_manifest.get("scenes"), list) else []
+    deleted_set = set(deleted_scene_ids)
+    kept_scenes = [s for s in scenes if isinstance(s, dict) and s.get("scene_id", "") not in deleted_set]
+    renumbered: list[dict[str, Any]] = []
+    for idx, scene in enumerate(kept_scenes, start=1):
+        new_scene = deepcopy(scene)
+        old_id = scene.get("scene_id", "")
+        new_scene["scene_id"] = f"scene_{idx:04d}"
+        new_scene["scene_index"] = idx
+        if old_id and old_id in episode_manifest.get("continuity", {}):
+            cont = deepcopy(episode_manifest["continuity"][old_id])
+            cont["previous_scene_id"] = renumbered[-1].get("scene_id", "") if renumbered else None
+            new_scene["continuity"] = cont
+        renumbered.append(new_scene)
+    result = deepcopy(episode_manifest)
+    result["scenes"] = renumbered
+    result["scene_count"] = len(renumbered)
+    result["last_renumbered"] = datetime.now().isoformat()
+    return result
+
+
+def cross_project_model_path(base_project_root: Path, model_name: str) -> Path:
+    return base_project_root / "shared_models" / model_name
+
+
+def list_shared_models(shared_root: Path) -> list[dict[str, Any]]:
+    if not shared_root.exists():
+        return []
+    models: list[dict[str, Any]] = []
+    for model_file in shared_root.glob("*.json"):
+        try:
+            data = json.loads(model_file.read_text(encoding="utf-8"))
+            models.append({
+                "name": model_file.stem,
+                "path": str(model_file),
+                "created": data.get("created_at"),
+                "character_count": len(data.get("characters", {})),
+            })
+        except Exception:
+            continue
+    return models
+
+
+def import_shared_model(
+    target_project_root: Path,
+    source_project_root: Path,
+    model_type: str,
+) -> bool:
+    source = cross_project_model_path(source_project_root, model_type)
+    target = cross_project_model_path(target_project_root, model_type)
+    if not source.exists():
+        return False
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source, target)
+    return True
+
+
+def cloud_backup_config_path(project_root: Path) -> Path:
+    return project_root / "configs" / "cloud_backup.json"
+
+
+def load_cloud_backup_config(project_root: Path) -> dict[str, Any]:
+    path = cloud_backup_config_path(project_root)
+    if path.exists():
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    return {"enabled": False, "provider": "", "bucket": "", "schedule": "daily", "last_backup": None}
+
+
+def save_cloud_backup_config(project_root: Path, config: dict[str, Any]) -> None:
+    path = cloud_backup_config_path(project_root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    write_json(path, config)
+
+
+def estimate_backup_size(
+    project_root: Path,
+    include_datasets: bool = True,
+) -> dict[str, Any]:
+    total_bytes = 0
+    paths_checked: list[str] = []
+    key_dirs = ["characters", "generation", "training"]
+    if include_datasets:
+        key_dirs.append("data")
+    for subdir in key_dirs:
+        dir_path = project_root / subdir
+        if not dir_path.exists():
+            continue
+        for file_path in dir_path.rglob("*"):
+            if file_path.is_file():
+                try:
+                    total_bytes += file_path.stat().st_size
+                    paths_checked.append(str(file_path.relative_to(project_root)))
+                except Exception:
+                    pass
+    return {
+        "total_bytes": total_bytes,
+        "total_mb": round(total_bytes / (1024 * 1024), 2),
+        "total_gb": round(total_bytes / (1024 * 1024 * 1024), 2),
+        "paths_checked_count": len(paths_checked),
+    }
+
