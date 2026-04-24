@@ -67,6 +67,13 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def format_quality_summary(label: object, percent: object) -> str:
+    quality_label = str(label or "").strip()
+    if not quality_label:
+        return "-"
+    return f"{quality_label} ({int(round(float(percent or 0.0)))}%)"
+
+
 def run_step(
     script_name: str,
     title: str,
@@ -330,6 +337,10 @@ def render_status_markdown(snapshot: dict) -> str:
                 f"- Scene video coverage: {format_completion_ratio(latest_generated_episode.get('scene_video_completion_ratio'))}",
                 f"- Scene dialogue coverage: {format_completion_ratio(latest_generated_episode.get('scene_dialogue_completion_ratio'))}",
                 f"- Scene master coverage: {format_completion_ratio(latest_generated_episode.get('scene_master_completion_ratio'))}",
+                f"- Episode quality: {format_quality_summary(latest_generated_episode.get('quality_label'), latest_generated_episode.get('quality_percent'))}",
+                f"- Minimum scene quality: {format_quality_summary(latest_generated_episode.get('minimum_scene_quality_label'), latest_generated_episode.get('minimum_scene_quality_percent'))}",
+                f"- Scenes below watch threshold: {latest_generated_episode.get('scenes_below_watch_threshold') or 0}",
+                f"- Scenes below release threshold: {latest_generated_episode.get('scenes_below_release_threshold') or 0}",
                 f"- Backend runner status: {latest_generated_episode.get('backend_runner_status') or '-'}",
                 f"- Backend runner coverage: {format_completion_ratio(latest_generated_episode.get('backend_runner_coverage_ratio'))}",
                 f"- Backend runners ready: {latest_generated_episode.get('backend_runner_ready_count') or 0}/{latest_generated_episode.get('backend_runner_expected_count') or 0}",

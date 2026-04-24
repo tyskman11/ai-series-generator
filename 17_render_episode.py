@@ -23,6 +23,7 @@ from pipeline_common import (
     LiveProgressReporter,
     PROJECT_ROOT,
     detect_tool,
+    episode_quality_assessment,
     error,
     external_tool_command,
     generated_episode_completion_summary,
@@ -38,6 +39,7 @@ from pipeline_common import (
     read_json,
     rerun_in_runtime,
     run_external_backend_runner,
+    scene_quality_assessment,
     resolve_project_path,
     resolve_stored_project_path,
     release_distributed_lease,
@@ -1022,7 +1024,7 @@ def build_scene_production_package(
         build_video_generation_prompt(scene, generation_plan),
         f"Generate a new video shot for {scene_id} with the listed characters and continuity.",
     )
-    return {
+    scene_package = {
         "episode_id": episode_id,
         "scene_id": scene_id,
         "title": clean_text(scene.get("title", "")),
@@ -1118,6 +1120,15 @@ def build_scene_production_package(
             },
         },
     }
+    scene_package["quality_assessment"] = scene_quality_assessment(
+        scene_id=scene_id,
+        current_outputs=scene_package.get("current_generated_outputs", {}),
+        voice_required=bool(voice_lines),
+        lipsync_required=bool(voice_lines),
+        reference_slot_count=len(reference_slots),
+        continuity_active=bool(continuity),
+    )
+    return scene_package
 
 
 def build_episode_production_package_payload(
@@ -1191,6 +1202,10 @@ def build_episode_production_package_payload(
         final_render=clean_text(manifest.get("final_render", "")),
         full_generated_episode=str(package_root / "master" / f"{episode_id}_full_generated_episode.mp4"),
     )
+    quality_assessment = episode_quality_assessment(
+        [scene.get("quality_assessment", {}) for scene in scene_packages if isinstance(scene, dict)],
+        scene_count=len(scene_packages),
+    )
     return {
         "episode_id": episode_id,
         "package_kind": "full_generated_episode_backend_package",
@@ -1215,6 +1230,7 @@ def build_episode_production_package_payload(
             "lip_sync": total_line_count > 0,
         },
         "completion_status": completion_status,
+        "quality_assessment": quality_assessment,
         "local_composition_status": {
             "scene_visual_beat_count": visual_beat_count,
             "scene_count_with_local_composed_video": local_composed_scene_video_count,
@@ -1500,6 +1516,9 @@ def refresh_scene_package_outputs(scene_package: dict, package_root: Path) -> di
     refreshed = dict(scene_package)
     scene_id = clean_text(refreshed.get("scene_id", "")) or "scene"
     current_outputs = refreshed.get("current_generated_outputs", {}) if isinstance(refreshed.get("current_generated_outputs", {}), dict) else {}
+    storyboard = refreshed.get("storyboard", {}) if isinstance(refreshed.get("storyboard", {}), dict) else {}
+    voice_clone = refreshed.get("voice_clone", {}) if isinstance(refreshed.get("voice_clone", {}), dict) else {}
+    lip_sync = refreshed.get("lip_sync", {}) if isinstance(refreshed.get("lip_sync", {}), dict) else {}
     target_paths = scene_package_target_paths(refreshed)
     primary_frame_text = clean_text(target_paths.get("primary_frame", ""))
     alternate_dir_text = clean_text(target_paths.get("alternate_frame_dir", ""))
@@ -1544,6 +1563,14 @@ def refresh_scene_package_outputs(scene_package: dict, package_root: Path) -> di
         "has_visual_beat_reference_images": bool(beat_reference_images),
         "local_composed_scene_video": bool(current_outputs.get("local_composed_scene_video", False)),
     }
+    refreshed["quality_assessment"] = scene_quality_assessment(
+        scene_id=scene_id,
+        current_outputs=refreshed.get("current_generated_outputs", {}),
+        voice_required=bool(voice_clone.get("required", False)),
+        lipsync_required=bool(lip_sync.get("required", False)),
+        reference_slot_count=len(storyboard.get("reference_slots", [])) if isinstance(storyboard.get("reference_slots", []), list) else 0,
+        continuity_active=bool(storyboard.get("continuity", {})),
+    )
     return refreshed
 
 
@@ -1602,6 +1629,10 @@ def refresh_episode_production_package(
         final_render=clean_text((payload.get("current_preview_outputs", {}) if isinstance(payload.get("current_preview_outputs", {}), dict) else {}).get("final_storyboard_render", "")),
         full_generated_episode=str(full_generated_episode_path) if full_generated_episode_path and render_output_ready(full_generated_episode_path) else "",
     )
+    quality_assessment = episode_quality_assessment(
+        [scene.get("quality_assessment", {}) for scene in refreshed_scenes if isinstance(scene, dict)],
+        scene_count=len(refreshed_scenes),
+    )
     payload["scenes"] = refreshed_scenes
     payload["scene_count"] = len(refreshed_scenes)
     payload["scene_package_paths"] = resolved_scene_paths or scene_package_paths
@@ -1611,6 +1642,7 @@ def refresh_episode_production_package(
         if isinstance(scene.get("voice_clone", {}), dict)
     )
     payload["completion_status"] = completion_status
+    payload["quality_assessment"] = quality_assessment
     payload["package_root"] = str(package_root)
     payload["package_path"] = str(package_path)
     if backend_runner_summary:

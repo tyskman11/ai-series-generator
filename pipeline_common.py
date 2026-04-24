@@ -1345,6 +1345,205 @@ def generated_episode_completion_summary(
     }
 
 
+def clamp_quality_score(value: object) -> float:
+    try:
+        numeric = float(value or 0.0)
+    except Exception:
+        numeric = 0.0
+    return max(0.0, min(1.0, numeric))
+
+
+def quality_label_for_score(score: object) -> str:
+    value = clamp_quality_score(score)
+    if value >= 0.9:
+        return "series_quality_candidate"
+    if value >= 0.8:
+        return "strong_generated_quality"
+    if value >= 0.68:
+        return "usable_generated_quality"
+    if value >= 0.52:
+        return "hybrid_fallback_quality"
+    if value >= 0.35:
+        return "rough_fallback_quality"
+    return "placeholder_quality"
+
+
+def scene_quality_assessment(
+    *,
+    scene_id: str,
+    current_outputs: dict[str, Any] | None,
+    voice_required: bool = False,
+    lipsync_required: bool = False,
+    reference_slot_count: int = 0,
+    continuity_active: bool = False,
+) -> dict[str, Any]:
+    outputs = current_outputs if isinstance(current_outputs, dict) else {}
+    video_source_type = coalesce_text(outputs.get("video_source_type", ""))
+    has_generated_scene_video = bool(outputs.get("has_generated_scene_video", False))
+    has_generated_primary_frame = bool(outputs.get("has_generated_primary_frame", False))
+    has_scene_dialogue_audio = bool(outputs.get("has_scene_dialogue_audio", False))
+    has_scene_master_clip = bool(outputs.get("has_scene_master_clip", False))
+    has_visual_beat_reference_images = bool(outputs.get("has_visual_beat_reference_images", False))
+    local_composed_scene_video = bool(outputs.get("local_composed_scene_video", False))
+
+    visual_score = 0.24
+    if video_source_type == "generated_lipsync_video":
+        visual_score = 0.96
+    elif video_source_type == "generated_scene_video":
+        visual_score = 0.9
+    elif video_source_type == "storyboard_backend_scene_video":
+        visual_score = 0.78
+    elif video_source_type in {"local_motion_fallback", "storyboard_motion_fallback", "generated_episode_frame"}:
+        visual_score = 0.62
+    elif has_generated_scene_video:
+        visual_score = 0.74
+    if has_generated_primary_frame:
+        visual_score = max(visual_score, 0.72)
+        visual_score += 0.06
+    if has_visual_beat_reference_images:
+        visual_score += 0.04
+    if local_composed_scene_video and video_source_type not in {"generated_lipsync_video", "generated_scene_video"}:
+        visual_score = min(visual_score, 0.72)
+    visual_score = clamp_quality_score(visual_score)
+
+    audio_score = 1.0 if not voice_required else (0.94 if has_scene_dialogue_audio else 0.18)
+
+    lipsync_score = 1.0
+    if lipsync_required:
+        if video_source_type == "generated_lipsync_video":
+            lipsync_score = 0.98
+        elif has_generated_scene_video and has_scene_dialogue_audio:
+            lipsync_score = 0.58
+        else:
+            lipsync_score = 0.14
+
+    continuity_score = 0.38
+    continuity_score += min(0.22, max(0, int(reference_slot_count or 0)) * 0.05)
+    if continuity_active:
+        continuity_score += 0.16
+    if has_visual_beat_reference_images:
+        continuity_score += 0.1
+    if has_generated_primary_frame:
+        continuity_score += 0.08
+    continuity_score = clamp_quality_score(continuity_score)
+
+    master_score = 0.12
+    if has_scene_master_clip:
+        master_score = 0.96
+    elif has_generated_scene_video:
+        master_score = 0.52
+    elif has_scene_dialogue_audio:
+        master_score = 0.32
+    master_score = clamp_quality_score(master_score)
+
+    weighted_scores = [
+        (visual_score, 0.34),
+        (audio_score, 0.24),
+        (master_score, 0.22),
+        (continuity_score, 0.12),
+        (lipsync_score, 0.08),
+    ]
+    quality_score = clamp_quality_score(
+        sum(score * weight for score, weight in weighted_scores) / max(0.01, sum(weight for _, weight in weighted_scores))
+    )
+    quality_label = quality_label_for_score(quality_score)
+
+    strengths: list[str] = []
+    if visual_score >= 0.8:
+        strengths.append("strong_visual_generation")
+    if audio_score >= 0.9:
+        strengths.append("strong_scene_dialogue_audio")
+    if master_score >= 0.9:
+        strengths.append("scene_master_ready")
+    if continuity_score >= 0.75:
+        strengths.append("strong_continuity_support")
+    if lipsync_required and lipsync_score >= 0.9:
+        strengths.append("dedicated_lipsync_ready")
+
+    weaknesses: list[str] = []
+    if visual_score < 0.68:
+        weaknesses.append("visual_generation_still_fallback_heavy")
+    if voice_required and audio_score < 0.68:
+        weaknesses.append("scene_dialogue_audio_missing_or_weak")
+    if master_score < 0.68:
+        weaknesses.append("scene_master_clip_missing")
+    if continuity_score < 0.55:
+        weaknesses.append("continuity_support_still_thin")
+    if lipsync_required and lipsync_score < 0.55:
+        weaknesses.append("lipsync_not_ready")
+
+    return {
+        "scene_id": coalesce_text(scene_id),
+        "quality_score": quality_score,
+        "quality_percent": int(round(quality_score * 100.0)),
+        "quality_label": quality_label,
+        "component_scores": {
+            "visual": visual_score,
+            "audio": audio_score,
+            "mastering": master_score,
+            "continuity": continuity_score,
+            "lip_sync": lipsync_score,
+        },
+        "strengths": strengths,
+        "weaknesses": weaknesses,
+    }
+
+
+def episode_quality_assessment(
+    scene_quality_rows: list[dict[str, Any]] | None,
+    *,
+    scene_count: int = 0,
+) -> dict[str, Any]:
+    rows = [row for row in (scene_quality_rows or []) if isinstance(row, dict)]
+    target_scene_count = max(int(scene_count or 0), len(rows))
+    if not rows:
+        return {
+            "scene_count": target_scene_count,
+            "quality_score": 0.0,
+            "quality_percent": 0,
+            "quality_label": quality_label_for_score(0.0),
+            "minimum_scene_score": 0.0,
+            "minimum_scene_percent": 0,
+            "minimum_scene_quality_label": quality_label_for_score(0.0),
+            "scene_quality_distribution": {},
+            "scene_ids_below_watch_threshold": [],
+            "scene_ids_below_release_threshold": [],
+            "scenes_below_watch_threshold": [],
+            "scenes_below_release_threshold": [],
+        }
+
+    score_rows = [clamp_quality_score(row.get("quality_score", 0.0)) for row in rows]
+    average_score = clamp_quality_score(sum(score_rows) / max(1, len(score_rows)))
+    minimum_score = min(score_rows) if score_rows else 0.0
+    distribution: dict[str, int] = {}
+    below_watch: list[str] = []
+    below_release: list[str] = []
+    for row in rows:
+        label = coalesce_text(row.get("quality_label", "")) or quality_label_for_score(row.get("quality_score", 0.0))
+        distribution[label] = distribution.get(label, 0) + 1
+        scene_id = coalesce_text(row.get("scene_id", ""))
+        score = clamp_quality_score(row.get("quality_score", 0.0))
+        if score < 0.52 and scene_id:
+            below_watch.append(scene_id)
+        if score < 0.8 and scene_id:
+            below_release.append(scene_id)
+
+    return {
+        "scene_count": target_scene_count,
+        "quality_score": average_score,
+        "quality_percent": int(round(average_score * 100.0)),
+        "quality_label": quality_label_for_score(average_score),
+        "minimum_scene_score": clamp_quality_score(minimum_score),
+        "minimum_scene_percent": int(round(clamp_quality_score(minimum_score) * 100.0)),
+        "minimum_scene_quality_label": quality_label_for_score(minimum_score),
+        "scene_quality_distribution": distribution,
+        "scene_ids_below_watch_threshold": below_watch,
+        "scene_ids_below_release_threshold": below_release,
+        "scenes_below_watch_threshold": len(below_watch),
+        "scenes_below_release_threshold": len(below_release),
+    }
+
+
 def summarize_backend_runner_results(summary: object) -> dict[str, Any]:
     payload = summary if isinstance(summary, dict) else {}
     scene_summary = payload.get("scene_runners", {}) if isinstance(payload.get("scene_runners"), dict) else {}
@@ -1461,6 +1660,11 @@ def generated_episode_artifacts(cfg: dict[str, Any], episode_id: str) -> dict[st
     completion_status = (
         production_package.get("completion_status", {})
         if isinstance(production_package.get("completion_status"), dict)
+        else {}
+    )
+    quality_assessment = (
+        production_package.get("quality_assessment", {})
+        if isinstance(production_package.get("quality_assessment"), dict)
         else {}
     )
     backend_runner_summary = (
@@ -1624,6 +1828,24 @@ def generated_episode_artifacts(cfg: dict[str, Any], episode_id: str) -> dict[st
         "production_readiness": coalesce_text(
             completion_status.get("production_readiness", "") or derived_completion_status.get("production_readiness", "")
         ),
+        "quality_score": float(quality_assessment.get("quality_score", 0.0) or 0.0),
+        "quality_percent": float(quality_assessment.get("quality_percent", 0.0) or 0.0),
+        "quality_label": coalesce_text(quality_assessment.get("quality_label", "")),
+        "minimum_scene_quality_score": float(
+            quality_assessment.get("minimum_scene_quality_score", quality_assessment.get("minimum_scene_score", 0.0)) or 0.0
+        ),
+        "minimum_scene_quality_percent": float(
+            quality_assessment.get("minimum_scene_quality_percent", quality_assessment.get("minimum_scene_percent", 0.0)) or 0.0
+        ),
+        "minimum_scene_quality_label": coalesce_text(
+            quality_assessment.get("minimum_scene_quality_label", "")
+        ),
+        "scene_quality_distribution": dict(quality_assessment.get("scene_quality_distribution", {}) or {}),
+        "scene_ids_below_watch_threshold": list(quality_assessment.get("scene_ids_below_watch_threshold", []) or []),
+        "scene_ids_below_release_threshold": list(quality_assessment.get("scene_ids_below_release_threshold", []) or []),
+        "scenes_below_watch_threshold": int(quality_assessment.get("scenes_below_watch_threshold", 0) or 0),
+        "scenes_below_release_threshold": int(quality_assessment.get("scenes_below_release_threshold", 0) or 0),
+        "quality_assessment": quality_assessment,
         "remaining_backend_tasks": completion_status.get("remaining_backend_tasks", [])
         if isinstance(completion_status.get("remaining_backend_tasks"), list) and completion_status.get("remaining_backend_tasks")
         else derived_completion_status.get("remaining_backend_tasks", []),

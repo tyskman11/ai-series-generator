@@ -33,6 +33,13 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def format_quality_markdown(label: object, percent: object) -> str:
+    quality_label = str(label or "").strip()
+    if not quality_label:
+        return "-"
+    return f"{quality_label} ({int(round(float(percent or 0.0)))}%)"
+
+
 def build_series_bible_payload(model: dict, generated_episodes: list[dict]) -> tuple[dict, str]:
     top_characters = model.get("characters", [])[:8]
     top_keywords = model.get("keywords", [])[:12]
@@ -94,6 +101,10 @@ def build_series_bible_payload(model: dict, generated_episodes: list[dict]) -> t
                     f"- Scene dialogue coverage: {int(round(float(episode.get('scene_dialogue_completion_ratio', 0.0) or 0.0) * 100.0))}%",
                     f"- Scene master clips: {episode.get('scene_master_clip_count', 0)}",
                     f"- Scene master coverage: {int(round(float(episode.get('scene_master_completion_ratio', 0.0) or 0.0) * 100.0))}%",
+                    f"- Episode quality: {format_quality_markdown(episode.get('quality_label'), episode.get('quality_percent'))}",
+                    f"- Minimum scene quality: {format_quality_markdown(episode.get('minimum_scene_quality_label'), episode.get('minimum_scene_quality_percent'))}",
+                    f"- Scenes below watch threshold: {episode.get('scenes_below_watch_threshold', 0)}",
+                    f"- Scenes below release threshold: {episode.get('scenes_below_release_threshold', 0)}",
                     f"- Backend runner status: {episode.get('backend_runner_status') or '-'}",
                     f"- Backend runner coverage: {int(round(float(episode.get('backend_runner_coverage_ratio', 0.0) or 0.0) * 100.0))}%",
                     f"- Backend runners ready: {episode.get('backend_runner_ready_count', 0)}/{episode.get('backend_runner_expected_count', 0)}",

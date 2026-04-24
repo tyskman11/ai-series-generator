@@ -394,6 +394,8 @@ def main() -> None:
                 extra_label=(
                     f"Finished episode ready: {episode_id} | "
                     f"readiness={episode_outputs.get('production_readiness', '-') or '-'} | "
+                    f"quality={episode_outputs.get('quality_label', '-') or '-'}:"
+                    f"{int(round(float(episode_outputs.get('quality_percent', 0.0) or 0.0)))}% | "
                     f"runners={int(episode_outputs.get('backend_runner_ready_count', 0) or 0)}/"
                     f"{int(episode_outputs.get('backend_runner_expected_count', 0) or 0)}"
                 ),

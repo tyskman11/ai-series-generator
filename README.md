@@ -116,6 +116,7 @@ All scripts in this repository are AI-generated and maintained with `GPT-5.4`.
 - batch orchestration, series-bible snapshots, and live status files now also expose external backend-runner coverage and master-runner state, so it is visible whether a run really reached the configured generated-episode path or only the local fallback path
 - the series bible can now summarize the most recent generated episodes together with their final render, full generated master, and production-package progress
 - generated episodes now also carry a central production-readiness label plus scene-video, scene-dialogue, and scene-master coverage ratios for easier follow-up automation
+- generated episodes now also carry heuristic scene/episode quality scoring, including watch/release threshold counts, so the bible and orchestration views can see more than just readiness ratios
 - local voice fallback with German Windows voices instead of old English default fallbacks
 
 ## Current Focus
@@ -192,6 +193,7 @@ All scripts in this repository are AI-generated and maintained with `GPT-5.4`.
 - `17_render_episode.py` now also refreshes `generation/renders/deliveries/latest` and writes `README_finished_episode.md` summaries into both the episode-specific and stable latest delivery folders, so the newest finished local episode always has one fixed handoff location
 - `pipeline_common.py` now exposes config-driven optional external backend runners, and `17_render_episode.py` now uses them for per-scene image/video/voice/lip-sync execution plus an optional episode-master runner, then refreshes the package and rebuilds the final generated episode master from the produced outputs in the same render run
 - `pipeline_common.py`, `18_build_series_bible.py`, `19_generate_finished_episodes.py`, and `99_process_next_episode.py` now also surface external runner readiness, coverage, and failures, and the finished-episode batch now treats configured but incomplete external runner work as an unfinished episode instead of silently accepting it
+- `pipeline_common.py`, `17_render_episode.py`, `18_build_series_bible.py`, `19_generate_finished_episodes.py`, and `99_process_next_episode.py` now also surface heuristic generated-episode quality scores, minimum-scene quality, and weak-scene counters so follow-up work can target bad scenes instead of only checking output existence
 - the numbered order now keeps all training in `07-13`, then generation/render in `14-17`, and only then rebuilds the series bible in `18`, so the pipeline follows the requested train-before-generate/render sequence more clearly
 - `19_generate_finished_episodes.py` now rebuilds the series bible once after the full generated/rendered batch instead of after every single episode, so multi-episode runs stay closer to the intended train-then-generate/render flow
 - `19_generate_finished_episodes.py` now also supports an endless generation mode: `--count 0` or `--endless` keeps generating episodes until stopped, and updates the series bible after each newly rendered episode in that mode
@@ -228,7 +230,6 @@ Only untouched follow-up work stays here. If implementation has started or parti
 
 ### Quality
 
-- add automatic quality scoring per generated scene for character fidelity, lip-sync quality, audio quality, motion stability, and visual consistency
 - add automatic re-queue logic for weak scenes so failed or low-quality image/video/lip-sync outputs can be regenerated selectively
 - persist stronger per-character continuity memory across generated episodes, including outfits, hairstyles, colors, and voice traits
 - add series- and season-level style profiles for look, pacing, color mood, framing, and dialogue rhythm
