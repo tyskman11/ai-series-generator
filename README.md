@@ -131,6 +131,7 @@ All scripts in this repository are AI-generated and maintained with `GPT-5.4`.
 
 ## In Progress
 
+- This section tracks work that has already started or already landed partially. Only untouched future work belongs in `Planned`.
 - `06_review_unknowns.py` now tries to re-identify known faces before manual naming, using multi-reference matching per character
 - `06_review_unknowns.py` keeps iterating after each manual naming step, so newly named characters immediately help resolve more open clusters
 - `06_review_unknowns.py` now automatically marks very low-activity unknown face clusters as `statist` using conservative scene/detection/sample thresholds, so minor/background faces stay visible but stop blocking finished-episode generation as unresolved main-character review work
@@ -208,16 +209,19 @@ All scripts in this repository are AI-generated and maintained with `GPT-5.4`.
 - `pipeline_common.py`, `17_render_episode.py`, and `18_build_series_bible.py` now also derive and expose a central production-readiness summary with coverage ratios and remaining backend tasks per generated episode
 - `99_process_next_episode.py` now also shows that same production-readiness summary directly in its live markdown status, so the full pipeline dashboard reveals how close the latest generated episode is to a fully generated master
 - `17_render_episode.py` and `18_build_series_bible.py` now also write their autosave/status metadata under the correct numbered step names again, so render and bible runs no longer appear swapped in shared runtime state
+- main-character review completion in `06_review_unknowns.py` is still active project work because the pipeline quality depends on real reviewed identities, not only code changes
+- harder `speaker_unknown` cleanup remains active work, but it is no longer `Planned` because rescue logic already exists and is being extended iteratively
+- the voiced-storyboard-to-finished-episode bridge remains active work: external runner hooks now exist in `16_run_storyboard_backend.py` and `17_render_episode.py`, and the remaining work is concrete backend tuning plus better quality from those runners
 
 ## Planned
 
+Only untouched follow-up work stays here. If implementation has started or partial code already exists, it belongs in `In Progress` instead.
+
 - finish naming main characters in `06_review_unknowns.py`
 - run `20_refresh_after_manual_review.py` on the fully reviewed set to rebuild datasets, model, training packs, generated episodes, bible, and renders
-- continue reducing harder `speaker_unknown` cases that cannot be safely inferred from a single visible named character
 - expand the fine-tune and backend stages from local preparation artifacts into real model-weight training later on
 - tune concrete local model command templates and quality settings for the new external backend runner hooks in `16_run_storyboard_backend.py` and `17_render_episode.py`
 - improve render quality, character consistency, and synthetic episode quality after the review and training loop stabilizes
-- continue improving the new voiced storyboard episode path so it sounds more natural and character-specific until the full generated-episode backends replace the fallback render
 - only let the full generated-episode path become the default once image/video generation and lip-sync actually look series-quality
 
 ## Documentation Rule
