@@ -589,6 +589,7 @@ def main() -> None:
         info("No storyboard backend input payloads found. Run 14_generate_storyboard_assets.py first.")
         return
 
+    total_backend_inputs = len(backend_inputs)
     requested_scene_ids = set(args.scene_ids) if args.scene_ids else None
     if requested_scene_ids:
         filtered_inputs: list[Path] = []
@@ -601,7 +602,7 @@ def main() -> None:
             info(f"None of the requested scene IDs were found: {', '.join(sorted(requested_scene_ids))}")
             return
         backend_inputs = filtered_inputs
-        info(f"Scene-selective mode: processing {len(backend_inputs)} of {len(filtered_inputs) + sum(1 for _ in [])} requested scenes.")
+        info(f"Scene-selective mode: processing {len(backend_inputs)} of {total_backend_inputs} available scene payloads.")
 
     autosave_target = episode_id
     mark_step_started("54_run_storyboard_backend", autosave_target, {"episode_id": episode_id, "shotlist": str(shotlist_path)})

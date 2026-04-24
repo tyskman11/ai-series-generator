@@ -329,6 +329,8 @@ DEFAULT_CONFIG = {
         "max_regeneration_batch": 8,
         "max_regeneration_retries": 3,
         "strict_warnings": False,
+        "auto_retry_failed_gate": False,
+        "auto_retry_update_bible": False,
     },
     "external_backends": {
         "storyboard_scene_runner": {

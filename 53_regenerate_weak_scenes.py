@@ -28,6 +28,13 @@ def parse_args() -> argparse.Namespace:
         description="Turn quality-gate regeneration hints into a retry manifest and optionally rerun weak scenes."
     )
     parser.add_argument("--episode-id", help="Target episode ID. Uses the newest generated episode by default.")
+    parser.add_argument("--min-quality", type=float, help="Forward a minimum quality override to 52_quality_gate.py.")
+    parser.add_argument("--max-weak-scenes", type=int, help="Forward a weak-scene limit override to 52_quality_gate.py.")
+    parser.add_argument(
+        "--max-regeneration-batch",
+        type=int,
+        help="Forward a regeneration-batch override to 52_quality_gate.py.",
+    )
     parser.add_argument(
         "--refresh-quality-gate",
         action="store_true",
@@ -109,6 +116,9 @@ def ensure_quality_gate_report(
     cfg: dict[str, Any],
     artifacts: dict[str, Any],
     *,
+    min_quality: float | None = None,
+    max_weak_scenes: int | None = None,
+    max_regeneration_batch: int | None = None,
     strict: bool = False,
     max_regeneration_retries: int | None = None,
     refresh: bool = False,
@@ -117,10 +127,15 @@ def ensure_quality_gate_report(
     report_path = quality_gate_report_path(artifacts)
     if refresh or not report_path.exists():
         gate_args = ["--episode-id", episode_id]
-        if max_regeneration_retries is not None:
-            gate_args.extend(["--max-regeneration-retries", str(int(max_regeneration_retries))])
-        if strict:
-            gate_args.append("--strict")
+        gate_args.extend(
+            quality_gate_override_args(
+                min_quality=min_quality,
+                max_weak_scenes=max_weak_scenes,
+                max_regeneration_batch=max_regeneration_batch,
+                max_regeneration_retries=max_regeneration_retries,
+                strict=strict,
+            )
+        )
         result = run_script("52_quality_gate.py", gate_args, allow_failure=True)
         if result.returncode not in (0, 1):
             raise RuntimeError(f"52_quality_gate.py exited unexpectedly with code {result.returncode}.")
@@ -136,12 +151,49 @@ def queue_manifest_path(production_package_path: Path, episode_id: str) -> Path:
     return production_package_path.parent / f"{episode_id}_regeneration_queue.json"
 
 
-def build_rerun_plan(episode_id: str, *, strict: bool, update_bible: bool, max_regeneration_retries: int | None, scene_ids: list[str] | None = None) -> list[dict[str, Any]]:
-    gate_args = ["--episode-id", episode_id]
+def quality_gate_override_args(
+    *,
+    min_quality: float | None = None,
+    max_weak_scenes: int | None = None,
+    max_regeneration_batch: int | None = None,
+    max_regeneration_retries: int | None = None,
+    strict: bool = False,
+) -> list[str]:
+    gate_args: list[str] = []
+    if min_quality is not None:
+        gate_args.extend(["--min-quality", str(float(min_quality))])
+    if max_weak_scenes is not None:
+        gate_args.extend(["--max-weak-scenes", str(int(max_weak_scenes))])
+    if max_regeneration_batch is not None:
+        gate_args.extend(["--max-regeneration-batch", str(int(max_regeneration_batch))])
     if max_regeneration_retries is not None:
         gate_args.extend(["--max-regeneration-retries", str(int(max_regeneration_retries))])
     if strict:
         gate_args.append("--strict")
+    return gate_args
+
+
+def build_rerun_plan(
+    episode_id: str,
+    *,
+    strict: bool,
+    update_bible: bool,
+    min_quality: float | None = None,
+    max_weak_scenes: int | None = None,
+    max_regeneration_batch: int | None = None,
+    max_regeneration_retries: int | None = None,
+    scene_ids: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    gate_args = ["--episode-id", episode_id]
+    gate_args.extend(
+        quality_gate_override_args(
+            min_quality=min_quality,
+            max_weak_scenes=max_weak_scenes,
+            max_regeneration_batch=max_regeneration_batch,
+            max_regeneration_retries=max_regeneration_retries,
+            strict=strict,
+        )
+    )
     storyboard_args = ["--episode-id", episode_id, "--force"]
     if scene_ids:
         storyboard_args.extend(["--scene-ids", *scene_ids])
@@ -350,6 +402,9 @@ def build_queue_manifest(
     manifest_path: Path,
     requested_at: str,
     max_regeneration_retries: int,
+    min_quality: float | None,
+    max_weak_scenes: int | None,
+    max_regeneration_batch: int | None,
     apply_requested: bool,
     update_bible: bool,
     strict: bool,
@@ -379,6 +434,13 @@ def build_queue_manifest(
         "warnings": list(report.get("warnings", []) or []),
         "regeneration_queue_count": len(queue),
         "regeneration_queue_scene_ids": scene_ids,
+        "quality_gate_overrides": {
+            "min_quality": min_quality,
+            "max_weak_scenes": max_weak_scenes,
+            "max_regeneration_batch": max_regeneration_batch,
+            "max_regeneration_retries": max_regeneration_retries,
+            "strict": bool(strict),
+        },
         "max_regeneration_retries": int(max_regeneration_retries),
         "rerun_scope": rerun_scope,
         "rerun_reason": rerun_reason,
@@ -386,6 +448,9 @@ def build_queue_manifest(
             episode_id,
             strict=strict,
             update_bible=update_bible,
+            min_quality=min_quality,
+            max_weak_scenes=max_weak_scenes,
+            max_regeneration_batch=max_regeneration_batch,
             max_regeneration_retries=max_regeneration_retries,
             scene_ids=scene_ids if scene_ids else None,
         ),
@@ -449,6 +514,9 @@ def main() -> None:
     report_path, report = ensure_quality_gate_report(
         cfg,
         artifacts,
+        min_quality=args.min_quality,
+        max_weak_scenes=args.max_weak_scenes,
+        max_regeneration_batch=args.max_regeneration_batch,
         strict=bool(args.strict),
         max_regeneration_retries=max_regeneration_retries,
         refresh=bool(args.refresh_quality_gate),
@@ -462,6 +530,9 @@ def main() -> None:
         manifest_path=manifest_path,
         requested_at=requested_at,
         max_regeneration_retries=max_regeneration_retries,
+        min_quality=args.min_quality,
+        max_weak_scenes=args.max_weak_scenes,
+        max_regeneration_batch=args.max_regeneration_batch,
         apply_requested=bool(args.apply),
         update_bible=bool(args.update_bible),
         strict=bool(args.strict),

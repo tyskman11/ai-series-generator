@@ -3,10 +3,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import subprocess
 from pathlib import Path
 from typing import Any
 
 from pipeline_common import (
+    SCRIPT_DIR,
     generated_episode_artifacts,
     headline,
     info,
@@ -17,6 +19,7 @@ from pipeline_common import (
     read_json,
     release_quality_gate,
     resolve_stored_project_path,
+    runtime_python,
     write_json,
 )
 
@@ -66,6 +69,64 @@ def gate_config(cfg: dict[str, Any], args: argparse.Namespace) -> dict[str, Any]
         release_cfg["max_regeneration_retries"] = int(args.max_regeneration_retries)
     merged["release_mode"] = release_cfg
     return merged
+
+
+def release_mode_config(cfg: dict[str, Any]) -> dict[str, Any]:
+    return dict(cfg.get("release_mode", {}) or {}) if isinstance(cfg.get("release_mode"), dict) else {}
+
+
+def auto_retry_enabled(cfg: dict[str, Any], args: argparse.Namespace) -> bool:
+    release_cfg = release_mode_config(cfg)
+    return bool(args.auto_retry or release_cfg.get("auto_retry_failed_gate", False))
+
+
+def strict_warnings_enabled(cfg: dict[str, Any], args: argparse.Namespace) -> bool:
+    release_cfg = release_mode_config(cfg)
+    return bool(args.strict or release_cfg.get("strict_warnings", False))
+
+
+def build_auto_retry_command(
+    cfg: dict[str, Any],
+    episode_id: str,
+    args: argparse.Namespace | None = None,
+    *,
+    strict: bool = False,
+) -> list[str]:
+    release_cfg = release_mode_config(cfg)
+    command = [
+        str(runtime_python()),
+        str(SCRIPT_DIR / "53_regenerate_weak_scenes.py"),
+        "--episode-id",
+        episode_id,
+        "--apply",
+        "--max-regeneration-retries",
+        str(int(release_cfg.get("max_regeneration_retries", 3) or 3)),
+    ]
+    if args is not None and args.min_quality is not None:
+        command.extend(["--min-quality", str(float(args.min_quality))])
+    if args is not None and args.max_weak_scenes is not None:
+        command.extend(["--max-weak-scenes", str(int(args.max_weak_scenes))])
+    if args is not None and args.max_regeneration_batch is not None:
+        command.extend(["--max-regeneration-batch", str(int(args.max_regeneration_batch))])
+    if strict:
+        command.append("--strict")
+    if bool(release_cfg.get("auto_retry_update_bible", False)):
+        command.append("--update-bible")
+    return command
+
+
+def reload_quality_gate_report(cfg: dict[str, Any], episode_id: str) -> tuple[dict[str, Any], dict[str, Any], Path, dict[str, Any]]:
+    refreshed_cfg = load_config()
+    refreshed_artifacts = resolve_episode_artifacts(refreshed_cfg, episode_id)
+    if not refreshed_artifacts:
+        refreshed_artifacts = resolve_episode_artifacts(cfg, episode_id)
+    report_path = quality_gate_report_path(refreshed_artifacts)
+    if not report_path.exists():
+        raise RuntimeError(f"Quality gate report is missing after auto-retry: {report_path}")
+    report = read_json(report_path, {})
+    if not isinstance(report, dict):
+        raise RuntimeError(f"Quality gate report is not valid JSON after auto-retry: {report_path}")
+    return refreshed_cfg, refreshed_artifacts, report_path, report
 
 
 def load_scene_quality_rows(artifacts: dict[str, Any]) -> list[dict[str, Any]]:
@@ -157,7 +218,7 @@ def main() -> None:
 
     scene_quality_rows = load_scene_quality_rows(artifacts)
     release_result = release_quality_gate(artifacts, effective_cfg)
-    release_cfg = effective_cfg.get("release_mode", {}) if isinstance(effective_cfg.get("release_mode"), dict) else {}
+    release_cfg = release_mode_config(effective_cfg)
     regeneration_queue = queue_scenes_for_regeneration(
         scene_quality_rows,
         watch_threshold=float(release_cfg.get("watch_threshold", 0.52) or 0.52),
@@ -166,7 +227,7 @@ def main() -> None:
         max_regeneration_retries=int(release_cfg.get("max_regeneration_retries", 3) or 3),
     )
     warnings = build_warnings(artifacts)
-    strict_fail = bool(args.strict and warnings)
+    strict_fail = bool(strict_warnings_enabled(effective_cfg, args) and warnings)
 
     report = {
         "episode_id": artifacts.get("episode_id", ""),
@@ -227,24 +288,50 @@ def main() -> None:
 
     info("QUALITY GATE FAILED")
 
-    if args.auto_retry and regeneration_queue:
+    if auto_retry_enabled(effective_cfg, args) and regeneration_queue:
+        episode_id = str(
+            artifacts.get("episode_id", "")
+            or artifacts.get("display_title", "")
+            or args.episode_id
+            or ""
+        ).strip()
+        if not episode_id:
+            raise RuntimeError("Auto-retry could not resolve an episode ID for the failing quality gate.")
         info(f"Auto-retry enabled: triggering regeneration for {len(regeneration_queue)} weak scene(s).")
-        import subprocess
-        from pipeline_common import SCRIPT_DIR, runtime_python
-        retry_cmd = [
-            str(runtime_python()),
-            str(SCRIPT_DIR / "53_regenerate_weak_scenes.py"),
-            "--episode-id", str(artifacts.get("episode_id", "")),
-            "--apply",
-        ]
-        if args.strict:
-            retry_cmd.append("--strict")
+        retry_cmd = build_auto_retry_command(
+            effective_cfg,
+            episode_id,
+            args,
+            strict=strict_warnings_enabled(effective_cfg, args),
+        )
         result = subprocess.run(retry_cmd, cwd=str(SCRIPT_DIR), text=True)
         if result.returncode != 0:
-            info(f"Auto-retry finished with exit code {result.returncode}.")
-        else:
-            ok("Auto-retry regeneration completed.")
-        return
+            raise SystemExit(result.returncode)
+        _refreshed_cfg, refreshed_artifacts, refreshed_report_path, refreshed_report = reload_quality_gate_report(
+            effective_cfg,
+            episode_id,
+        )
+        refreshed_release_gate = (
+            refreshed_report.get("release_gate", {})
+            if isinstance(refreshed_report.get("release_gate"), dict)
+            else {}
+        )
+        refreshed_strict_fail = bool(refreshed_report.get("strict_fail", False))
+        print(f"Auto-retry report: {refreshed_report_path}")
+        print(
+            f"Auto-retry release gate: "
+            f"{'PASS' if refreshed_release_gate.get('passed') and not refreshed_strict_fail else 'FAIL'}"
+        )
+        if args.print_json:
+            print(json.dumps(refreshed_report, indent=2, ensure_ascii=False))
+        if refreshed_release_gate.get("passed") and not refreshed_strict_fail:
+            ok("QUALITY GATE PASSED AFTER AUTO-RETRY")
+            return
+        if refreshed_artifacts:
+            info(
+                "Auto-retry finished, but the refreshed episode still does not pass the release gate."
+            )
+        raise SystemExit(1)
 
     raise SystemExit(1)
 
