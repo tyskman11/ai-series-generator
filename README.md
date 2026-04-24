@@ -63,6 +63,8 @@ The default path stays local-first and license-light. The project already produc
 - per-scene mastered clips and package-level `*_full_generated_episode.mp4` masters
 - dedicated delivery bundles under `generation/renders/deliveries/<episode>` plus stable `generation/renders/deliveries/latest`
 - production-readiness summaries, backend-runner summaries, and heuristic scene/episode quality scoring in orchestration outputs and the series bible
+- exportable external handoff packages under `exports/packages/<episode>/<format>`
+- release-style quality-gate reports with regeneration queues, plus optional enforcement in the main finished-episode orchestrators when `release_mode.enabled` is turned on
 
 ## Current Focus
 
@@ -81,8 +83,11 @@ The default path stays local-first and license-light. The project already produc
 - `14_generate_storyboard_assets.py` emits backend-ready scene input payloads and rebases moved artifact paths
 - `54_run_storyboard_backend.py` can materialize local scene packs and optionally call configured external storyboard runners first
 - `15_render_episode.py` reuses backend frames/clips when present, assembles voiced scene masters, writes delivery bundles, and keeps improving the final generated-episode package
+- `51_export_package.py` now exports real generated-episode packages for JSON, DaVinci-style, and Premiere-style handoff folders
+- `52_quality_gate.py` now writes persistent quality-gate reports, regeneration queues, and feeds that state back into episode artifacts
 - `16_build_series_bible.py`, `57_generate_finished_episodes.py`, and `99_process_next_episode.py` surface readiness, backend coverage, and quality scoring for generated episodes
 - `49_refresh_after_manual_review.py` and `57_generate_finished_episodes.py` now follow the real train-then-generate/render order against the current script names
+- `49_refresh_after_manual_review.py`, `57_generate_finished_episodes.py`, and `99_process_next_episode.py` can now run `52_quality_gate.py` automatically after render when `release_mode.enabled` is active
 - `50_run_backend_finetunes.py` remains the backend-prep bridge between `12_train_fine_tune_models.py` and the actual generation/render path
 - real fully generated image/video/lip-sync quality is still active work even though the orchestration and package plumbing already exist
 
@@ -93,7 +98,7 @@ Only untouched follow-up work belongs here. If implementation has already starte
 - automatic re-queue for weak scenes based on the new quality scores
 - backend preset benchmarking so different local runner command templates can be compared automatically
 - stronger per-character continuity memory across generated episodes, including outfit and look consistency
-- automatic release gating that checks quality, backend coverage, and required delivery artifacts before marking an episode as final
+- release-gate retry orchestration that can automatically rerender or requeue weak scenes instead of only failing the batch
 - worker capability scheduling so GPU-heavy steps can prefer stronger machines automatically on NAS runs
 
 ## Documentation Rule
@@ -127,7 +132,9 @@ Also keep the `In Progress` and `Planned` sections current.
 - `17_analyze_patterns.py` to `48_social_media_clips.py`: analysis, utility, and content-export helpers
 - `49_refresh_after_manual_review.py`: one-command rebuild after heavy review work
 - `50_run_backend_finetunes.py`: backend-oriented fine-tune/materialization bridge after `12`
-- `51_export_package.py` to `56_restore_project.py`: export, QA, backend, and maintenance helpers
+- `51_export_package.py`: export generated-episode bundles for external tools
+- `52_quality_gate.py`: evaluate finished episodes against release-style thresholds and write regeneration hints
+- `53_run_scene_backend.py` to `56_restore_project.py`: backend and maintenance helpers
 - `57_generate_finished_episodes.py`: batch or endless finished-episode generation
 - `99_process_next_episode.py`: full end-to-end coordinator
 
@@ -149,6 +156,7 @@ Also keep the `In Progress` and `Planned` sections current.
 - `ai_series_project/generation/final_episode_packages/<episode>`: full generated-episode package with per-scene targets and outputs
 - `ai_series_project/generation/renders/deliveries/<episode>`: final handoff bundle per episode
 - `ai_series_project/generation/renders/deliveries/latest`: stable latest-finished-episode handoff folder
+- `ai_series_project/exports/packages/<episode>/<format>`: export packages for external editing or handoff tools
 - `ai_series_project/runtime/autosaves`: autosaves and resumable run state
 - `ai_series_project/runtime/distributed`: NAS/shared-worker lease files
 - `ai_series_project/tools/ffmpeg/bin`: OS-specific FFmpeg binaries
@@ -162,6 +170,11 @@ Also keep the `In Progress` and `Planned` sections current.
 - optional NVIDIA GPU for faster transcription, embeddings, and rendering
 
 `00_prepare_runtime.py` installs the runtime. On Linux/NAS it uses the active `python3` runtime directly with `python3 -m pip install --break-system-packages`. It also downloads the matching FFmpeg build for the current OS into `ai_series_project/tools/ffmpeg/bin`.
+
+`ai_series_project/configs/project.json` now also exposes:
+
+- `paths.export_packages`: root for `51_export_package.py`
+- `release_mode.*`: optional release thresholds and strictness for `52_quality_gate.py` plus the main orchestrators
 
 ## Quick Start
 
@@ -187,6 +200,10 @@ python 57_generate_finished_episodes.py --count 1 --skip-downloads
 Important: the logical run order is not strictly numeric anymore. Training must finish before final episode generation/render starts. The real finished-episode path is:
 
 `07 -> 08 -> 09 -> 10 -> 11 -> 12 -> 50 -> 13 -> 14 -> 54 -> 15 -> 16`
+
+If `release_mode.enabled` is turned on, the orchestrated path becomes:
+
+`07 -> 08 -> 09 -> 10 -> 11 -> 12 -> 50 -> 13 -> 14 -> 54 -> 15 -> 52 -> 16`
 
 ### 00 - Prepare Runtime
 
@@ -243,6 +260,14 @@ Builds local fine-tune profiles on top of the adapter stage.
 ### 50 - Run Backend Finetunes
 
 Turns fine-tune profiles into backend-oriented runs/materialized artifacts and acts as the bridge from training into the later generated-episode backend path.
+
+### 51 - Export Package
+
+Builds handoff folders under `exports/packages/<episode>/<format>` from the real production package and can optionally copy the referenced media for external editing tools.
+
+### 52 - Quality Gate
+
+Evaluates the latest or requested generated episode against `release_mode` thresholds, writes a report JSON plus regeneration queue, and updates the recorded episode artifacts with the result.
 
 ### 13 - Generate Episode
 
@@ -301,6 +326,7 @@ python 13_generate_episode.py
 python 14_generate_storyboard_assets.py
 python 54_run_storyboard_backend.py
 python 15_render_episode.py
+python 52_quality_gate.py
 python 16_build_series_bible.py
 ```
 
@@ -308,6 +334,20 @@ One-command finished-episode run from already reviewed data:
 
 ```powershell
 python 57_generate_finished_episodes.py --count 1 --skip-downloads
+```
+
+Export the latest generated episode for external tools:
+
+```powershell
+python 51_export_package.py --format davinci --copy-media
+python 51_export_package.py --format premiere
+```
+
+Run the standalone release-style quality gate:
+
+```powershell
+python 52_quality_gate.py
+python 52_quality_gate.py --strict
 ```
 
 Shared NAS transcription example:
@@ -325,6 +365,7 @@ python 04_diarize_and_transcribe.py --worker-id pc2
 - fully new dialogue lines still depend on generated speech when no strong original segment can be reused
 - lip-sync and generated scene video quality still depend on later backend tuning
 - orchestration-heavy scripts mainly use exclusive leases; the fine-grained parallelism lives in worker-heavy numbered steps underneath
+- `release_mode` is optional and stays disabled by default until your local image/video/lip-sync outputs are good enough to gate production automatically
 
 ## Typical Daily Use
 
@@ -349,6 +390,7 @@ python 13_generate_episode.py
 python 14_generate_storyboard_assets.py
 python 54_run_storyboard_backend.py
 python 15_render_episode.py
+python 52_quality_gate.py
 python 16_build_series_bible.py
 ```
 
@@ -362,6 +404,13 @@ python 49_refresh_after_manual_review.py --skip-downloads
 
 ```powershell
 python 57_generate_finished_episodes.py --count 2 --skip-downloads
+```
+
+### Export Or Gate A Finished Episode
+
+```powershell
+python 51_export_package.py --format davinci --copy-media
+python 52_quality_gate.py
 ```
 
 Endless mode:

@@ -19,6 +19,7 @@ from pipeline_common import (
     mark_step_failed,
     mark_step_started,
     ok,
+    release_mode_enabled,
     rerun_in_runtime,
     runtime_python,
     shared_worker_cli_args,
@@ -105,9 +106,13 @@ def planned_refresh_steps(cfg: dict, skip_downloads: bool = False, stop_after_tr
                 ("14_generate_storyboard_assets.py", "Generate storyboard assets for the refreshed episode", []),
                 ("54_run_storyboard_backend.py", "Materialize local storyboard backend frames for the refreshed episode", []),
                 ("15_render_episode.py", "Render the refreshed episode", []),
-                ("16_build_series_bible.py", "Update the series bible with the refreshed state", []),
             ]
         )
+        if release_mode_enabled(cfg):
+            release_cfg = cfg.get("release_mode", {}) if isinstance(cfg.get("release_mode"), dict) else {}
+            quality_gate_args = ["--strict"] if bool(release_cfg.get("strict_warnings", False)) else []
+            planned_steps.append(("52_quality_gate.py", "Run the release-style quality gate for the refreshed episode", quality_gate_args))
+        planned_steps.append(("16_build_series_bible.py", "Update the series bible with the refreshed state", []))
     return planned_steps
 
 

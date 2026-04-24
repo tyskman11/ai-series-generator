@@ -148,6 +148,7 @@ DEFAULT_CONFIG = {
         "foundation_finetunes": "training/foundation/finetunes",
         "foundation_backend_runs": "training/foundation/backend_runs",
         "foundation_logs": "training/foundation/logs",
+        "export_packages": "exports/packages",
     },
     "transcription": {
         "model_name": "large-v3",
@@ -324,6 +325,9 @@ DEFAULT_CONFIG = {
         "enabled": False,
         "min_episode_quality": 0.68,
         "max_weak_scenes": 2,
+        "watch_threshold": 0.52,
+        "max_regeneration_batch": 8,
+        "strict_warnings": False,
     },
     "external_backends": {
         "storyboard_scene_runner": {
@@ -1884,6 +1888,28 @@ def generated_episode_artifacts(cfg: dict[str, Any], episode_id: str) -> dict[st
         "backend_master_runner_summary_path": coalesce_text(backend_runner_status.get("master_summary_path", "")),
         "runner_failure_scenes": backend_runner_status.get("scene_ids_with_runner_failures", []),
         "runner_pending_scenes": backend_runner_status.get("scene_ids_with_runner_pending", []),
+        "quality_gate_report": coalesce_text(
+            (shotlist.get("quality_gate_report") if isinstance(shotlist, dict) else "")
+            or (render_manifest.get("quality_gate_report") if isinstance(render_manifest, dict) else "")
+        ),
+        "release_gate": deep_merge(
+            render_manifest.get("release_gate", {}) if isinstance(render_manifest, dict) else {},
+            shotlist.get("release_gate", {}) if isinstance(shotlist, dict) else {},
+        ),
+        "release_gate_passed": bool(
+            (shotlist.get("release_gate_passed") if isinstance(shotlist, dict) else False)
+            or (render_manifest.get("release_gate_passed") if isinstance(render_manifest, dict) else False)
+        ),
+        "quality_gate_warnings": list(
+            (shotlist.get("quality_gate_warnings") if isinstance(shotlist, dict) else [])
+            or (render_manifest.get("quality_gate_warnings") if isinstance(render_manifest, dict) else [])
+            or []
+        ),
+        "regeneration_queue_count": int(
+            (shotlist.get("regeneration_queue_count") if isinstance(shotlist, dict) else 0)
+            or (render_manifest.get("regeneration_queue_count") if isinstance(render_manifest, dict) else 0)
+            or 0
+        ),
     }
 
 

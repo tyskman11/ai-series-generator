@@ -25,6 +25,7 @@ from pipeline_common import (
     next_unprocessed_video,
     ok,
     read_json,
+    release_mode_enabled,
     rerun_in_runtime,
     resolve_project_path,
     runtime_python,
@@ -344,6 +345,10 @@ def render_status_markdown(snapshot: dict) -> str:
                 f"- Minimum scene quality: {format_quality_summary(latest_generated_episode.get('minimum_scene_quality_label'), latest_generated_episode.get('minimum_scene_quality_percent'))}",
                 f"- Scenes below watch threshold: {latest_generated_episode.get('scenes_below_watch_threshold') or 0}",
                 f"- Scenes below release threshold: {latest_generated_episode.get('scenes_below_release_threshold') or 0}",
+                f"- Release gate passed: {'yes' if latest_generated_episode.get('release_gate_passed') else 'no'}",
+                f"- Quality gate warnings: {len(latest_generated_episode.get('quality_gate_warnings', []) or [])}",
+                f"- Quality gate report: {latest_generated_episode.get('quality_gate_report') or '-'}",
+                f"- Regeneration queue count: {latest_generated_episode.get('regeneration_queue_count') or 0}",
                 f"- Backend runner status: {latest_generated_episode.get('backend_runner_status') or '-'}",
                 f"- Backend runner coverage: {format_completion_ratio(latest_generated_episode.get('backend_runner_coverage_ratio'))}",
                 f"- Backend runners ready: {latest_generated_episode.get('backend_runner_ready_count') or 0}/{latest_generated_episode.get('backend_runner_expected_count') or 0}",
@@ -468,9 +473,13 @@ def global_step_rows(cfg: dict, skip_downloads: bool = False) -> list[tuple[str,
             ("14_generate_storyboard_assets.py", "Generate Storyboard Scene Assets", []),
             ("54_run_storyboard_backend.py", "Materialize Storyboard Backend Frames", []),
             ("15_render_episode.py", "Render Finished Episode", []),
-            ("16_build_series_bible.py", "Update Series Bible", []),
         ]
     )
+    if release_mode_enabled(cfg):
+        release_cfg = cfg.get("release_mode", {}) if isinstance(cfg.get("release_mode"), dict) else {}
+        quality_gate_args = ["--strict"] if bool(release_cfg.get("strict_warnings", False)) else []
+        steps.append(("52_quality_gate.py", "Run Release-Style Quality Gate", quality_gate_args))
+    steps.append(("16_build_series_bible.py", "Update Series Bible", []))
     return steps
 
 
@@ -542,6 +551,7 @@ def global_step_title(script_name: str) -> str:
         "14_generate_storyboard_assets.py": "Generate Storyboard Scene Assets",
         "54_run_storyboard_backend.py": "Materialize Storyboard Backend Frames",
         "15_render_episode.py": "Render Finished Episode",
+        "52_quality_gate.py": "Run Release-Style Quality Gate",
         "16_build_series_bible.py": "Update Series Bible",
     }
     return titles[script_name]
@@ -553,6 +563,7 @@ def record_global_generated_episode_outputs(state: dict, cfg: dict, script_name:
         "14_generate_storyboard_assets.py",
         "54_run_storyboard_backend.py",
         "15_render_episode.py",
+        "52_quality_gate.py",
         "16_build_series_bible.py",
     }:
         return

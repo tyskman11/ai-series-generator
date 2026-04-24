@@ -26,6 +26,7 @@ from pipeline_common import (
     mark_step_started,
     ok,
     rerun_in_runtime,
+    release_mode_enabled,
     runtime_python,
     shared_worker_cli_args,
     shared_worker_id_for_args,
@@ -128,6 +129,16 @@ def training_plan_rows(cfg: dict, skip_downloads: bool = False) -> list[tuple[st
     return rows
 
 
+def quality_gate_extra_args(cfg: dict, episode_id: str | None = None) -> list[str]:
+    release_cfg = cfg.get("release_mode", {}) if isinstance(cfg.get("release_mode"), dict) else {}
+    args: list[str] = []
+    if episode_id:
+        args.extend(["--episode-id", episode_id])
+    if bool(release_cfg.get("strict_warnings", False)):
+        args.append("--strict")
+    return args
+
+
 def planned_preview_steps(cfg: dict, count: int) -> list[str]:
     return planned_preview_steps_for_mode(cfg, count, endless=False)
 
@@ -140,6 +151,8 @@ def planned_preview_steps_for_mode(cfg: dict, count: int, *, endless: bool) -> l
         "54_run_storyboard_backend.py",
         "15_render_episode.py",
     ]
+    if release_mode_enabled(cfg):
+        generation_cycle.append("52_quality_gate.py")
     if endless:
         steps.extend(generation_cycle)
         steps.append("16_build_series_bible.py")
@@ -197,7 +210,7 @@ def output_path_ready(value: object) -> bool:
     return False
 
 
-def ensure_finished_episode_outputs(episode_id: str, episode_outputs: dict[str, object]) -> dict[str, object]:
+def ensure_finished_episode_outputs(cfg: dict, episode_id: str, episode_outputs: dict[str, object]) -> dict[str, object]:
     core_required_fields = (
         "final_render",
         "full_generated_episode",
@@ -248,6 +261,10 @@ def ensure_finished_episode_outputs(episode_id: str, episode_outputs: dict[str, 
         raise RuntimeError(
             f"Episode {episode_id} still has pending external backend runner tasks "
             f"({backend_runner_pending_count} remaining)."
+        )
+    if release_mode_enabled(cfg) and not bool(episode_outputs.get("release_gate_passed", False)):
+        raise RuntimeError(
+            f"Episode {episode_id} finished without a passing release gate although release mode is enabled."
         )
     return episode_outputs
 
@@ -386,9 +403,25 @@ def main() -> None:
             )
             run_step("15_render_episode.py", env=env, shared_args=child_shared_args)
             completed_steps += 1
+            if release_mode_enabled(cfg):
+                reporter.update(
+                    preview_reporter_current(reporter, completed_steps),
+                    current_label=f"{episode_id} quality gate",
+                    extra_label="Running now: 52_quality_gate.py",
+                    force=True,
+                    scope_current=len(generated) + 1,
+                    scope_total=preview_scope_total(count, endless, len(generated)),
+                    scope_label="Episodes",
+                )
+                run_step(
+                    "52_quality_gate.py",
+                    extra_args=quality_gate_extra_args(cfg, episode_id),
+                    shared_args=child_shared_args,
+                )
+                completed_steps += 1
             episode_outputs = generated_episode_artifacts(cfg, episode_id)
             if episode_outputs:
-                generated_outputs.append(ensure_finished_episode_outputs(episode_id, episode_outputs))
+                generated_outputs.append(ensure_finished_episode_outputs(cfg, episode_id, episode_outputs))
             else:
                 raise RuntimeError(f"Episode {episode_id} finished rendering without a recorded output bundle.")
             reporter.update(
@@ -399,6 +432,7 @@ def main() -> None:
                     f"readiness={episode_outputs.get('production_readiness', '-') or '-'} | "
                     f"quality={episode_outputs.get('quality_label', '-') or '-'}:"
                     f"{int(round(float(episode_outputs.get('quality_percent', 0.0) or 0.0)))}% | "
+                    f"gate={'pass' if episode_outputs.get('release_gate_passed') else ('off' if not release_mode_enabled(cfg) else 'fail')} | "
                     f"runners={int(episode_outputs.get('backend_runner_ready_count', 0) or 0)}/"
                     f"{int(episode_outputs.get('backend_runner_expected_count', 0) or 0)}"
                 ),
