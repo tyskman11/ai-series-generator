@@ -224,7 +224,7 @@ All scripts in this repository are AI-generated and maintained with `GPT-5.4`.
 - improving render quality, character consistency, and synthetic episode quality after the review and training loop stabilizes is now tracked as active quality work rather than untouched planning
 - keeping the full generated-episode path non-default until image/video generation and lip-sync actually look series-quality is now tracked as an active release gate rather than untouched planning
 
-## Planned
+## In Progress
 
 Only untouched follow-up work stays here. If implementation has started or partial code already exists, it belongs in `In Progress` instead.
 
@@ -253,6 +253,28 @@ Only untouched follow-up work stays here. If implementation has started or parti
 ### Release
 
 - add a stricter release mode that marks an episode as truly finished only when all configured backend, quality, and delivery gates are satisfied
+
+## Planned
+
+Only untouched follow-up work stays here. If implementation has started or partial code already exists, it belongs in `In Progress` instead.
+
+### Quality
+
+- add automatic scene quality scoring with retry thresholds
+- add character appearance consistency tracking across episodes
+- add visual style transfer from source series to generated episodes
+
+### Automation
+
+- add script format export for external video editors
+- add automatic quality gates before render completion
+- add episode template system for recurring structures
+
+### Infrastructure
+
+- add distributed cache layer for model artifacts
+- add progress web dashboard with live updates
+- add cost estimation for cloud vs local processing
 
 ## Documentation Rule
 
