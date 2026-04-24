@@ -9,6 +9,7 @@ from datetime import datetime
 from pathlib import Path
 
 from pipeline_common import (
+    add_batch_job,
     add_shared_worker_arguments,
     distributed_item_lease,
     distributed_step_runtime_root,
@@ -20,6 +21,7 @@ from pipeline_common import (
     headline,
     info,
     load_config,
+    load_batch_jobs,
     next_unprocessed_video,
     ok,
     read_json,
@@ -29,6 +31,7 @@ from pipeline_common import (
     shared_worker_cli_args,
     shared_worker_id_for_args,
     shared_workers_enabled_for_args,
+    update_batch_job_status,
 )
 
 AUTOSAVE_VERSION = 1
@@ -679,7 +682,7 @@ def main() -> None:
                     scope_current=len(finished_steps),
                     scope_total=len(EPISODE_STEPS),
                     scope_started_at=step_started_at,
-                    scope_label="Current Episode Steps",
+scope_label="Current Episode Steps",
                 )
                 save_autosave(cfg, state, f"{episode_name}:{script_name}", inbox_dir)
 
@@ -688,6 +691,14 @@ def main() -> None:
                 info(f"Inbox file removed: {next_video_name}")
             episode_step_reporter.finish(current_label=episode_name, extra_label=f"Total completed steps: {len(finished_steps)}")
             mark_episode_completed(state, episode_name)
+
+            jobs = load_batch_jobs(PROJECT_ROOT)
+            for job in jobs:
+                if job.get("type") == "process_episode" and job.get("status") == "running":
+                    if job.get("config", {}).get("episode_name") == episode_name:
+                        update_batch_job_status(PROJECT_ROOT, job.get("id", ""), "completed")
+                        break
+
             processed_in_this_run += 1
             episode_batch_reporter.update(
                 processed_in_this_run,

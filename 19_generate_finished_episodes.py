@@ -7,6 +7,7 @@ import subprocess
 from pathlib import Path
 
 from pipeline_common import (
+    add_batch_job,
     add_shared_worker_arguments,
     distributed_item_lease,
     distributed_step_runtime_root,
@@ -19,6 +20,7 @@ from pipeline_common import (
     headline,
     latest_matching_file,
     load_config,
+    load_batch_jobs,
     mark_step_completed,
     mark_step_failed,
     mark_step_started,
@@ -28,6 +30,7 @@ from pipeline_common import (
     shared_worker_cli_args,
     shared_worker_id_for_args,
     shared_workers_enabled_for_args,
+    update_batch_job_status,
 )
 
 
@@ -404,6 +407,12 @@ def main() -> None:
                 scope_label="Episodes",
             )
             generated.append(episode_id)
+            jobs = load_batch_jobs(PROJECT_ROOT)
+            for job in jobs:
+                if job.get("type") == "generate_episode" and job.get("status") == "running":
+                    if job.get("config", {}).get("episode_id") == episode_id:
+                        update_batch_job_status(PROJECT_ROOT, job.get("id", ""), "completed")
+                        break
             if endless:
                 reporter.update(
                     preview_reporter_current(reporter, completed_steps),

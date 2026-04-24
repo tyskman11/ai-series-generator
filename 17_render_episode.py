@@ -47,6 +47,7 @@ from pipeline_common import (
     shared_workers_enabled_for_args,
     write_json,
     write_text,
+    write_realtime_preview,
 )
 
 
@@ -2746,6 +2747,13 @@ def main() -> None:
     cfg = load_config()
     worker_id = shared_worker_id_for_args(args)
     shared_workers = shared_workers_enabled_for_args(cfg, args)
+
+    write_realtime_preview(
+        PROJECT_ROOT,
+        args.episode_id or "pending",
+        {"status": "started", "progress": 0, "message": "Render started"},
+    )
+
     shotlist_dir = resolve_project_path("generation/shotlists")
     shotlist_path = (shotlist_dir / f"{args.episode_id}.json") if args.episode_id else find_latest_shotlist(shotlist_dir)
     if shotlist_path is None or not shotlist_path.exists():
@@ -2986,6 +2994,18 @@ def main() -> None:
 
         reporter.update(len(scenes) + 2, current_label="Draft Render", extra_label="Running now: encode draft and final video", force=True)
         encode_video(ffmpeg, concat_path, draft_path, fps, min(width, 960), min(height, 540), crf=28)
+
+        write_realtime_preview(
+            PROJECT_ROOT,
+            episode_id,
+            {
+                "status": "rendering",
+                "progress": 50,
+                "scenes_rendered": len(scenes),
+                "draft_ready": draft_path.exists(),
+            },
+        )
+
         encode_clip_sequence(ffmpeg, clip_concat_path, final_video_only_path, crf=20)
 
         try:
@@ -3242,6 +3262,18 @@ def main() -> None:
         shotlist["latest_delivery_manifest"] = delivery_bundle.get("latest_delivery_manifest", "")
         shotlist["latest_delivery_episode"] = delivery_bundle.get("latest_watch_episode", "")
         write_json(shotlist_path, shotlist)
+
+        write_realtime_preview(
+            PROJECT_ROOT,
+            episode_id,
+            {
+                "status": "completed",
+                "progress": 100,
+                "final_render": str(final_path),
+                "full_generated_episode": str(full_generated_episode_path),
+                "delivery_bundle": delivery_bundle.get("delivery_root", ""),
+            },
+        )
 
         reporter.finish(current_label=episode_id, extra_label=f"Rendered {len(scenes)} scenes and exported the full-episode production package")
         mark_step_completed(

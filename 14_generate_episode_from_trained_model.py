@@ -20,7 +20,9 @@ from pipeline_common import (
     fine_tune_training_status,
     headline,
     info,
+    list_registered_series,
     load_config,
+    load_multi_series_config,
     mark_step_completed,
     mark_step_failed,
     mark_step_started,
@@ -30,6 +32,7 @@ from pipeline_common import (
     resolve_project_path,
     shared_worker_id_for_args,
     shared_workers_enabled_for_args,
+    switch_active_series,
     write_json,
     write_text,
 )
@@ -120,6 +123,12 @@ def main() -> None:
     cfg = load_config()
     worker_id = shared_worker_id_for_args(args)
     shared_workers = shared_workers_enabled_for_args(cfg, args)
+
+    multi_series_cfg = load_multi_series_config(PROJECT_ROOT)
+    active_series = multi_series_cfg.get("active_series", "default")
+    if active_series != "default":
+        info(f"Active series: {active_series}")
+
     model_path = resolve_project_path(cfg["paths"]["series_model"])
     if not model_path.exists():
         info("No trained series model found. Run 08_train_series_model.py first.")
