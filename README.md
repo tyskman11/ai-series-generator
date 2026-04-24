@@ -247,6 +247,14 @@ Only untouched follow-up work stays here. If implementation has started or parti
 - add video training optimization (batch size, learning rate, frame skip)
 - add training quality evaluation function
 
+### Emotion & Continuity
+
+- add emotion-aware generation (detect dialog emotion, modify prompts)
+- add adaptive scene pacing (dialog-based duration adjustment)
+- add style consistency scoring (frame analysis)
+- add voice emotion cloning (preserve emotion from source)
+- add multi-season continuity tracking
+
 ### Infrastructure
 
 - add multi-series/project support for managing several series from one installation (implemented)
