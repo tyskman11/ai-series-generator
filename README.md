@@ -323,30 +323,30 @@ Also keep the `In Progress` and `Planned` sections current. If priorities change
 - `21_export_package.py`: export finished episode package for external tools (DaVinci, Premiere)
 - `22_quality_gate.py`: automatic quality check before release with configurable thresholds
 - `23_compare_scenes.py`: compare two scenes visually for QA
-- `24_analyze_patterns.py`: analyze recurring patterns in the series
-- `25_backup_project.py`: backup project to cloud/NAS
-- `26_restore_project.py`: restore project from backup
-- `27_character_timeline.py`: show character appearance timeline across episodes
-- `28_merge_episodes.py`: merge multiple episodes into one season
-- `29_subtitle_generator.py`: generate subtitles from dialog (SRT, VTT)
-- `30_music_cue_sheet.py`: generate music cue points for scenes
-- `31_multi_language_subtitle.py`: translate subtitles to multiple languages
-- `32_chapter_marker.py`: auto-detect chapter markers from content
-- `33_podcast_export.py`: export audio-only for podcast feeds
-- `34_social_media_clips.py`: generate social media clips (TikTok, Reels, Shorts)
-- `35_trailer_generator.py`: generate trailer from episode footage
-- `36_recap_generator.py`: generate recap episode from season
-- `37_episode_archive.py`: archive old episodes with retention
-- `38_review_queue.py`: review workflow queue system
-- `41_highlights_extractor.py`: extract best scenes from episodes
-- `42_batch_exporter.py`: export multiple formats in parallel
-- `43_mood_analyzer.py`: analyze mood/emotions across episodes
-- `45_script_writer.py`: generate dialog suggestions
-- `46_voice_clone_detector.py`: detect voice clones across episodes
-- `47_trend_analyzer.py`: analyze series trends
-- `48_metadata_generator.py`: generate platform metadata
-- `49_auto_editor.py`: auto-edit based on mood
-- `51_sync_to_github.py`: sync local changes to GitHub (last step)
+- `24_backup_project.py`: backup project to cloud/NAS
+- `25_restore_project.py`: restore project from backup
+- `26_character_timeline.py`: show character appearance timeline across episodes
+- `27_merge_episodes.py`: merge multiple episodes into one season
+- `28_subtitle_generator.py`: generate subtitles from dialog (SRT, VTT)
+- `29_music_cue_sheet.py`: generate music cue points for scenes
+- `30_multi_language_subtitle.py`: translate subtitles to multiple languages
+- `31_chapter_marker.py`: auto-detect chapter markers from content
+- `32_podcast_export.py`: export audio-only for podcast feeds
+- `33_social_media_clips.py`: generate social media clips (TikTok, Reels, Shorts)
+- `34_trailer_generator.py`: generate trailer from episode footage
+- `35_recap_generator.py`: generate recap episode from season
+- `36_episode_archive.py`: archive old episodes with retention
+- `37_review_queue.py`: review workflow queue system
+- `38_highlights_extractor.py`: extract best scenes from episodes
+- `39_batch_exporter.py`: export multiple formats in parallel
+- `40_mood_analyzer.py`: analyze mood/emotions across episodes
+- `41_analyze_patterns.py`: analyze recurring patterns in series
+- `43_script_writer.py`: generate dialog suggestions
+- `44_voice_clone_detector.py`: detect voice clones across episodes
+- `45_trend_analyzer.py`: analyze series trends
+- `46_metadata_generator.py`: generate platform metadata
+- `47_auto_editor.py`: auto-edit based on mood
+- `48_sync_to_github.py`: sync local changes to GitHub (last step)
 - `99_process_next_episode.py`: run the full end-to-end workflow
 - `pipeline_common.py`: shared helpers for paths, config, runtime, progress reporting, and status handling
 
