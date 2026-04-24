@@ -124,7 +124,7 @@ def training_plan_rows(cfg: dict, skip_downloads: bool = False) -> list[tuple[st
                 if should_train_fine_tune:
                     rows.append(("12_train_fine_tune_models.py", "Train Fine-Tune Profiles", []))
                     if should_run_backend:
-                        rows.append(("13_run_backend_finetunes.py", "Prepare Backend Fine-Tunes", []))
+                        rows.append(("50_run_backend_finetunes.py", "Prepare Backend Fine-Tunes", []))
     return rows
 
 
@@ -135,17 +135,17 @@ def planned_preview_steps(cfg: dict, count: int) -> list[str]:
 def planned_preview_steps_for_mode(cfg: dict, count: int, *, endless: bool) -> list[str]:
     steps = [row[0] for row in training_plan_rows(cfg, skip_downloads=False)]
     generation_cycle = [
-        "14_generate_episode_from_trained_model.py",
-        "15_generate_storyboard_assets.py",
-        "16_run_storyboard_backend.py",
-        "17_render_episode.py",
+        "13_generate_episode.py",
+        "14_generate_storyboard_assets.py",
+        "54_run_storyboard_backend.py",
+        "15_render_episode.py",
     ]
     if endless:
         steps.extend(generation_cycle)
-        steps.append("18_build_series_bible.py")
+        steps.append("16_build_series_bible.py")
         return steps
     steps.extend(generation_cycle * max(1, int(count)))
-    steps.append("18_build_series_bible.py")
+    steps.append("16_build_series_bible.py")
     return steps
 
 
@@ -270,17 +270,17 @@ def main() -> None:
     if shared_workers:
         info(f"Shared NAS workers: enabled ({worker_id})")
     mark_step_started(
-        "19_generate_finished_episodes",
+        "57_generate_finished_episodes",
         autosave_target,
         {"requested_count": count, "endless": endless, "skip_downloads": bool(args.skip_downloads)},
     )
     lease_manager = distributed_item_lease(
-        root=distributed_step_runtime_root("19_generate_finished_episodes", autosave_target),
+        root=distributed_step_runtime_root("57_generate_finished_episodes", autosave_target),
         lease_name=autosave_target,
         cfg=cfg,
         worker_id=worker_id,
         enabled=shared_workers,
-        meta={"step": "19_generate_finished_episodes", "scope": autosave_target, "worker_id": worker_id},
+        meta={"step": "57_generate_finished_episodes", "scope": autosave_target, "worker_id": worker_id},
     )
     acquired = lease_manager.__enter__()
     if not acquired:
@@ -296,7 +296,7 @@ def main() -> None:
             )
         planned_steps = planned_preview_steps_for_mode(cfg, count, endless=endless)
         reporter = LiveProgressReporter(
-            script_name="19_generate_finished_episodes.py",
+            script_name="57_generate_finished_episodes.py",
             total=preview_reporter_total(training_rows, planned_steps, endless),
             phase_label="Generate Finished Episodes",
             parent_label=preview_parent_label(count, endless),
@@ -314,13 +314,13 @@ def main() -> None:
             reporter.update(
                 preview_reporter_current(reporter, completed_steps),
                 current_label=f"Generate episode {index + 1}",
-                extra_label="Running now: 14_generate_episode_from_trained_model.py",
+                extra_label="Running now: 13_generate_episode.py",
                 force=True,
                 scope_current=len(generated),
                 scope_total=preview_scope_total(count, endless, len(generated)),
                 scope_label="Episodes",
             )
-            run_step("14_generate_episode_from_trained_model.py", shared_args=child_shared_args)
+            run_step("13_generate_episode.py", shared_args=child_shared_args)
             completed_steps += 1
             episode_id = latest_episode_id()
             if not episode_id or episode_id == before:
@@ -338,13 +338,13 @@ def main() -> None:
             reporter.update(
                 preview_reporter_current(reporter, completed_steps),
                 current_label=f"{episode_id} storyboard assets",
-                extra_label="Running now: 15_generate_storyboard_assets.py",
+                extra_label="Running now: 14_generate_storyboard_assets.py",
                 force=True,
                 scope_current=len(generated) + 1,
                 scope_total=preview_scope_total(count, endless, len(generated)),
                 scope_label="Episodes",
             )
-            run_step("15_generate_storyboard_assets.py", env=env, shared_args=child_shared_args)
+            run_step("14_generate_storyboard_assets.py", env=env, shared_args=child_shared_args)
             completed_steps += 1
             reporter.update(
                 preview_reporter_current(reporter, completed_steps),
@@ -357,13 +357,13 @@ def main() -> None:
             reporter.update(
                 preview_reporter_current(reporter, completed_steps),
                 current_label=f"{episode_id} backend frames",
-                extra_label="Running now: 16_run_storyboard_backend.py",
+                extra_label="Running now: 54_run_storyboard_backend.py",
                 force=True,
                 scope_current=len(generated) + 1,
                 scope_total=preview_scope_total(count, endless, len(generated)),
                 scope_label="Episodes",
             )
-            run_step("16_run_storyboard_backend.py", env=env, shared_args=child_shared_args)
+            run_step("54_run_storyboard_backend.py", env=env, shared_args=child_shared_args)
             completed_steps += 1
             reporter.update(
                 preview_reporter_current(reporter, completed_steps),
@@ -378,13 +378,13 @@ def main() -> None:
             reporter.update(
                 preview_reporter_current(reporter, completed_steps),
                 current_label=f"{episode_id} render",
-                extra_label="Running now: 17_render_episode.py",
+                extra_label="Running now: 15_render_episode.py",
                 force=True,
                 scope_current=len(generated) + 1,
                 scope_total=preview_scope_total(count, endless, len(generated)),
                 scope_label="Episodes",
             )
-            run_step("17_render_episode.py", env=env, shared_args=child_shared_args)
+            run_step("15_render_episode.py", env=env, shared_args=child_shared_args)
             completed_steps += 1
             episode_outputs = generated_episode_artifacts(cfg, episode_id)
             if episode_outputs:
@@ -417,13 +417,13 @@ def main() -> None:
                 reporter.update(
                     preview_reporter_current(reporter, completed_steps),
                     current_label="Update series bible",
-                    extra_label="Running now: 18_build_series_bible.py",
+                    extra_label="Running now: 16_build_series_bible.py",
                     force=True,
                     scope_current=len(generated),
                     scope_total=preview_scope_total(count, endless, len(generated)),
                     scope_label="Episodes",
                 )
-                run_step("18_build_series_bible.py", shared_args=child_shared_args)
+                run_step("16_build_series_bible.py", shared_args=child_shared_args)
                 completed_steps += 1
                 reporter.update(
                     preview_reporter_current(reporter, completed_steps),
@@ -438,13 +438,13 @@ def main() -> None:
                 ok(f"{index + 1}/{count}: {episode_id} generated and rendered.")
             index += 1
         if not endless:
-            reporter.update(completed_steps, current_label="Update series bible", extra_label="Running now: 18_build_series_bible.py", force=True)
-            run_step("18_build_series_bible.py", shared_args=child_shared_args)
+            reporter.update(completed_steps, current_label="Update series bible", extra_label="Running now: 16_build_series_bible.py", force=True)
+            run_step("16_build_series_bible.py", shared_args=child_shared_args)
             completed_steps += 1
-            reporter.update(completed_steps, current_label="Update series bible", extra_label="Completed: 18_build_series_bible.py")
+            reporter.update(completed_steps, current_label="Update series bible", extra_label="Completed: 16_build_series_bible.py")
             reporter.finish(current_label="Finished Episodes", extra_label=f"Total episodes: {len(generated)}")
         mark_step_completed(
-            "19_generate_finished_episodes",
+                "57_generate_finished_episodes",
             autosave_target,
             {
                 "requested_count": count,
@@ -465,9 +465,9 @@ def main() -> None:
         if generated and endless:
             info_message = f"Endless generation interrupted after {len(generated)} episodes. Updating the series bible one last time."
             headline(info_message)
-            run_step("18_build_series_bible.py", shared_args=child_shared_args)
+            run_step("16_build_series_bible.py", shared_args=child_shared_args)
         mark_step_failed(
-            "19_generate_finished_episodes",
+                "57_generate_finished_episodes",
             "Interrupted by user",
             autosave_target,
             {
@@ -487,7 +487,7 @@ def main() -> None:
         raise
     except Exception as exc:
         mark_step_failed(
-            "19_generate_finished_episodes",
+                "57_generate_finished_episodes",
             str(exc),
             autosave_target,
             {

@@ -50,12 +50,12 @@ GLOBAL_STEPS = [
     "10_train_foundation_models.py",
     "11_train_adapter_models.py",
     "12_train_fine_tune_models.py",
-    "13_run_backend_finetunes.py",
-    "14_generate_episode_from_trained_model.py",
-    "15_generate_storyboard_assets.py",
-    "16_run_storyboard_backend.py",
-    "17_render_episode.py",
-    "18_build_series_bible.py",
+    "50_run_backend_finetunes.py",
+    "13_generate_episode.py",
+    "14_generate_storyboard_assets.py",
+    "54_run_storyboard_backend.py",
+    "15_render_episode.py",
+    "16_build_series_bible.py",
 ]
 
 
@@ -461,14 +461,14 @@ def global_step_rows(cfg: dict, skip_downloads: bool = False) -> list[tuple[str,
                 if bool(fine_tune_cfg.get("auto_train_after_adapter", True)):
                     steps.append(("12_train_fine_tune_models.py", "Train Local Fine-Tune Profiles", []))
                     if bool(backend_cfg.get("auto_run_after_fine_tune", True)):
-                        steps.append(("13_run_backend_finetunes.py", "Create Concrete Backend Fine-Tune Runs", []))
+                        steps.append(("50_run_backend_finetunes.py", "Create Concrete Backend Fine-Tune Runs", []))
     steps.extend(
         [
-            ("14_generate_episode_from_trained_model.py", "Generate New Episode From Trained Model", []),
-            ("15_generate_storyboard_assets.py", "Generate Storyboard Scene Assets", []),
-            ("16_run_storyboard_backend.py", "Materialize Storyboard Backend Frames", []),
-            ("17_render_episode.py", "Render Finished Episode", []),
-            ("18_build_series_bible.py", "Update Series Bible", []),
+            ("13_generate_episode.py", "Generate New Episode From Trained Model", []),
+            ("14_generate_storyboard_assets.py", "Generate Storyboard Scene Assets", []),
+            ("54_run_storyboard_backend.py", "Materialize Storyboard Backend Frames", []),
+            ("15_render_episode.py", "Render Finished Episode", []),
+            ("16_build_series_bible.py", "Update Series Bible", []),
         ]
     )
     return steps
@@ -537,23 +537,23 @@ def global_step_title(script_name: str) -> str:
         "10_train_foundation_models.py": "Train Foundation Models",
         "11_train_adapter_models.py": "Train Local Adapter Profiles",
         "12_train_fine_tune_models.py": "Train Local Fine-Tune Profiles",
-        "13_run_backend_finetunes.py": "Create Concrete Backend Fine-Tune Runs",
-        "14_generate_episode_from_trained_model.py": "Generate New Episode From Trained Model",
-        "15_generate_storyboard_assets.py": "Generate Storyboard Scene Assets",
-        "16_run_storyboard_backend.py": "Materialize Storyboard Backend Frames",
-        "17_render_episode.py": "Render Finished Episode",
-        "18_build_series_bible.py": "Update Series Bible",
+        "50_run_backend_finetunes.py": "Create Concrete Backend Fine-Tune Runs",
+        "13_generate_episode.py": "Generate New Episode From Trained Model",
+        "14_generate_storyboard_assets.py": "Generate Storyboard Scene Assets",
+        "54_run_storyboard_backend.py": "Materialize Storyboard Backend Frames",
+        "15_render_episode.py": "Render Finished Episode",
+        "16_build_series_bible.py": "Update Series Bible",
     }
     return titles[script_name]
 
 
 def record_global_generated_episode_outputs(state: dict, cfg: dict, script_name: str) -> None:
     if script_name not in {
-        "14_generate_episode_from_trained_model.py",
-        "15_generate_storyboard_assets.py",
-        "16_run_storyboard_backend.py",
-        "17_render_episode.py",
-        "18_build_series_bible.py",
+        "13_generate_episode.py",
+        "14_generate_storyboard_assets.py",
+        "54_run_storyboard_backend.py",
+        "15_render_episode.py",
+        "16_build_series_bible.py",
     }:
         return
     outputs = latest_generated_episode_artifacts(cfg)

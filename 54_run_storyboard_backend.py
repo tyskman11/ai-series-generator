@@ -574,7 +574,7 @@ def main() -> None:
     crf = int(render_cfg.get("crf", 23))
     assets_root = resolve_project_path(cfg["paths"].get("storyboard_assets", "generation/storyboard_assets")) / episode_id
     if not assets_root.exists():
-        info("No storyboard asset root found yet. Run 15_generate_storyboard_assets.py first.")
+        info("No storyboard asset root found yet. Run 14_generate_storyboard_assets.py first.")
         return
 
     ffmpeg: Path | None = None
@@ -585,18 +585,18 @@ def main() -> None:
 
     backend_inputs = sorted(assets_root.glob("*_backend_input.json"))
     if not backend_inputs:
-        info("No storyboard backend input payloads found. Run 15_generate_storyboard_assets.py first.")
+        info("No storyboard backend input payloads found. Run 14_generate_storyboard_assets.py first.")
         return
 
     autosave_target = episode_id
-    mark_step_started("16_run_storyboard_backend", autosave_target, {"episode_id": episode_id, "shotlist": str(shotlist_path)})
+    mark_step_started("54_run_storyboard_backend", autosave_target, {"episode_id": episode_id, "shotlist": str(shotlist_path)})
     reporter = LiveProgressReporter(
-        script_name="16_run_storyboard_backend.py",
+        script_name="54_run_storyboard_backend.py",
         total=max(1, len(backend_inputs)),
         phase_label="Storyboard Backend",
         parent_label=episode_id,
     )
-    scene_lease_root = distributed_step_runtime_root("16_run_storyboard_backend", episode_id) / "scenes"
+    scene_lease_root = distributed_step_runtime_root("54_run_storyboard_backend", episode_id) / "scenes"
     if shared_workers:
         info(f"Shared NAS workers: enabled ({worker_id})")
     try:
@@ -611,7 +611,7 @@ def main() -> None:
                 cfg=cfg,
                 worker_id=worker_id,
                 enabled=shared_workers,
-                meta={"step": "16_run_storyboard_backend", "episode_id": episode_id, "scene_id": scene_id, "worker_id": worker_id},
+                        meta={"step": "54_run_storyboard_backend", "episode_id": episode_id, "scene_id": scene_id, "worker_id": worker_id},
             ) as acquired:
                 if not acquired:
                     continue
@@ -656,7 +656,7 @@ def main() -> None:
             extra_label=f"Storyboard backend ready: {completed_count}/{len(backend_inputs)} scenes | local scene videos: {completed_scene_video_count}",
         )
         mark_step_completed(
-            "16_run_storyboard_backend",
+                "54_run_storyboard_backend",
             autosave_target,
             {
                 "episode_id": episode_id,
@@ -667,7 +667,7 @@ def main() -> None:
         )
         ok(f"Storyboard backend materialized: {episode_id}")
     except Exception as exc:
-        mark_step_failed("16_run_storyboard_backend", str(exc), autosave_target, {"episode_id": episode_id})
+        mark_step_failed("54_run_storyboard_backend", str(exc), autosave_target, {"episode_id": episode_id})
         raise
 
 

@@ -135,16 +135,16 @@ def main() -> None:
         return
 
     autosave_target = (args.episode_id or "").strip() or "auto_next"
-    mark_step_started("14_generate_episode_from_trained_model", autosave_target, {"series_model": str(model_path)})
+    mark_step_started("13_generate_episode", autosave_target, {"series_model": str(model_path)})
     if shared_workers:
         info(f"Shared NAS workers: enabled ({worker_id})")
     lease_manager = distributed_item_lease(
-        root=distributed_step_runtime_root("14_generate_episode_from_trained_model", autosave_target),
+        root=distributed_step_runtime_root("13_generate_episode", autosave_target),
         lease_name=autosave_target,
         cfg=cfg,
         worker_id=worker_id,
         enabled=shared_workers,
-        meta={"step": "14_generate_episode_from_trained_model", "scope": autosave_target, "worker_id": worker_id},
+        meta={"step": "13_generate_episode", "scope": autosave_target, "worker_id": worker_id},
     )
     acquired = lease_manager.__enter__()
     if not acquired:
@@ -152,7 +152,7 @@ def main() -> None:
         lease_manager.__exit__(None, None, None)
         return
     reporter = LiveProgressReporter(
-        script_name="14_generate_episode_from_trained_model.py",
+        script_name="13_generate_episode.py",
         total=5,
         phase_label="Generate New Episode",
         parent_label=autosave_target,
@@ -207,7 +207,7 @@ def main() -> None:
         write_json(shotlist_path, shotlist_payload)
         reporter.finish(current_label=episode_id, extra_label=f"Episode geschrieben: {story_path.name}, {shotlist_path.name} und Storyboard-Requests")
         mark_step_completed(
-            "14_generate_episode_from_trained_model",
+            "13_generate_episode",
             episode_id,
             {
                 "series_model": str(model_path),
@@ -218,7 +218,7 @@ def main() -> None:
         )
         ok(f"Neue Episode aus trainiertem Modell erzeugt: {episode_id}")
     except Exception as exc:
-        mark_step_failed("14_generate_episode_from_trained_model", str(exc), autosave_target, {"series_model": str(model_path)})
+        mark_step_failed("13_generate_episode", str(exc), autosave_target, {"series_model": str(model_path)})
         raise
     finally:
         lease_manager.__exit__(None, None, None)

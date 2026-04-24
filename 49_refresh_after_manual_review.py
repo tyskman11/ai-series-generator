@@ -96,16 +96,16 @@ def planned_refresh_steps(cfg: dict, skip_downloads: bool = False, stop_after_tr
                     )
                     if bool(backend_cfg.get("auto_run_after_fine_tune", True)):
                         planned_steps.append(
-                            ("13_run_backend_finetunes.py", "Create backend fine-tune runs with the latest reviewed character state", ["--force"])
+                            ("50_run_backend_finetunes.py", "Create backend fine-tune runs with the latest reviewed character state", ["--force"])
                         )
     if not stop_after_training:
         planned_steps.extend(
             [
-                ("14_generate_episode_from_trained_model.py", "Generate a new episode from the refreshed model", []),
-                ("15_generate_storyboard_assets.py", "Generate storyboard assets for the refreshed episode", []),
-                ("16_run_storyboard_backend.py", "Materialize local storyboard backend frames for the refreshed episode", []),
-                ("17_render_episode.py", "Render the refreshed episode", []),
-                ("18_build_series_bible.py", "Update the series bible with the refreshed state", []),
+                ("13_generate_episode.py", "Generate a new episode from the refreshed model", []),
+                ("14_generate_storyboard_assets.py", "Generate storyboard assets for the refreshed episode", []),
+                ("54_run_storyboard_backend.py", "Materialize local storyboard backend frames for the refreshed episode", []),
+                ("15_render_episode.py", "Render the refreshed episode", []),
+                ("16_build_series_bible.py", "Update the series bible with the refreshed state", []),
             ]
         )
     return planned_steps
@@ -131,7 +131,7 @@ def main() -> None:
     if shared_workers:
         info(f"Shared NAS workers: enabled ({worker_id})")
     mark_step_started(
-        "20_refresh_after_manual_review",
+        "49_refresh_after_manual_review",
         autosave_target,
         {
             "allow_open_review": bool(args.allow_open_review),
@@ -140,12 +140,12 @@ def main() -> None:
         },
     )
     lease_manager = distributed_item_lease(
-        root=distributed_step_runtime_root("20_refresh_after_manual_review", autosave_target),
+        root=distributed_step_runtime_root("49_refresh_after_manual_review", autosave_target),
         lease_name=autosave_target,
         cfg=cfg,
         worker_id=worker_id,
         enabled=shared_workers,
-        meta={"step": "20_refresh_after_manual_review", "scope": autosave_target, "worker_id": worker_id},
+        meta={"step": "49_refresh_after_manual_review", "scope": autosave_target, "worker_id": worker_id},
     )
     acquired = lease_manager.__enter__()
     if not acquired:
@@ -166,7 +166,7 @@ def main() -> None:
             stop_after_training=bool(args.stop_after_training),
         )
         reporter = LiveProgressReporter(
-            script_name="20_refresh_after_manual_review.py",
+            script_name="49_refresh_after_manual_review.py",
             total=len(planned_steps),
             phase_label="Rebuild After Review",
             parent_label="global",
@@ -180,7 +180,7 @@ def main() -> None:
         reporter.finish(current_label="Rebuild", extra_label=f"Completed steps: {completed_count}")
 
         mark_step_completed(
-            "20_refresh_after_manual_review",
+                "49_refresh_after_manual_review",
             autosave_target,
             {
                 "allow_open_review": bool(args.allow_open_review),
@@ -192,7 +192,7 @@ def main() -> None:
         ok("Rebuild after manual character review completed.")
     except Exception as exc:
         mark_step_failed(
-            "20_refresh_after_manual_review",
+                "49_refresh_after_manual_review",
             str(exc),
             autosave_target,
             {

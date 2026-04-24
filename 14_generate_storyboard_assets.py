@@ -333,7 +333,7 @@ def main() -> None:
     request_dir = Path(str(shotlist.get("storyboard_request_dir", "")))
     episode_request_path = Path(str(shotlist.get("storyboard_request", "")))
     if not episode_request_path.exists():
-        info("No storyboard request export found. Run 14_generate_episode_from_trained_model.py first.")
+        info("No storyboard request export found. Run 13_generate_episode.py first.")
         return
 
     render_cfg = cfg.get("render", {})
@@ -347,14 +347,14 @@ def main() -> None:
     episode_request = read_json(episode_request_path, {})
     scene_requests = episode_request.get("scene_requests", []) if isinstance(episode_request.get("scene_requests", []), list) else []
     autosave_target = episode_id
-    mark_step_started("15_generate_storyboard_assets", autosave_target, {"episode_id": episode_id, "shotlist": str(shotlist_path)})
+    mark_step_started("14_generate_storyboard_assets", autosave_target, {"episode_id": episode_id, "shotlist": str(shotlist_path)})
     reporter = LiveProgressReporter(
-        script_name="15_generate_storyboard_assets.py",
+        script_name="14_generate_storyboard_assets.py",
         total=max(1, len(scene_requests)),
         phase_label="Generate Storyboard Assets",
         parent_label=episode_id,
     )
-    scene_lease_root = distributed_step_runtime_root("15_generate_storyboard_assets", episode_id) / "scenes"
+    scene_lease_root = distributed_step_runtime_root("14_generate_storyboard_assets", episode_id) / "scenes"
     if shared_workers:
         info(f"Shared NAS workers: enabled ({worker_id})")
     try:
@@ -367,7 +367,7 @@ def main() -> None:
                 cfg=cfg,
                 worker_id=worker_id,
                 enabled=shared_workers,
-                meta={"step": "15_generate_storyboard_assets", "episode_id": episode_id, "scene_id": scene_id, "worker_id": worker_id},
+                        meta={"step": "14_generate_storyboard_assets", "episode_id": episode_id, "scene_id": scene_id, "worker_id": worker_id},
             ) as acquired:
                 if not acquired:
                     continue
@@ -402,13 +402,13 @@ def main() -> None:
         write_json(shotlist_path, shotlist)
         reporter.finish(current_label=episode_id, extra_label=f"Storyboard assets ready: {len(generated_assets)} scenes")
         mark_step_completed(
-            "15_generate_storyboard_assets",
+                "14_generate_storyboard_assets",
             autosave_target,
             {"episode_id": episode_id, "asset_root": str(assets_root), "manifest": str(manifest_path)},
         )
         ok(f"Storyboard assets generated: {episode_id}")
     except Exception as exc:
-        mark_step_failed("15_generate_storyboard_assets", str(exc), autosave_target, {"episode_id": episode_id})
+        mark_step_failed("14_generate_storyboard_assets", str(exc), autosave_target, {"episode_id": episode_id})
         raise
 
 

@@ -233,9 +233,9 @@ def main() -> None:
         return
 
     summary_rows: list[dict] = []
-    lease_root = distributed_step_runtime_root("13_run_backend_finetunes", "characters")
+    lease_root = distributed_step_runtime_root("50_run_backend_finetunes", "characters")
     reporter = LiveProgressReporter(
-        script_name="13_run_backend_finetunes.py",
+        script_name="50_run_backend_finetunes.py",
         total=len(filtered_rows),
         phase_label="Prepare Backend Fine-Tunes",
     )
@@ -254,7 +254,7 @@ def main() -> None:
             cfg=cfg,
             worker_id=worker_id,
             enabled=shared_workers,
-            meta={"step": "13_run_backend_finetunes", "character": character_name, "slug": slug, "worker_id": worker_id},
+                    meta={"step": "50_run_backend_finetunes", "character": character_name, "slug": slug, "worker_id": worker_id},
         ) as acquired:
             if not acquired:
                 continue
@@ -264,7 +264,7 @@ def main() -> None:
             else:
                 info(f"Creating backend fine-tune run: {character_name}")
                 mark_step_started(
-                    "13_run_backend_finetunes",
+                "50_run_backend_finetunes",
                     autosave_target,
                     {"character": character_name, "backend_run_path": str(output_path)},
                 )
@@ -273,7 +273,7 @@ def main() -> None:
                     output_path.parent.mkdir(parents=True, exist_ok=True)
                     write_json(output_path, payload)
                     mark_step_completed(
-                        "13_run_backend_finetunes",
+                    "50_run_backend_finetunes",
                         autosave_target,
                         {
                             "character": character_name,
@@ -287,7 +287,7 @@ def main() -> None:
                     )
                 except Exception as exc:
                     mark_step_failed(
-                        "13_run_backend_finetunes",
+                "50_run_backend_finetunes",
                         str(exc),
                         autosave_target,
                         {"character": character_name, "backend_run_path": str(output_path)},
@@ -306,7 +306,7 @@ def main() -> None:
                     "voice_model_path": coalesce_text(payload.get("voice_model_path", "")),
                     "dominant_voice_language": coalesce_text(payload.get("dominant_voice_language", "")),
                     "backends": dict(payload.get("backends", {}) or {}),
-                    "autosave": load_step_autosave("13_run_backend_finetunes", autosave_target),
+            "autosave": load_step_autosave("50_run_backend_finetunes", autosave_target),
                 }
             )
             reporter.update(
