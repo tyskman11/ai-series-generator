@@ -215,17 +215,18 @@ All scripts in this repository are AI-generated and maintained with `GPT-5.4`.
 - harder `speaker_unknown` cleanup remains active work, but it is no longer `Planned` because rescue logic already exists and is being extended iteratively
 - the voiced-storyboard-to-finished-episode bridge remains active work: external runner hooks now exist in `16_run_storyboard_backend.py` and `17_render_episode.py`, and the remaining work is concrete backend tuning plus better quality from those runners
 - the new external-runner path is now visible in bible and orchestration status output, but practical quality still depends on tuning real local model command templates and backend quality
+- finish naming main characters in `06_review_unknowns.py` is now tracked as active completion work rather than untouched planning, because the remaining finished-episode quality depends on real reviewed identities
+- `20_refresh_after_manual_review.py` on the fully reviewed set is now an active rebuild milestone rather than untouched planning, because that full rerun is the next real data-driven convergence step after review completion
+- expanding the fine-tune and backend stages from local preparation artifacts into real model-weight training is now an active longer-running track rather than untouched planning, because the codebase already contains the staging chain that this work will extend
+- tuning concrete local model command templates and quality settings for the external backend runner hooks in `16_run_storyboard_backend.py` and `17_render_episode.py` is now active work rather than untouched planning, because those hooks already exist and now need real backend-specific tuning
+- improving render quality, character consistency, and synthetic episode quality after the review and training loop stabilizes is now tracked as active quality work rather than untouched planning
+- keeping the full generated-episode path non-default until image/video generation and lip-sync actually look series-quality is now tracked as an active release gate rather than untouched planning
 
 ## Planned
 
 Only untouched follow-up work stays here. If implementation has started or partial code already exists, it belongs in `In Progress` instead.
 
-- finish naming main characters in `06_review_unknowns.py`
-- run `20_refresh_after_manual_review.py` on the fully reviewed set to rebuild datasets, model, training packs, generated episodes, bible, and renders
-- expand the fine-tune and backend stages from local preparation artifacts into real model-weight training later on
-- tune concrete local model command templates and quality settings for the new external backend runner hooks in `16_run_storyboard_backend.py` and `17_render_episode.py`
-- improve render quality, character consistency, and synthetic episode quality after the review and training loop stabilizes
-- only let the full generated-episode path become the default once image/video generation and lip-sync actually look series-quality
+- No untouched follow-up items are listed right now. The remaining major themes are all active work and are tracked in `In Progress`.
 
 ## Documentation Rule
 
