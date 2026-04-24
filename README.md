@@ -104,7 +104,6 @@ Whenever you change any of the following, update `README.md` in the same task:
 
 - `00_prepare_runtime.py` through `57_generate_finished_episodes.py`
 - `99_process_next_episode.py`
-- `99_sync_to_github.py`
 - `pipeline_common.py`
 - `ai_series_project/configs/project.json`
 - CLI options
@@ -131,7 +130,6 @@ Also keep the `In Progress` and `Planned` sections current.
 - `51_export_package.py` to `56_restore_project.py`: export, QA, backend, and maintenance helpers
 - `57_generate_finished_episodes.py`: batch or endless finished-episode generation
 - `99_process_next_episode.py`: full end-to-end coordinator
-- `99_sync_to_github.py`: local-only sync helper, not part of the project deliverables
 
 ### Important Folders
 
@@ -186,7 +184,7 @@ python 57_generate_finished_episodes.py --count 1 --skip-downloads
 
 ## Workflow Summary
 
-Important: the logical run order is not strictly numeric anymore. The real finished-episode path is:
+Important: the logical run order is not strictly numeric anymore. Training must finish before final episode generation/render starts. The real finished-episode path is:
 
 `07 -> 08 -> 09 -> 10 -> 11 -> 12 -> 50 -> 13 -> 14 -> 54 -> 15 -> 16`
 
