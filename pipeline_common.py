@@ -3647,3 +3647,184 @@ def schedule_worker_task(
         "task_requirements": task_requirements,
     }
 
+
+def episode_template_path(project_root: Path, template_name: str) -> Path:
+    return project_root / "generation" / "templates" / f"{template_name}.json"
+
+
+def load_episode_template(project_root: Path, template_name: str) -> dict[str, Any]:
+    path = episode_template_path(project_root, template_name)
+    if path.exists():
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    return {
+        "template_name": template_name,
+        "structure": {"act_count": 3, "acts": []},
+        "scene_patterns": [],
+        "dialogue_density": "medium",
+        "pacing": "standard",
+    }
+
+
+def save_episode_template(project_root: Path, template: dict[str, Any]) -> None:
+    template_name = template.get("template_name", "default")
+    path = episode_template_path(project_root, template_name)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    write_json(path, template)
+
+
+def apply_episode_template(
+    generated_episode: dict[str, Any],
+    template: dict[str, Any],
+) -> dict[str, Any]:
+    enriched = deepcopy(generated_episode)
+    structure = template.get("structure", {})
+    act_count = structure.get("act_count", 3)
+    scenes = enriched.get("scenes", []) if isinstance(enriched.get("scenes"), list) else []
+    scenes_per_act = max(1, len(scenes) // act_count)
+    for idx, scene in enumerate(scenes):
+        if not isinstance(scene, dict):
+            continue
+        act_num = min(act_count, (idx // scenes_per_act) + 1)
+        scene["act"] = act_num
+        if idx % scenes_per_act == 0:
+            scene["act_break"] = True
+    enriched["scenes"] = scenes
+    enriched["template_applied"] = template.get("template_name", "unknown")
+    return enriched
+
+
+def export_script_format(
+    episode_data: dict[str, Any],
+    output_path: Path,
+    format: str = "fountain",
+) -> None:
+    scenes = episode_data.get("scenes", []) if isinstance(episode_data.get("scenes"), list) else []
+    if format.lower() == "fountain":
+        lines: list[str] = ["Title: " + episode_data.get("title", "Untitled Episode")]
+        lines.append("Credit: " + episode_data.get("credit", ""))
+        lines.append("Author: " + episode_data.get("author", ""))
+        lines.append("")
+        for scene in scenes:
+            if not isinstance(scene, dict):
+                continue
+            scene_id = scene.get("scene_id", "")
+            location = scene.get("location", "INT")
+            lines.append(f"INT. {location} - DAY")
+            lines.append("")
+            dialogue = scene.get("dialogue", []) if isinstance(scene.get("dialogue"), list) else []
+            for line in dialogue:
+                if not isinstance(line, dict):
+                    continue
+                speaker = line.get("speaker_name", "")
+                text = line.get("text", "")
+                if speaker:
+                    lines.append(f"{speaker.upper()}")
+                if text:
+                    lines.append(text)
+                lines.append("")
+        output_path.write_text("\n".join(lines), encoding="utf-8")
+    elif format.lower() == "final_draft":
+        import io
+        lines: list[str] = []
+        for scene in scenes:
+            if not isinstance(scene, dict):
+                continue
+            location = scene.get("location", "")
+            lines.append(f"INT. {location}")
+            dialogue = scene.get("dialogue", []) if isinstance(scene.get("dialogue"), list) else []
+            for line in dialogue:
+                if not isinstance(line, dict):
+                    continue
+                speaker = line.get("speaker_name", "")
+                text = line.get("text", "")
+                if speaker:
+                    lines.append(f"{speaker}: {text}")
+                else:
+                    lines.append(text)
+        output_path.write_text("\n".join(lines), encoding="utf-8")
+
+
+def distributed_cache_path(project_root: Path) -> Path:
+    return project_root / "runtime" / "distributed_cache.json"
+
+
+def load_distributed_cache(project_root: Path) -> dict[str, Any]:
+    path = distributed_cache_path(project_root)
+    if path.exists():
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    return {"artifacts": {}, "locks": {}, "last_updated": None}
+
+
+def save_distributed_cache(project_root: Path, cache: dict[str, Any]) -> None:
+    path = distributed_cache_path(project_root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    cache["last_updated"] = datetime.now().isoformat()
+    write_json(path, cache)
+
+
+def acquire_cache_lock(
+    project_root: Path,
+    artifact_key: str,
+    worker_id: str,
+    ttl_seconds: int = 300,
+) -> bool:
+    cache = load_distributed_cache(project_root)
+    locks = cache.get("locks", {}) if isinstance(cache.get("locks"), dict) else {}
+    existing = locks.get(artifact_key, {})
+    if existing:
+        holder = existing.get("worker_id", "")
+        expires = float(existing.get("expires_at", 0.0))
+        if holder != worker_id and expires > time.time():
+            return False
+    locks[artifact_key] = {
+        "worker_id": worker_id,
+        "acquired_at": time.time(),
+        "expires_at": time.time() + ttl_seconds,
+    }
+    cache["locks"] = locks
+    save_distributed_cache(project_root, cache)
+    return True
+
+
+def release_cache_lock(project_root: Path, artifact_key: str, worker_id: str) -> None:
+    cache = load_distributed_cache(project_root)
+    locks = cache.get("locks", {}) if isinstance(cache.get("locks"), dict) else {}
+    existing = locks.get(artifact_key, {})
+    if existing and existing.get("worker_id") == worker_id:
+        del locks[artifact_key]
+        cache["locks"] = locks
+        save_distributed_cache(project_root, cache)
+
+
+def estimate_processing_cost(
+    *,
+    episode_count: int = 1,
+    scene_count: int = 0,
+    character_count: int = 0,
+    cloud_rate_per_minute: float = 0.50,
+    local_power_watts: float = 500.0,
+    local_electric_rate_per_kwh: float = 0.15,
+    local_hours: float = 0.0,
+) -> dict[str, Any]:
+    total_cloud_cost = cloud_rate_per_minute * local_hours * 60.0
+    local_energy_kwh = (local_power_watts / 1000.0) * local_hours
+    local_cost = local_energy_kwh * local_electric_rate_per_kwh
+    cloud_is_cheaper = total_cloud_cost < local_cost
+    savings = abs(total_cloud_cost - local_cost) if cloud_is_cheaper else 0.0
+    return {
+        "episode_count": episode_count,
+        "scene_count": scene_count,
+        "character_count": character_count,
+        "estimated_hours": round(local_hours, 2),
+        "cloud_cost_usd": round(total_cloud_cost, 2),
+        "local_cost_usd": round(local_cost, 2),
+        "recommendation": "cloud" if cloud_is_cheaper else "local",
+        "potential_savings_usd": round(savings, 2),
+    }
+
