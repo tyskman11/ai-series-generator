@@ -345,7 +345,8 @@ Also keep the `In Progress` and `Planned` sections current. If priorities change
 - `46_voice_clone_detector.py`: detect voice clones across episodes
 - `47_trend_analyzer.py`: analyze series trends
 - `48_metadata_generator.py`: generate platform metadata
-- `50_sync_to_github.py`: sync local changes to GitHub (last step)
+- `49_auto_editor.py`: auto-edit based on mood
+- `51_sync_to_github.py`: sync local changes to GitHub (last step)
 - `99_process_next_episode.py`: run the full end-to-end workflow
 - `pipeline_common.py`: shared helpers for paths, config, runtime, progress reporting, and status handling
 
