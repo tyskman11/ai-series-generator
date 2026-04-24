@@ -252,20 +252,6 @@ Only untouched follow-up work stays here. If implementation has started or parti
 - add scene transition selector (fade, dissolve, wipe, zoom)
 - add character relationship tracking (ally, enemy, friend, family)
 
-## Planned
-
-Only untouched follow-up work stays here. If implementation has started or partial code already exists, it belongs in `In Progress` instead.
-
-### Quality
-
-- pending new feature requests
-
-### Automation
-
-### Infrastructure
-
-### New Feature Ideas
-
 ## Documentation Rule
 
 This file is mandatory documentation.
