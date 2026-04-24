@@ -239,6 +239,14 @@ Only untouched follow-up work stays here. If implementation has started or parti
 - add batch processing queue UI for managing multiple episode jobs (implemented)
 - add auto-shot composition from beat variations (implemented)
 
+### Training Enhancements
+
+- add lip sync model configuration (wav2lip, quality threshold, framesync)
+- add image training optimization (batch size, learning rate, epochs, mixed precision)
+- add voice training optimization (batch size, learning rate, epochs, AMP)
+- add video training optimization (batch size, learning rate, frame skip)
+- add training quality evaluation function
+
 ### Infrastructure
 
 - add multi-series/project support for managing several series from one installation (implemented)
