@@ -228,17 +228,6 @@ All scripts in this repository are AI-generated and maintained with `GPT-5.4`.
 
 Only untouched follow-up work stays here. If implementation has started or partial code already exists, it belongs in `In Progress` instead.
 
-### Quality
-
-- add KI-based character consistency improvements across generated scenes using appearance embeddings (implemented)
-- add visual style transfer from source series to generated episodes (implemented)
-
-### Automation
-
-- add real-time preview during generation for faster iteration (implemented)
-- add batch processing queue UI for managing multiple episode jobs (implemented)
-- add auto-shot composition from beat variations (implemented)
-
 ### Training Enhancements
 
 - add lip sync model configuration (wav2lip, quality threshold, framesync)
