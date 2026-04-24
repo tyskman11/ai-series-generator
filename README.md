@@ -230,17 +230,18 @@ Only untouched follow-up work stays here. If implementation has started or parti
 
 ### Quality
 
-- add KI-based character consistency improvements across generated scenes using appearance embeddings
-- add visual style transfer from source series to generated episodes
+- add KI-based character consistency improvements across generated scenes using appearance embeddings (implemented)
+- add visual style transfer from source series to generated episodes (implemented)
 
 ### Automation
 
-- add real-time preview during generation for faster iteration
-- add batch processing queue UI for managing multiple episode jobs
+- add real-time preview during generation for faster iteration (implemented)
+- add batch processing queue UI for managing multiple episode jobs (implemented)
+- add auto-shot composition from beat variations (implemented)
 
 ### Infrastructure
 
-- add multi-series/project support for managing several series from one installation
+- add multi-series/project support for managing several series from one installation (implemented)
 
 ## Planned
 
@@ -248,7 +249,7 @@ Only untouched follow-up work stays here. If implementation has started or parti
 
 ### Quality
 
-- add auto-shot composition from beat variations
+- pending new feature requests
 
 ### Automation
 

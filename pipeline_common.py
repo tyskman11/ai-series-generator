@@ -2643,6 +2643,58 @@ def select_background_music(
     return None
 
 
+def auto_compose_shot_from_beats(
+    base_frame_path: Path,
+    beat_references: list[dict[str, Any]],
+    output_path: Path,
+    width: int,
+    height: int,
+) -> bool:
+    from PIL import Image, ImageDraw
+    if not base_frame_path.exists() or not beat_references:
+        return False
+    try:
+        base = Image.open(base_frame_path).convert("RGB")
+        base = base.resize((width, height), Image.LANCZOS)
+        draw = ImageDraw.Draw(base)
+        for idx, beat in enumerate(beat_references):
+            ref_path = beat.get("reference_image")
+            if ref_path and Path(ref_path).exists():
+                ref_img = Image.open(ref_path).convert("RGBA")
+                ref_img = ref_img.resize((width // 3, height // 3), Image.LANCZOS)
+                x_pos = (idx % 3) * (width // 3)
+                y_pos = height - height // 3 - 10
+                base.paste(ref_img, (x_pos, y_pos), ref_img)
+        base.save(output_path, quality=95)
+        return True
+    except Exception:
+        return False
+
+
+def analyze_scene_beats(
+    scene_manifest: dict[str, Any],
+    voice_plan: dict[str, Any],
+) -> list[dict[str, Any]]:
+    beats: list[dict[str, Any]] = []
+    dialogue = scene_manifest.get("dialogue", []) if isinstance(scene_manifest.get("dialogue"), list) else []
+    for idx, line in enumerate(dialogue):
+        if not isinstance(line, dict):
+            continue
+        beat = {
+            "beat_index": idx,
+            "speaker": line.get("speaker_name", ""),
+            "text": line.get("text", ""),
+            "start_time": line.get("start_time", 0.0),
+            "emotion": line.get("emotion", "neutral"),
+            "reference_image": None,
+        }
+        char = line.get("speaker_name", "")
+        if char:
+            beat["character"] = char
+        beats.append(beat)
+    return beats
+
+
 def keyword_token_allowed(token: str) -> bool:
     lower = token.lower().strip("-'")
     if len(lower) < 4:
