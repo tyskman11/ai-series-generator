@@ -273,24 +273,15 @@ Only untouched follow-up work stays here. If implementation has started or parti
 
 ### Automation
 
-- add script format export for external video editors (implemented in 21_export_package.py)
+- (see 21_export_package.py)
 
 ### Infrastructure
 
-- add distributed cache layer for model artifacts (implemented in pipeline_common.py)
+- (see pipeline_common.py)
 
 ### New Feature Ideas
 
-- add subtitle generator with multiple formats (implemented in 29_subtitle_generator.py)
-- add music cue sheet generator (implemented in 30_music_cue_sheet.py)
 - add multi-language subtitle translator
-- add podcast/audio-only export for podcast feeds
-- add chapter marker auto-detection
-- add social media clip generator (TikTok, Reels, Shorts)
-- add trailer generator from episode footage
-- add recap episode generator
-- add episode archive/retention system
-- add review workflow queue system
 
 ## Documentation Rule
 
