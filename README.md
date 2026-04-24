@@ -322,6 +322,16 @@ Also keep the `In Progress` and `Planned` sections current. If priorities change
 - `18_build_series_bible.py`: rebuild the series bible
 - `19_generate_finished_episodes.py`: generate multiple finished episodes in one run or keep generating endlessly until stopped
 - `20_refresh_after_manual_review.py`: rebuild the pipeline after manual character review
+- `22_export_package.py`: export finished episode package for external tools (DaVinci, Premiere)
+- `23_quality_gate.py`: automatic quality check before release with configurable thresholds
+- `24_compare_scenes.py`: compare two scenes visually for QA
+- `25_analyze_patterns.py`: analyze recurring patterns in the series
+- `26_backup_project.py`: backup project to cloud/NAS
+- `27_restore_project.py`: restore project from backup
+- `28_character_timeline.py`: show character appearance timeline across episodes
+- `29_merge_episodes.py`: merge multiple episodes into one season
+- `30_subtitle_generator.py`: generate subtitles from dialog (SRT, VTT)
+- `31_music_cue_sheet.py`: generate music cue points for scenes
 - `99_process_next_episode.py`: run the full end-to-end workflow
 - `pipeline_common.py`: shared helpers for paths, config, runtime, progress reporting, and status handling
 
