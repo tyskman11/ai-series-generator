@@ -268,12 +268,11 @@ Also keep the `In Progress` and `Planned` sections current. If priorities change
 - `11_train_adapter_models.py`: train local adapter profiles
 - `12_train_fine_tune_models.py`: train local fine-tune profiles
 
-### Generation Pipeline (13-16)
+### Generation Pipeline (13-15)
 
 - `13_generate_episode.py`: generate a new synthetic episode blueprint
 - `14_generate_storyboard_assets.py`: build scene-level storyboard seed assets and backend-ready per-scene input payloads
 - `15_render_episode.py`: render a draft preview plus a final voiced episode
-- `16_generate_finished_episodes.py`: generate multiple finished episodes in one run or keep generating endlessly until stopped
 
 ### Analysis (17-24)
 
@@ -317,21 +316,22 @@ Also keep the `In Progress` and `Planned` sections current. If priorities change
 - `48_voice_emotion_cloning.py`: clone voice with emotion
 - `49_social_media_clips.py`: generate social media clips (TikTok, Reels, Shorts)
 
-### Post-Process Pipeline (50-57)
+### Post-Process Pipeline (49-56)
 
-- `50_refresh_after_manual_review.py`: rebuild the pipeline after manual character review
-- `51_run_backend_finetunes.py`: materialize backend-oriented fine-tune runs
-- `52_export_package.py`: export finished episode package for external tools
-- `53_quality_gate.py`: automatic quality check before release
-- `54_compare_scenes.py`: compare two scenes visually for QA
-- `55_run_storyboard_backend.py`: materialize local backend-style storyboard scene packs
-- `56_backup_project.py`: backup project to cloud/NAS
-- `57_restore_project.py`: restore project from backup
+- `49_refresh_after_manual_review.py`: rebuild the pipeline after manual character review
+- `50_run_backend_finetunes.py`: materialize backend-oriented fine-tune runs
+- `51_export_package.py`: export finished episode package for external tools
+- `52_quality_gate.py`: automatic quality check before release
+- `53_compare_scenes.py`: compare two scenes visually for QA
+- `54_run_storyboard_backend.py`: materialize local backend-style storyboard scene packs
+- `55_backup_project.py`: backup project to cloud/NAS
+- `56_restore_project.py`: restore project from backup
+- `57_generate_finished_episodes.py`: generate multiple finished episodes in one run or keep generating endlessly until stopped
 
 ### End-to-End (99)
 
 - `99_process_next_episode.py`: run the full end-to-end workflow
-- `99_sync_to_github.py`: sync local changes to GitHub (last step)
+- `99_sync_to_github.py`: sync local changes to GitHub (last step, local only)
 - `59_character_outfit.py`: track character outfits across episodes
 - `60_relationship_tracker.py`: track character relationships
 - `61_similar_scene_finder.py`: find similar scenes for reuse
