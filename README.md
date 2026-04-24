@@ -230,17 +230,15 @@ Only untouched follow-up work stays here. If implementation has started or parti
 
 ### Quality
 
-- add episode template system for recurring story structures
+- current work complete, pending new feature requests
 
 ### Automation
 
-- add script format export for external video editors
+- current work complete, pending new feature requests
 
 ### Infrastructure
 
-- add distributed cache layer for model artifacts
-- add cost estimation for cloud vs local processing
-- add real-time sync between NAS workers via web sockets
+- current work complete, pending new feature requests
 
 ## Planned
 
