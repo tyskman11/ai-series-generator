@@ -338,10 +338,10 @@ Also keep the `In Progress` and `Planned` sections current. If priorities change
 - `36_recap_generator.py`: generate recap episode from season
 - `37_episode_archive.py`: archive old episodes with retention
 - `38_review_queue.py`: review workflow queue system
-- `39_highlights_extractor.py`: extract best scenes from episodes
-- `40_batch_exporter.py`: export multiple formats in parallel
-- `41_mood_analyzer.py`: analyze mood/emotions across episodes
-- `42_sync_to_github.py`: sync local changes to GitHub (last step)
+- `41_highlights_extractor.py`: extract best scenes from episodes
+- `42_batch_exporter.py`: export multiple formats in parallel
+- `43_mood_analyzer.py`: analyze mood/emotions across episodes
+- `44_sync_to_github.py`: sync local changes to GitHub (last step)
 - `99_process_next_episode.py`: run the full end-to-end workflow
 - `pipeline_common.py`: shared helpers for paths, config, runtime, progress reporting, and status handling
 
