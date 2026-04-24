@@ -967,6 +967,39 @@ def build_voice_clone_line_package(cfg: dict, episode_package_root: Path, line: 
     }
 
 
+def merge_scene_regeneration_metadata(
+    quality_assessment: dict,
+    previous_quality: dict | None = None,
+) -> dict:
+    merged = dict(quality_assessment) if isinstance(quality_assessment, dict) else {}
+    previous = previous_quality if isinstance(previous_quality, dict) else {}
+    retries = int(previous.get("regeneration_retries", 0) or 0)
+    retry_limit = int(
+        previous.get("regeneration_retry_limit", previous.get("max_regeneration_retries", 0)) or 0
+    )
+    if retries > 0:
+        merged["regeneration_retries"] = retries
+    if retry_limit > 0:
+        merged["regeneration_retry_limit"] = retry_limit
+        merged["max_regeneration_retries"] = retry_limit
+    for key in (
+        "last_regeneration_requested_at",
+        "last_regeneration_applied_at",
+        "last_regeneration_reason",
+        "last_regeneration_request_source",
+        "last_regeneration_queue_manifest",
+        "last_regeneration_apply_mode",
+    ):
+        value = clean_text(previous.get(key, ""))
+        if value:
+            merged[key] = value
+    if isinstance(previous.get("last_regeneration_queue_entry"), dict) and previous.get("last_regeneration_queue_entry"):
+        merged["last_regeneration_queue_entry"] = dict(previous.get("last_regeneration_queue_entry", {}))
+    if "queued_for_regeneration" in previous:
+        merged["queued_for_regeneration"] = bool(previous.get("queued_for_regeneration", False))
+    return merged
+
+
 def build_scene_production_package(
     cfg: dict,
     episode_id: str,
@@ -974,6 +1007,7 @@ def build_scene_production_package(
     scene: dict,
     scene_manifest: dict,
     scene_voice_plan: dict,
+    previous_scene_package: dict | None = None,
 ) -> dict:
     scene_id = clean_text(scene.get("scene_id", "") or scene_manifest.get("scene_id", "")) or "scene"
     scene_slug = production_scene_slug(scene_id)
@@ -1121,13 +1155,21 @@ def build_scene_production_package(
             },
         },
     }
-    scene_package["quality_assessment"] = scene_quality_assessment(
-        scene_id=scene_id,
-        current_outputs=scene_package.get("current_generated_outputs", {}),
-        voice_required=bool(voice_lines),
-        lipsync_required=bool(voice_lines),
-        reference_slot_count=len(reference_slots),
-        continuity_active=bool(continuity),
+    previous_quality = (
+        previous_scene_package.get("quality_assessment", {})
+        if isinstance(previous_scene_package, dict) and isinstance(previous_scene_package.get("quality_assessment", {}), dict)
+        else {}
+    )
+    scene_package["quality_assessment"] = merge_scene_regeneration_metadata(
+        scene_quality_assessment(
+            scene_id=scene_id,
+            current_outputs=scene_package.get("current_generated_outputs", {}),
+            voice_required=bool(voice_lines),
+            lipsync_required=bool(voice_lines),
+            reference_slot_count=len(reference_slots),
+            continuity_active=bool(continuity),
+        ),
+        previous_quality,
     )
     return scene_package
 
@@ -1139,12 +1181,14 @@ def build_episode_production_package_payload(
     manifest: dict,
     voice_plan_payload: dict,
     package_root: Path,
+    existing_scene_packages: dict[str, dict] | None = None,
 ) -> dict:
     scenes = shotlist.get("scenes", []) if isinstance(shotlist.get("scenes", []), list) else []
     manifest_scenes = manifest.get("scenes", []) if isinstance(manifest.get("scenes", []), list) else []
     voice_plan_scenes = voice_plan_payload.get("scenes", []) if isinstance(voice_plan_payload.get("scenes", []), list) else []
     manifest_index = {clean_text(scene.get("scene_id", "")): scene for scene in manifest_scenes if isinstance(scene, dict)}
     voice_plan_index = {clean_text(scene.get("scene_id", "")): scene for scene in voice_plan_scenes if isinstance(scene, dict)}
+    existing_scene_index = existing_scene_packages if isinstance(existing_scene_packages, dict) else {}
     scene_packages: list[dict] = []
     for scene in scenes:
         if not isinstance(scene, dict):
@@ -1158,6 +1202,7 @@ def build_episode_production_package_payload(
                 scene,
                 manifest_index.get(scene_id, {}),
                 voice_plan_index.get(scene_id, {}),
+                existing_scene_index.get(scene_id, {}),
             )
         )
     total_line_count = sum(len(scene.get("voice_clone", {}).get("lines", [])) for scene in scene_packages if isinstance(scene.get("voice_clone", {}), dict))
@@ -1459,7 +1504,25 @@ def write_episode_production_package(
     package_root.mkdir(parents=True, exist_ok=True)
     scene_root.mkdir(parents=True, exist_ok=True)
     master_root.mkdir(parents=True, exist_ok=True)
-    payload = build_episode_production_package_payload(cfg, episode_id, shotlist, manifest, voice_plan_payload, package_root)
+    existing_scene_packages: dict[str, dict] = {}
+    for existing_scene_path in scene_root.glob("*_production.json"):
+        existing_payload = read_json(existing_scene_path, {})
+        if not isinstance(existing_payload, dict):
+            continue
+        existing_scene_id = clean_text(existing_payload.get("scene_id", "")) or clean_text(
+            existing_scene_path.stem.removesuffix("_production")
+        )
+        if existing_scene_id:
+            existing_scene_packages[existing_scene_id] = existing_payload
+    payload = build_episode_production_package_payload(
+        cfg,
+        episode_id,
+        shotlist,
+        manifest,
+        voice_plan_payload,
+        package_root,
+        existing_scene_packages=existing_scene_packages,
+    )
     scene_package_paths: list[str] = []
     for scene in payload.get("scenes", []) if isinstance(payload.get("scenes", []), list) else []:
         if not isinstance(scene, dict):
@@ -1520,6 +1583,7 @@ def refresh_scene_package_outputs(scene_package: dict, package_root: Path) -> di
     storyboard = refreshed.get("storyboard", {}) if isinstance(refreshed.get("storyboard", {}), dict) else {}
     voice_clone = refreshed.get("voice_clone", {}) if isinstance(refreshed.get("voice_clone", {}), dict) else {}
     lip_sync = refreshed.get("lip_sync", {}) if isinstance(refreshed.get("lip_sync", {}), dict) else {}
+    previous_quality = refreshed.get("quality_assessment", {}) if isinstance(refreshed.get("quality_assessment", {}), dict) else {}
     target_paths = scene_package_target_paths(refreshed)
     primary_frame_text = clean_text(target_paths.get("primary_frame", ""))
     alternate_dir_text = clean_text(target_paths.get("alternate_frame_dir", ""))
@@ -1564,13 +1628,16 @@ def refresh_scene_package_outputs(scene_package: dict, package_root: Path) -> di
         "has_visual_beat_reference_images": bool(beat_reference_images),
         "local_composed_scene_video": bool(current_outputs.get("local_composed_scene_video", False)),
     }
-    refreshed["quality_assessment"] = scene_quality_assessment(
-        scene_id=scene_id,
-        current_outputs=refreshed.get("current_generated_outputs", {}),
-        voice_required=bool(voice_clone.get("required", False)),
-        lipsync_required=bool(lip_sync.get("required", False)),
-        reference_slot_count=len(storyboard.get("reference_slots", [])) if isinstance(storyboard.get("reference_slots", []), list) else 0,
-        continuity_active=bool(storyboard.get("continuity", {})),
+    refreshed["quality_assessment"] = merge_scene_regeneration_metadata(
+        scene_quality_assessment(
+            scene_id=scene_id,
+            current_outputs=refreshed.get("current_generated_outputs", {}),
+            voice_required=bool(voice_clone.get("required", False)),
+            lipsync_required=bool(lip_sync.get("required", False)),
+            reference_slot_count=len(storyboard.get("reference_slots", [])) if isinstance(storyboard.get("reference_slots", []), list) else 0,
+            continuity_active=bool(storyboard.get("continuity", {})),
+        ),
+        previous_quality,
     )
     return refreshed
 

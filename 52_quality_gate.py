@@ -31,6 +31,11 @@ def parse_args() -> argparse.Namespace:
         type=int,
         help="Override how many scenes should be suggested for the regeneration queue.",
     )
+    parser.add_argument(
+        "--max-regeneration-retries",
+        type=int,
+        help="Override how many rerender attempts each weak scene may receive before it stops being queued.",
+    )
     parser.add_argument("--strict", action="store_true", help="Fail if warnings remain even when the quality gate passes.")
     parser.add_argument("--print-json", action="store_true", help="Also print the full gate report as JSON.")
     return parser.parse_args()
@@ -52,6 +57,8 @@ def gate_config(cfg: dict[str, Any], args: argparse.Namespace) -> dict[str, Any]
         release_cfg["max_weak_scenes"] = int(args.max_weak_scenes)
     if args.max_regeneration_batch is not None:
         release_cfg["max_regeneration_batch"] = int(args.max_regeneration_batch)
+    if args.max_regeneration_retries is not None:
+        release_cfg["max_regeneration_retries"] = int(args.max_regeneration_retries)
     merged["release_mode"] = release_cfg
     return merged
 
@@ -151,6 +158,7 @@ def main() -> None:
         watch_threshold=float(release_cfg.get("watch_threshold", 0.52) or 0.52),
         release_threshold=float(release_cfg.get("min_episode_quality", 0.68) or 0.68),
         max_regeneration_batch=int(release_cfg.get("max_regeneration_batch", 8) or 8),
+        max_regeneration_retries=int(release_cfg.get("max_regeneration_retries", 3) or 3),
     )
     warnings = build_warnings(artifacts)
     strict_fail = bool(args.strict and warnings)
@@ -170,6 +178,7 @@ def main() -> None:
         "release_gate": release_result,
         "warnings": warnings,
         "strict_fail": strict_fail,
+        "max_regeneration_retries": int(release_cfg.get("max_regeneration_retries", 3) or 3),
         "regeneration_queue": regeneration_queue,
     }
 

@@ -64,7 +64,7 @@ The default path stays local-first and license-light. The project already produc
 - dedicated delivery bundles under `generation/renders/deliveries/<episode>` plus stable `generation/renders/deliveries/latest`
 - production-readiness summaries, backend-runner summaries, and heuristic scene/episode quality scoring in orchestration outputs and the series bible
 - exportable external handoff packages under `exports/packages/<episode>/<format>`
-- release-style quality-gate reports with regeneration queues, plus optional enforcement in the main finished-episode orchestrators when `release_mode.enabled` is turned on
+- release-style quality-gate reports with regeneration queues, preserved retry metadata across rerenders, and optional enforcement in the main finished-episode orchestrators when `release_mode.enabled` is turned on
 
 ## Current Focus
 
@@ -85,6 +85,7 @@ The default path stays local-first and license-light. The project already produc
 - `15_render_episode.py` reuses backend frames/clips when present, assembles voiced scene masters, writes delivery bundles, and keeps improving the final generated-episode package
 - `51_export_package.py` now exports real generated-episode packages for JSON, DaVinci-style, and Premiere-style handoff folders
 - `52_quality_gate.py` now writes persistent quality-gate reports, regeneration queues, and feeds that state back into episode artifacts
+- `53_regenerate_weak_scenes.py` turns quality-gate queues into retry manifests and can rerun the current full-episode retry chain while preserving scene retry state
 - `16_build_series_bible.py`, `57_generate_finished_episodes.py`, and `99_process_next_episode.py` surface readiness, backend coverage, and quality scoring for generated episodes
 - `49_refresh_after_manual_review.py` and `57_generate_finished_episodes.py` now follow the real train-then-generate/render order against the current script names
 - `49_refresh_after_manual_review.py`, `57_generate_finished_episodes.py`, and `99_process_next_episode.py` can now run `52_quality_gate.py` automatically after render when `release_mode.enabled` is active
@@ -95,10 +96,10 @@ The default path stays local-first and license-light. The project already produc
 
 Only untouched follow-up work belongs here. If implementation has already started, it belongs in `In Progress`.
 
-- automatic re-queue for weak scenes based on the new quality scores
 - backend preset benchmarking so different local runner command templates can be compared automatically
 - stronger per-character continuity memory across generated episodes, including outfit and look consistency
-- release-gate retry orchestration that can automatically rerender or requeue weak scenes instead of only failing the batch
+- scene-selective regeneration so weak-scene retries no longer need a full `54 -> 15 -> 52` rerun
+- auto-release retry orchestration that can decide when `53_regenerate_weak_scenes.py` should run automatically after a failed gate
 - worker capability scheduling so GPU-heavy steps can prefer stronger machines automatically on NAS runs
 
 ## Documentation Rule
@@ -134,7 +135,7 @@ Also keep the `In Progress` and `Planned` sections current.
 - `50_run_backend_finetunes.py`: backend-oriented fine-tune/materialization bridge after `12`
 - `51_export_package.py`: export generated-episode bundles for external tools
 - `52_quality_gate.py`: evaluate finished episodes against release-style thresholds and write regeneration hints
-- `53_run_scene_backend.py` to `56_restore_project.py`: backend and maintenance helpers
+- `53_regenerate_weak_scenes.py` to `56_restore_project.py`: regeneration, backup, and maintenance helpers
 - `57_generate_finished_episodes.py`: batch or endless finished-episode generation
 - `99_process_next_episode.py`: full end-to-end coordinator
 
@@ -175,6 +176,7 @@ Also keep the `In Progress` and `Planned` sections current.
 
 - `paths.export_packages`: root for `51_export_package.py`
 - `release_mode.*`: optional release thresholds and strictness for `52_quality_gate.py` plus the main orchestrators
+- `release_mode.max_regeneration_retries`: cap for how often one weak scene may stay in the retry queue before `53_regenerate_weak_scenes.py` stops requesting another rerender
 
 ## Quick Start
 
@@ -269,6 +271,14 @@ Builds handoff folders under `exports/packages/<episode>/<format>` from the real
 
 Evaluates the latest or requested generated episode against `release_mode` thresholds, writes a report JSON plus regeneration queue, and updates the recorded episode artifacts with the result.
 
+### 53 - Regenerate Weak Scenes
+
+Turns the current quality-gate queue into a persistent retry manifest and can optionally apply the current retry loop:
+
+`54 -> 15 -> 52`
+
+Retry state is written back into the production package, scene packages, shotlist, and render manifest so later rerenders keep the same retry counters.
+
 ### 13 - Generate Episode
 
 Generates a new synthetic episode blueprint and shotlist from the trained local model. It also writes per-scene storyboard plans and backend-ready storyboard request exports.
@@ -327,6 +337,7 @@ python 14_generate_storyboard_assets.py
 python 54_run_storyboard_backend.py
 python 15_render_episode.py
 python 52_quality_gate.py
+python 53_regenerate_weak_scenes.py
 python 16_build_series_bible.py
 ```
 
@@ -350,6 +361,13 @@ python 52_quality_gate.py
 python 52_quality_gate.py --strict
 ```
 
+Write or apply a weak-scene regeneration manifest:
+
+```powershell
+python 53_regenerate_weak_scenes.py
+python 53_regenerate_weak_scenes.py --apply
+```
+
 Shared NAS transcription example:
 
 ```powershell
@@ -364,6 +382,7 @@ python 04_diarize_and_transcribe.py --worker-id pc2
 - the local finished episode is already watchable, but not yet a TV-grade final production
 - fully new dialogue lines still depend on generated speech when no strong original segment can be reused
 - lip-sync and generated scene video quality still depend on later backend tuning
+- `53_regenerate_weak_scenes.py` currently reruns the full episode-level storyboard/render/gate chain instead of only the flagged scenes
 - orchestration-heavy scripts mainly use exclusive leases; the fine-grained parallelism lives in worker-heavy numbered steps underneath
 - `release_mode` is optional and stays disabled by default until your local image/video/lip-sync outputs are good enough to gate production automatically
 
@@ -411,6 +430,7 @@ python 57_generate_finished_episodes.py --count 2 --skip-downloads
 ```powershell
 python 51_export_package.py --format davinci --copy-media
 python 52_quality_gate.py
+python 53_regenerate_weak_scenes.py --apply
 ```
 
 Endless mode:

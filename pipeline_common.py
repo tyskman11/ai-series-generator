@@ -327,6 +327,7 @@ DEFAULT_CONFIG = {
         "max_weak_scenes": 2,
         "watch_threshold": 0.52,
         "max_regeneration_batch": 8,
+        "max_regeneration_retries": 3,
         "strict_warnings": False,
     },
     "external_backends": {
@@ -1904,6 +1905,31 @@ def generated_episode_artifacts(cfg: dict[str, Any], episode_id: str) -> dict[st
             (shotlist.get("quality_gate_warnings") if isinstance(shotlist, dict) else [])
             or (render_manifest.get("quality_gate_warnings") if isinstance(render_manifest, dict) else [])
             or []
+        ),
+        "regeneration_queue_manifest": coalesce_text(
+            (shotlist.get("regeneration_queue_manifest") if isinstance(shotlist, dict) else "")
+            or (render_manifest.get("regeneration_queue_manifest") if isinstance(render_manifest, dict) else "")
+        ),
+        "regeneration_requested_scene_ids": list(
+            (shotlist.get("regeneration_requested_scene_ids") if isinstance(shotlist, dict) else [])
+            or (render_manifest.get("regeneration_requested_scene_ids") if isinstance(render_manifest, dict) else [])
+            or []
+        ),
+        "regeneration_last_requested_at": coalesce_text(
+            (shotlist.get("regeneration_last_requested_at") if isinstance(shotlist, dict) else "")
+            or (render_manifest.get("regeneration_last_requested_at") if isinstance(render_manifest, dict) else "")
+        ),
+        "regeneration_apply_requested": bool(
+            (shotlist.get("regeneration_apply_requested") if isinstance(shotlist, dict) else False)
+            or (render_manifest.get("regeneration_apply_requested") if isinstance(render_manifest, dict) else False)
+        ),
+        "regeneration_apply_requested_at": coalesce_text(
+            (shotlist.get("regeneration_apply_requested_at") if isinstance(shotlist, dict) else "")
+            or (render_manifest.get("regeneration_apply_requested_at") if isinstance(render_manifest, dict) else "")
+        ),
+        "regeneration_last_applied_at": coalesce_text(
+            (shotlist.get("regeneration_last_applied_at") if isinstance(shotlist, dict) else "")
+            or (render_manifest.get("regeneration_last_applied_at") if isinstance(render_manifest, dict) else "")
         ),
         "regeneration_queue_count": int(
             (shotlist.get("regeneration_queue_count") if isinstance(shotlist, dict) else 0)
@@ -3808,7 +3834,7 @@ def scene_weakness_detection(
     *,
     watch_threshold: float = 0.52,
     release_threshold: float = 0.8,
-    min_regeneration_retries: int = 3,
+    max_regeneration_retries: int = 3,
 ) -> dict[str, Any]:
     quality_score = clamp_quality_score(scene_quality.get("quality_score", 0.0))
     component_scores = scene_quality.get("component_scores", {}) if isinstance(scene_quality.get("component_scores"), dict) else {}
@@ -3817,7 +3843,7 @@ def scene_weakness_detection(
     needs_regeneration = quality_score < watch_threshold
     regeneration_priority = "high" if quality_score < 0.35 else ("medium" if quality_score < watch_threshold else "low")
     current_retries = int(scene_quality.get("regeneration_retries", 0) or 0)
-    can_retry = current_retries < min_regeneration_retries
+    can_retry = current_retries < max_regeneration_retries
     return {
         "scene_id": scene_id,
         "quality_score": quality_score,
@@ -3828,6 +3854,8 @@ def scene_weakness_detection(
         "regeneration_priority": regeneration_priority,
         "current_retries": current_retries,
         "can_retry": can_retry,
+        "max_regeneration_retries": max_regeneration_retries,
+        "retry_limit": max_regeneration_retries,
         "watch_threshold": watch_threshold,
         "release_threshold": release_threshold,
         "scenes_below_watch": quality_score < watch_threshold,
@@ -3841,6 +3869,7 @@ def queue_scenes_for_regeneration(
     watch_threshold: float = 0.52,
     release_threshold: float = 0.8,
     max_regeneration_batch: int = 8,
+    max_regeneration_retries: int = 3,
 ) -> list[dict[str, Any]]:
     queue: list[dict[str, Any]] = []
     for sq in scene_qualities:
@@ -3850,6 +3879,7 @@ def queue_scenes_for_regeneration(
             sq,
             watch_threshold=watch_threshold,
             release_threshold=release_threshold,
+            max_regeneration_retries=max_regeneration_retries,
         )
         if detection.get("needs_regeneration") and detection.get("can_retry"):
             queue.append(detection)
