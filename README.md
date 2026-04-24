@@ -273,15 +273,9 @@ Only untouched follow-up work stays here. If implementation has started or parti
 
 ### Automation
 
-- (see 21_export_package.py)
-
 ### Infrastructure
 
-- (see pipeline_common.py)
-
 ### New Feature Ideas
-
-- add multi-language subtitle translator
 
 ## Documentation Rule
 
@@ -336,7 +330,11 @@ Also keep the `In Progress` and `Planned` sections current. If priorities change
 - `28_merge_episodes.py`: merge multiple episodes into one season
 - `29_subtitle_generator.py`: generate subtitles from dialog (SRT, VTT)
 - `30_music_cue_sheet.py`: generate music cue points for scenes
-- `31_sync_to_github.py`: sync local changes to GitHub (helper script, do not commit)
+- `31_multi_language_subtitle.py`: translate subtitles to multiple languages
+- `32_chapter_marker.py`: auto-detect chapter markers from content
+- `33_podcast_export.py`: export audio-only for podcast feeds
+- `34_social_media_clips.py`: generate social media clips (TikTok, Reels, Shorts)
+- `35_sync_to_github.py`: sync local changes to GitHub (last step)
 - `99_process_next_episode.py`: run the full end-to-end workflow
 - `pipeline_common.py`: shared helpers for paths, config, runtime, progress reporting, and status handling
 
