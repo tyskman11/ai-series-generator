@@ -334,7 +334,11 @@ Also keep the `In Progress` and `Planned` sections current. If priorities change
 - `32_chapter_marker.py`: auto-detect chapter markers from content
 - `33_podcast_export.py`: export audio-only for podcast feeds
 - `34_social_media_clips.py`: generate social media clips (TikTok, Reels, Shorts)
-- `35_sync_to_github.py`: sync local changes to GitHub (last step)
+- `35_trailer_generator.py`: generate trailer from episode footage
+- `36_recap_generator.py`: generate recap episode from season
+- `37_episode_archive.py`: archive old episodes with retention
+- `38_review_queue.py`: review workflow queue system
+- `39_sync_to_github.py`: sync local changes to GitHub (last step)
 - `99_process_next_episode.py`: run the full end-to-end workflow
 - `pipeline_common.py`: shared helpers for paths, config, runtime, progress reporting, and status handling
 
