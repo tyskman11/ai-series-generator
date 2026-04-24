@@ -226,7 +226,32 @@ All scripts in this repository are AI-generated and maintained with `GPT-5.4`.
 
 Only untouched follow-up work stays here. If implementation has started or partial code already exists, it belongs in `In Progress` instead.
 
-- No untouched follow-up items are listed right now. The remaining major themes are all active work and are tracked in `In Progress`.
+### Quality
+
+- add automatic quality scoring per generated scene for character fidelity, lip-sync quality, audio quality, motion stability, and visual consistency
+- add automatic re-queue logic for weak scenes so failed or low-quality image/video/lip-sync outputs can be regenerated selectively
+- persist stronger per-character continuity memory across generated episodes, including outfits, hairstyles, colors, and voice traits
+- add series- and season-level style profiles for look, pacing, color mood, framing, and dialogue rhythm
+- improve side-character and crowd handling so background figures stay plausible without destabilizing main-character identity
+
+### Automation
+
+- add shot-level generation and render orchestration so scenes can be split into true sub-shots instead of being handled only at scene level
+- add automatic speaker/casting conflict checks so wrong voices, wrong languages, or wrong face/identity assignments are detected before final delivery
+- integrate background music, room tone, and transition sound design into the finished-episode pipeline
+- add multi-language subtitle and export workflows for final episodes, including synchronized subtitle variants
+- derive stronger prompt and render constraints automatically from the series bible so recurring rules stay enforced without manual rewriting
+
+### Infrastructure
+
+- add a web/dashboard layer for review status, training progress, runner readiness, generated episodes, and open failures
+- improve worker scheduling so GPU-heavy or backend-specific tasks are assigned to the most suitable participating machine automatically
+- add backend/model comparison workflows so multiple local runners can be evaluated and the best output per scene can be selected automatically
+- add project-wide runtime and throughput forecasting so long training and generation batches can estimate expected duration ahead of time
+
+### Release
+
+- add a stricter release mode that marks an episode as truly finished only when all configured backend, quality, and delivery gates are satisfied
 
 ## Documentation Rule
 
