@@ -37,6 +37,7 @@ from pipeline_common import (
     ok,
     read_json,
     rerun_in_runtime,
+    run_external_backend_runner,
     resolve_project_path,
     resolve_stored_project_path,
     release_distributed_lease,
@@ -1193,6 +1194,7 @@ def build_episode_production_package_payload(
     return {
         "episode_id": episode_id,
         "package_kind": "full_generated_episode_backend_package",
+        "render_mode": clean_text(manifest.get("render_mode", "")),
         "display_title": clean_text(shotlist.get("display_title", episode_id)),
         "episode_title": clean_text(shotlist.get("episode_title", "")),
         "source_shotlist": clean_text(manifest.get("shotlist_path", "")),
@@ -1454,6 +1456,9 @@ def write_episode_production_package(
         scene_package_paths.append(str(scene_path))
     prompt_preview_path = master_root / f"{episode_id}_backend_prompts.txt"
     package_path = master_root / f"{episode_id}_production_package.json"
+    payload["package_root"] = str(package_root)
+    payload["package_path"] = str(package_path)
+    payload["prompt_preview_path"] = str(prompt_preview_path)
     payload["scene_package_paths"] = scene_package_paths
     payload["prompt_preview"] = str(prompt_preview_path)
     write_text(prompt_preview_path, render_production_prompt_preview(payload.get("scenes", []) if isinstance(payload.get("scenes", []), list) else []))
@@ -1464,6 +1469,303 @@ def write_episode_production_package(
         "prompt_preview_path": str(prompt_preview_path),
         "scene_package_paths": scene_package_paths,
     }
+
+
+def scene_package_target_paths(scene_package: dict) -> dict[str, str]:
+    image_generation = scene_package.get("image_generation", {}) if isinstance(scene_package.get("image_generation", {}), dict) else {}
+    image_outputs = image_generation.get("target_outputs", {}) if isinstance(image_generation.get("target_outputs", {}), dict) else {}
+    video_generation = scene_package.get("video_generation", {}) if isinstance(scene_package.get("video_generation", {}), dict) else {}
+    video_outputs = video_generation.get("target_outputs", {}) if isinstance(video_generation.get("target_outputs", {}), dict) else {}
+    voice_clone = scene_package.get("voice_clone", {}) if isinstance(scene_package.get("voice_clone", {}), dict) else {}
+    voice_outputs = voice_clone.get("target_outputs", {}) if isinstance(voice_clone.get("target_outputs", {}), dict) else {}
+    lip_sync = scene_package.get("lip_sync", {}) if isinstance(scene_package.get("lip_sync", {}), dict) else {}
+    lipsync_outputs = lip_sync.get("target_outputs", {}) if isinstance(lip_sync.get("target_outputs", {}), dict) else {}
+    mastering = scene_package.get("mastering", {}) if isinstance(scene_package.get("mastering", {}), dict) else {}
+    mastering_outputs = mastering.get("target_outputs", {}) if isinstance(mastering.get("target_outputs", {}), dict) else {}
+    return {
+        "primary_frame": clean_text(image_outputs.get("primary_frame", "")),
+        "alternate_frame_dir": clean_text(image_outputs.get("alternate_frame_dir", "")),
+        "layered_storyboard_frame": clean_text(image_outputs.get("layered_storyboard_frame", "")),
+        "scene_video": clean_text(video_outputs.get("scene_video", "")),
+        "video_preview_frame": clean_text(video_outputs.get("preview_frame", "")),
+        "video_poster_frame": clean_text(video_outputs.get("poster_frame", "")),
+        "scene_dialogue_audio": clean_text(voice_outputs.get("scene_dialogue_audio", "")),
+        "lipsync_video": clean_text(lipsync_outputs.get("lipsync_video", "")),
+        "lipsync_poster_frame": clean_text(lipsync_outputs.get("poster_frame", "")),
+        "scene_master_clip": clean_text(mastering_outputs.get("scene_master_clip", "")),
+    }
+
+
+def refresh_scene_package_outputs(scene_package: dict, package_root: Path) -> dict:
+    refreshed = dict(scene_package)
+    scene_id = clean_text(refreshed.get("scene_id", "")) or "scene"
+    current_outputs = refreshed.get("current_generated_outputs", {}) if isinstance(refreshed.get("current_generated_outputs", {}), dict) else {}
+    target_paths = scene_package_target_paths(refreshed)
+    primary_frame_text = clean_text(target_paths.get("primary_frame", ""))
+    alternate_dir_text = clean_text(target_paths.get("alternate_frame_dir", ""))
+    layered_storyboard_text = clean_text(target_paths.get("layered_storyboard_frame", ""))
+    scene_dialogue_audio_text = clean_text(target_paths.get("scene_dialogue_audio", ""))
+    scene_master_clip_text = clean_text(target_paths.get("scene_master_clip", ""))
+    lipsync_video_text = clean_text(target_paths.get("lipsync_video", ""))
+    primary_frame_path = resolve_stored_project_path(primary_frame_text) if primary_frame_text else Path()
+    alternate_dir_path = resolve_stored_project_path(alternate_dir_text) if alternate_dir_text else Path()
+    layered_storyboard_path = resolve_stored_project_path(layered_storyboard_text) if layered_storyboard_text else Path()
+    scene_dialogue_audio_path = resolve_stored_project_path(scene_dialogue_audio_text) if scene_dialogue_audio_text else Path()
+    scene_master_clip_path = resolve_stored_project_path(scene_master_clip_text) if scene_master_clip_text else Path()
+    lipsync_video_path = resolve_stored_project_path(lipsync_video_text) if lipsync_video_text else Path()
+    scene_video_source = first_existing_production_scene_video(package_root, scene_id)
+    beat_reference_images = current_outputs.get("beat_reference_images", []) if isinstance(current_outputs.get("beat_reference_images", []), list) else []
+    local_video_plan = refreshed.get("video_generation", {}).get("local_video_plan", {}) if isinstance(refreshed.get("video_generation", {}), dict) else {}
+    if not beat_reference_images and isinstance(local_video_plan, dict):
+        beat_reference_images = [
+            clean_text(beat.get("reference_image_path", ""))
+            for beat in local_video_plan.get("beats", [])
+            if isinstance(beat, dict) and clean_text(beat.get("reference_image_path", ""))
+        ]
+    scene_visual_beat_count = int(current_outputs.get("scene_visual_beat_count", 0) or 0)
+    if scene_visual_beat_count <= 0 and isinstance(local_video_plan, dict):
+        scene_visual_beat_count = int(local_video_plan.get("beat_count", 0) or 0)
+    refreshed["current_generated_outputs"] = {
+        **current_outputs,
+        "video_source_type": scene_video_source[0] if scene_video_source else "",
+        "video_source_path": str(scene_video_source[1]) if scene_video_source else "",
+        "scene_dialogue_audio": str(scene_dialogue_audio_path) if render_output_ready(scene_dialogue_audio_path) else "",
+        "scene_master_clip": str(scene_master_clip_path) if render_output_ready(scene_master_clip_path) else "",
+        "generated_primary_frame": str(primary_frame_path) if render_output_ready(primary_frame_path) else "",
+        "generated_layered_storyboard_frame": str(layered_storyboard_path) if render_output_ready(layered_storyboard_path) else "",
+        "generated_lipsync_video": str(lipsync_video_path) if render_output_ready(lipsync_video_path) else "",
+        "alternate_frame_dir": str(alternate_dir_path) if alternate_dir_text and alternate_dir_path.exists() else "",
+        "has_generated_scene_video": bool(scene_video_source),
+        "has_generated_primary_frame": render_output_ready(primary_frame_path),
+        "has_scene_dialogue_audio": render_output_ready(scene_dialogue_audio_path),
+        "has_scene_master_clip": render_output_ready(scene_master_clip_path),
+        "scene_visual_beat_count": scene_visual_beat_count,
+        "beat_reference_images": beat_reference_images,
+        "has_visual_beat_reference_images": bool(beat_reference_images),
+        "local_composed_scene_video": bool(current_outputs.get("local_composed_scene_video", False)),
+    }
+    return refreshed
+
+
+def refresh_episode_production_package(
+    package_path: Path,
+    *,
+    full_generated_episode_path: Path | None = None,
+    backend_runner_summary: dict | None = None,
+) -> dict:
+    payload = read_json(package_path, {})
+    if not isinstance(payload, dict):
+        return {}
+    package_root_text = clean_text(payload.get("package_root", ""))
+    package_root = resolve_stored_project_path(package_root_text) if package_root_text else package_path.parent.parent
+    scene_package_paths = payload.get("scene_package_paths", []) if isinstance(payload.get("scene_package_paths", []), list) else []
+    refreshed_scenes: list[dict] = []
+    resolved_scene_paths: list[str] = []
+    for index, scene_package_path_raw in enumerate(scene_package_paths):
+        scene_package_path = resolve_stored_project_path(scene_package_path_raw)
+        if scene_package_path is None or not scene_package_path.exists():
+            scene_payload = payload.get("scenes", [])[index] if index < len(payload.get("scenes", [])) and isinstance(payload.get("scenes", []), list) else {}
+            if not isinstance(scene_payload, dict):
+                continue
+            refreshed_scene = refresh_scene_package_outputs(scene_payload, package_root)
+            refreshed_scenes.append(refreshed_scene)
+            continue
+        scene_payload = read_json(scene_package_path, {})
+        if not isinstance(scene_payload, dict):
+            continue
+        refreshed_scene = refresh_scene_package_outputs(scene_payload, package_root)
+        write_json(scene_package_path, refreshed_scene)
+        refreshed_scenes.append(refreshed_scene)
+        resolved_scene_paths.append(str(scene_package_path))
+
+    completion_status = generated_episode_completion_summary(
+        scene_count=len(refreshed_scenes),
+        generated_scene_video_count=sum(
+            1
+            for scene in refreshed_scenes
+            if isinstance(scene.get("current_generated_outputs", {}), dict)
+            and bool(scene["current_generated_outputs"].get("has_generated_scene_video", False))
+        ),
+        scene_dialogue_audio_count=sum(
+            1
+            for scene in refreshed_scenes
+            if isinstance(scene.get("current_generated_outputs", {}), dict)
+            and bool(scene["current_generated_outputs"].get("has_scene_dialogue_audio", False))
+        ),
+        scene_master_clip_count=sum(
+            1
+            for scene in refreshed_scenes
+            if isinstance(scene.get("current_generated_outputs", {}), dict)
+            and bool(scene["current_generated_outputs"].get("has_scene_master_clip", False))
+        ),
+        render_mode=clean_text(payload.get("render_mode", "")),
+        final_render=clean_text((payload.get("current_preview_outputs", {}) if isinstance(payload.get("current_preview_outputs", {}), dict) else {}).get("final_storyboard_render", "")),
+        full_generated_episode=str(full_generated_episode_path) if full_generated_episode_path and render_output_ready(full_generated_episode_path) else "",
+    )
+    payload["scenes"] = refreshed_scenes
+    payload["scene_count"] = len(refreshed_scenes)
+    payload["scene_package_paths"] = resolved_scene_paths or scene_package_paths
+    payload["line_count"] = sum(
+        len(scene.get("voice_clone", {}).get("lines", []))
+        for scene in refreshed_scenes
+        if isinstance(scene.get("voice_clone", {}), dict)
+    )
+    payload["completion_status"] = completion_status
+    payload["package_root"] = str(package_root)
+    payload["package_path"] = str(package_path)
+    if backend_runner_summary:
+        payload["backend_runner_summary"] = backend_runner_summary
+    write_json(package_path, payload)
+    return payload
+
+
+def build_scene_runner_context(
+    scene_package: dict,
+    scene_package_path: Path,
+    package_path: Path,
+    prompt_preview_path: Path,
+    package_root: Path,
+) -> dict[str, object]:
+    target_paths = scene_package_target_paths(scene_package)
+    scene_id = clean_text(scene_package.get("scene_id", "")) or scene_package_path.stem
+    current_outputs = scene_package.get("current_generated_outputs", {}) if isinstance(scene_package.get("current_generated_outputs", {}), dict) else {}
+    current_preview_assets = scene_package.get("current_preview_assets", {}) if isinstance(scene_package.get("current_preview_assets", {}), dict) else {}
+    voice_clone = scene_package.get("voice_clone", {}) if isinstance(scene_package.get("voice_clone", {}), dict) else {}
+    lip_sync = scene_package.get("lip_sync", {}) if isinstance(scene_package.get("lip_sync", {}), dict) else {}
+    video_generation = scene_package.get("video_generation", {}) if isinstance(scene_package.get("video_generation", {}), dict) else {}
+    image_generation = scene_package.get("image_generation", {}) if isinstance(scene_package.get("image_generation", {}), dict) else {}
+    return {
+        "episode_id": clean_text(scene_package.get("episode_id", "")),
+        "scene_id": scene_id,
+        "scene_title": clean_text(scene_package.get("title", "")),
+        "scene_summary": clean_text(scene_package.get("summary", "")),
+        "scene_package_path": scene_package_path,
+        "scene_dir": scene_package_path.parent,
+        "package_path": package_path,
+        "package_root": package_root,
+        "prompt_preview_path": prompt_preview_path,
+        "preview_frame_path": clean_text(current_preview_assets.get("preview_frame_path", "")),
+        "preview_asset_path": clean_text(current_preview_assets.get("asset_source_path", "")),
+        "current_video_source_path": clean_text(current_outputs.get("video_source_path", "")),
+        "image_prompt": clean_text(image_generation.get("prompt", "")),
+        "video_prompt": clean_text(video_generation.get("prompt", "")),
+        "speaker_targets": ",".join(lip_sync.get("speaker_targets", [])) if isinstance(lip_sync.get("speaker_targets", []), list) else "",
+        "voice_line_count": len(voice_clone.get("lines", [])) if isinstance(voice_clone.get("lines", []), list) else 0,
+        **target_paths,
+    }
+
+
+def run_finished_episode_scene_runners(
+    cfg: dict,
+    package_path: Path,
+    prompt_preview_path: Path,
+    *,
+    force: bool,
+) -> dict[str, object]:
+    package_payload = read_json(package_path, {})
+    if not isinstance(package_payload, dict):
+        return {"scene_results": []}
+    package_root_text = clean_text(package_payload.get("package_root", ""))
+    package_root = resolve_stored_project_path(package_root_text) if package_root_text else package_path.parent.parent
+    scene_results: list[dict] = []
+    scene_package_paths = package_payload.get("scene_package_paths", []) if isinstance(package_payload.get("scene_package_paths", []), list) else []
+    runner_specs = [
+        ("finished_episode_image_runner", "image_generation"),
+        ("finished_episode_video_runner", "video_generation"),
+        ("finished_episode_voice_runner", "voice_clone"),
+        ("finished_episode_lipsync_runner", "lip_sync"),
+    ]
+    for scene_package_path_raw in scene_package_paths:
+        scene_package_path = resolve_stored_project_path(scene_package_path_raw)
+        if scene_package_path is None or not scene_package_path.exists():
+            continue
+        scene_package = read_json(scene_package_path, {})
+        if not isinstance(scene_package, dict):
+            continue
+        context = build_scene_runner_context(scene_package, scene_package_path, package_path, prompt_preview_path, package_root)
+        runner_rows: list[dict] = []
+        for runner_name, section_name in runner_specs:
+            section_payload = scene_package.get(section_name, {}) if isinstance(scene_package.get(section_name, {}), dict) else {}
+            if not bool(section_payload.get("required", False)):
+                continue
+            runner_rows.append(
+                run_external_backend_runner(
+                    cfg,
+                    runner_name,
+                    context=context,
+                    force=force,
+                    fallback_cwd=scene_package_path.parent,
+                    log_dir=resolve_project_path("logs") / "external_backends" / runner_name / clean_text(scene_package.get("episode_id", "")) / clean_text(scene_package.get("scene_id", "")),
+                )
+            )
+        scene_results.append(
+            {
+                "scene_id": clean_text(scene_package.get("scene_id", "")),
+                "scene_package_path": str(scene_package_path),
+                "runner_results": runner_rows,
+            }
+        )
+    summary_path = package_path.parent / f"{package_path.stem}_backend_runners.json"
+    summary = {
+        "package_path": str(package_path),
+        "prompt_preview_path": str(prompt_preview_path),
+        "scene_results": scene_results,
+    }
+    write_json(summary_path, summary)
+    summary["summary_path"] = str(summary_path)
+    return summary
+
+
+def run_finished_episode_master_runner(
+    cfg: dict,
+    package_payload: dict,
+    *,
+    force: bool,
+) -> dict[str, object]:
+    package_path_text = clean_text(package_payload.get("package_path", ""))
+    if not package_path_text:
+        return {"status": "missing_package"}
+    package_path = resolve_stored_project_path(package_path_text)
+    package_root_text = clean_text(package_payload.get("package_root", ""))
+    package_root = resolve_stored_project_path(package_root_text) if package_root_text else package_path.parent.parent
+    prompt_preview_text = clean_text(package_payload.get("prompt_preview_path", ""))
+    prompt_preview_path = resolve_stored_project_path(prompt_preview_text) if prompt_preview_text else Path()
+    target_master_outputs = package_payload.get("target_master_outputs", {}) if isinstance(package_payload.get("target_master_outputs", {}), dict) else {}
+    result = run_external_backend_runner(
+        cfg,
+        "finished_episode_master_runner",
+        context={
+            "episode_id": clean_text(package_payload.get("episode_id", "")),
+            "package_path": package_path,
+            "package_root": package_root,
+            "prompt_preview_path": prompt_preview_path or "",
+            "final_master_episode": clean_text(target_master_outputs.get("final_master_episode", "")),
+            "video_root": clean_text(target_master_outputs.get("video_root", "")),
+            "audio_root": clean_text(target_master_outputs.get("audio_root", "")),
+            "lipsync_root": clean_text(target_master_outputs.get("lipsync_root", "")),
+            "scene_master_root": clean_text(target_master_outputs.get("scene_master_root", "")),
+        },
+        force=force,
+        fallback_cwd=package_root,
+        log_dir=resolve_project_path("logs") / "external_backends" / "finished_episode_master_runner" / clean_text(package_payload.get("episode_id", "")),
+    )
+    summary_path = package_path.parent / f"{package_path.stem}_master_runner.json"
+    write_json(summary_path, result)
+    result["summary_path"] = str(summary_path)
+    return result
+
+
+def collect_scene_dialogue_outputs_from_package(package_payload: dict) -> dict[str, str]:
+    outputs: dict[str, str] = {}
+    for scene in package_payload.get("scenes", []) if isinstance(package_payload.get("scenes", []), list) else []:
+        if not isinstance(scene, dict):
+            continue
+        scene_id = clean_text(scene.get("scene_id", ""))
+        current_outputs = scene.get("current_generated_outputs", {}) if isinstance(scene.get("current_generated_outputs", {}), dict) else {}
+        scene_dialogue_audio = clean_text(current_outputs.get("scene_dialogue_audio", ""))
+        if scene_id and scene_dialogue_audio:
+            outputs[scene_id] = scene_dialogue_audio
+    return outputs
 
 
 def voice_supports_language(voice: dict, language_code: str) -> bool:
@@ -1802,7 +2104,12 @@ def materialize_scene_master_clips(
         scene_id = clean_text(scene.get("scene_id", ""))
         if not scene_id:
             continue
-        final_clip_path = resolve_stored_project_path(scene.get("final_clip_path", ""))
+        production_scene_video = first_existing_production_scene_video(package_root, scene_id)
+        final_clip_path = (
+            production_scene_video[1]
+            if production_scene_video is not None and render_output_ready(production_scene_video[1])
+            else resolve_stored_project_path(scene.get("final_clip_path", ""))
+        )
         if not render_output_ready(final_clip_path):
             continue
         scene_master_path = scene_master_clip_output_path(package_root, scene_id)
@@ -1879,6 +2186,61 @@ def materialize_scene_dialogue_tracks(
             concat_audio_segments(ffmpeg, concat_segments, output_path)
         scene_outputs[scene_id] = str(output_path)
     return scene_outputs
+
+
+def materialize_episode_audio_track_from_scene_outputs(
+    ffmpeg: Path,
+    voice_plan_scenes: list[dict],
+    total_duration: float,
+    scene_output_map: dict[str, str],
+    sample_rate: int,
+    output_path: Path,
+) -> dict[str, object]:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    concat_segments: list[Path] = []
+    cursor = 0.0
+    scene_audio_count = 0
+    silence_index = 0
+    with tempfile.TemporaryDirectory() as tmpdir:
+        temp_root = Path(tmpdir)
+        for scene in sorted(
+            [row for row in voice_plan_scenes if isinstance(row, dict)],
+            key=lambda item: float(item.get("scene_start_seconds", 0.0) or 0.0),
+        ):
+            scene_id = clean_text(scene.get("scene_id", ""))
+            scene_start = max(0.0, float(scene.get("scene_start_seconds", 0.0) or 0.0))
+            scene_duration = max(0.0, float(scene.get("duration_seconds", 0.0) or 0.0))
+            if scene_start > cursor + 0.01:
+                silence_path = temp_root / f"gap_{silence_index:04d}.wav"
+                create_silence_audio(ffmpeg, scene_start - cursor, silence_path, sample_rate)
+                concat_segments.append(silence_path)
+                silence_index += 1
+            scene_audio_path = resolve_stored_project_path(scene_output_map.get(scene_id, ""))
+            if render_output_ready(scene_audio_path) and scene_duration > 0.01:
+                normalized_scene_path = temp_root / f"scene_{len(concat_segments):04d}.wav"
+                normalize_line_audio(ffmpeg, scene_audio_path, scene_duration, normalized_scene_path, sample_rate)
+                concat_segments.append(normalized_scene_path)
+                scene_audio_count += 1
+            elif scene_duration > 0.01:
+                silence_path = temp_root / f"scene_silence_{silence_index:04d}.wav"
+                create_silence_audio(ffmpeg, scene_duration, silence_path, sample_rate)
+                concat_segments.append(silence_path)
+                silence_index += 1
+            cursor = max(cursor, scene_start + scene_duration)
+        tail_duration = max(0.0, float(total_duration or 0.0) - cursor)
+        if tail_duration > 0.01:
+            silence_path = temp_root / f"tail_{silence_index:04d}.wav"
+            create_silence_audio(ffmpeg, tail_duration, silence_path, sample_rate)
+            concat_segments.append(silence_path)
+        if not concat_segments:
+            create_silence_audio(ffmpeg, max(float(total_duration or 0.0), 0.25), output_path, sample_rate)
+        else:
+            concat_audio_segments(ffmpeg, concat_segments, output_path)
+    return {
+        "audio_path": str(output_path),
+        "scene_audio_count": scene_audio_count,
+        "scene_count": len([row for row in voice_plan_scenes if isinstance(row, dict)]),
+    }
 
 
 def render_episode_audio_track(
@@ -2693,6 +3055,118 @@ def main() -> None:
         manifest["render_manifest_path"] = str(manifest_path)
         write_json(manifest_path, manifest)
         production_package = write_episode_production_package(cfg, episode_id, shotlist, manifest, voice_plan_payload)
+        production_package_path_text = clean_text(production_package.get("package_path", ""))
+        prompt_preview_path_text = clean_text(production_package.get("prompt_preview_path", ""))
+        production_package_path_resolved = (
+            resolve_stored_project_path(production_package_path_text) if production_package_path_text else Path(production_package["package_path"])
+        )
+        prompt_preview_path_resolved = (
+            resolve_stored_project_path(prompt_preview_path_text) if prompt_preview_path_text else Path(production_package["prompt_preview_path"])
+        )
+        scene_runner_summary = run_finished_episode_scene_runners(
+            cfg,
+            production_package_path_resolved,
+            prompt_preview_path_resolved,
+            force=args.force,
+        )
+        production_package_payload = refresh_episode_production_package(
+            production_package_path_resolved,
+            full_generated_episode_path=full_generated_episode_path if render_output_ready(full_generated_episode_path) else None,
+            backend_runner_summary={"scene_runners": scene_runner_summary},
+        )
+        package_scene_dialogue_outputs = collect_scene_dialogue_outputs_from_package(production_package_payload)
+        generated_scene_dialogue_meta: dict[str, object] = {}
+        preferred_dialogue_audio_path = dialogue_audio_path if audio_track_meta else Path()
+        if package_scene_dialogue_outputs:
+            generated_scene_dialogue_path = package_root / "master" / f"{episode_id}_generated_scene_dialogue.wav"
+            generated_scene_dialogue_meta = materialize_episode_audio_track_from_scene_outputs(
+                ffmpeg,
+                voice_plan_scenes,
+                timeline_cursor,
+                package_scene_dialogue_outputs,
+                int(render_cfg.get("audio_sample_rate", 22050) or 22050),
+                generated_scene_dialogue_path,
+            )
+            generated_scene_dialogue_audio_path = resolve_stored_project_path(generated_scene_dialogue_meta.get("audio_path", ""))
+            if render_output_ready(generated_scene_dialogue_audio_path):
+                preferred_dialogue_audio_path = generated_scene_dialogue_audio_path
+        scene_master_audio_outputs = (
+            package_scene_dialogue_outputs
+            if package_scene_dialogue_outputs
+            else (
+                audio_track_meta.get("scene_dialogue_outputs", {})
+                if isinstance(audio_track_meta.get("scene_dialogue_outputs", {}), dict)
+                else {}
+            )
+        )
+        scene_master_outputs = materialize_scene_master_clips(
+            ffmpeg,
+            manifest_scenes,
+            scene_master_audio_outputs,
+            package_root,
+        )
+        for scene_meta in manifest_scenes:
+            if not isinstance(scene_meta, dict):
+                continue
+            scene_id = clean_text(scene_meta.get("scene_id", ""))
+            if scene_id and isinstance(scene_master_audio_outputs, dict):
+                scene_meta["scene_dialogue_audio"] = clean_text(scene_master_audio_outputs.get(scene_id, ""))
+            scene_meta["scene_master_clip"] = clean_text(scene_master_outputs.get(scene_id, ""))
+        package_master_clip_paths = [*opening_clip_paths]
+        for scene_meta, scene_clip_path in zip(manifest_scenes, scene_clip_paths):
+            if not isinstance(scene_meta, dict):
+                continue
+            scene_id = clean_text(scene_meta.get("scene_id", ""))
+            scene_master_path = resolve_stored_project_path(scene_master_outputs.get(scene_id, ""))
+            package_master_clip_paths.append(scene_master_path if render_output_ready(scene_master_path) else scene_clip_path)
+        package_master_clip_paths.extend(closing_clip_paths)
+        build_clip_concat_file(package_master_clip_paths, clip_concat_path)
+        master_runner_result = run_finished_episode_master_runner(
+            cfg,
+            production_package_payload,
+            force=args.force,
+        )
+        master_runner_ready = (
+            str(master_runner_result.get("status", "")).strip() in {"completed", "existing_outputs"}
+            and render_output_ready(full_generated_episode_path)
+        )
+        if master_runner_ready:
+            full_generated_episode_master_meta = {
+                "audio_muxed": bool(render_output_ready(preferred_dialogue_audio_path)),
+                "video_only_path": "",
+                "audio_source": str(preferred_dialogue_audio_path) if render_output_ready(preferred_dialogue_audio_path) else "",
+                "external_master_runner": True,
+            }
+        else:
+            full_generated_episode_master_meta = encode_full_generated_episode_master(
+                ffmpeg,
+                clip_concat_path,
+                full_generated_episode_path,
+                preferred_dialogue_audio_path if render_output_ready(preferred_dialogue_audio_path) else Path(),
+                crf=20,
+            )
+        production_package_payload = refresh_episode_production_package(
+            production_package_path_resolved,
+            full_generated_episode_path=full_generated_episode_path,
+            backend_runner_summary={
+                "scene_runners": scene_runner_summary,
+                "master_runner": master_runner_result,
+            },
+        )
+        production_package = production_package_payload
+        manifest["dialogue_audio"] = str(preferred_dialogue_audio_path) if render_output_ready(preferred_dialogue_audio_path) else ""
+        manifest["full_generated_episode"] = str(full_generated_episode_path)
+        manifest["full_generated_episode_master_meta"] = full_generated_episode_master_meta
+        manifest["scene_master_clip_count"] = len(scene_master_outputs)
+        manifest["generated_scene_dialogue_audio"] = str(preferred_dialogue_audio_path) if render_output_ready(preferred_dialogue_audio_path) else ""
+        manifest["generated_scene_dialogue_meta"] = generated_scene_dialogue_meta
+        manifest["production_backend_runner_manifest"] = clean_text(
+            (
+                production_package_payload.get("backend_runner_summary", {})
+                if isinstance(production_package_payload.get("backend_runner_summary", {}), dict)
+                else {}
+            ).get("scene_runners", {}).get("summary_path", "")
+        )
         delivery_bundle = write_episode_delivery_bundle(
             cfg,
             episode_id,
@@ -2701,7 +3175,7 @@ def main() -> None:
             production_package,
             final_path,
             full_generated_episode_path,
-            dialogue_audio_path,
+            preferred_dialogue_audio_path,
             subtitle_preview_path,
             voice_plan_path,
         )
@@ -2720,13 +3194,14 @@ def main() -> None:
         shotlist["render_manifest"] = str(manifest_path)
         shotlist["draft_render"] = str(draft_path)
         shotlist["final_render"] = str(final_path)
-        shotlist["dialogue_audio"] = str(dialogue_audio_path) if audio_track_meta else ""
+        shotlist["dialogue_audio"] = str(preferred_dialogue_audio_path) if render_output_ready(preferred_dialogue_audio_path) else ""
         shotlist["voice_plan"] = str(voice_plan_path)
         shotlist["subtitle_preview"] = str(subtitle_preview_path)
         shotlist["full_generated_episode"] = str(full_generated_episode_path)
         shotlist["production_package_root"] = production_package["package_root"]
         shotlist["production_package"] = production_package["package_path"]
         shotlist["production_prompt_preview"] = production_package["prompt_preview_path"]
+        shotlist["production_backend_runner_manifest"] = manifest.get("production_backend_runner_manifest", "")
         shotlist["delivery_bundle_root"] = delivery_bundle["delivery_root"]
         shotlist["delivery_manifest"] = delivery_bundle["delivery_manifest"]
         shotlist["delivery_episode"] = delivery_bundle["watch_episode"]
@@ -2744,7 +3219,7 @@ def main() -> None:
                 "episode_id": episode_id,
                 "draft_render": str(draft_path),
                 "final_render": str(final_path),
-                "dialogue_audio": str(dialogue_audio_path) if audio_track_meta else "",
+                "dialogue_audio": str(preferred_dialogue_audio_path) if render_output_ready(preferred_dialogue_audio_path) else "",
                 "render_mode": render_mode,
                 "manifest": str(manifest_path),
                 "production_package": production_package["package_path"],

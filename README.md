@@ -65,6 +65,7 @@ Starting from real episode files, the pipeline can:
 - export a dedicated delivery bundle per generated episode so one finished watchable episode, subtitles, manifests, and production snapshots live in one clear output folder
 - refresh one stable `generation/renders/deliveries/latest` handoff folder after every finished render so the newest locally finished episode always has one fixed final target path
 - export backend-ready production packages for fully generated episodes with new frames, cloned voices, and lip-sync
+- optionally call configured local image, video, voice-clone, lip-sync, storyboard, or episode-master runners directly from the numbered pipeline and fold their outputs back into the final package automatically
 - reuse original dialogue segments in final episode audio whenever matching source material is available, while falling back to local TTS only for truly new missing lines
 - automatically compose a more complete final episode from already generated per-scene video or lip-sync clips whenever those backend outputs exist
 - automatically materialize multi-shot local scene videos from storyboard/backend frames plus dialogue-aware beat variation when dedicated generated scene video is still missing
@@ -97,9 +98,11 @@ All scripts in this repository are AI-generated and maintained with `GPT-5.4`.
 - voice-training preparation now prioritizes original per-character dialogue segments from the source material and writes language-aware local voice-model profiles for each trained character
 - storyboard scene asset generation now writes backend-ready per-scene seed packages and can reuse moved training artifacts after workspace path changes
 - local storyboard backend materialization can turn those seed packages into reusable per-scene backend frames, alternates, posters, and local scene clips before render
+- the storyboard backend step can now also hand each per-scene backend input payload to one configured external local runner first, then still fill missing previews/posters/clips locally if needed
 - real episode titles for generated outputs instead of raw `folge_0x` placeholders
 - draft previews and local finished-episode rendering
 - full-episode production packages with per-scene image generation, video generation, voice clone, and lip-sync plans for later real episode backends
+- finished-episode rendering can now also call configured local scene-level image/video/voice/lip-sync runners plus an optional episode-master runner, refresh the production package from the produced files, and rebuild the final generated episode master from those outputs in the same `17_render_episode.py` run
 - mixed final-audio rendering that already reuses matching original dialogue segments, smooths every rendered line with loudness normalization and short fades, and materializes per-line/per-scene audio into the full-episode package
 - final-episode composition that already prefers generated scene videos and lip-sync clips from the production package over static storyboard cards whenever those scene outputs exist
 - local multi-shot scene-video materialization from generated frames, alternates, posters, or storyboard frames, so missing backend video shots still become moving scene clips
@@ -124,7 +127,7 @@ All scripts in this repository are AI-generated and maintained with `GPT-5.4`.
 - improve the voice path so future local cloning backends can replace simple fallback TTS where appropriate
 - keep the voice path centered on original per-character dialogue material instead of generic online voice base models
 - improve the model-side storyboard planning so future image/video backends can use original-series references without relying on any graphical node editor or UI-specific workflow
-- move the path after `17_render_episode.py` from locally finished episodes toward truly newly generated TV-grade episodes with new frames, new shot video, original-voice cloning, and lip-sync
+- move the path after `17_render_episode.py` from locally finished episodes toward truly newly generated TV-grade episodes with stronger concrete local runner quality, more stable character consistency, and better lip-sync
 
 ## In Progress
 
@@ -143,6 +146,7 @@ All scripts in this repository are AI-generated and maintained with `GPT-5.4`.
 - the new training chain around `09` through `13` is being observed on real project data, especially where voice material is still weak
 - `14_generate_episode_from_trained_model.py` now writes per-scene multi-reference storyboard plans inspired by shot-by-shot image-edit workflows, but stays model-only and does not depend on any GUI workflow
 - `16_run_storyboard_backend.py` can now materialize local backend-style scene packs from the seed payloads emitted by `15_generate_storyboard_assets.py`, including graded keyframes, alternates, posters, and optional local scene clips
+- `16_run_storyboard_backend.py` can now also call one optional configured external storyboard-scene runner per backend input payload before the local fallback kicks in, and then still auto-fill missing preview/poster/clip derivatives from that runner output
 - `17_render_episode.py` now carries storyboard plans into the render manifest, reuses backend frames from `16` when they exist, and falls back to seed assets or generated placeholder cards when needed
 - `14_generate_episode_from_trained_model.py` now also exports backend-ready storyboard request files per episode and per scene under `generation/storyboard_requests`
 - `17_render_episode.py` now automatically picks up already generated storyboard scene frames from `generation/storyboard_assets/<episode>` when they exist, so local backend materialization and later model backends can feed visuals back into the render path without changing script order
@@ -184,6 +188,7 @@ All scripts in this repository are AI-generated and maintained with `GPT-5.4`.
 - `17_render_episode.py` now also writes the real generated-output state back into the scene package JSONs and the episode master package, including ready counts for scene videos, scene dialogue tracks, and scene master clips
 - `17_render_episode.py` now also writes a dedicated delivery bundle under `generation/renders/deliveries/<episode>`, copying the main finished episode, subtitle preview, dialogue audio, render manifest, voice plan, and production package snapshot into one stable handoff folder
 - `17_render_episode.py` now also refreshes `generation/renders/deliveries/latest` and writes `README_finished_episode.md` summaries into both the episode-specific and stable latest delivery folders, so the newest finished local episode always has one fixed handoff location
+- `pipeline_common.py` now exposes config-driven optional external backend runners, and `17_render_episode.py` now uses them for per-scene image/video/voice/lip-sync execution plus an optional episode-master runner, then refreshes the package and rebuilds the final generated episode master from the produced outputs in the same render run
 - the numbered order now keeps all training in `07-13`, then generation/render in `14-17`, and only then rebuilds the series bible in `18`, so the pipeline follows the requested train-before-generate/render sequence more clearly
 - `19_generate_finished_episodes.py` now rebuilds the series bible once after the full generated/rendered batch instead of after every single episode, so multi-episode runs stay closer to the intended train-then-generate/render flow
 - `19_generate_finished_episodes.py` now also supports an endless generation mode: `--count 0` or `--endless` keeps generating episodes until stopped, and updates the series bible after each newly rendered episode in that mode
@@ -210,7 +215,7 @@ All scripts in this repository are AI-generated and maintained with `GPT-5.4`.
 - run `20_refresh_after_manual_review.py` on the fully reviewed set to rebuild datasets, model, training packs, generated episodes, bible, and renders
 - continue reducing harder `speaker_unknown` cases that cannot be safely inferred from a single visible named character
 - expand the fine-tune and backend stages from local preparation artifacts into real model-weight training later on
-- connect the new backend-ready storyboard seed packages from `15_generate_storyboard_assets.py` and the full generated-episode production packages from `17_render_episode.py` to actual local image/video/voice/lip-sync model runners later on
+- tune concrete local model command templates and quality settings for the new external backend runner hooks in `16_run_storyboard_backend.py` and `17_render_episode.py`
 - improve render quality, character consistency, and synthetic episode quality after the review and training loop stabilizes
 - continue improving the new voiced storyboard episode path so it sounds more natural and character-specific until the full generated-episode backends replace the fallback render
 - only let the full generated-episode path become the default once image/video generation and lip-sync actually look series-quality
@@ -253,8 +258,8 @@ Also keep the `In Progress` and `Planned` sections current. If priorities change
 - `13_run_backend_finetunes.py`: materialize backend-oriented fine-tune runs
 - `14_generate_episode_from_trained_model.py`: generate a new synthetic episode blueprint
 - `15_generate_storyboard_assets.py`: build scene-level storyboard seed assets and backend-ready per-scene input payloads from exported storyboard requests
-- `16_run_storyboard_backend.py`: materialize local backend-style storyboard scene packs from the per-scene backend input payloads, including keyframes, alternates, posters, and optional scene clips
-- `17_render_episode.py`: render a draft preview plus a final voiced episode from seed assets, backend frames, generated scene videos, auto-materialized motion fallback clips, or placeholder scene cards, reuse matching original dialogue where possible, export/update a backend-ready production package for a fully generated episode, and write a final delivery bundle for the generated episode
+- `16_run_storyboard_backend.py`: materialize local backend-style storyboard scene packs from the per-scene backend input payloads, optionally hand them to one configured external storyboard runner first, and still fill missing keyframes/posters/previews/clips locally when needed
+- `17_render_episode.py`: render a draft preview plus a final voiced episode from seed assets, backend frames, generated scene videos, auto-materialized motion fallback clips, or placeholder scene cards, reuse matching original dialogue where possible, export/update a backend-ready production package for a fully generated episode, optionally call configured local image/video/voice/lip-sync/master runners, refresh the package from their outputs, and write a final delivery bundle for the generated episode
 - `18_build_series_bible.py`: rebuild the series bible
 - `19_generate_finished_episodes.py`: generate multiple finished episodes in one run or keep generating endlessly until stopped
 - `20_refresh_after_manual_review.py`: rebuild the pipeline after manual character review

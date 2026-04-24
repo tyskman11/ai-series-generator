@@ -6,6 +6,7 @@ import math
 import os
 import platform
 import re
+import shlex
 import shutil
 import socket
 import struct
@@ -306,6 +307,86 @@ DEFAULT_CONFIG = {
         "closing_card_seconds": 2.0,
         "audio_pad_seconds": 0.35,
         "voice_rate": 175,
+    },
+    "external_backends": {
+        "storyboard_scene_runner": {
+            "enabled": False,
+            "command_template": [],
+            "working_directory": "",
+            "environment": {},
+            "shell": False,
+            "timeout_seconds": 0,
+            "skip_if_outputs_exist": True,
+            "success_mode": "any",
+            "success_outputs": [
+                "{frame_path}",
+            ],
+        },
+        "finished_episode_image_runner": {
+            "enabled": False,
+            "command_template": [],
+            "working_directory": "",
+            "environment": {},
+            "shell": False,
+            "timeout_seconds": 0,
+            "skip_if_outputs_exist": True,
+            "success_mode": "any",
+            "success_outputs": [
+                "{primary_frame}",
+            ],
+        },
+        "finished_episode_video_runner": {
+            "enabled": False,
+            "command_template": [],
+            "working_directory": "",
+            "environment": {},
+            "shell": False,
+            "timeout_seconds": 0,
+            "skip_if_outputs_exist": True,
+            "success_mode": "any",
+            "success_outputs": [
+                "{scene_video}",
+            ],
+        },
+        "finished_episode_voice_runner": {
+            "enabled": False,
+            "command_template": [],
+            "working_directory": "",
+            "environment": {},
+            "shell": False,
+            "timeout_seconds": 0,
+            "skip_if_outputs_exist": True,
+            "success_mode": "any",
+            "success_outputs": [
+                "{scene_dialogue_audio}",
+            ],
+        },
+        "finished_episode_lipsync_runner": {
+            "enabled": False,
+            "command_template": [],
+            "working_directory": "",
+            "environment": {},
+            "shell": False,
+            "timeout_seconds": 0,
+            "skip_if_outputs_exist": True,
+            "success_mode": "any",
+            "success_outputs": [
+                "{lipsync_video}",
+            ],
+        },
+        "finished_episode_master_runner": {
+            "enabled": False,
+            "command_template": [],
+            "working_directory": "",
+            "environment": {},
+            "shell": False,
+            "timeout_seconds": 0,
+            "skip_if_outputs_exist": True,
+            "success_mode": "any",
+            "success_outputs": [
+                "{final_master_episode}",
+            ],
+        },
     },
 }
 
@@ -824,6 +905,193 @@ def run_command(
             text=True,
         )
     return subprocess.run(normalized_cmd, check=check, cwd=normalized_cwd)
+
+
+class _SafeTemplateDict(dict[str, str]):
+    def __missing__(self, key: str) -> str:
+        return ""
+
+
+def _external_backend_context(context: dict[str, Any] | None) -> dict[str, str]:
+    mapping: dict[str, str] = {}
+    for key, value in (context or {}).items():
+        if not isinstance(key, str):
+            continue
+        if value is None:
+            mapping[key] = ""
+        elif isinstance(value, Path):
+            mapping[key] = str(value)
+        else:
+            mapping[key] = str(value)
+    return mapping
+
+
+def render_external_backend_template(value: object, context: dict[str, Any] | None = None) -> str:
+    template = str(value or "")
+    if not template:
+        return ""
+    rendered = template.format_map(_SafeTemplateDict(_external_backend_context(context)))
+    return os.path.expandvars(rendered).strip()
+
+
+def external_backend_output_ready(path: Path) -> bool:
+    if not path.exists():
+        return False
+    if path.is_file():
+        return path.stat().st_size > 0
+    if path.is_dir():
+        return any(path.iterdir())
+    return False
+
+
+def resolve_external_backend_output_paths(
+    values: object,
+    context: dict[str, Any] | None = None,
+    *,
+    base_dir: Path | None = None,
+) -> list[Path]:
+    raw_values = values if isinstance(values, list) else [values]
+    resolved: list[Path] = []
+    for raw_value in raw_values:
+        rendered = render_external_backend_template(raw_value, context)
+        if not rendered:
+            continue
+        candidate = Path(rendered)
+        if not candidate.is_absolute() and base_dir is not None:
+            candidate = base_dir / candidate
+        resolved.append(candidate)
+    return resolved
+
+
+def external_backend_outputs_exist(paths: Iterable[Path], success_mode: str = "any") -> tuple[bool, list[str]]:
+    path_list = list(paths)
+    ready_paths = [str(path) for path in path_list if external_backend_output_ready(path)]
+    success_mode_value = str(success_mode or "any").strip().lower()
+    if success_mode_value == "all":
+        return (bool(ready_paths) and len(ready_paths) == len(path_list), ready_paths)
+    return (bool(ready_paths), ready_paths)
+
+
+def run_external_backend_runner(
+    cfg: dict[str, Any],
+    runner_name: str,
+    *,
+    context: dict[str, Any] | None = None,
+    force: bool = False,
+    fallback_cwd: Path | None = None,
+    log_dir: Path | None = None,
+    raise_on_failure: bool = False,
+) -> dict[str, Any]:
+    external_cfg = cfg.get("external_backends", {}) if isinstance(cfg.get("external_backends"), dict) else {}
+    runner_cfg = external_cfg.get(runner_name, {}) if isinstance(external_cfg.get(runner_name), dict) else {}
+    success_mode = str(runner_cfg.get("success_mode", "any") or "any").strip().lower()
+    rendered_cwd_text = render_external_backend_template(runner_cfg.get("working_directory", ""), context)
+    resolved_cwd = Path(rendered_cwd_text) if rendered_cwd_text else fallback_cwd
+    if resolved_cwd is not None and not resolved_cwd.is_absolute():
+        resolved_cwd = (fallback_cwd or SCRIPT_DIR) / resolved_cwd
+    success_outputs = resolve_external_backend_output_paths(
+        runner_cfg.get("success_outputs", []),
+        context,
+        base_dir=resolved_cwd or fallback_cwd or SCRIPT_DIR,
+    )
+    outputs_ready, ready_outputs = external_backend_outputs_exist(success_outputs, success_mode)
+    result: dict[str, Any] = {
+        "runner_name": runner_name,
+        "enabled": bool(runner_cfg.get("enabled", False)),
+        "status": "disabled",
+        "command": [],
+        "command_text": "",
+        "cwd": str(resolved_cwd) if resolved_cwd else "",
+        "shell": bool(runner_cfg.get("shell", False)),
+        "returncode": 0,
+        "success_outputs": [str(path) for path in success_outputs],
+        "produced_outputs": ready_outputs,
+        "log_path": "",
+        "error": "",
+    }
+    if not result["enabled"]:
+        return result
+    if outputs_ready and not force and bool(runner_cfg.get("skip_if_outputs_exist", True)):
+        result["status"] = "existing_outputs"
+        return result
+
+    command_template = runner_cfg.get("command_template", runner_cfg.get("command", []))
+    shell = bool(runner_cfg.get("shell", False))
+    if isinstance(command_template, str):
+        command_text = render_external_backend_template(command_template, context)
+        if not command_text:
+            result["status"] = "missing_command"
+            return result
+        result["command_text"] = command_text
+        command_value: str | list[str]
+        if shell:
+            command_value = command_text
+        else:
+            command_value = external_tool_command(shlex.split(command_text, posix=current_os() != "windows"))
+            result["command"] = list(command_value)
+    elif isinstance(command_template, list):
+        rendered_command = [render_external_backend_template(part, context) for part in command_template]
+        rendered_command = [part for part in rendered_command if part]
+        if not rendered_command:
+            result["status"] = "missing_command"
+            return result
+        result["command"] = rendered_command
+        result["command_text"] = " ".join(rendered_command)
+        command_value = external_tool_command(rendered_command)
+    else:
+        result["status"] = "missing_command"
+        return result
+
+    env = os.environ.copy()
+    env_updates = runner_cfg.get("environment", {}) if isinstance(runner_cfg.get("environment"), dict) else {}
+    for key, value in env_updates.items():
+        if not isinstance(key, str):
+            continue
+        env[key] = render_external_backend_template(value, context)
+
+    timeout_seconds = max(0, int(runner_cfg.get("timeout_seconds", 0) or 0))
+    resolved_log_dir = log_dir or resolve_project_path("logs") / "external_backends" / runner_name
+    resolved_log_dir.mkdir(parents=True, exist_ok=True)
+    log_path = resolved_log_dir / f"{runner_name}_{int(time.time())}_{uuid.uuid4().hex[:8]}.log"
+    result["log_path"] = str(log_path)
+    try:
+        completed = subprocess.run(
+            command_value,
+            check=False,
+            cwd=external_tool_arg(resolved_cwd) if resolved_cwd else None,
+            env=env,
+            shell=shell,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            timeout=timeout_seconds or None,
+        )
+        output_text = completed.stdout or ""
+        result["returncode"] = int(completed.returncode)
+    except subprocess.TimeoutExpired as exc:
+        output_text = (exc.stdout or "") if isinstance(exc.stdout, str) else ""
+        result["returncode"] = -1
+        result["status"] = "timeout"
+        result["error"] = f"Runner exceeded the timeout of {timeout_seconds} seconds."
+        write_text(log_path, output_text)
+        if raise_on_failure or bool(runner_cfg.get("stop_on_error", False)):
+            raise RuntimeError(f"External backend runner '{runner_name}' timed out. See {log_path}") from exc
+        return result
+    write_text(log_path, output_text)
+    outputs_ready, ready_outputs = external_backend_outputs_exist(success_outputs, success_mode)
+    result["produced_outputs"] = ready_outputs
+    if completed.returncode == 0 and outputs_ready:
+        result["status"] = "completed"
+        return result
+    if completed.returncode == 0:
+        result["status"] = "missing_outputs"
+        result["error"] = "Runner finished without the expected outputs."
+    else:
+        result["status"] = "failed"
+        result["error"] = f"Runner exited with code {completed.returncode}."
+    if raise_on_failure or bool(runner_cfg.get("stop_on_error", False)):
+        raise RuntimeError(f"External backend runner '{runner_name}' failed. See {log_path}")
+    return result
 
 
 def create_tree(base: Path, tree: dict[str, Any]) -> None:
