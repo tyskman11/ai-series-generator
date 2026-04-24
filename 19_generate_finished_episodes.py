@@ -223,6 +223,29 @@ def ensure_finished_episode_outputs(episode_id: str, episode_outputs: dict[str, 
         raise RuntimeError(
             f"Episode {episode_id} did not produce a complete finished-episode bundle. Missing outputs: {', '.join(missing)}"
         )
+    backend_runner_expected_count = int(episode_outputs.get("backend_runner_expected_count", 0) or 0)
+    backend_runner_ready_count = int(episode_outputs.get("backend_runner_ready_count", 0) or 0)
+    backend_runner_failed_count = int(episode_outputs.get("backend_runner_failed_count", 0) or 0)
+    backend_runner_pending_count = int(episode_outputs.get("backend_runner_pending_count", 0) or 0)
+    backend_runner_status = str(episode_outputs.get("backend_runner_status", "") or "").strip()
+    if backend_runner_failed_count > 0:
+        failure_scenes = episode_outputs.get("runner_failure_scenes", [])
+        failure_hint = f" Failed scenes: {', '.join(failure_scenes)}." if isinstance(failure_scenes, list) and failure_scenes else ""
+        raise RuntimeError(
+            f"Episode {episode_id} finished with failed external backend runners.{failure_hint}"
+        )
+    if backend_runner_expected_count > 0 and backend_runner_ready_count < backend_runner_expected_count:
+        pending_scenes = episode_outputs.get("runner_pending_scenes", [])
+        pending_hint = f" Pending scenes: {', '.join(pending_scenes)}." if isinstance(pending_scenes, list) and pending_scenes else ""
+        raise RuntimeError(
+            f"Episode {episode_id} still has incomplete external backend runners "
+            f"({backend_runner_ready_count}/{backend_runner_expected_count}, status: {backend_runner_status or 'unknown'}).{pending_hint}"
+        )
+    if backend_runner_expected_count > 0 and backend_runner_pending_count > 0:
+        raise RuntimeError(
+            f"Episode {episode_id} still has pending external backend runner tasks "
+            f"({backend_runner_pending_count} remaining)."
+        )
     return episode_outputs
 
 
@@ -368,7 +391,12 @@ def main() -> None:
             reporter.update(
                 preview_reporter_current(reporter, completed_steps),
                 current_label=episode_id,
-                extra_label=f"Finished episode delivery bundle ready: {episode_id}",
+                extra_label=(
+                    f"Finished episode ready: {episode_id} | "
+                    f"readiness={episode_outputs.get('production_readiness', '-') or '-'} | "
+                    f"runners={int(episode_outputs.get('backend_runner_ready_count', 0) or 0)}/"
+                    f"{int(episode_outputs.get('backend_runner_expected_count', 0) or 0)}"
+                ),
                 scope_current=len(generated) + 1,
                 scope_total=preview_scope_total(count, endless, len(generated)),
                 scope_label="Episodes",

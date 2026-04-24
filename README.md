@@ -113,6 +113,7 @@ All scripts in this repository are AI-generated and maintained with `GPT-5.4`.
 - a stable `generation/renders/deliveries/latest` folder that always mirrors the newest finished episode with generic filenames plus a `README_finished_episode.md` summary
 - scene and master package JSONs that now track the real already-generated outputs, not only planned target paths
 - autosaves and live progress dashboards for long-running pipelines, now including concrete finished-episode output paths, production-readiness labels, coverage ratios, and remaining backend tasks instead of only step completion flags
+- batch orchestration, series-bible snapshots, and live status files now also expose external backend-runner coverage and master-runner state, so it is visible whether a run really reached the configured generated-episode path or only the local fallback path
 - the series bible can now summarize the most recent generated episodes together with their final render, full generated master, and production-package progress
 - generated episodes now also carry a central production-readiness label plus scene-video, scene-dialogue, and scene-master coverage ratios for easier follow-up automation
 - local voice fallback with German Windows voices instead of old English default fallbacks
@@ -190,6 +191,7 @@ All scripts in this repository are AI-generated and maintained with `GPT-5.4`.
 - `17_render_episode.py` now also writes a dedicated delivery bundle under `generation/renders/deliveries/<episode>`, copying the main finished episode, subtitle preview, dialogue audio, render manifest, voice plan, and production package snapshot into one stable handoff folder
 - `17_render_episode.py` now also refreshes `generation/renders/deliveries/latest` and writes `README_finished_episode.md` summaries into both the episode-specific and stable latest delivery folders, so the newest finished local episode always has one fixed handoff location
 - `pipeline_common.py` now exposes config-driven optional external backend runners, and `17_render_episode.py` now uses them for per-scene image/video/voice/lip-sync execution plus an optional episode-master runner, then refreshes the package and rebuilds the final generated episode master from the produced outputs in the same render run
+- `pipeline_common.py`, `18_build_series_bible.py`, `19_generate_finished_episodes.py`, and `99_process_next_episode.py` now also surface external runner readiness, coverage, and failures, and the finished-episode batch now treats configured but incomplete external runner work as an unfinished episode instead of silently accepting it
 - the numbered order now keeps all training in `07-13`, then generation/render in `14-17`, and only then rebuilds the series bible in `18`, so the pipeline follows the requested train-before-generate/render sequence more clearly
 - `19_generate_finished_episodes.py` now rebuilds the series bible once after the full generated/rendered batch instead of after every single episode, so multi-episode runs stay closer to the intended train-then-generate/render flow
 - `19_generate_finished_episodes.py` now also supports an endless generation mode: `--count 0` or `--endless` keeps generating episodes until stopped, and updates the series bible after each newly rendered episode in that mode
@@ -212,6 +214,7 @@ All scripts in this repository are AI-generated and maintained with `GPT-5.4`.
 - main-character review completion in `06_review_unknowns.py` is still active project work because the pipeline quality depends on real reviewed identities, not only code changes
 - harder `speaker_unknown` cleanup remains active work, but it is no longer `Planned` because rescue logic already exists and is being extended iteratively
 - the voiced-storyboard-to-finished-episode bridge remains active work: external runner hooks now exist in `16_run_storyboard_backend.py` and `17_render_episode.py`, and the remaining work is concrete backend tuning plus better quality from those runners
+- the new external-runner path is now visible in bible and orchestration status output, but practical quality still depends on tuning real local model command templates and backend quality
 
 ## Planned
 

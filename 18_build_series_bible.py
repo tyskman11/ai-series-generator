@@ -94,6 +94,10 @@ def build_series_bible_payload(model: dict, generated_episodes: list[dict]) -> t
                     f"- Scene dialogue coverage: {int(round(float(episode.get('scene_dialogue_completion_ratio', 0.0) or 0.0) * 100.0))}%",
                     f"- Scene master clips: {episode.get('scene_master_clip_count', 0)}",
                     f"- Scene master coverage: {int(round(float(episode.get('scene_master_completion_ratio', 0.0) or 0.0) * 100.0))}%",
+                    f"- Backend runner status: {episode.get('backend_runner_status') or '-'}",
+                    f"- Backend runner coverage: {int(round(float(episode.get('backend_runner_coverage_ratio', 0.0) or 0.0) * 100.0))}%",
+                    f"- Backend runners ready: {episode.get('backend_runner_ready_count', 0)}/{episode.get('backend_runner_expected_count', 0)}",
+                    f"- Master backend runner: {episode.get('master_backend_runner_status') or '-'}",
                     f"- Remaining backend tasks: {', '.join(episode.get('remaining_backend_tasks', [])) or '-'}",
                     "",
                 ]

@@ -1345,6 +1345,91 @@ def generated_episode_completion_summary(
     }
 
 
+def summarize_backend_runner_results(summary: object) -> dict[str, Any]:
+    payload = summary if isinstance(summary, dict) else {}
+    scene_summary = payload.get("scene_runners", {}) if isinstance(payload.get("scene_runners"), dict) else {}
+    scene_results = scene_summary.get("scene_results", []) if isinstance(scene_summary.get("scene_results"), list) else []
+    total_required = 0
+    ready_count = 0
+    failed_count = 0
+    pending_count = 0
+    disabled_count = 0
+    scene_ids_with_runner_failures: list[str] = []
+    scene_ids_with_runner_pending: list[str] = []
+    for scene_result in scene_results:
+        if not isinstance(scene_result, dict):
+            continue
+        scene_id = coalesce_text(scene_result.get("scene_id", ""))
+        runner_results = scene_result.get("runner_results", []) if isinstance(scene_result.get("runner_results"), list) else []
+        scene_failed = False
+        scene_pending = False
+        for runner_result in runner_results:
+            if not isinstance(runner_result, dict):
+                continue
+            status = coalesce_text(runner_result.get("status", ""))
+            enabled = bool(runner_result.get("enabled", False))
+            if not enabled or status == "disabled":
+                disabled_count += 1
+                continue
+            total_required += 1
+            if status in {"completed", "existing_outputs"}:
+                ready_count += 1
+                continue
+            if status in {"failed", "timeout"}:
+                failed_count += 1
+                scene_failed = True
+                continue
+            pending_count += 1
+            scene_pending = True
+        if scene_failed and scene_id:
+            scene_ids_with_runner_failures.append(scene_id)
+        elif scene_pending and scene_id:
+            scene_ids_with_runner_pending.append(scene_id)
+
+    master_summary = payload.get("master_runner", {}) if isinstance(payload.get("master_runner"), dict) else {}
+    master_status = coalesce_text(master_summary.get("status", ""))
+    master_enabled = bool(master_summary.get("enabled", False))
+    master_required = bool(master_enabled and master_status != "disabled")
+    master_ready = master_status in {"completed", "existing_outputs"}
+    master_failed = master_status in {"failed", "timeout"}
+    master_pending = bool(master_required and not master_ready and not master_failed)
+    total_expected = total_required + (1 if master_required else 0)
+    total_ready = ready_count + (1 if master_ready else 0)
+    total_failed = failed_count + (1 if master_failed else 0)
+    total_pending = pending_count + (1 if master_pending else 0)
+
+    if total_expected <= 0:
+        overall_status = "disabled"
+    elif total_failed > 0:
+        overall_status = "failed"
+    elif total_pending > 0:
+        overall_status = "partial"
+    else:
+        overall_status = "ready"
+
+    return {
+        "summary_path": coalesce_text(scene_summary.get("summary_path", "")),
+        "master_summary_path": coalesce_text(master_summary.get("summary_path", "")),
+        "status": overall_status,
+        "expected_count": total_expected,
+        "ready_count": total_ready,
+        "failed_count": total_failed,
+        "pending_count": total_pending,
+        "disabled_count": disabled_count,
+        "coverage_ratio": completion_ratio(total_ready, total_expected),
+        "scene_runner_expected_count": total_required,
+        "scene_runner_ready_count": ready_count,
+        "scene_runner_failed_count": failed_count,
+        "scene_runner_pending_count": pending_count,
+        "master_runner_required": master_required,
+        "master_runner_status": master_status,
+        "master_runner_ready": master_ready,
+        "master_runner_failed": master_failed,
+        "scene_ids_with_runner_failures": scene_ids_with_runner_failures,
+        "scene_ids_with_runner_pending": scene_ids_with_runner_pending,
+    }
+
+
 def generated_episode_artifacts(cfg: dict[str, Any], episode_id: str) -> dict[str, Any]:
     episode_name = coalesce_text(episode_id)
     if not episode_name:
@@ -1378,6 +1463,12 @@ def generated_episode_artifacts(cfg: dict[str, Any], episode_id: str) -> dict[st
         if isinstance(production_package.get("completion_status"), dict)
         else {}
     )
+    backend_runner_summary = (
+        production_package.get("backend_runner_summary", {})
+        if isinstance(production_package.get("backend_runner_summary"), dict)
+        else {}
+    )
+    backend_runner_status = summarize_backend_runner_results(backend_runner_summary)
     scene_count = int(
         (render_manifest.get("scene_count") if isinstance(render_manifest, dict) else 0)
         or completion_status.get("scene_count", 0)
@@ -1537,6 +1628,23 @@ def generated_episode_artifacts(cfg: dict[str, Any], episode_id: str) -> dict[st
         if isinstance(completion_status.get("remaining_backend_tasks"), list) and completion_status.get("remaining_backend_tasks")
         else derived_completion_status.get("remaining_backend_tasks", []),
         "completion_status": deep_merge(derived_completion_status, completion_status),
+        "backend_runner_status": backend_runner_status.get("status", ""),
+        "backend_runner_expected_count": int(backend_runner_status.get("expected_count", 0) or 0),
+        "backend_runner_ready_count": int(backend_runner_status.get("ready_count", 0) or 0),
+        "backend_runner_failed_count": int(backend_runner_status.get("failed_count", 0) or 0),
+        "backend_runner_pending_count": int(backend_runner_status.get("pending_count", 0) or 0),
+        "backend_runner_coverage_ratio": float(backend_runner_status.get("coverage_ratio", 0.0) or 0.0),
+        "scene_backend_runner_expected_count": int(backend_runner_status.get("scene_runner_expected_count", 0) or 0),
+        "scene_backend_runner_ready_count": int(backend_runner_status.get("scene_runner_ready_count", 0) or 0),
+        "scene_backend_runner_failed_count": int(backend_runner_status.get("scene_runner_failed_count", 0) or 0),
+        "scene_backend_runner_pending_count": int(backend_runner_status.get("scene_runner_pending_count", 0) or 0),
+        "master_backend_runner_required": bool(backend_runner_status.get("master_runner_required", False)),
+        "master_backend_runner_status": coalesce_text(backend_runner_status.get("master_runner_status", "")),
+        "master_backend_runner_ready": bool(backend_runner_status.get("master_runner_ready", False)),
+        "backend_runner_summary_path": coalesce_text(backend_runner_status.get("summary_path", "")),
+        "backend_master_runner_summary_path": coalesce_text(backend_runner_status.get("master_summary_path", "")),
+        "runner_failure_scenes": backend_runner_status.get("scene_ids_with_runner_failures", []),
+        "runner_pending_scenes": backend_runner_status.get("scene_ids_with_runner_pending", []),
     }
 
 
