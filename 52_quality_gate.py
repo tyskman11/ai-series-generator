@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 from __future__ import annotations
 
 import argparse
@@ -38,6 +38,11 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--strict", action="store_true", help="Fail if warnings remain even when the quality gate passes.")
     parser.add_argument("--print-json", action="store_true", help="Also print the full gate report as JSON.")
+    parser.add_argument(
+        "--auto-retry",
+        action="store_true",
+        help="Automatically trigger 53_regenerate_weak_scenes.py --apply when the quality gate fails and weak scenes are queued.",
+    )
     return parser.parse_args()
 
 
@@ -221,6 +226,26 @@ def main() -> None:
         return
 
     info("QUALITY GATE FAILED")
+
+    if args.auto_retry and regeneration_queue:
+        info(f"Auto-retry enabled: triggering regeneration for {len(regeneration_queue)} weak scene(s).")
+        import subprocess
+        from pipeline_common import SCRIPT_DIR, runtime_python
+        retry_cmd = [
+            str(runtime_python()),
+            str(SCRIPT_DIR / "53_regenerate_weak_scenes.py"),
+            "--episode-id", str(artifacts.get("episode_id", "")),
+            "--apply",
+        ]
+        if args.strict:
+            retry_cmd.append("--strict")
+        result = subprocess.run(retry_cmd, cwd=str(SCRIPT_DIR), text=True)
+        if result.returncode != 0:
+            info(f"Auto-retry finished with exit code {result.returncode}.")
+        else:
+            ok("Auto-retry regeneration completed.")
+        return
+
     raise SystemExit(1)
 
 

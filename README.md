@@ -1,4 +1,4 @@
-# AI Series Training
+﻿# AI Series Training
 
 ## Table Of Contents
 
@@ -86,6 +86,7 @@ The default path stays local-first and license-light. The project already produc
 - `51_export_package.py` now exports real generated-episode packages for JSON, DaVinci-style, and Premiere-style handoff folders
 - `52_quality_gate.py` now writes persistent quality-gate reports, regeneration queues, and feeds that state back into episode artifacts
 - `53_regenerate_weak_scenes.py` turns quality-gate queues into retry manifests and can rerun the current full-episode retry chain while preserving scene retry state
+- `52_quality_gate.py` now supports `--auto-retry` to automatically trigger `53_regenerate_weak_scenes.py --apply` when the gate fails and weak scenes are queued
 - `16_build_series_bible.py`, `57_generate_finished_episodes.py`, and `99_process_next_episode.py` surface readiness, backend coverage, and quality scoring for generated episodes
 - `49_refresh_after_manual_review.py` and `57_generate_finished_episodes.py` now follow the real train-then-generate/render order against the current script names
 - `49_refresh_after_manual_review.py`, `57_generate_finished_episodes.py`, and `99_process_next_episode.py` can now run `52_quality_gate.py` automatically after render when `release_mode.enabled` is active
@@ -99,7 +100,6 @@ Only untouched follow-up work belongs here. If implementation has already starte
 - backend preset benchmarking so different local runner command templates can be compared automatically
 - stronger per-character continuity memory across generated episodes, including outfit and look consistency
 - scene-selective regeneration so weak-scene retries no longer need a full `54 -> 15 -> 52` rerun
-- auto-release retry orchestration that can decide when `53_regenerate_weak_scenes.py` should run automatically after a failed gate
 - worker capability scheduling so GPU-heavy steps can prefer stronger machines automatically on NAS runs
 
 ## Documentation Rule
