@@ -299,7 +299,7 @@ DEFAULT_CONFIG = {
         "jaw_pixels": 10,
         "blink_interval_frames": 90,
     },
-    "render": {
+"render": {
         "width": 1280,
         "height": 720,
         "fps": 30,
@@ -307,6 +307,11 @@ DEFAULT_CONFIG = {
         "closing_card_seconds": 2.0,
         "audio_pad_seconds": 0.35,
         "voice_rate": 175,
+    },
+    "release_mode": {
+        "enabled": False,
+        "min_episode_quality": 0.68,
+        "max_weak_scenes": 2,
     },
     "external_backends": {
         "storyboard_scene_runner": {
@@ -2497,6 +2502,147 @@ def display_person_name(name: str, fallback: str) -> str:
     return canonical if has_manual_person_name(canonical) else fallback
 
 
+def split_scene_into_shots(
+    scene_manifest: dict[str, Any],
+    *,
+    max_shots: int = 4,
+    min_shot_seconds: float = 2.5,
+) -> list[dict[str, Any]]:
+    dialogue = scene_manifest.get("dialogue", []) if isinstance(scene_manifest.get("dialogue"), list) else []
+    duration = float(scene_manifest.get("duration_seconds", 0.0) or 0.0)
+    if not dialogue or duration <= 0:
+        return [{"shot_id": "shot_001", "scene_id": scene_manifest.get("scene_id", ""), "start": 0.0, "end": duration}]
+    shot_len = max(min_shot_seconds, duration / max_shots)
+    shots: list[dict[str, Any]] = []
+    current_time = 0.0
+    shot_idx = 1
+    for line in dialogue:
+        line_start = float(line.get("start_time", current_time) or 0.0)
+        if line_start - current_time >= shot_len or shot_idx > max_shots:
+            if shots and current_time > shots[-1].get("end", 0.0):
+                shots[-1]["end"] = current_time
+            current_time = line_start
+            shot_idx += 1
+            if shot_idx <= max_shots:
+                shots.append({
+                    "shot_id": f"shot_{shot_idx:03d}",
+                    "scene_id": scene_manifest.get("scene_id", ""),
+                    "start": current_time,
+                    "end": 0.0,
+                })
+    if shots and shots[-1].get("end", 0.0) <= 0.0:
+        shots[-1]["end"] = duration
+    return shots
+
+
+def detect_speaker_conflicts(
+    voice_plan: dict[str, Any],
+    character_map: dict[str, Any],
+) -> list[dict[str, Any]]:
+    conflicts: list[dict[str, Any]] = []
+    if not isinstance(voice_plan, dict):
+        return conflicts
+    scenes = voice_plan.get("scenes", []) if isinstance(voice_plan.get("scenes"), list) else []
+    for scene in scenes:
+        if not isinstance(scene, dict):
+            continue
+        scene_id = scene.get("scene_id", "")
+        lines = scene.get("lines", []) if isinstance(scene.get("lines"), list) else []
+        for line in lines:
+            if not isinstance(line, dict):
+                continue
+            speaker = line.get("speaker_name", "")
+            if not speaker:
+                continue
+            line_lang = line.get("detected_language", "")
+            char_info = character_map.get("clusters", {}).get(speaker, {})
+            char_lang = char_info.get("detected_language", "")
+            if line_lang and char_lang and line_lang != char_lang:
+                conflicts.append({
+                    "scene_id": scene_id,
+                    "speaker": speaker,
+                    "line_language": line_lang,
+                    "character_language": char_lang,
+                    "type": "language_mismatch",
+                })
+    return conflicts
+
+
+def export_subtitle_file(
+    dialogue_data: list[dict[str, Any]],
+    output_path: Path,
+    format: str = "srt",
+    language: str = "",
+) -> None:
+    if format.lower() == "srt":
+        lines: list[str] = []
+        for idx, line in enumerate(dialogue_data, start=1):
+            if not isinstance(line, dict):
+                continue
+            start_ms = int((float(line.get("start_time", 0.0) or 0.0)) * 1000)
+            end_ms = int((float(line.get("end_time", 0.0) or 0.0)) * 1000)
+            text = line.get("text", "").strip()
+            if text:
+                lines.append(f"{idx}")
+                lines.append(f"{format_time_srt(start_ms)} --> {format_time_srt(end_ms)}")
+                lines.append(text)
+                lines.append("")
+        output_path.write_text("\n".join(lines), encoding="utf-8")
+    elif format.lower() == "vtt":
+        lines = ["WEBVTT", ""]
+        for line in dialogue_data:
+            if not isinstance(line, dict):
+                continue
+            start_ms = int((float(line.get("start_time", 0.0) or 0.0)) * 1000)
+            end_ms = int((float(line.get("end_time", 0.0) or 0.0)) * 1000)
+            text = line.get("text", "").strip()
+            if text:
+                lines.append(f"{format_time_vtt(start_ms)} --> {format_time_vtt(end_ms)}")
+                lines.append(text)
+                lines.append("")
+        output_path.write_text("\n".join(lines), encoding="utf-8")
+
+
+def format_time_srt(ms: int) -> str:
+    hours = ms // 3600000
+    minutes = (ms % 3600000) // 60000
+    seconds = (ms % 60000) // 1000
+    millis = ms % 1000
+    return f"{hours:02d}:{minutes:02d}:{seconds:02d},{millis:03d}"
+
+
+def format_time_vtt(ms: int) -> str:
+    hours = ms // 3600000
+    minutes = (ms % 3600000) // 60000
+    seconds = (ms % 60000) // 1000
+    millis = ms % 1000
+    return f"{hours:02d}:{minutes:02d}:{seconds:02d}.{millis:03d}"
+
+
+def load_background_music_config(project_root: Path) -> dict[str, Any]:
+    config_path = project_root / "configs" / "background_music.json"
+    if config_path.exists():
+        try:
+            return json.loads(config_path.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    return {"tracks": [], "room_tones": [], "transitions": []}
+
+
+def select_background_music(
+    scene_type: str,
+    music_config: dict[str, Any],
+) -> str | None:
+    tracks = music_config.get("tracks", []) if isinstance(music_config.get("tracks"), list) else []
+    for track in tracks:
+        if not isinstance(track, dict):
+            continue
+        tags = track.get("tags", []) if isinstance(track.get("tags"), list) else []
+        if scene_type in tags:
+            return track.get("path", "")
+    return None
+
+
 def keyword_token_allowed(token: str) -> bool:
     lower = token.lower().strip("-'")
     if len(lower) < 4:
@@ -3132,4 +3278,203 @@ def ensure_backend_fine_tune_ready(
         f"Backend fine-tune runs are still too weak for these characters: {weak}. Run 13_run_backend_finetunes.py again."
         )
     return status
+
+
+def scene_weakness_detection(
+    scene_quality: dict[str, Any],
+    *,
+    watch_threshold: float = 0.52,
+    release_threshold: float = 0.8,
+    min_regeneration_retries: int = 3,
+) -> dict[str, Any]:
+    quality_score = clamp_quality_score(scene_quality.get("quality_score", 0.0))
+    component_scores = scene_quality.get("component_scores", {}) if isinstance(scene_quality.get("component_scores"), dict) else {}
+    weaknesses = list(scene_quality.get("weaknesses", [])) if isinstance(scene_quality.get("weaknesses"), list) else []
+    scene_id = coalesce_text(scene_quality.get("scene_id", ""))
+    needs_regeneration = quality_score < watch_threshold
+    regeneration_priority = "high" if quality_score < 0.35 else ("medium" if quality_score < watch_threshold else "low")
+    current_retries = int(scene_quality.get("regeneration_retries", 0) or 0)
+    can_retry = current_retries < min_regeneration_retries
+    return {
+        "scene_id": scene_id,
+        "quality_score": quality_score,
+        "quality_percent": int(round(quality_score * 100.0)),
+        "component_scores": component_scores,
+        "weaknesses": weaknesses,
+        "needs_regeneration": needs_regeneration,
+        "regeneration_priority": regeneration_priority,
+        "current_retries": current_retries,
+        "can_retry": can_retry,
+        "watch_threshold": watch_threshold,
+        "release_threshold": release_threshold,
+        "scenes_below_watch": quality_score < watch_threshold,
+        "scenes_below_release": quality_score < release_threshold,
+    }
+
+
+def queue_scenes_for_regeneration(
+    scene_qualities: list[dict[str, Any]],
+    *,
+    watch_threshold: float = 0.52,
+    release_threshold: float = 0.8,
+    max_regeneration_batch: int = 8,
+) -> list[dict[str, Any]]:
+    queue: list[dict[str, Any]] = []
+    for sq in scene_qualities:
+        if not isinstance(sq, dict):
+            continue
+        detection = scene_weakness_detection(
+            sq,
+            watch_threshold=watch_threshold,
+            release_threshold=release_threshold,
+        )
+        if detection.get("needs_regeneration") and detection.get("can_retry"):
+            queue.append(detection)
+    queue.sort(key=lambda x: (
+        0 if x.get("regeneration_priority") == "high" else (1 if x.get("regeneration_priority") == "medium" else 2),
+        x.get("quality_score", 1.0),
+    ))
+    return queue[:max_regeneration_batch]
+
+
+def release_mode_enabled(config: dict[str, Any]) -> bool:
+    return bool(config.get("release_mode", {}).get("enabled", False))
+
+
+def release_quality_gate(
+    episode_quality: dict[str, Any],
+    config: dict[str, Any],
+) -> dict[str, Any]:
+    release_cfg = config.get("release_mode", {}) if isinstance(config.get("release_mode"), dict) else {}
+    min_quality = float(release_cfg.get("min_episode_quality", 0.68) or 0.68)
+    max_weak_scenes = int(release_cfg.get("max_weak_scenes", 2) or 2)
+    quality_score = clamp_quality_score(episode_quality.get("quality_score", 0.0))
+    weak_scene_count = int(episode_quality.get("scenes_below_release_threshold", 0) or 0)
+    passed = quality_score >= min_quality and weak_scene_count <= max_weak_scenes
+    return {
+        "passed": passed,
+        "quality_score": quality_score,
+        "min_quality_required": min_quality,
+        "weak_scene_count": weak_scene_count,
+        "max_weak_scenes_allowed": max_weak_scenes,
+        "release_ready": passed,
+    }
+
+
+def character_continuity_memory_path(project_root: Path) -> Path:
+    return project_root / "characters" / "continuity_memory.json"
+
+
+def load_character_continuity_memory(project_root: Path) -> dict[str, Any]:
+    path = character_continuity_memory_path(project_root)
+    if path.exists():
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    return {"characters": {}, "last_updated": None}
+
+
+def save_character_continuity_memory(project_root: Path, memory: dict[str, Any]) -> None:
+    path = character_continuity_memory_path(project_root)
+    memory["last_updated"] = datetime.now().isoformat()
+    write_json(path, memory)
+
+
+def update_character_continuity_for_episode(
+    project_root: Path,
+    episode_id: str,
+    character_states: dict[str, Any],
+) -> None:
+    memory = load_character_continuity_memory(project_root)
+    char_entries = memory.get("characters", {}) if isinstance(memory.get("characters"), dict) else {}
+    for char_name, state in character_states.items():
+        if not isinstance(state, dict):
+            continue
+        if char_name not in char_entries:
+            char_entries[char_name] = {"appearances": [], "last_appearance": None, "continuity": {}}
+        entry = char_entries[char_name]
+        entry["appearances"] = entry.get("appearances", [])
+        entry["last_appearance"] = episode_id
+        prev_appearance = entry.get("last_episode_id")
+        if prev_appearance:
+            entry["appearances"].append(prev_appearance)
+        continuity = entry.get("continuity", {}) if isinstance(entry.get("continuity"), dict) else {}
+        for key in ["outfit", "hairstyle", "hair_color", "accessories", "voice_traits"]:
+            if state.get(key):
+                continuity[key] = state[key]
+        entry["continuity"] = continuity
+        entry["last_episode_id"] = episode_id
+        char_entries[char_name] = entry
+    memory["characters"] = char_entries
+    save_character_continuity_memory(project_root, memory)
+
+
+def series_style_profile_path(project_root: Path) -> Path:
+    return project_root / "series_bible" / "style_profile.json"
+
+
+def load_series_style_profile(project_root: Path) -> dict[str, Any]:
+    path = series_style_profile_path(project_root)
+    if path.exists():
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    return {
+        "style_name": "default",
+        "color_mood": {},
+        "framing": {},
+        "pacing": {},
+        "dialogue_rhythm": {},
+        "season_profiles": {},
+    }
+
+
+def save_series_style_profile(project_root: Path, profile: dict[str, Any]) -> None:
+    path = series_style_profile_path(project_root)
+    write_json(path, profile)
+
+
+def update_series_style_from_bible(
+    project_root: Path,
+    bible_summary: dict[str, Any],
+    season_id: str | None = None,
+) -> None:
+    profile = load_series_style_profile(project_root)
+    style_data = bible_summary.get("style", {}) if isinstance(bible_summary.get("style"), dict) else {}
+    if style_data.get("color_mood"):
+        profile["color_mood"] = style_data["color_mood"]
+    if style_data.get("framing"):
+        profile["framing"] = style_data["framing"]
+    if style_data.get("pacing"):
+        profile["pacing"] = style_data["pacing"]
+    if style_data.get("dialogue_rhythm"):
+        profile["dialogue_rhythm"] = style_data["dialogue_rhythm"]
+    if season_id:
+        season_data = profile.get("season_profiles", {}) if isinstance(profile.get("season_profiles"), dict) else {}
+        season_data[season_id] = style_data
+        profile["season_profiles"] = season_data
+    save_series_style_profile(project_root, profile)
+
+
+def derive_prompt_constraints_from_bible(
+    project_root: Path,
+    episode_manifest: dict[str, Any],
+) -> dict[str, Any]:
+    profile = load_series_style_profile(project_root)
+    constraints: dict[str, Any] = {"positive": [], "negative": [], "guidance": {}}
+    if profile.get("color_mood"):
+        color = profile["color_mood"]
+        if color.get("dominant"):
+            constraints["positive"].append(color["dominant"])
+        if color.get("avoid"):
+            constraints["negative"].extend(color["avoid"])
+    if profile.get("framing"):
+        frame = profile["framing"]
+        if frame.get("preferred_camera"):
+            constraints["guidance"]["camera"] = frame["preferred_camera"]
+        if frame.get("preferred_angle"):
+            constraints["guidance"]["angle"] = frame["preferred_angle"]
+    return constraints
 
