@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 from __future__ import annotations
 
 import argparse
@@ -136,22 +136,28 @@ def queue_manifest_path(production_package_path: Path, episode_id: str) -> Path:
     return production_package_path.parent / f"{episode_id}_regeneration_queue.json"
 
 
-def build_rerun_plan(episode_id: str, *, strict: bool, update_bible: bool, max_regeneration_retries: int | None) -> list[dict[str, Any]]:
+def build_rerun_plan(episode_id: str, *, strict: bool, update_bible: bool, max_regeneration_retries: int | None, scene_ids: list[str] | None = None) -> list[dict[str, Any]]:
     gate_args = ["--episode-id", episode_id]
     if max_regeneration_retries is not None:
         gate_args.extend(["--max-regeneration-retries", str(int(max_regeneration_retries))])
     if strict:
         gate_args.append("--strict")
+    storyboard_args = ["--episode-id", episode_id, "--force"]
+    if scene_ids:
+        storyboard_args.extend(["--scene-ids", *scene_ids])
+        storyboard_note = f"Scene-selective storyboard backend rerun for {len(scene_ids)} scene(s)."
+    else:
+        storyboard_note = "Full episode storyboard backend rerun."
     plan: list[dict[str, Any]] = [
         {
             "script": "54_run_storyboard_backend.py",
-            "args": ["--episode-id", episode_id, "--force"],
-            "note": "Current storyboard backend reruns operate on the whole episode.",
+            "args": storyboard_args,
+            "note": storyboard_note,
         },
         {
             "script": "15_render_episode.py",
             "args": ["--episode-id", episode_id, "--force"],
-            "note": "Current render retries rebuild the full episode package and master.",
+            "note": "Render retries rebuild the full episode package and master.",
         },
         {
             "script": "52_quality_gate.py",
@@ -350,6 +356,17 @@ def build_queue_manifest(
 ) -> dict[str, Any]:
     episode_id = clean_text(artifacts.get("episode_id", "")) or "episode"
     queue = report.get("regeneration_queue", []) if isinstance(report.get("regeneration_queue"), list) else []
+    scene_ids = [
+        clean_text(entry.get("scene_id", ""))
+        for entry in queue
+        if isinstance(entry, dict) and clean_text(entry.get("scene_id", ""))
+    ]
+    rerun_scope = "scene_selective" if scene_ids else "full_episode_pipeline"
+    rerun_reason = (
+        f"Scene-selective backend rerun for {len(scene_ids)} flagged scene(s)."
+        if scene_ids
+        else "No flagged scenes; full episode pipeline rerun."
+    )
     return {
         "episode_id": episode_id,
         "display_title": clean_text(artifacts.get("display_title", "")),
@@ -361,22 +378,16 @@ def build_queue_manifest(
         "release_gate": dict(report.get("release_gate", {}) or {}),
         "warnings": list(report.get("warnings", []) or []),
         "regeneration_queue_count": len(queue),
-        "regeneration_queue_scene_ids": [
-            clean_text(entry.get("scene_id", ""))
-            for entry in queue
-            if isinstance(entry, dict) and clean_text(entry.get("scene_id", ""))
-        ],
+        "regeneration_queue_scene_ids": scene_ids,
         "max_regeneration_retries": int(max_regeneration_retries),
-        "rerun_scope": "full_episode_pipeline",
-        "rerun_reason": (
-            "Scene-selective backend retries are not exposed yet, so this helper reruns the current "
-            "episode-level storyboard backend and render steps."
-        ),
+        "rerun_scope": rerun_scope,
+        "rerun_reason": rerun_reason,
         "rerun_plan": build_rerun_plan(
             episode_id,
             strict=strict,
             update_bible=update_bible,
             max_regeneration_retries=max_regeneration_retries,
+            scene_ids=scene_ids if scene_ids else None,
         ),
         "regeneration_queue": queue,
         "manifest_path": str(manifest_path),

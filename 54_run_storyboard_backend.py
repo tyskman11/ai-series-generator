@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 from __future__ import annotations
 
 import argparse
@@ -42,6 +42,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--episode-id", help="Target a specific episode ID such as episode_09 or folge_09.")
     parser.add_argument("--force", action="store_true", help="Recreate already materialized backend frames.")
+    parser.add_argument("--scene-ids", nargs="*", help="Only process these scene IDs (scene-selective regeneration).")
     add_shared_worker_arguments(parser)
     return parser.parse_args()
 
@@ -587,6 +588,20 @@ def main() -> None:
     if not backend_inputs:
         info("No storyboard backend input payloads found. Run 14_generate_storyboard_assets.py first.")
         return
+
+    requested_scene_ids = set(args.scene_ids) if args.scene_ids else None
+    if requested_scene_ids:
+        filtered_inputs: list[Path] = []
+        for bi in backend_inputs:
+            payload = read_json(bi, {})
+            sid = str(payload.get("scene_id", bi.stem.replace("_backend_input", ""))).strip()
+            if sid in requested_scene_ids:
+                filtered_inputs.append(bi)
+        if not filtered_inputs:
+            info(f"None of the requested scene IDs were found: {', '.join(sorted(requested_scene_ids))}")
+            return
+        backend_inputs = filtered_inputs
+        info(f"Scene-selective mode: processing {len(backend_inputs)} of {len(filtered_inputs) + sum(1 for _ in [])} requested scenes.")
 
     autosave_target = episode_id
     mark_step_started("54_run_storyboard_backend", autosave_target, {"episode_id": episode_id, "shotlist": str(shotlist_path)})

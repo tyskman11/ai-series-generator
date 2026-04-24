@@ -85,7 +85,7 @@ The default path stays local-first and license-light. The project already produc
 - `15_render_episode.py` reuses backend frames/clips when present, assembles voiced scene masters, writes delivery bundles, and keeps improving the final generated-episode package
 - `51_export_package.py` now exports real generated-episode packages for JSON, DaVinci-style, and Premiere-style handoff folders
 - `52_quality_gate.py` now writes persistent quality-gate reports, regeneration queues, and feeds that state back into episode artifacts
-- `53_regenerate_weak_scenes.py` turns quality-gate queues into retry manifests and can rerun the current full-episode retry chain while preserving scene retry state
+- `53_regenerate_weak_scenes.py` turns quality-gate queues into retry manifests and can rerun the current full-episode retry chain while preserving scene retry state; storyboard backend stage now supports `--scene-ids` for scene-selective reruns
 - `52_quality_gate.py` now supports `--auto-retry` to automatically trigger `53_regenerate_weak_scenes.py --apply` when the gate fails and weak scenes are queued
 - `16_build_series_bible.py`, `57_generate_finished_episodes.py`, and `99_process_next_episode.py` surface readiness, backend coverage, and quality scoring for generated episodes
 - `49_refresh_after_manual_review.py` and `57_generate_finished_episodes.py` now follow the real train-then-generate/render order against the current script names
@@ -99,7 +99,6 @@ Only untouched follow-up work belongs here. If implementation has already starte
 
 - backend preset benchmarking so different local runner command templates can be compared automatically
 - stronger per-character continuity memory across generated episodes, including outfit and look consistency
-- scene-selective regeneration so weak-scene retries no longer need a full `54 -> 15 -> 52` rerun
 - worker capability scheduling so GPU-heavy steps can prefer stronger machines automatically on NAS runs
 
 ## Documentation Rule
@@ -382,7 +381,7 @@ python 04_diarize_and_transcribe.py --worker-id pc2
 - the local finished episode is already watchable, but not yet a TV-grade final production
 - fully new dialogue lines still depend on generated speech when no strong original segment can be reused
 - lip-sync and generated scene video quality still depend on later backend tuning
-- `53_regenerate_weak_scenes.py` currently reruns the full episode-level storyboard/render/gate chain instead of only the flagged scenes
+- `53_regenerate_weak_scenes.py` now reruns only the flagged scenes in the storyboard backend stage (`54_run_storyboard_backend.py --scene-ids`), but the render step (`15_render_episode.py`) still rebuilds the full episode package
 - orchestration-heavy scripts mainly use exclusive leases; the fine-grained parallelism lives in worker-heavy numbered steps underneath
 - `release_mode` is optional and stays disabled by default until your local image/video/lip-sync outputs are good enough to gate production automatically
 
