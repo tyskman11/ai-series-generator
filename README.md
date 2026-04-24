@@ -271,36 +271,15 @@ Also keep the `In Progress` and `Planned` sections current. If priorities change
 - `18_build_series_bible.py`: rebuild the series bible
 - `19_generate_finished_episodes.py`: generate multiple finished episodes in one run or keep generating endlessly until stopped
 - `20_refresh_after_manual_review.py`: rebuild the pipeline after manual character review
-- `21_export_package.py`: export finished episode package for external tools (DaVinci, Premiere)
-- `22_quality_gate.py`: automatic quality check before release with configurable thresholds
+- `21_export_package.py`: export finished episode package for external tools
+- `22_quality_gate.py`: automatic quality check before release
 - `23_compare_scenes.py`: compare two scenes visually for QA
 - `24_backup_project.py`: backup project to cloud/NAS
 - `25_restore_project.py`: restore project from backup
-- `26_character_timeline.py`: show character appearances across episodes
-- `27_merge_episodes.py`: merge multiple episodes into one season
-- `28_subtitle_generator.py`: generate subtitles from dialog (SRT, VTT)
-- `29_music_cue_sheet.py`: generate music cue points for scenes
-- `30_multi_language_subtitle.py`: translate subtitles to multiple languages
-- `31_chapter_marker.py`: auto-detect chapter markers from content
-- `34_trailer_generator.py`: generate trailer from episode footage
-- `35_recap_generator.py`: generate recap episode from season
-- `36_episode_archive.py`: archive old episodes with retention
-- `37_review_queue.py`: review workflow queue system
-- `38_character_timeline.py` (moved to 26)
-- `39_script_writer.py` (moved to 39)
-- `40_analyze_patterns.py`: analyze recurring patterns in series
-- `41_mood_analyzer.py`: analyze mood/emotions across episodes
-- `42_podcast_export.py`: export audio-only for podcast feeds
-- `43_social_media_clips.py`: generate social media clips (TikTok, Reels, Shorts)
-- `44_highlights_extractor.py`: extract best scenes from episodes
-- `45_batch_exporter.py`: export multiple formats in parallel
-- `46_metadata_generator.py`: generate platform metadata
-- `47_auto_editor.py`: auto-edit based on mood
-- `48_voice_clone_detector.py`: detect voice clones across episodes
-- `49_trend_analyzer.py`: analyze series trends
-- `50_sync_to_github.py`: sync local changes to GitHub (last step)
+- `27_* - 51_*`: post-processing and output scripts (see Root Scripts for details)
 - `99_process_next_episode.py`: run the full end-to-end workflow
-- `pipeline_common.py`: shared helpers for paths, config, runtime, progress reporting, and status handling
+
+### Root Scripts
 
 ### Important Project Folders
 
