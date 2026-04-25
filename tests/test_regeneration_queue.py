@@ -142,6 +142,30 @@ class RegenerationQueueTests(unittest.TestCase):
         self.assertIn("--min-quality", quality_gate_args)
         self.assertIn("0.73", quality_gate_args)
 
+    def test_ensure_quality_gate_report_disables_auto_retry_during_refresh(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            production_package = root / "episode_001_production_package.json"
+            production_package.write_text("{}", encoding="utf-8")
+            report_path = root / "episode_001_quality_gate.json"
+            write_json(report_path, {"episode_id": "episode_001", "regeneration_queue": []})
+
+            with mock.patch.object(STEP53, "run_script", return_value=mock.Mock(returncode=0)) as run_script:
+                loaded_report_path, loaded_report = STEP53.ensure_quality_gate_report(
+                    {"release_mode": {"auto_retry_failed_gate": True}},
+                    {"episode_id": "episode_001", "production_package": str(production_package)},
+                    min_quality=0.72,
+                    refresh=True,
+                )
+
+        self.assertEqual(loaded_report_path, report_path)
+        self.assertEqual(loaded_report["episode_id"], "episode_001")
+        self.assertEqual(run_script.call_args.args[0], "52_quality_gate.py")
+        gate_args = run_script.call_args.args[1]
+        self.assertIn("--no-auto-retry", gate_args)
+        self.assertIn("--min-quality", gate_args)
+        self.assertIn("0.72", gate_args)
+
     def test_build_auto_retry_command_honors_retry_config(self) -> None:
         command = STEP52.build_auto_retry_command(
             {

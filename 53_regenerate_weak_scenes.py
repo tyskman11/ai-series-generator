@@ -145,7 +145,7 @@ def ensure_quality_gate_report(
     episode_id = clean_text(artifacts.get("episode_id", "")) or clean_text(artifacts.get("display_title", "")) or "episode"
     report_path = quality_gate_report_path(artifacts)
     if refresh or not report_path.exists():
-        gate_args = ["--episode-id", episode_id]
+        gate_args = ["--episode-id", episode_id, "--no-auto-retry"]
         gate_args.extend(
             quality_gate_override_args(
                 min_quality=min_quality,
