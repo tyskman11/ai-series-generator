@@ -63,7 +63,7 @@ The default path stays local-first and license-light. The project already produc
 - per-scene mastered clips and package-level `*_full_generated_episode.mp4` masters
 - dedicated delivery bundles under `generation/renders/deliveries/<episode>` plus stable `generation/renders/deliveries/latest`
 - production-readiness summaries, backend-runner summaries, and heuristic scene/episode quality scoring in orchestration outputs and the series bible
-- exportable external handoff packages under `exports/packages/<episode>/<format>`
+- exportable external handoff packages under `exports/packages/<episode>/<format>`, now including render profile plus release-gate and regeneration metadata
 - release-style quality-gate reports with regeneration queues, preserved retry metadata across rerenders, and optional enforcement in the main finished-episode orchestrators when `release_mode.enabled` is turned on
 
 ## Current Focus
@@ -83,7 +83,7 @@ The default path stays local-first and license-light. The project already produc
 - `14_generate_storyboard_assets.py` emits backend-ready scene input payloads and rebases moved artifact paths
 - `54_run_storyboard_backend.py` can materialize local scene packs and optionally call configured external storyboard runners first
 - `15_render_episode.py` reuses backend frames/clips when present, assembles voiced scene masters, writes delivery bundles, and keeps improving the final generated-episode package
-- `51_export_package.py` now exports real generated-episode packages for JSON, DaVinci-style, and Premiere-style handoff folders
+- `51_export_package.py` now exports real generated-episode packages for JSON, DaVinci-style, and Premiere-style handoff folders, including resolved render profile plus release/delivery/regeneration metadata
 - `52_quality_gate.py` now writes persistent quality-gate reports, regeneration queues, and feeds that state back into episode artifacts
 - `53_regenerate_weak_scenes.py` turns quality-gate queues into retry manifests and can rerun the current full-episode retry chain while preserving scene retry state; storyboard backend stage now supports `--scene-ids` for scene-selective reruns
 - `52_quality_gate.py` now supports `--auto-retry` plus `release_mode.auto_retry_*` config so failed gates can launch one automatic retry loop, suppress nested retries inside the inner rerun, and only return success after the refreshed gate really passes
@@ -132,7 +132,7 @@ Also keep the `In Progress` and `Planned` sections current.
 - `17_analyze_patterns.py` to `48_social_media_clips.py`: analysis, utility, and content-export helpers
 - `49_refresh_after_manual_review.py`: one-command rebuild after heavy review work
 - `50_run_backend_finetunes.py`: backend-oriented fine-tune/materialization bridge after `12`
-- `51_export_package.py`: export generated-episode bundles for external tools
+- `51_export_package.py`: export generated-episode bundles for external tools with render-profile and release-gate handoff metadata
 - `52_quality_gate.py`: evaluate finished episodes against release-style thresholds and write regeneration hints
 - `53_regenerate_weak_scenes.py` to `56_restore_project.py`: regeneration, backup, and maintenance helpers
 - `57_generate_finished_episodes.py`: batch or endless finished-episode generation
@@ -271,6 +271,8 @@ Turns fine-tune profiles into backend-oriented runs/materialized artifacts and a
 ### 51 - Export Package
 
 Builds handoff folders under `exports/packages/<episode>/<format>` from the real production package and can optionally copy the referenced media for external editing tools.
+
+Export manifests now also carry the configured render profile plus delivery, quality-gate, and regeneration-manifest references so external tools or later handoff steps can see the actual release state of the exported episode.
 
 ### 52 - Quality Gate
 

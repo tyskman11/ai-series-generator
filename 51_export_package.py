@@ -159,7 +159,16 @@ def collect_scene_export_rows(production_package: dict[str, Any]) -> list[dict[s
     return rows
 
 
+def render_profile(cfg: dict[str, Any]) -> dict[str, int | float]:
+    render_cfg = cfg.get("render", {}) if isinstance(cfg.get("render"), dict) else {}
+    width = int(render_cfg.get("width", 1280) or 1280)
+    height = int(render_cfg.get("height", 720) or 720)
+    fps = float(render_cfg.get("fps", 30) or 30)
+    return {"width": width, "height": height, "fps": fps}
+
+
 def build_common_export_payload(
+    cfg: dict[str, Any],
     artifacts: dict[str, Any],
     production_package: dict[str, Any],
     format_name: str,
@@ -173,20 +182,37 @@ def build_common_export_payload(
         "display_title": str(artifacts.get("display_title", "") or ""),
         "episode_title": str(artifacts.get("episode_title", "") or ""),
         "render_mode": str(artifacts.get("render_mode", "") or ""),
+        "render_profile": render_profile(cfg),
         "production_readiness": str(artifacts.get("production_readiness", "") or ""),
         "quality_label": str(artifacts.get("quality_label", "") or ""),
         "quality_percent": int(artifacts.get("quality_percent", 0) or 0),
-        "final_render": str(artifacts.get("final_render", "") or ""),
-        "full_generated_episode": str(artifacts.get("full_generated_episode", "") or ""),
-        "dialogue_audio": str(artifacts.get("dialogue_audio", "") or ""),
-        "subtitle_preview": str(artifacts.get("subtitle_preview", "") or ""),
-        "voice_plan": str(artifacts.get("voice_plan", "") or ""),
-        "render_manifest": str(artifacts.get("render_manifest", "") or ""),
-        "production_package": str(artifacts.get("production_package", "") or ""),
-        "production_prompt_preview": str(artifacts.get("production_prompt_preview", "") or ""),
-        "delivery_bundle_root": str(artifacts.get("delivery_bundle_root", "") or ""),
-        "delivery_manifest": str(artifacts.get("delivery_manifest", "") or ""),
-        "delivery_episode": str(artifacts.get("delivery_episode", "") or ""),
+        "final_render": stored_path_text(artifacts.get("final_render", "")),
+        "full_generated_episode": stored_path_text(artifacts.get("full_generated_episode", "")),
+        "dialogue_audio": stored_path_text(artifacts.get("dialogue_audio", "")),
+        "subtitle_preview": stored_path_text(artifacts.get("subtitle_preview", "")),
+        "voice_plan": stored_path_text(artifacts.get("voice_plan", "")),
+        "render_manifest": stored_path_text(artifacts.get("render_manifest", "")),
+        "production_package": stored_path_text(artifacts.get("production_package", "")),
+        "production_prompt_preview": stored_path_text(artifacts.get("production_prompt_preview", "")),
+        "delivery_bundle_root": stored_path_text(artifacts.get("delivery_bundle_root", "")),
+        "delivery_manifest": stored_path_text(artifacts.get("delivery_manifest", "")),
+        "delivery_episode": stored_path_text(artifacts.get("delivery_episode", "")),
+        "delivery_summary": str(artifacts.get("delivery_summary", "") or ""),
+        "latest_delivery_root": stored_path_text(artifacts.get("latest_delivery_root", "")),
+        "latest_delivery_manifest": stored_path_text(artifacts.get("latest_delivery_manifest", "")),
+        "latest_delivery_episode": stored_path_text(artifacts.get("latest_delivery_episode", "")),
+        "quality_gate_report": stored_path_text(artifacts.get("quality_gate_report", "")),
+        "release_gate": dict(artifacts.get("release_gate", {}) or {})
+        if isinstance(artifacts.get("release_gate"), dict)
+        else {},
+        "release_gate_passed": bool(artifacts.get("release_gate_passed", False)),
+        "quality_gate_warnings": list(artifacts.get("quality_gate_warnings", []) or [])
+        if isinstance(artifacts.get("quality_gate_warnings"), list)
+        else [],
+        "regeneration_queue_manifest": stored_path_text(artifacts.get("regeneration_queue_manifest", "")),
+        "regeneration_requested_scene_ids": list(artifacts.get("regeneration_requested_scene_ids", []) or [])
+        if isinstance(artifacts.get("regeneration_requested_scene_ids"), list)
+        else [],
         "scene_count": len(scene_rows),
         "scenes": scene_rows,
     }
@@ -206,6 +232,12 @@ def copy_referenced_media(export_payload: dict[str, Any], media_root: Path) -> d
         "render_manifest",
         "production_package",
         "production_prompt_preview",
+        "delivery_manifest",
+        "delivery_episode",
+        "latest_delivery_manifest",
+        "latest_delivery_episode",
+        "quality_gate_report",
+        "regeneration_queue_manifest",
     )
     for field in top_level_fields:
         source = str(export_payload.get(field, "") or "").strip()
@@ -243,12 +275,21 @@ def copy_referenced_media(export_payload: dict[str, Any], media_root: Path) -> d
 
 
 def export_for_davinci(export_payload: dict[str, Any], target_root: Path) -> dict[str, Any]:
+    render_profile_payload = export_payload.get("render_profile", {})
+    width = 1280
+    height = 720
+    fps = 30.0
+    if isinstance(render_profile_payload, dict):
+        width = int(render_profile_payload.get("width", width) or width)
+        height = int(render_profile_payload.get("height", height) or height)
+        fps = float(render_profile_payload.get("fps", fps) or fps)
     timeline = {
         "project_name": export_payload.get("episode_id") or "export",
         "display_title": export_payload.get("display_title") or "",
-        "resolution": {"width": 1280, "height": 720, "fps": 30},
+        "resolution": {"width": width, "height": height, "fps": fps},
         "production_readiness": export_payload.get("production_readiness", ""),
         "quality_percent": export_payload.get("quality_percent", 0),
+        "release_gate_passed": bool(export_payload.get("release_gate_passed", False)),
         "tracks": [
             {
                 "track_name": "episode_timeline",
@@ -325,7 +366,7 @@ def main() -> None:
 
     target_root = export_root(cfg, str(artifacts.get("episode_id", "") or "latest"), args.format)
     target_root.mkdir(parents=True, exist_ok=True)
-    export_payload = build_common_export_payload(artifacts, production_package, args.format, target_root)
+    export_payload = build_common_export_payload(cfg, artifacts, production_package, args.format, target_root)
 
     copied_top_level: dict[str, str] = {}
     if args.copy_media:
