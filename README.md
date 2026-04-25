@@ -282,7 +282,7 @@ Turns the current quality-gate queue into a persistent retry manifest and can op
 
 `54 -> 15 -> 52`
 
-Retry state is written back into the production package, scene packages, shotlist, and render manifest so later rerenders keep the same retry counters. When it is launched from `52_quality_gate.py --auto-retry`, the current gate thresholds are forwarded into the retry loop.
+Retry state is written back into the production package, scene packages, shotlist, and render manifest so later rerenders keep the same retry counters. When it is launched from `52_quality_gate.py --auto-retry`, the current gate thresholds are forwarded into the retry loop. If you call `53_regenerate_weak_scenes.py` directly with threshold overrides, it now refreshes `52_quality_gate.py` first so the queue matches those overrides.
 
 ### 13 - Generate Episode
 

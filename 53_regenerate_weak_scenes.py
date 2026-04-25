@@ -112,6 +112,18 @@ def run_script(script_name: str, args: list[str], *, allow_failure: bool = False
     return result
 
 
+def quality_gate_override_requested(args: argparse.Namespace) -> bool:
+    return any(
+        value is not None
+        for value in (
+            getattr(args, "min_quality", None),
+            getattr(args, "max_weak_scenes", None),
+            getattr(args, "max_regeneration_batch", None),
+            getattr(args, "max_regeneration_retries", None),
+        )
+    ) or bool(getattr(args, "strict", False))
+
+
 def ensure_quality_gate_report(
     cfg: dict[str, Any],
     artifacts: dict[str, Any],
@@ -511,6 +523,9 @@ def main() -> None:
         raise RuntimeError(f"Production package is missing: {production_package_path}")
 
     max_regeneration_retries = effective_retry_limit(cfg, args.max_regeneration_retries)
+    refresh_quality_gate = bool(args.refresh_quality_gate or quality_gate_override_requested(args))
+    if refresh_quality_gate and not args.refresh_quality_gate:
+        info("Quality gate overrides detected. Refreshing 52_quality_gate.py before building the regeneration manifest.")
     report_path, report = ensure_quality_gate_report(
         cfg,
         artifacts,
@@ -519,7 +534,7 @@ def main() -> None:
         max_regeneration_batch=args.max_regeneration_batch,
         strict=bool(args.strict),
         max_regeneration_retries=max_regeneration_retries,
-        refresh=bool(args.refresh_quality_gate),
+        refresh=refresh_quality_gate,
     )
     requested_at = utc_timestamp()
     manifest_path = queue_manifest_path(production_package_path, episode_id)

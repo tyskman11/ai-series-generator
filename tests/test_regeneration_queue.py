@@ -27,6 +27,41 @@ STEP53 = load_module("53_regenerate_weak_scenes.py", "step53_regeneration")
 
 
 class RegenerationQueueTests(unittest.TestCase):
+    def test_quality_gate_override_requested_detects_override_flags(self) -> None:
+        self.assertTrue(
+            STEP53.quality_gate_override_requested(
+                argparse.Namespace(
+                    min_quality=0.72,
+                    max_weak_scenes=None,
+                    max_regeneration_batch=None,
+                    max_regeneration_retries=None,
+                    strict=False,
+                )
+            )
+        )
+        self.assertTrue(
+            STEP53.quality_gate_override_requested(
+                argparse.Namespace(
+                    min_quality=None,
+                    max_weak_scenes=None,
+                    max_regeneration_batch=None,
+                    max_regeneration_retries=None,
+                    strict=True,
+                )
+            )
+        )
+        self.assertFalse(
+            STEP53.quality_gate_override_requested(
+                argparse.Namespace(
+                    min_quality=None,
+                    max_weak_scenes=None,
+                    max_regeneration_batch=None,
+                    max_regeneration_retries=None,
+                    strict=False,
+                )
+            )
+        )
+
     def test_build_auto_retry_command_honors_retry_config(self) -> None:
         command = STEP52.build_auto_retry_command(
             {
@@ -55,6 +90,61 @@ class RegenerationQueueTests(unittest.TestCase):
         self.assertIn("--strict", command)
         self.assertIn("--update-bible", command)
         self.assertTrue(str(command[1]).endswith("53_regenerate_weak_scenes.py"))
+
+    def test_regenerate_main_refreshes_gate_when_overrides_are_passed(self) -> None:
+        args = argparse.Namespace(
+            episode_id="episode_001",
+            min_quality=0.74,
+            max_weak_scenes=None,
+            max_regeneration_batch=None,
+            refresh_quality_gate=False,
+            apply=False,
+            force=False,
+            update_bible=False,
+            max_regeneration_retries=4,
+            strict=False,
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            production_package = Path(tmpdir) / "episode_001_production_package.json"
+            production_package.write_text("{}", encoding="utf-8")
+            artifacts = {
+                "episode_id": "episode_001",
+                "production_package": str(production_package),
+            }
+            report_path = Path(tmpdir) / "episode_001_quality_gate.json"
+            queue_path = Path(tmpdir) / "episode_001_regeneration_queue.json"
+            with mock.patch.object(STEP53, "parse_args", return_value=args), mock.patch.object(
+                STEP53, "load_config", return_value={"release_mode": {"max_regeneration_retries": 3}}
+            ), mock.patch.object(
+                STEP53, "resolve_episode_artifacts", return_value=artifacts
+            ), mock.patch.object(
+                STEP53, "effective_retry_limit", return_value=4
+            ), mock.patch.object(
+                STEP53, "ensure_quality_gate_report", return_value=(report_path, {"regeneration_queue": []})
+            ) as ensure_report, mock.patch.object(
+                STEP53, "queue_manifest_path", return_value=queue_path
+            ), mock.patch.object(
+                STEP53, "build_queue_manifest", return_value={"regeneration_queue": [], "manifest_path": str(queue_path)}
+            ), mock.patch.object(
+                STEP53, "write_json"
+            ), mock.patch.object(
+                STEP53, "persist_artifact_metadata"
+            ), mock.patch.object(
+                STEP53, "persist_package_scene_updates"
+            ), mock.patch.object(
+                STEP53, "headline"
+            ), mock.patch.object(
+                STEP53, "info"
+            ), mock.patch.object(
+                STEP53, "ok"
+            ), mock.patch.object(
+                STEP53, "rerun_in_runtime"
+            ):
+                STEP53.main()
+
+        self.assertEqual(ensure_report.call_args.kwargs["min_quality"], 0.74)
+        self.assertEqual(ensure_report.call_args.kwargs["max_regeneration_retries"], 4)
+        self.assertTrue(ensure_report.call_args.kwargs["refresh"])
 
     def test_queue_scenes_for_regeneration_honors_retry_limit(self) -> None:
         queue = queue_scenes_for_regeneration(
