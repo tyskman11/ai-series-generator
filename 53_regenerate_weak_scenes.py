@@ -196,7 +196,7 @@ def build_rerun_plan(
     max_regeneration_retries: int | None = None,
     scene_ids: list[str] | None = None,
 ) -> list[dict[str, Any]]:
-    gate_args = ["--episode-id", episode_id]
+    gate_args = ["--episode-id", episode_id, "--no-auto-retry"]
     gate_args.extend(
         quality_gate_override_args(
             min_quality=min_quality,

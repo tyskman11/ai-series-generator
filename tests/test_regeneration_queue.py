@@ -27,6 +27,21 @@ STEP53 = load_module("53_regenerate_weak_scenes.py", "step53_regeneration")
 
 
 class RegenerationQueueTests(unittest.TestCase):
+    def test_auto_retry_enabled_respects_no_auto_retry_override(self) -> None:
+        cfg = {"release_mode": {"auto_retry_failed_gate": True}}
+        self.assertFalse(
+            STEP52.auto_retry_enabled(
+                cfg,
+                argparse.Namespace(auto_retry=False, no_auto_retry=True),
+            )
+        )
+        self.assertTrue(
+            STEP52.auto_retry_enabled(
+                cfg,
+                argparse.Namespace(auto_retry=False, no_auto_retry=False),
+            )
+        )
+
     def test_quality_gate_override_requested_detects_override_flags(self) -> None:
         self.assertTrue(
             STEP53.quality_gate_override_requested(
@@ -61,6 +76,23 @@ class RegenerationQueueTests(unittest.TestCase):
                 )
             )
         )
+
+    def test_build_rerun_plan_disables_nested_quality_gate_auto_retry(self) -> None:
+        plan = STEP53.build_rerun_plan(
+            "episode_001",
+            strict=True,
+            update_bible=False,
+            min_quality=0.73,
+            scene_ids=["scene_001"],
+        )
+
+        quality_gate_steps = [step for step in plan if step.get("script") == "52_quality_gate.py"]
+        self.assertEqual(len(quality_gate_steps), 1)
+        quality_gate_args = quality_gate_steps[0]["args"]
+        self.assertIn("--no-auto-retry", quality_gate_args)
+        self.assertIn("--strict", quality_gate_args)
+        self.assertIn("--min-quality", quality_gate_args)
+        self.assertIn("0.73", quality_gate_args)
 
     def test_build_auto_retry_command_honors_retry_config(self) -> None:
         command = STEP52.build_auto_retry_command(
