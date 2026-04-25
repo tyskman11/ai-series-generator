@@ -86,6 +86,7 @@ The default path stays local-first and license-light. The project already produc
 - `51_export_package.py` now exports real generated-episode packages for JSON, DaVinci-style, and Premiere-style handoff folders, including resolved render profile plus release/delivery/regeneration metadata
 - `52_quality_gate.py` now writes persistent quality-gate reports, regeneration queues, and feeds that state back into episode artifacts
 - `53_regenerate_weak_scenes.py` turns quality-gate queues into retry manifests and can rerun the current full-episode retry chain while preserving scene retry state; storyboard backend stage now supports `--scene-ids` for scene-selective reruns
+- `52_quality_gate.py` and `53_regenerate_weak_scenes.py` now ignore empty stored artifact paths before resolving reports, packages, or delivery folders, so missing metadata cannot accidentally point at the current working directory
 - `52_quality_gate.py` now supports `--auto-retry` plus `release_mode.auto_retry_*` config so failed gates can launch one automatic retry loop, suppress nested retries inside the inner rerun, and only return success after the refreshed gate really passes
 - `16_build_series_bible.py`, `57_generate_finished_episodes.py`, and `99_process_next_episode.py` surface readiness, backend coverage, and quality scoring for generated episodes
 - `49_refresh_after_manual_review.py` and `57_generate_finished_episodes.py` now follow the real train-then-generate/render order against the current script names
@@ -276,7 +277,7 @@ Export manifests now also carry the configured render profile plus delivery, qua
 
 ### 52 - Quality Gate
 
-Evaluates the latest or requested generated episode against `release_mode` thresholds, writes a report JSON plus regeneration queue, and updates the recorded episode artifacts with the result. With `--auto-retry` or `release_mode.auto_retry_failed_gate`, it can launch one automatic retry loop and only exits successfully when the refreshed gate actually passes. The inner gate rerun now uses an internal `--no-auto-retry` guard so that config-driven auto-retry cannot recursively retrigger itself.
+Evaluates the latest or requested generated episode against `release_mode` thresholds, writes a report JSON plus regeneration queue, and updates the recorded episode artifacts with the result. With `--auto-retry` or `release_mode.auto_retry_failed_gate`, it can launch one automatic retry loop and only exits successfully when the refreshed gate actually passes. The inner gate rerun now uses an internal `--no-auto-retry` guard so that config-driven auto-retry cannot recursively retrigger itself. Empty artifact path fields are ignored before report/package/delivery paths are resolved.
 
 ### 53 - Regenerate Weak Scenes
 
@@ -284,7 +285,7 @@ Turns the current quality-gate queue into a persistent retry manifest and can op
 
 `54 -> 15 -> 52`
 
-Retry state is written back into the production package, scene packages, shotlist, and render manifest so later rerenders keep the same retry counters. When it is launched from `52_quality_gate.py --auto-retry`, the current gate thresholds are forwarded into the retry loop. If you call `53_regenerate_weak_scenes.py` directly with threshold overrides, it now refreshes `52_quality_gate.py` first so the queue matches those overrides.
+Retry state is written back into the production package, scene packages, shotlist, and render manifest so later rerenders keep the same retry counters. When it is launched from `52_quality_gate.py --auto-retry`, the current gate thresholds are forwarded into the retry loop. If you call `53_regenerate_weak_scenes.py` directly with threshold overrides, it now refreshes `52_quality_gate.py` first so the queue matches those overrides. Missing production-package metadata now fails explicitly instead of falling through to the current working directory.
 
 ### 13 - Generate Episode
 

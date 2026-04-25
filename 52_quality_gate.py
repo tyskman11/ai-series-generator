@@ -80,6 +80,13 @@ def release_mode_config(cfg: dict[str, Any]) -> dict[str, Any]:
     return dict(cfg.get("release_mode", {}) or {}) if isinstance(cfg.get("release_mode"), dict) else {}
 
 
+def stored_path_if_present(path_value: object) -> Path | None:
+    text = str(path_value or "").strip()
+    if not text:
+        return None
+    return resolve_stored_project_path(text)
+
+
 def auto_retry_enabled(cfg: dict[str, Any], args: argparse.Namespace) -> bool:
     if bool(getattr(args, "no_auto_retry", False)):
         return False
@@ -137,8 +144,8 @@ def reload_quality_gate_report(cfg: dict[str, Any], episode_id: str) -> tuple[di
 
 
 def load_scene_quality_rows(artifacts: dict[str, Any]) -> list[dict[str, Any]]:
-    package_path = resolve_stored_project_path(artifacts.get("production_package", ""))
-    if not package_path.exists():
+    package_path = stored_path_if_present(artifacts.get("production_package", ""))
+    if not package_path or not package_path.exists() or not package_path.is_file():
         return []
     package_payload = read_json(package_path, {})
     if not isinstance(package_payload, dict):
@@ -154,7 +161,9 @@ def load_scene_quality_rows(artifacts: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def artifact_path_exists(path_value: object) -> bool:
-    candidate = resolve_stored_project_path(path_value)
+    candidate = stored_path_if_present(path_value)
+    if not candidate:
+        return False
     return candidate.exists() and candidate.is_file()
 
 
@@ -182,18 +191,18 @@ def build_warnings(artifacts: dict[str, Any]) -> list[str]:
 
 
 def quality_gate_report_path(artifacts: dict[str, Any]) -> Path:
-    delivery_root = resolve_stored_project_path(artifacts.get("delivery_bundle_root", ""))
-    if delivery_root.exists():
+    delivery_root = stored_path_if_present(artifacts.get("delivery_bundle_root", ""))
+    if delivery_root and delivery_root.exists() and delivery_root.is_dir():
         return delivery_root / f"{artifacts.get('episode_id', 'episode')}_quality_gate.json"
-    package_path = resolve_stored_project_path(artifacts.get("production_package", ""))
-    if package_path.exists():
+    package_path = stored_path_if_present(artifacts.get("production_package", ""))
+    if package_path and package_path.exists() and package_path.is_file():
         return package_path.parent / f"{artifacts.get('episode_id', 'episode')}_quality_gate.json"
     return Path(f"{artifacts.get('episode_id', 'episode')}_quality_gate.json")
 
 
 def persist_quality_gate_result(artifacts: dict[str, Any], report_path: Path, report: dict[str, Any]) -> None:
-    shotlist_path = resolve_stored_project_path(artifacts.get("shotlist", ""))
-    render_manifest_path = resolve_stored_project_path(artifacts.get("render_manifest", ""))
+    shotlist_path = stored_path_if_present(artifacts.get("shotlist", ""))
+    render_manifest_path = stored_path_if_present(artifacts.get("render_manifest", ""))
     release_gate = report.get("release_gate", {}) if isinstance(report.get("release_gate"), dict) else {}
     updates = {
         "quality_gate_report": str(report_path),
@@ -203,7 +212,7 @@ def persist_quality_gate_result(artifacts: dict[str, Any], report_path: Path, re
         "regeneration_queue_count": len(report.get("regeneration_queue", []) or []),
     }
     for target_path in (shotlist_path, render_manifest_path):
-        if not target_path.exists():
+        if not target_path or not target_path.exists() or not target_path.is_file():
             continue
         payload = read_json(target_path, {})
         if not isinstance(payload, dict):

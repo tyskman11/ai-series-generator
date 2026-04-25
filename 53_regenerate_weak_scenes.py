@@ -90,16 +90,23 @@ def effective_retry_limit(cfg: dict[str, Any], override: int | None = None) -> i
     return max(0, int(release_cfg.get("max_regeneration_retries", 3) or 3))
 
 
+def stored_path_if_present(path_value: object) -> Path | None:
+    text = clean_text(path_value)
+    if not text:
+        return None
+    return resolve_stored_project_path(text)
+
+
 def quality_gate_report_path(artifacts: dict[str, Any]) -> Path:
-    explicit = resolve_stored_project_path(artifacts.get("quality_gate_report", ""))
-    if explicit.exists():
+    explicit = stored_path_if_present(artifacts.get("quality_gate_report", ""))
+    if explicit and explicit.exists() and explicit.is_file():
         return explicit
-    delivery_root = resolve_stored_project_path(artifacts.get("delivery_bundle_root", ""))
+    delivery_root = stored_path_if_present(artifacts.get("delivery_bundle_root", ""))
     episode_id = clean_text(artifacts.get("episode_id", "")) or "episode"
-    if delivery_root.exists():
+    if delivery_root and delivery_root.exists() and delivery_root.is_dir():
         return delivery_root / f"{episode_id}_quality_gate.json"
-    package_path = resolve_stored_project_path(artifacts.get("production_package", ""))
-    if package_path.exists():
+    package_path = stored_path_if_present(artifacts.get("production_package", ""))
+    if package_path and package_path.exists() and package_path.is_file():
         return package_path.parent / f"{episode_id}_quality_gate.json"
     return Path(f"{episode_id}_quality_gate.json")
 
@@ -518,8 +525,8 @@ def main() -> None:
         raise RuntimeError("No generated episode artifacts were found.")
 
     episode_id = clean_text(artifacts.get("episode_id", "")) or clean_text(args.episode_id) or "episode"
-    production_package_path = resolve_stored_project_path(artifacts.get("production_package", ""))
-    if not production_package_path.exists():
+    production_package_path = stored_path_if_present(artifacts.get("production_package", ""))
+    if not production_package_path or not production_package_path.exists() or not production_package_path.is_file():
         raise RuntimeError(f"Production package is missing: {production_package_path}")
 
     max_regeneration_retries = effective_retry_limit(cfg, args.max_regeneration_retries)
@@ -596,8 +603,8 @@ def main() -> None:
 
     applied_at = utc_timestamp()
     refreshed_artifacts = resolve_episode_artifacts(cfg, episode_id)
-    refreshed_package_path = resolve_stored_project_path(refreshed_artifacts.get("production_package", ""))
-    if refreshed_package_path.exists():
+    refreshed_package_path = stored_path_if_present(refreshed_artifacts.get("production_package", ""))
+    if refreshed_package_path and refreshed_package_path.exists() and refreshed_package_path.is_file():
         persist_package_scene_updates(
             refreshed_package_path,
             queue,

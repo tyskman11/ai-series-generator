@@ -27,6 +27,54 @@ STEP53 = load_module("53_regenerate_weak_scenes.py", "step53_regeneration")
 
 
 class RegenerationQueueTests(unittest.TestCase):
+    def test_quality_gate_paths_ignore_empty_artifact_fields(self) -> None:
+        artifacts = {"episode_id": "episode_001"}
+
+        self.assertIsNone(STEP52.stored_path_if_present(""))
+        self.assertIsNone(STEP53.stored_path_if_present(""))
+        self.assertEqual(STEP52.quality_gate_report_path(artifacts), Path("episode_001_quality_gate.json"))
+        self.assertEqual(STEP53.quality_gate_report_path(artifacts), Path("episode_001_quality_gate.json"))
+        self.assertFalse(STEP52.artifact_path_exists(""))
+        self.assertEqual(STEP52.load_scene_quality_rows({}), [])
+        STEP52.persist_quality_gate_result({}, Path("missing_quality_gate.json"), {"release_gate": {"passed": False}})
+
+    def test_quality_gate_report_path_prefers_real_delivery_or_package_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            delivery_root = root / "delivery"
+            delivery_root.mkdir()
+            package_path = root / "package" / "episode_001_production_package.json"
+            package_path.parent.mkdir()
+            package_path.write_text("{}", encoding="utf-8")
+
+            delivery_artifacts = {
+                "episode_id": "episode_001",
+                "delivery_bundle_root": str(delivery_root),
+                "production_package": str(package_path),
+            }
+            package_artifacts = {
+                "episode_id": "episode_001",
+                "delivery_bundle_root": "",
+                "production_package": str(package_path),
+            }
+
+            self.assertEqual(
+                STEP52.quality_gate_report_path(delivery_artifacts),
+                delivery_root / "episode_001_quality_gate.json",
+            )
+            self.assertEqual(
+                STEP53.quality_gate_report_path(delivery_artifacts),
+                delivery_root / "episode_001_quality_gate.json",
+            )
+            self.assertEqual(
+                STEP52.quality_gate_report_path(package_artifacts),
+                package_path.parent / "episode_001_quality_gate.json",
+            )
+            self.assertEqual(
+                STEP53.quality_gate_report_path(package_artifacts),
+                package_path.parent / "episode_001_quality_gate.json",
+            )
+
     def test_auto_retry_enabled_respects_no_auto_retry_override(self) -> None:
         cfg = {"release_mode": {"auto_retry_failed_gate": True}}
         self.assertFalse(
