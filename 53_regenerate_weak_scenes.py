@@ -90,13 +90,6 @@ def effective_retry_limit(cfg: dict[str, Any], override: int | None = None) -> i
     return max(0, int(release_cfg.get("max_regeneration_retries", 3) or 3))
 
 
-def stored_path_if_present(path_value: object) -> Path | None:
-    text = clean_text(path_value)
-    if not text:
-        return None
-    return resolve_stored_project_path(text)
-
-
 def quality_gate_report_path(artifacts: dict[str, Any]) -> Path:
     explicit = stored_path_if_present(artifacts.get("quality_gate_report", ""))
     if explicit and explicit.exists() and explicit.is_file():

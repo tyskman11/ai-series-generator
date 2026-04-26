@@ -80,13 +80,6 @@ def release_mode_config(cfg: dict[str, Any]) -> dict[str, Any]:
     return dict(cfg.get("release_mode", {}) or {}) if isinstance(cfg.get("release_mode"), dict) else {}
 
 
-def stored_path_if_present(path_value: object) -> Path | None:
-    text = str(path_value or "").strip()
-    if not text:
-        return None
-    return resolve_stored_project_path(text)
-
-
 def auto_retry_enabled(cfg: dict[str, Any], args: argparse.Namespace) -> bool:
     if bool(getattr(args, "no_auto_retry", False)):
         return False
