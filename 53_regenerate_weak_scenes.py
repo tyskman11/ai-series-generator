@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 from __future__ import annotations
 
 import argparse
@@ -19,6 +19,7 @@ from pipeline_common import (
     rerun_in_runtime,
     resolve_stored_project_path,
     runtime_python,
+    stored_path_if_present,
     write_json,
 )
 
