@@ -1283,13 +1283,12 @@ def resolve_stored_project_path(path_value: str | Path | None) -> Path:
             return rebased
     return candidate
 
-
-
 def stored_path_if_present(path_value: object) -> Path | None:
-    text = str(path_value or '').strip()
+    text = str(path_value or "").strip()
     if not text:
         return None
     return resolve_stored_project_path(text)
+
 
 def generated_story_prompt_dir(cfg: dict[str, Any]) -> Path:
     paths = cfg.get("paths", {}) if isinstance(cfg.get("paths"), dict) else {}

@@ -88,6 +88,7 @@ The default path stays local-first and license-light. The project already produc
 - `53_regenerate_weak_scenes.py` turns quality-gate queues into retry manifests and can rerun the current full-episode retry chain while preserving scene retry state; storyboard backend stage now supports `--scene-ids` for scene-selective reruns
 - `52_quality_gate.py` and `53_regenerate_weak_scenes.py` now ignore empty stored artifact paths before resolving reports, packages, or delivery folders, so missing metadata cannot accidentally point at the current working directory
 - `52_quality_gate.py` now supports `--auto-retry` plus `release_mode.auto_retry_*` config so failed gates can launch one automatic retry loop, while `53_regenerate_weak_scenes.py` suppresses nested auto-retries both during its gate refresh and inside the inner rerun
+- the tracked regression suite covers export handoffs, release-gate reports, retry queues, strict warning handling, and regeneration metadata so those finished-episode contracts stay guarded
 - `16_build_series_bible.py`, `57_generate_finished_episodes.py`, and `99_process_next_episode.py` surface readiness, backend coverage, and quality scoring for generated episodes
 - `49_refresh_after_manual_review.py` and `57_generate_finished_episodes.py` now follow the real train-then-generate/render order against the current script names
 - `49_refresh_after_manual_review.py`, `57_generate_finished_episodes.py`, and `99_process_next_episode.py` can now run `52_quality_gate.py` automatically after render when `release_mode.enabled` is active
@@ -161,6 +162,7 @@ Also keep the `In Progress` and `Planned` sections current.
 - `ai_series_project/runtime/autosaves`: autosaves and resumable run state
 - `ai_series_project/runtime/distributed`: NAS/shared-worker lease files
 - `ai_series_project/tools/ffmpeg/bin`: OS-specific FFmpeg binaries
+- `tests`: tracked unit tests for export packages, quality gates, and regeneration/retry behavior
 
 ## Requirements
 
@@ -328,6 +330,8 @@ Run the automated tests:
 ```powershell
 python -m unittest discover -s tests -v
 ```
+
+The tracked test suite currently focuses on the finished-episode handoff path: export packages, release quality gates, retry queues, strict warnings, and regeneration metadata.
 
 Recommended smoke run after larger pipeline changes:
 
