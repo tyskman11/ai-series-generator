@@ -94,12 +94,12 @@ The default path stays local-first and license-light. The project already produc
 - `49_refresh_after_manual_review.py`, `57_generate_finished_episodes.py`, and `99_process_next_episode.py` can now run `52_quality_gate.py` automatically after render when `release_mode.enabled` is active
 - `50_run_backend_finetunes.py` remains the backend-prep bridge between `12_train_fine_tune_models.py` and the actual generation/render path
 - real fully generated image/video/lip-sync quality is still active work even though the orchestration and package plumbing already exist
+- `backend_preset_benchmark.py` provides a ranked comparison of backend runner presets with composite scoring and test-scene evaluation
 
 ## Planned
 
 Only untouched follow-up work belongs here. If implementation has already started, it belongs in `In Progress`.
 
-- backend preset benchmarking so different local runner command templates can be compared automatically
 - stronger per-character continuity memory across generated episodes, including outfit and look consistency
 - worker capability scheduling so GPU-heavy steps can prefer stronger machines automatically on NAS runs
 
@@ -139,6 +139,7 @@ Also keep the `In Progress` and `Planned` sections current.
 - `53_regenerate_weak_scenes.py` to `56_restore_project.py`: regeneration, backup, and maintenance helpers
 - `57_generate_finished_episodes.py`: batch or endless finished-episode generation
 - `99_process_next_episode.py`: full end-to-end coordinator
+- `backend_preset_benchmark.py`: compare backend runner presets and produce a ranked recommendation report
 
 ### Important Folders
 
@@ -379,6 +380,13 @@ Write or apply a weak-scene regeneration manifest:
 ```powershell
 python 53_regenerate_weak_scenes.py
 python 53_regenerate_weak_scenes.py --apply
+```
+
+Benchmark backend runner presets:
+
+```powershell
+python backend_preset_benchmark.py
+python backend_preset_benchmark.py --preset-file my_presets.json --output reports/benchmark.json
 ```
 
 Shared NAS transcription example:
