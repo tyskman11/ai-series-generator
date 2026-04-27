@@ -4577,6 +4577,63 @@ def track_character_appearances(
     save_character_continuity_memory(project_root, memory)
 
 
+def check_character_continuity_violations(
+    project_root: Path,
+    character_states: dict[str, Any],
+    embedding_threshold: float = 0.75,
+) -> list[dict[str, Any]]:
+    """Check for continuity violations between current character states and stored memory.
+
+    Returns a list of violation dicts with character name, violation type and details.
+    """
+    memory = load_character_continuity_memory(project_root)
+    char_entries = memory.get("characters", {}) if isinstance(memory.get("characters"), dict) else {}
+    violations: list[dict[str, Any]] = []
+
+    for char_name, state in character_states.items():
+        if not isinstance(state, dict):
+            continue
+        entry = char_entries.get(char_name)
+        if not entry:
+            continue
+
+        continuity = entry.get("continuity", {}) if isinstance(entry.get("continuity"), dict) else {}
+        appearances = entry.get("appearances", {}) if isinstance(entry.get("appearances"), dict) else {}
+
+        # Check text-based continuity (outfit, hairstyle, accessories)
+        for key in ["outfit", "hairstyle", "accessories"]:
+            current_value = state.get(key)
+            stored_value = continuity.get(key)
+            if current_value and stored_value and current_value != stored_value:
+                violations.append({
+                    "character": char_name,
+                    "type": "attribute_change",
+                    "attribute": key,
+                    "previous": stored_value,
+                    "current": current_value,
+                })
+
+        # Check embedding-based continuity (appearance similarity)
+        current_emb = state.get("appearance_embedding", [])
+        if current_emb and appearances:
+            last_episode_id = entry.get("last_episode_id")
+            if last_episode_id and last_episode_id in appearances:
+                prev_emb = appearances[last_episode_id].get("embedding", [])
+                if prev_emb:
+                    similarity = compute_appearance_similarity(current_emb, prev_emb)
+                    if similarity < embedding_threshold:
+                        violations.append({
+                            "character": char_name,
+                            "type": "appearance_drift",
+                            "similarity": round(similarity, 4),
+                            "threshold": embedding_threshold,
+                            "previous_episode": last_episode_id,
+                        })
+
+    return violations
+
+
+
 def multi_series_config_path(project_root: Path) -> Path:
     return project_root / "configs" / "multi_series.json"
 
