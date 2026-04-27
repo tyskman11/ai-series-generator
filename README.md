@@ -334,6 +334,14 @@ python -m unittest discover -s tests -v
 
 The tracked test suite currently focuses on the finished-episode handoff path: export packages, release quality gates, retry queues, strict warnings, and regeneration metadata.
 
+Quick syntax check for all pipeline and test files:
+
+```powershell
+python _check_syntax.py
+```
+
+`_check_syntax.py` recursively validates every `*.py` file in the project root and the `tests/` directory, excluding `__pycache__`, `runtime/`, `.venv/`, `venv/`, and `ai_series_project/`. It is a fast pre-flight check before running the full test suite or smoke runs.
+
 Recommended smoke run after larger pipeline changes:
 
 ```powershell
