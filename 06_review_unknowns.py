@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import ctypes
+import html
 import math
 import os
 import subprocess
@@ -375,6 +377,113 @@ def create_face_review_sheet(cluster_id: str, payload: dict) -> Path | None:
     return output_path
 
 
+def create_face_review_html(cluster_id: str, payload: dict) -> Path | None:
+    preview_dir = preview_dir_path(payload)
+    if not preview_dir:
+        return None
+    pairs = preview_pairs(payload)
+    files = preview_files(payload)
+    if not pairs and not files:
+        return None
+
+    review_dir = resolve_project_path("characters/review")
+    review_dir.mkdir(parents=True, exist_ok=True)
+    output_path = review_dir / f"{cluster_id}_preview.html"
+
+    cards: list[str] = []
+    if pairs:
+        for index, (context_path, crop_path) in enumerate(pairs, start=1):
+            image_blocks: list[str] = []
+            for label, image_path in (("Scene", context_path), ("Crop", crop_path)):
+                if image_path is None or not image_path.exists():
+                    continue
+                mime = "image/jpeg" if image_path.suffix.lower() in {".jpg", ".jpeg"} else "image/png"
+                encoded = base64.b64encode(image_path.read_bytes()).decode("ascii")
+                image_blocks.append(
+                    f"<figure><figcaption>{html.escape(label)}: {html.escape(image_path.name)}</figcaption>"
+                    f"<img src=\"data:{mime};base64,{encoded}\" alt=\"{html.escape(image_path.name)}\"></figure>"
+                )
+            if image_blocks:
+                cards.append(f"<section class=\"pair\"><h2>Sample {index}</h2>{''.join(image_blocks)}</section>")
+    else:
+        for image_path in files[:6]:
+            if not image_path.exists():
+                continue
+            mime = "image/jpeg" if image_path.suffix.lower() in {".jpg", ".jpeg"} else "image/png"
+            encoded = base64.b64encode(image_path.read_bytes()).decode("ascii")
+            cards.append(
+                "<section class=\"single\">"
+                f"<figure><figcaption>{html.escape(image_path.name)}</figcaption>"
+                f"<img src=\"data:{mime};base64,{encoded}\" alt=\"{html.escape(image_path.name)}\"></figure>"
+                "</section>"
+            )
+    if not cards:
+        return None
+
+    html_text = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{html.escape(cluster_id)} Preview</title>
+  <style>
+    body {{
+      font-family: "Segoe UI", sans-serif;
+      background: #111827;
+      color: #f9fafb;
+      margin: 0;
+      padding: 24px;
+    }}
+    h1 {{
+      margin-top: 0;
+    }}
+    .grid {{
+      display: grid;
+      gap: 20px;
+    }}
+    .pair, .single {{
+      background: #1f2937;
+      border-radius: 16px;
+      padding: 16px;
+      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.25);
+    }}
+    .pair {{
+      display: grid;
+      gap: 16px;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    }}
+    figure {{
+      margin: 0;
+    }}
+    figcaption {{
+      font-weight: 600;
+      margin-bottom: 8px;
+    }}
+    img {{
+      width: 100%;
+      height: auto;
+      border-radius: 12px;
+      background: #374151;
+    }}
+    .hint {{
+      color: #cbd5e1;
+      margin-bottom: 20px;
+    }}
+  </style>
+</head>
+<body>
+  <h1>{html.escape(cluster_id)} Preview</h1>
+  <p class="hint">Review the samples here and enter the assignment back in the terminal or the optional Tk window.</p>
+  <div class="grid">
+    {''.join(cards)}
+  </div>
+</body>
+</html>
+"""
+    output_path.write_text(html_text, encoding="utf-8")
+    return output_path
+
+
 def gui_preview_available() -> bool:
     try:
         os_name = current_os()
@@ -455,6 +564,10 @@ def open_preview_file(path: Path) -> bool:
 
 
 def preview_open_targets(cluster_id: str, payload: dict) -> list[Path]:
+    html_preview = create_face_review_html(cluster_id, payload)
+    if html_preview and html_preview.exists():
+        return [html_preview]
+
     montage = create_face_review_sheet(cluster_id, payload)
     if montage and montage.exists():
         return [montage]

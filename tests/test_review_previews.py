@@ -53,6 +53,32 @@ class ReviewPreviewTests(unittest.TestCase):
             self.assertTrue(sheet_path.exists())
             self.assertGreater(sheet_path.stat().st_size, 0)
 
+    def test_create_face_review_html_writes_browser_preview(self) -> None:
+        try:
+            from PIL import Image
+        except Exception:
+            self.skipTest("Pillow is not available")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            preview_dir = Path(tmpdir) / "previews"
+            review_dir = Path(tmpdir) / "review"
+            preview_dir.mkdir(parents=True, exist_ok=True)
+            review_dir.mkdir(parents=True, exist_ok=True)
+            context_path = preview_dir / "scene_001_context.jpg"
+            crop_path = preview_dir / "scene_001_crop.jpg"
+            Image.new("RGB", (120, 90), "navy").save(context_path)
+            Image.new("RGB", (60, 60), "white").save(crop_path)
+
+            with mock.patch.object(STEP06, "resolve_project_path", return_value=review_dir):
+                html_path = STEP06.create_face_review_html("face_001", {"preview_dir": str(preview_dir)})
+
+            self.assertIsNotNone(html_path)
+            assert html_path is not None
+            self.assertTrue(html_path.exists())
+            html_text = html_path.read_text(encoding="utf-8")
+            self.assertIn("face_001 Preview", html_text)
+            self.assertIn("data:image/jpeg;base64,", html_text)
+
     def test_open_preview_file_uses_windows_default_viewer(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             preview_path = Path(tmpdir) / "preview.jpg"
@@ -71,6 +97,16 @@ class ReviewPreviewTests(unittest.TestCase):
             shell_open.assert_called_once_with(preview_path)
             popen.assert_not_called()
 
+    def test_preview_open_targets_prefers_html_preview(self) -> None:
+        html_preview = Path("preview.html")
+        montage = Path("preview.jpg")
+        with mock.patch.object(STEP06, "create_face_review_html", return_value=html_preview), mock.patch.object(
+            STEP06,
+            "create_face_review_sheet",
+            return_value=montage,
+        ), mock.patch.object(Path, "exists", return_value=True):
+            self.assertEqual(STEP06.preview_open_targets("face_001", {"preview_dir": "x"}), [html_preview])
+
     def test_preview_open_targets_falls_back_to_raw_images_without_montage(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             preview_dir = Path(tmpdir)
@@ -79,7 +115,11 @@ class ReviewPreviewTests(unittest.TestCase):
             context_path.write_text("context", encoding="utf-8")
             crop_path.write_text("crop", encoding="utf-8")
 
-            with mock.patch.object(STEP06, "create_face_review_sheet", return_value=None):
+            with mock.patch.object(STEP06, "create_face_review_html", return_value=None), mock.patch.object(
+                STEP06,
+                "create_face_review_sheet",
+                return_value=None,
+            ):
                 targets = STEP06.preview_open_targets("face_001", {"preview_dir": str(preview_dir)})
 
             self.assertEqual(targets, [context_path, crop_path])
