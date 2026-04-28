@@ -4160,6 +4160,13 @@ def compare_backend_runners(
     runner_configs: list[dict[str, Any]],
     test_scene: dict[str, Any],
 ) -> list[dict[str, Any]]:
+    def normalized_score(value: object, default: float) -> float:
+        try:
+            score = float(value)
+        except (TypeError, ValueError):
+            score = default
+        return max(0.0, min(1.0, score))
+
     results: list[dict[str, Any]] = []
     for runner in runner_configs:
         if not isinstance(runner, dict):
@@ -4167,16 +4174,20 @@ def compare_backend_runners(
         runner_name = runner.get("name", "unknown")
         enabled = runner.get("enabled", False)
         success_outputs = runner.get("success_outputs", [])
+        quality_weight = normalized_score(runner.get("quality_weight"), 0.7)
+        speed_weight = normalized_score(runner.get("speed_weight"), 0.6)
         result = {
             "runner_name": runner_name,
             "enabled": enabled,
             "estimated_quality": 0.0,
             "estimated_speed": 0.0,
+            "quality_weight": quality_weight,
+            "speed_weight": speed_weight,
             "recommended": False,
         }
         if enabled and success_outputs:
-            result["estimated_quality"] = 0.7
-            result["estimated_speed"] = 0.6
+            result["estimated_quality"] = quality_weight
+            result["estimated_speed"] = speed_weight
             result["recommended"] = True
         results.append(result)
     results.sort(key=lambda x: x.get("estimated_quality", 0.0), reverse=True)

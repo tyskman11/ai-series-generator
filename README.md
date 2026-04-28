@@ -7,6 +7,7 @@
 - [What Already Works Well](#what-already-works-well)
 - [Current Focus](#current-focus)
 - [In Progress](#in-progress)
+- [Finished](#finished)
 - [Planned](#planned)
 - [Documentation Rule](#documentation-rule)
 - [Project Layout](#project-layout)
@@ -77,6 +78,7 @@ The default path stays local-first and license-light. The project already produc
 ## In Progress
 
 - `06_review_unknowns.py` keeps reducing open manual review work through known-face matching, iterative naming propagation, and conservative `statist` auto-marking
+- `06_review_unknowns.py` now rebases stored NAS preview paths and falls back to the system image viewer when the embedded Tk preview window cannot open
 - `04_diarize_and_transcribe.py` keeps extending `speaker_unknown` rescue logic and language handling
 - `99_process_next_episode.py` is being hardened for long resumable inbox runs with autosaves and live status files
 - `13_generate_episode.py` writes multi-reference storyboard plans and backend-ready request exports
@@ -95,13 +97,23 @@ The default path stays local-first and license-light. The project already produc
 - `50_run_backend_finetunes.py` remains the backend-prep bridge between `12_train_fine_tune_models.py` and the actual generation/render path
 - real fully generated image/video/lip-sync quality is still active work even though the orchestration and package plumbing already exist
 - `backend_preset_benchmark.py` provides a ranked comparison of backend runner presets with composite scoring and test-scene evaluation
+- worker capability helpers exist in `pipeline_common.py`; full orchestration integration for GPU-heavy NAS scheduling is still being connected
+
+## Finished
+
+These items are implemented and should stay guarded by README updates and tests when they change.
+
+- script numbering is numeric only, with training before generated-episode render in the documented orchestration paths
+- OS-specific FFmpeg detection and runtime setup are in place for Windows and Linux/NAS runs
+- `57_generate_finished_episodes.py` is the finished-episode entry point and defaults to one episode unless `--count 0` or `--endless` is used
+- release-gate, export-package, regeneration-queue, backend-benchmark, and review-preview behavior have tracked regression tests
 
 ## Planned
 
 Only untouched follow-up work belongs here. If implementation has already started, it belongs in `In Progress`.
 
 - stronger per-character continuity memory across generated episodes, including outfit and look consistency
-- worker capability scheduling so GPU-heavy steps can prefer stronger machines automatically on NAS runs
+- automatic GUI/display diagnostics before interactive review starts on headless NAS or SSH sessions
 
 ## Documentation Rule
 
@@ -242,7 +254,7 @@ Detects faces, links them to speaker clusters, and applies rescue logic for cert
 
 ### 06 - Review Unknowns
 
-Interactive review for unknown or weakly linked face clusters. This step tries to match known characters first and can auto-mark safe low-activity background clusters as `statist`.
+Interactive review for unknown or weakly linked face clusters. This step tries to match known characters first and can auto-mark safe low-activity background clusters as `statist`. Stored preview paths are rebased for NAS/moved workspaces; if the embedded preview window cannot open, the contact sheet is opened with the OS image viewer when possible and the terminal remains the assignment fallback.
 
 ### 07 - Build Dataset
 
@@ -404,6 +416,14 @@ python 04_diarize_and_transcribe.py --worker-id pc1
 python 04_diarize_and_transcribe.py --worker-id pc2
 ```
 
+Interactive NAS review example:
+
+```powershell
+python 06_review_unknowns.py --review-faces --open-previews
+```
+
+Run this from a desktop session on the PC that should show the images. On headless Linux/NAS or SSH sessions without `DISPLAY`/`WAYLAND_DISPLAY`, the script prints the contact-sheet path and keeps terminal assignment available.
+
 ## Known Limitations
 
 - face/speaker quality still depends heavily on review quality in `06_review_unknowns.py`
@@ -414,6 +434,7 @@ python 04_diarize_and_transcribe.py --worker-id pc2
 - `53_regenerate_weak_scenes.py` now reruns only the flagged scenes in the storyboard backend stage (`54_run_storyboard_backend.py --scene-ids`), but the render step (`15_render_episode.py`) still rebuilds the full episode package
 - automatic gate retry now performs at most one extra retry loop per failing run; if the refreshed gate still fails, the pipeline stops and leaves the queue/report for manual follow-up
 - orchestration-heavy scripts mainly use exclusive leases; the fine-grained parallelism lives in worker-heavy numbered steps underneath
+- interactive image review in `06_review_unknowns.py` needs a local desktop session for embedded Tk windows; headless NAS sessions fall back to printed contact-sheet paths and, where available, the system image viewer
 - `release_mode` is optional and stays disabled by default until your local image/video/lip-sync outputs are good enough to gate production automatically
 - test runs may show harmless FFmpeg warnings like `moov atom not found` on stderr; these do not indicate test failures and can be ignored when exit code is 0
 

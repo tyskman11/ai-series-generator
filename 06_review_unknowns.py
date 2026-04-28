@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import argparse
 import math
+import os
+import subprocess
 from pathlib import Path
 
 from pipeline_common import (
@@ -28,8 +30,10 @@ from pipeline_common import (
     read_json,
     rerun_in_runtime,
     resolve_project_path,
+    resolve_stored_project_path,
     shared_worker_id_for_args,
     shared_workers_enabled_for_args,
+    warn,
     write_json,
 )
 
@@ -238,8 +242,17 @@ def face_display_name(payload: dict | None, cluster_id: str) -> str:
     return display_person_name(str(payload.get("name", "")), cluster_id)
 
 
+def preview_dir_path(payload: dict) -> Path | None:
+    preview_dir_text = str(payload.get("preview_dir", "") or "").strip()
+    if not preview_dir_text:
+        return None
+    return resolve_stored_project_path(preview_dir_text)
+
+
 def preview_files(payload: dict) -> list[Path]:
-    preview_dir = Path(payload.get("preview_dir", ""))
+    preview_dir = preview_dir_path(payload)
+    if not preview_dir:
+        return []
     if not preview_dir.is_dir():
         return []
     files = [
@@ -251,7 +264,9 @@ def preview_files(payload: dict) -> list[Path]:
 
 
 def preview_pairs(payload: dict) -> list[tuple[Path | None, Path | None]]:
-    preview_dir = Path(payload.get("preview_dir", ""))
+    preview_dir = preview_dir_path(payload)
+    if not preview_dir:
+        return []
     if not preview_dir.is_dir():
         return []
 
@@ -302,7 +317,7 @@ def create_contact_sheet(image_paths: list[Path], output_path: Path, title: str 
 
 
 def create_face_review_sheet(cluster_id: str, payload: dict) -> Path | None:
-    preview_dir = Path(payload.get("preview_dir", ""))
+    preview_dir = preview_dir_path(payload)
     if not preview_dir:
         return None
     pairs = preview_pairs(payload)
@@ -316,7 +331,7 @@ def create_face_review_sheet(cluster_id: str, payload: dict) -> Path | None:
         from PIL import Image, ImageDraw, ImageOps
     except Exception:
         fallback_files = [path for pair in pairs for path in pair if path is not None]
-    return create_contact_sheet(fallback_files, preview_dir / f"{cluster_id}_montage.jpg", title=f"{cluster_id} | Preview")
+        return create_contact_sheet(fallback_files, preview_dir / f"{cluster_id}_montage.jpg", title=f"{cluster_id} | Preview")
 
     row_height = 300
     row_width = 560
@@ -346,6 +361,41 @@ def create_face_review_sheet(cluster_id: str, payload: dict) -> Path | None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     sheet.save(output_path)
     return output_path
+
+
+def gui_preview_available() -> bool:
+    try:
+        os_name = current_os()
+    except Exception:
+        return False
+    if os_name == "windows":
+        return True
+    if os_name == "linux":
+        return bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
+    return False
+
+
+def open_preview_file(path: Path) -> bool:
+    if not path.exists() or not path.is_file():
+        return False
+    try:
+        os_name = current_os()
+    except Exception:
+        return False
+    try:
+        if os_name == "windows":
+            os.startfile(str(path))  # type: ignore[attr-defined]
+            return True
+        if os_name == "linux" and gui_preview_available():
+            subprocess.Popen(
+                ["xdg-open", str(path)],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            return True
+    except Exception:
+        return False
+    return False
 
 
 def poll_terminal_line(buffer: list[str]) -> str | None:
@@ -415,21 +465,32 @@ def show_preview_assignment_window(
 ) -> dict[str, object] | None:
     if not image_path.exists():
         return None
+    if not gui_preview_available():
+        return None
     try:
         import tkinter as tk
         from PIL import Image, ImageTk
     except Exception:
         return None
 
-    image = Image.open(image_path).convert("RGB")
-    image.thumbnail((1200, 900))
+    try:
+        image = Image.open(image_path).convert("RGB")
+        image.thumbnail((1200, 900))
+    except Exception:
+        return None
 
     result: dict[str, object] = {"value": None, "priority": bool(initial_priority)}
     terminal_buffer: list[str] = []
 
-    window = tk.Tk()
+    try:
+        window = tk.Tk()
+    except Exception:
+        return None
     window.title(title)
-    window.attributes("-topmost", True)
+    try:
+        window.attributes("-topmost", True)
+    except Exception:
+        pass
     window.configure(bg="#1f2937")
 
     def finish(value: str | None, priority: bool | None = None) -> None:
@@ -446,7 +507,14 @@ def show_preview_assignment_window(
     window.protocol("WM_DELETE_WINDOW", lambda: finish(None))
     window.bind("<Escape>", lambda _event: finish(None))
 
-    photo = ImageTk.PhotoImage(image)
+    try:
+        photo = ImageTk.PhotoImage(image)
+    except Exception:
+        try:
+            window.destroy()
+        except Exception:
+            pass
+        return None
     label = tk.Label(window, image=photo, bg="#1f2937")
     label.image = photo
     label.pack(padx=12, pady=(12, 8))
@@ -539,6 +607,13 @@ def show_preview_assignment_window(
 
     if is_interactive_session() and current_os() == "windows":
         window.after(80, poll_terminal)
+
+    try:
+        window.update_idletasks()
+        window.lift()
+        window.focus_force()
+    except Exception:
+        pass
 
     window.mainloop()
     return result
@@ -1640,8 +1715,6 @@ def interactive_face_review(cfg: dict, char_map: dict, voice_map: dict, include_
             print(f"Automatic review hint: {action_hint}")
             if montage:
                 print(f"Contact sheet: {montage}")
-                if open_previews:
-                    info("Preview is open. You can enter the name directly in the window or in parallel in the terminal.")
             for context_path, crop_path in preview_pairs(payload):
                 if context_path:
                     print(f"Szene: {context_path}")
@@ -1665,6 +1738,13 @@ def interactive_face_review(cfg: dict, char_map: dict, voice_map: dict, include_
                 if preview_result is not None:
                     preview_name = str(preview_result.get("value") or "").strip()
                     preview_priority = bool(preview_result.get("priority", False))
+                elif open_preview_file(montage):
+                    info("Preview opened in the system image viewer. Enter the assignment in the terminal.")
+                else:
+                    warn(
+                        "Automatic preview opening is not available in this session. "
+                        "Open the contact sheet path above manually or run 06 from a desktop session with a display."
+                    )
             try:
                 if preview_name:
                     answer = preview_name
