@@ -423,7 +423,7 @@ Interactive NAS review example:
 python 06_review_unknowns.py --review-faces --open-previews
 ```
 
-`--open-previews` is the default now, so `python 06_review_unknowns.py --review-faces` is enough in normal desktop use. Run this from a desktop session on the PC that should show the images. On Windows, the script now prefers a generated HTML preview page, then tries `ShellExecute`, then additional viewer launch fallbacks, and if needed opens raw preview images when no montage could be created. On headless Linux/NAS or SSH sessions without `DISPLAY`/`WAYLAND_DISPLAY`, the script prints the preview paths and keeps terminal assignment available.
+`--open-previews` is the default now, so `python 06_review_unknowns.py --review-faces` is enough in normal desktop use. Run this from a desktop session on the PC that should show the images. On Windows, the script now prefers a generated HTML preview page, then tries `ShellExecute`, then additional viewer launch fallbacks, and if needed opens raw preview images when no montage could be created. The terminal output now also prints the exact preview target files that were chosen, so you can open the concrete HTML or JPG path manually. On headless Linux/NAS or SSH sessions without `DISPLAY`/`WAYLAND_DISPLAY`, the script prints the preview paths and keeps terminal assignment available.
 
 ## Known Limitations
 

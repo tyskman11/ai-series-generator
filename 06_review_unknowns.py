@@ -1916,6 +1916,10 @@ def interactive_face_review(cfg: dict, char_map: dict, voice_map: dict, include_
             print(f"Automatic review hint: {action_hint}")
             if montage:
                 print(f"Contact sheet: {montage}")
+            if preview_targets:
+                print("Exact preview target paths:")
+                for preview_target in preview_targets:
+                    print(f"Preview target: {preview_target}")
             for context_path, crop_path in preview_pairs(payload):
                 if context_path:
                     print(f"Szene: {context_path}")
