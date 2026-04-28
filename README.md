@@ -80,7 +80,7 @@ The default path stays local-first and license-light. The project already produc
 
 - `05_link_faces_and_speakers.py` now opens assignment previews more robustly from NAS/UNC paths by preferring a self-contained browser preview plus exact image links before falling back to the montage JPG
 - `06_review_unknowns.py` keeps reducing open manual review work through known-face matching, iterative naming propagation, and conservative `statist` auto-marking
-- `06_review_unknowns.py` now rebases stored NAS preview paths, opens the exact selected face JPG files by default during interactive review, and prints those exact file paths before falling back to optional HTML/contact-sheet helpers
+- `06_review_unknowns.py` now rebases stored NAS preview paths, mirrors the active review images into a local temp preview cache for GUI/browser opening, and prints both the original files and local launch targets before falling back to optional helpers
 - shared NAS lease handling now auto-recovers same-host stale worker locks when the recorded PID is no longer alive
 - `05_link_faces_and_speakers.py`, `06_review_unknowns.py`, and the shared path helpers now normalize stored project paths back to relative metadata so the same workspace can move between Windows, Linux, NAS mounts, and different drive letters more safely
 - `04_diarize_and_transcribe.py` keeps extending `speaker_unknown` rescue logic and language handling
@@ -262,7 +262,7 @@ Detects faces, links them to speaker clusters, and applies rescue logic for cert
 
 ### 06 - Review Unknowns
 
-Interactive review for unknown or weakly linked face clusters. This step tries to match known characters first and can auto-mark safe low-activity background clusters as `statist`. Stored preview paths are rebased for NAS/moved workspaces and persisted back as relative project metadata; the exact selected face JPG files (`*_crop.jpg` first, then matching `*_context.jpg`) open by default during interactive review. The terminal output prints those exact file paths explicitly, while optional HTML/contact-sheet helpers remain available for manual opening. Use `--no-open-previews` only when you want terminal-only review.
+Interactive review for unknown or weakly linked face clusters. This step tries to match known characters first and can auto-mark safe low-activity background clusters as `statist`. Stored preview paths are rebased for NAS/moved workspaces and persisted back as relative project metadata; the exact selected face JPG files (`*_crop.jpg` first, then matching `*_context.jpg`) are mirrored into a local temp preview cache so the Tk window and browser/system preview can launch from a local path even when the project itself lives on a NAS share. The terminal output prints both the original preview files and the local launch targets explicitly, while optional HTML/contact-sheet helpers remain available for manual opening. Use `--no-open-previews` only when you want terminal-only review.
 
 ### 07 - Build Dataset
 
@@ -430,7 +430,7 @@ Interactive NAS review example:
 python 06_review_unknowns.py --review-faces --open-previews
 ```
 
-`--open-previews` is the default now, so `python 06_review_unknowns.py --review-faces` is enough in normal desktop use. Run this from a desktop session on the PC that should show the images. On Windows, the script now opens the exact selected `*_crop.jpg` and `*_context.jpg` files first and prints those concrete paths in the terminal, so you can manually open the same files if the automatic launch still does not appear. Optional HTML/contact-sheet helper files are still generated and printed separately. On headless Linux/NAS or SSH sessions without `DISPLAY`/`WAYLAND_DISPLAY`, the script prints the preview paths and keeps terminal assignment available.
+`--open-previews` is the default now, so `python 06_review_unknowns.py --review-faces` is enough in normal desktop use. Run this from a desktop session on the PC that should show the images. On Windows, the script now mirrors the active preview set into a local temp cache, opens those local launch files first, and still prints the original source images plus the local launch paths in the terminal so you can open either manually if needed. Optional HTML/contact-sheet helper files are still generated and printed separately. On headless Linux/NAS or SSH sessions without `DISPLAY`/`WAYLAND_DISPLAY`, the script prints the preview paths and keeps terminal assignment available.
 
 ## Known Limitations
 

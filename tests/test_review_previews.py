@@ -121,6 +121,37 @@ class ReviewPreviewTests(unittest.TestCase):
 
             self.assertEqual(targets, [crop_path, context_path])
 
+    def test_materialize_local_preview_bundle_copies_images_for_local_gui(self) -> None:
+        try:
+            from PIL import Image
+        except Exception:
+            self.skipTest("Pillow is not available")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            source_dir = Path(tmpdir) / "nas_source"
+            local_root = Path(tmpdir) / "local_cache"
+            source_dir.mkdir(parents=True, exist_ok=True)
+            local_root.mkdir(parents=True, exist_ok=True)
+            crop_path = source_dir / "scene_001_crop.jpg"
+            context_path = source_dir / "scene_001_context.jpg"
+            Image.new("RGB", (64, 64), "white").save(crop_path)
+            Image.new("RGB", (120, 80), "navy").save(context_path)
+
+            with mock.patch.object(STEP06.tempfile, "gettempdir", return_value=str(local_root)):
+                bundle = STEP06.materialize_local_preview_bundle("face_001", {"preview_dir": str(source_dir)})
+
+            local_images = bundle.get("local_images", [])
+            self.assertTrue(local_images)
+            self.assertTrue(all(isinstance(path, Path) and path.exists() for path in local_images))
+            self.assertTrue(all(str(path).startswith(str(local_root)) for path in local_images))
+            preview_window_image = bundle.get("preview_window_image")
+            self.assertIsInstance(preview_window_image, Path)
+            assert isinstance(preview_window_image, Path)
+            self.assertTrue(str(preview_window_image).startswith(str(local_root)))
+            open_targets = bundle.get("open_targets", [])
+            self.assertTrue(open_targets)
+            self.assertEqual(Path(open_targets[0]).suffix, ".html")
+
     def test_open_preview_targets_counts_each_opened_image(self) -> None:
         paths = [Path("a.jpg"), Path("b.jpg"), Path("c.jpg")]
         with mock.patch.object(STEP06, "open_preview_file", side_effect=[True, False, True]) as open_file:

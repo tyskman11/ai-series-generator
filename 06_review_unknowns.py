@@ -7,7 +7,9 @@ import ctypes
 import html
 import math
 import os
+import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 
 from pipeline_common import (
@@ -38,6 +40,7 @@ from pipeline_common import (
     resolve_stored_project_path,
     shared_worker_id_for_args,
     shared_workers_enabled_for_args,
+    terminal_clickable_path,
     warn,
     write_json,
 )
@@ -332,22 +335,23 @@ def create_contact_sheet(image_paths: list[Path], output_path: Path, title: str 
     return output_path
 
 
-def create_face_review_sheet(cluster_id: str, payload: dict) -> Path | None:
+def create_face_review_sheet(cluster_id: str, payload: dict, output_dir: Path | None = None) -> Path | None:
     preview_dir = preview_dir_path(payload)
     if not preview_dir:
         return None
+    target_dir = output_dir or preview_dir
     pairs = preview_pairs(payload)
     if not pairs:
         files = preview_files(payload)
         if not files:
             return None
-        return create_contact_sheet(files, preview_dir / f"{cluster_id}_montage.jpg", title=f"{cluster_id} | Preview")
+        return create_contact_sheet(files, target_dir / f"{cluster_id}_montage.jpg", title=f"{cluster_id} | Preview")
 
     try:
         from PIL import Image, ImageDraw, ImageOps
     except Exception:
         fallback_files = [path for pair in pairs for path in pair if path is not None]
-        return create_contact_sheet(fallback_files, preview_dir / f"{cluster_id}_montage.jpg", title=f"{cluster_id} | Preview")
+        return create_contact_sheet(fallback_files, target_dir / f"{cluster_id}_montage.jpg", title=f"{cluster_id} | Preview")
 
     row_height = 300
     row_width = 560
@@ -373,13 +377,13 @@ def create_face_review_sheet(cluster_id: str, payload: dict) -> Path | None:
             y_offset = top + 28 + ((250 - image.height) // 2)
             sheet.paste(image, (x_offset, y_offset))
 
-    output_path = preview_dir / f"{cluster_id}_montage.jpg"
+    output_path = target_dir / f"{cluster_id}_montage.jpg"
     output_path.parent.mkdir(parents=True, exist_ok=True)
     sheet.save(output_path)
     return output_path
 
 
-def create_face_review_html(cluster_id: str, payload: dict) -> Path | None:
+def create_face_review_html(cluster_id: str, payload: dict, output_dir: Path | None = None) -> Path | None:
     preview_dir = preview_dir_path(payload)
     if not preview_dir:
         return None
@@ -388,7 +392,7 @@ def create_face_review_html(cluster_id: str, payload: dict) -> Path | None:
     if not pairs and not files:
         return None
 
-    review_dir = resolve_project_path("characters/review")
+    review_dir = output_dir or resolve_project_path("characters/review")
     review_dir.mkdir(parents=True, exist_ok=True)
     output_path = review_dir / f"{cluster_id}_preview.html"
 
@@ -599,22 +603,80 @@ def preview_open_targets(cluster_id: str, payload: dict) -> list[Path]:
     return []
 
 
+def local_preview_cache_dir(cluster_id: str) -> Path:
+    return Path(tempfile.gettempdir()) / "ai_series_review_previews" / cluster_id
+
+
+def materialize_local_preview_bundle(cluster_id: str, payload: dict) -> dict[str, object]:
+    source_images = selected_preview_images(payload)
+    cache_dir = local_preview_cache_dir(cluster_id)
+    try:
+        shutil.rmtree(cache_dir, ignore_errors=True)
+    except Exception:
+        pass
+    cache_dir.mkdir(parents=True, exist_ok=True)
+
+    local_images: list[Path] = []
+    for source_path in source_images:
+        if not source_path.exists() or not source_path.is_file():
+            continue
+        target_path = cache_dir / source_path.name
+        try:
+            shutil.copy2(source_path, target_path)
+        except Exception:
+            continue
+        local_images.append(target_path)
+
+    if local_images:
+        local_payload = {"preview_dir": str(cache_dir)}
+        html_preview = create_face_review_html(cluster_id, local_payload, output_dir=cache_dir)
+        montage = create_face_review_sheet(cluster_id, local_payload, output_dir=cache_dir)
+        open_targets: list[Path] = []
+        if html_preview and html_preview.exists():
+            open_targets.append(html_preview)
+        for image_path in local_images[:4]:
+            if image_path not in open_targets:
+                open_targets.append(image_path)
+        if montage and montage.exists() and montage not in open_targets:
+            open_targets.append(montage)
+        return {
+            "source_images": source_images,
+            "local_images": local_images,
+            "open_targets": open_targets,
+            "preview_window_image": local_images[0] if local_images else None,
+            "html_preview": html_preview,
+            "montage": montage,
+            "cache_dir": cache_dir,
+        }
+
+    fallback_targets = preview_open_targets(cluster_id, payload)
+    local_targets: list[Path] = []
+    for source_path in fallback_targets:
+        if not source_path.exists() or not source_path.is_file():
+            continue
+        target_path = cache_dir / source_path.name
+        try:
+            shutil.copy2(source_path, target_path)
+        except Exception:
+            continue
+        local_targets.append(target_path)
+    return {
+        "source_images": source_images,
+        "local_images": [],
+        "open_targets": local_targets,
+        "preview_window_image": None,
+        "html_preview": local_targets[0] if local_targets else None,
+        "montage": None,
+        "cache_dir": cache_dir,
+    }
+
+
 def open_preview_targets(paths: list[Path]) -> int:
     opened = 0
     for path in paths:
         if open_preview_file(path):
             opened += 1
     return opened
-
-
-def terminal_clickable_path(path: Path) -> str:
-    try:
-        return path.resolve().as_uri()
-    except Exception:
-        try:
-            return path.as_uri()
-        except Exception:
-            return str(path)
 
 
 def poll_terminal_line(buffer: list[str]) -> str | None:
@@ -1924,8 +1986,12 @@ def interactive_face_review(cfg: dict, char_map: dict, voice_map: dict, include_
         action_hint = suggested_face_action_hint(payload)
         answer = ""
         while True:
-            preview_targets = preview_open_targets(cluster_id, payload)
-            preview_window_image = preview_targets[0] if preview_targets else None
+            source_preview_targets = preview_open_targets(cluster_id, payload)
+            local_preview_bundle = materialize_local_preview_bundle(cluster_id, payload)
+            preview_targets = list(local_preview_bundle.get("open_targets", []) or [])
+            preview_window_image = local_preview_bundle.get("preview_window_image")
+            if not isinstance(preview_window_image, Path):
+                preview_window_image = preview_targets[0] if preview_targets else None
             print()
             print("-" * 72)
             print_cluster(char_map, cluster_id, payload)
@@ -1933,16 +1999,26 @@ def interactive_face_review(cfg: dict, char_map: dict, voice_map: dict, include_
             print(f"Total actually still open: {total_open_count}")
             print(f"Automatic role hint: {role_hint}")
             print(f"Automatic review hint: {action_hint}")
-            if preview_targets:
+            source_images = list(local_preview_bundle.get("source_images", []) or [])
+            if source_images:
                 print("Exact face preview files:")
-                for preview_target in preview_targets:
+                for preview_target in source_images:
                     print(f"Preview target: {preview_target}")
                     print(f"Open link: {terminal_clickable_path(preview_target)}")
-            html_preview = create_face_review_html(cluster_id, payload)
+            if preview_targets:
+                print("Local launch targets:")
+                for preview_target in preview_targets:
+                    print(f"Local preview target: {preview_target}")
+                    print(f"Local open link: {terminal_clickable_path(preview_target)}")
+            html_preview = local_preview_bundle.get("html_preview")
+            if not isinstance(html_preview, Path):
+                html_preview = create_face_review_html(cluster_id, payload)
             if html_preview and html_preview.exists():
                 print(f"HTML preview page: {html_preview}")
                 print(f"Open HTML link: {terminal_clickable_path(html_preview)}")
-            montage = create_face_review_sheet(cluster_id, payload)
+            montage = local_preview_bundle.get("montage")
+            if not isinstance(montage, Path):
+                montage = create_face_review_sheet(cluster_id, payload)
             if montage and montage.exists():
                 print(f"Contact sheet: {montage}")
                 print(f"Open contact sheet link: {terminal_clickable_path(montage)}")
