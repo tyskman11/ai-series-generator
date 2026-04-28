@@ -59,13 +59,20 @@ class ReviewPreviewTests(unittest.TestCase):
             preview_path.write_text("placeholder", encoding="utf-8")
 
             with mock.patch.object(STEP06, "current_os", return_value="windows"), mock.patch.object(
-                STEP06.os,
-                "startfile",
-                create=True,
-            ) as startfile:
+                STEP06.subprocess,
+                "Popen",
+            ) as popen:
                 self.assertTrue(STEP06.open_preview_file(preview_path))
 
-            startfile.assert_called_once_with(str(preview_path))
+            popen.assert_called_once()
+            self.assertEqual(popen.call_args.args[0][0], "powershell.exe")
+
+    def test_review_previews_are_enabled_by_default_and_can_be_disabled(self) -> None:
+        with mock.patch("sys.argv", ["06_review_unknowns.py"]):
+            self.assertTrue(STEP06.parse_args().open_previews)
+
+        with mock.patch("sys.argv", ["06_review_unknowns.py", "--no-open-previews"]):
+            self.assertFalse(STEP06.parse_args().open_previews)
 
     def test_gui_preview_unavailable_on_headless_linux(self) -> None:
         with mock.patch.object(STEP06, "current_os", return_value="linux"), mock.patch.dict(

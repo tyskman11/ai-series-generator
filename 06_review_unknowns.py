@@ -84,7 +84,18 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--limit", type=int, default=20, help="Maximum number of clusters to process per start. Default: 20")
     parser.add_argument("--all", action="store_true", help="Process every currently open face cluster.")
-    parser.add_argument("--open-previews", action="store_true", help="Open the contact sheet during interactive review.")
+    parser.add_argument(
+        "--open-previews",
+        action="store_true",
+        default=True,
+        help="Open the contact sheet during interactive review. This is enabled by default.",
+    )
+    parser.add_argument(
+        "--no-open-previews",
+        dest="open_previews",
+        action="store_false",
+        help="Do not open preview windows or the system image viewer during interactive review.",
+    )
     parser.add_argument(
         "--auto-mark-statists",
         action="store_true",
@@ -375,6 +386,23 @@ def gui_preview_available() -> bool:
     return False
 
 
+def windows_preview_commands(path: Path) -> list[list[str]]:
+    path_text = str(path)
+    return [
+        [
+            "powershell.exe",
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            "Start-Process -LiteralPath $args[0]",
+            path_text,
+        ],
+        ["cmd", "/c", "start", "", path_text],
+        ["explorer.exe", path_text],
+    ]
+
+
 def open_preview_file(path: Path) -> bool:
     if not path.exists() or not path.is_file():
         return False
@@ -384,8 +412,21 @@ def open_preview_file(path: Path) -> bool:
         return False
     try:
         if os_name == "windows":
-            os.startfile(str(path))  # type: ignore[attr-defined]
-            return True
+            for command in windows_preview_commands(path):
+                try:
+                    subprocess.Popen(
+                        command,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                    )
+                    return True
+                except Exception:
+                    continue
+            try:
+                os.startfile(str(path))  # type: ignore[attr-defined]
+                return True
+            except Exception:
+                return False
         if os_name == "linux" and gui_preview_available():
             subprocess.Popen(
                 ["xdg-open", str(path)],
@@ -1723,6 +1764,9 @@ def interactive_face_review(cfg: dict, char_map: dict, voice_map: dict, include_
             preview_name = ""
             preview_priority: bool | None = None
             if open_previews and montage:
+                external_preview_opened = open_preview_file(montage)
+                if external_preview_opened:
+                    info("Preview opened in the system image viewer. Enter the assignment in the terminal or in the preview window.")
                 quick_assignments = known_identity_button_options(char_map, limit=16)
                 preview_result = show_preview_assignment_window(
                     montage,
@@ -1738,9 +1782,7 @@ def interactive_face_review(cfg: dict, char_map: dict, voice_map: dict, include_
                 if preview_result is not None:
                     preview_name = str(preview_result.get("value") or "").strip()
                     preview_priority = bool(preview_result.get("priority", False))
-                elif open_preview_file(montage):
-                    info("Preview opened in the system image viewer. Enter the assignment in the terminal.")
-                else:
+                elif not external_preview_opened:
                     warn(
                         "Automatic preview opening is not available in this session. "
                         "Open the contact sheet path above manually or run 06 from a desktop session with a display."

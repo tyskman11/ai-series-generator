@@ -78,7 +78,7 @@ The default path stays local-first and license-light. The project already produc
 ## In Progress
 
 - `06_review_unknowns.py` keeps reducing open manual review work through known-face matching, iterative naming propagation, and conservative `statist` auto-marking
-- `06_review_unknowns.py` now rebases stored NAS preview paths and falls back to the system image viewer when the embedded Tk preview window cannot open
+- `06_review_unknowns.py` now rebases stored NAS preview paths, opens contact sheets by default during interactive review, and falls back to multiple OS viewer launch methods when the embedded Tk preview window cannot open
 - `04_diarize_and_transcribe.py` keeps extending `speaker_unknown` rescue logic and language handling
 - `99_process_next_episode.py` is being hardened for long resumable inbox runs with autosaves and live status files
 - `13_generate_episode.py` writes multi-reference storyboard plans and backend-ready request exports
@@ -254,7 +254,7 @@ Detects faces, links them to speaker clusters, and applies rescue logic for cert
 
 ### 06 - Review Unknowns
 
-Interactive review for unknown or weakly linked face clusters. This step tries to match known characters first and can auto-mark safe low-activity background clusters as `statist`. Stored preview paths are rebased for NAS/moved workspaces; if the embedded preview window cannot open, the contact sheet is opened with the OS image viewer when possible and the terminal remains the assignment fallback.
+Interactive review for unknown or weakly linked face clusters. This step tries to match known characters first and can auto-mark safe low-activity background clusters as `statist`. Stored preview paths are rebased for NAS/moved workspaces; contact sheets open by default during interactive review. If the embedded preview window cannot open, the script still tries OS viewer launchers and keeps the terminal as the assignment fallback. Use `--no-open-previews` only when you want terminal-only review.
 
 ### 07 - Build Dataset
 
@@ -422,7 +422,7 @@ Interactive NAS review example:
 python 06_review_unknowns.py --review-faces --open-previews
 ```
 
-Run this from a desktop session on the PC that should show the images. On headless Linux/NAS or SSH sessions without `DISPLAY`/`WAYLAND_DISPLAY`, the script prints the contact-sheet path and keeps terminal assignment available.
+`--open-previews` is the default now, so `python 06_review_unknowns.py --review-faces` is enough in normal desktop use. Run this from a desktop session on the PC that should show the images. On headless Linux/NAS or SSH sessions without `DISPLAY`/`WAYLAND_DISPLAY`, the script prints the contact-sheet path and keeps terminal assignment available.
 
 ## Known Limitations
 
@@ -434,7 +434,7 @@ Run this from a desktop session on the PC that should show the images. On headle
 - `53_regenerate_weak_scenes.py` now reruns only the flagged scenes in the storyboard backend stage (`54_run_storyboard_backend.py --scene-ids`), but the render step (`15_render_episode.py`) still rebuilds the full episode package
 - automatic gate retry now performs at most one extra retry loop per failing run; if the refreshed gate still fails, the pipeline stops and leaves the queue/report for manual follow-up
 - orchestration-heavy scripts mainly use exclusive leases; the fine-grained parallelism lives in worker-heavy numbered steps underneath
-- interactive image review in `06_review_unknowns.py` needs a local desktop session for embedded Tk windows; headless NAS sessions fall back to printed contact-sheet paths and, where available, the system image viewer
+- interactive image review in `06_review_unknowns.py` needs a local desktop session for embedded Tk windows; Windows review now also launches the contact sheet through external viewer fallbacks, while headless NAS sessions fall back to printed contact-sheet paths
 - `release_mode` is optional and stays disabled by default until your local image/video/lip-sync outputs are good enough to gate production automatically
 - test runs may show harmless FFmpeg warnings like `moov atom not found` on stderr; these do not indicate test failures and can be ignored when exit code is 0
 
