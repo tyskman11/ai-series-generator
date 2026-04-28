@@ -30,6 +30,8 @@ from pipeline_common import (
     mark_step_started,
     open_review_item_count,
     ok,
+    normalize_portable_project_paths,
+    portable_project_path,
     read_json,
     rerun_in_runtime,
     resolve_project_path,
@@ -984,14 +986,14 @@ def hydrate_face_clusters_from_previews(cfg: dict, char_map: dict) -> int:
         cluster_id = preview_dir.name
         payload = char_map.setdefault("clusters", {}).setdefault(cluster_id, {})
         if payload:
-            payload.setdefault("preview_dir", str(preview_dir))
+            payload.setdefault("preview_dir", portable_project_path(preview_dir))
             payload.setdefault("samples", max(1, len(list(preview_dir.glob("*_crop.jpg")))))
             continue
         if not allow_new_clusters:
             char_map["clusters"].pop(cluster_id, None)
             continue
         payload["name"] = cluster_id
-        payload["preview_dir"] = str(preview_dir)
+        payload["preview_dir"] = portable_project_path(preview_dir)
         payload["samples"] = max(1, len(list(preview_dir.glob("*_crop.jpg"))))
         payload["auto_named"] = True
         payload["ignored"] = False
@@ -1411,11 +1413,11 @@ def merge_face_cluster_into_target(char_map: dict, source_cluster_id: str, targe
 
     preview_dirs = []
     for payload in (target_payload, source_payload):
-        preview_dir = str(payload.get("preview_dir", "")).strip()
+        preview_dir = portable_project_path(payload.get("preview_dir", ""))
         if preview_dir and preview_dir not in preview_dirs:
             preview_dirs.append(preview_dir)
         for extra_dir in payload.get("merged_preview_dirs", []) or []:
-            extra_value = str(extra_dir).strip()
+            extra_value = portable_project_path(extra_dir)
             if extra_value and extra_value not in preview_dirs:
                 preview_dirs.append(extra_value)
     if preview_dirs:
@@ -1488,7 +1490,7 @@ def remap_linked_segments_face_clusters(cfg: dict, replacements: dict[str, str])
                 row["speaker_face_cluster"] = replacements[speaker_face_cluster]
                 changed = True
         if changed:
-            write_json(linked_file, rows)
+            write_json(linked_file, normalize_portable_project_paths(rows))
             changed_files += 1
     return changed_files
 
@@ -1745,7 +1747,7 @@ def refresh_linked_segments(cfg: dict, char_map: dict, voice_map: dict) -> int:
                 changed = True
 
         if changed:
-            write_json(linked_file, rows)
+            write_json(linked_file, normalize_portable_project_paths(rows))
             changed_files += 1
     return changed_files
 
@@ -1760,15 +1762,15 @@ def rebuild_review_queue(cfg: dict) -> int:
             visible_names = [str(name) for name in row.get("visible_character_names", [])]
             if looks_auto_named(speaker_name) or any(looks_auto_named(name) for name in visible_names):
                 items.append(row)
-    write_json(resolve_project_path(cfg["paths"]["review_queue"]), {"items": items})
+    write_json(resolve_project_path(cfg["paths"]["review_queue"]), normalize_portable_project_paths({"items": items}))
     return len(items)
 
 
 def persist_updates(cfg: dict, char_map: dict, voice_map: dict) -> tuple[int, int]:
     rebuild_character_map_identities(char_map)
     refresh_voice_map(char_map, voice_map)
-    write_json(resolve_project_path(cfg["paths"]["character_map"]), char_map)
-    write_json(resolve_project_path(cfg["paths"]["voice_map"]), voice_map)
+    write_json(resolve_project_path(cfg["paths"]["character_map"]), normalize_portable_project_paths(char_map))
+    write_json(resolve_project_path(cfg["paths"]["voice_map"]), normalize_portable_project_paths(voice_map))
     changed_linked_files = refresh_linked_segments(cfg, char_map, voice_map)
     review_count = rebuild_review_queue(cfg)
     return changed_linked_files, review_count

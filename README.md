@@ -53,6 +53,7 @@ The default path stays local-first and license-light. The project already produc
 
 - full local preprocessing from inbox episode to linked scene data
 - NAS/shared-worker leases across the numbered pipeline, including recovery when one worker disappears
+- generated JSON metadata now stores project-local relative paths and can rebase legacy absolute paths after moving the workspace
 - automatic language detection during transcription, with filename language hints preferred when present
 - per-character voice training preparation from original dialogue recordings instead of one generic online voice base
 - local heuristic series model generation plus synthetic episode blueprints
@@ -80,6 +81,7 @@ The default path stays local-first and license-light. The project already produc
 - `06_review_unknowns.py` keeps reducing open manual review work through known-face matching, iterative naming propagation, and conservative `statist` auto-marking
 - `06_review_unknowns.py` now rebases stored NAS preview paths, opens the exact selected face JPG files by default during interactive review, and prints those exact file paths before falling back to optional HTML/contact-sheet helpers
 - shared NAS lease handling now auto-recovers same-host stale worker locks when the recorded PID is no longer alive
+- `05_link_faces_and_speakers.py`, `06_review_unknowns.py`, and the shared path helpers now normalize stored project paths back to relative metadata so the same workspace can move between Windows, Linux, NAS mounts, and different drive letters more safely
 - `04_diarize_and_transcribe.py` keeps extending `speaker_unknown` rescue logic and language handling
 - `99_process_next_episode.py` is being hardened for long resumable inbox runs with autosaves and live status files
 - `13_generate_episode.py` writes multi-reference storyboard plans and backend-ready request exports
@@ -107,6 +109,7 @@ These items are implemented and should stay guarded by README updates and tests 
 - script numbering is numeric only, with training before generated-episode render in the documented orchestration paths
 - OS-specific FFmpeg detection and runtime setup are in place for Windows and Linux/NAS runs
 - `57_generate_finished_episodes.py` is the finished-episode entry point and defaults to one episode unless `--count 0` or `--endless` is used
+- generated project metadata uses portable relative paths for previews, review queues, linked speaker reference frames, and render handoff fields while legacy absolute paths are still accepted on read
 - release-gate, export-package, regeneration-queue, backend-benchmark, and review-preview behavior have tracked regression tests
 
 ## Planned
@@ -183,7 +186,7 @@ Also keep the `In Progress` and `Planned` sections current.
 - Windows/PowerShell or Linux with `python3`
 - enough disk space for scenes, audio, models, and render outputs
 - patience: transcription, linking, training, and render steps can take a long time
-- for NAS/shared-worker mode, all participating PCs must see the same project path and the same `ai_series_project/runtime/distributed` lease files
+- for NAS/shared-worker mode, all participating PCs must work on the same shared project contents and the same `ai_series_project/runtime/distributed` lease files; generated metadata is portable across different local mount points or drive letters
 - optional NVIDIA GPU for faster transcription, embeddings, and rendering
 
 `00_prepare_runtime.py` installs the runtime. On Linux/NAS it uses the active `python3` runtime directly with `python3 -m pip install --break-system-packages`. It also downloads the matching FFmpeg build for the current OS into `ai_series_project/tools/ffmpeg/bin`.
@@ -195,6 +198,8 @@ Also keep the `In Progress` and `Planned` sections current.
 - `release_mode.max_regeneration_retries`: cap for how often one weak scene may stay in the retry queue before `53_regenerate_weak_scenes.py` stops requesting another rerender
 - `release_mode.auto_retry_failed_gate`: optionally lets `52_quality_gate.py` launch one automatic retry loop after a failed gate
 - `release_mode.auto_retry_update_bible`: optionally appends `16_build_series_bible.py` to that automatic retry loop
+
+Generated JSON artifacts under `characters`, `data/processed`, `generation`, and related handoff folders now prefer project-relative paths instead of machine-specific absolute paths. Older absolute paths are still rebased automatically when the workspace has been moved.
 
 ## Quick Start
 
@@ -255,7 +260,7 @@ Detects faces, links them to speaker clusters, and applies rescue logic for cert
 
 ### 06 - Review Unknowns
 
-Interactive review for unknown or weakly linked face clusters. This step tries to match known characters first and can auto-mark safe low-activity background clusters as `statist`. Stored preview paths are rebased for NAS/moved workspaces; the exact selected face JPG files (`*_crop.jpg` first, then matching `*_context.jpg`) open by default during interactive review. The terminal output prints those exact file paths explicitly, while optional HTML/contact-sheet helpers remain available for manual opening. Use `--no-open-previews` only when you want terminal-only review.
+Interactive review for unknown or weakly linked face clusters. This step tries to match known characters first and can auto-mark safe low-activity background clusters as `statist`. Stored preview paths are rebased for NAS/moved workspaces and persisted back as relative project metadata; the exact selected face JPG files (`*_crop.jpg` first, then matching `*_context.jpg`) open by default during interactive review. The terminal output prints those exact file paths explicitly, while optional HTML/contact-sheet helpers remain available for manual opening. Use `--no-open-previews` only when you want terminal-only review.
 
 ### 07 - Build Dataset
 

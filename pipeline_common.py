@@ -1305,6 +1305,54 @@ def resolve_project_path(relative_path: str) -> Path:
     return PROJECT_ROOT / relative_path
 
 
+PORTABLE_PATH_VALUE_KEYS = {
+    "preview_dir",
+    "pack_path",
+    "profile_path",
+    "log_path",
+    "output_path",
+    "preview_path",
+    "manifest_path",
+    "delivery_path",
+    "quality_gate_report",
+    "final_render",
+    "full_generated_episode",
+    "render_manifest",
+}
+PORTABLE_PATH_LIST_KEYS = {
+    "merged_preview_dirs",
+    "speaker_reference_frames",
+}
+
+
+def portable_project_path(path_value: str | Path | None) -> str:
+    text = coalesce_text(str(path_value or ""))
+    if not text:
+        return ""
+    candidate = Path(text)
+    resolved = resolve_stored_project_path(text)
+    for root in (PROJECT_ROOT, SCRIPT_DIR):
+        try:
+            return resolved.relative_to(root).as_posix()
+        except ValueError:
+            continue
+    if not candidate.is_absolute():
+        return candidate.as_posix()
+    return text
+
+
+def normalize_portable_project_paths(value: Any, key_name: str = "") -> Any:
+    if isinstance(value, dict):
+        return {key: normalize_portable_project_paths(child, str(key)) for key, child in value.items()}
+    if isinstance(value, list):
+        if key_name in PORTABLE_PATH_LIST_KEYS:
+            return [portable_project_path(item) if isinstance(item, (str, Path)) else item for item in value]
+        return [normalize_portable_project_paths(item, key_name) for item in value]
+    if isinstance(value, (str, Path)) and key_name in PORTABLE_PATH_VALUE_KEYS:
+        return portable_project_path(value)
+    return value
+
+
 def latest_matching_file(directory: Path, pattern: str) -> Path | None:
     if not directory.exists():
         return None
@@ -1321,11 +1369,6 @@ def resolve_stored_project_path(path_value: str | Path | None) -> Path:
     candidate = Path(text)
     if candidate.exists():
         return candidate
-    if not candidate.is_absolute():
-        rebased_relative = (PROJECT_ROOT / candidate).resolve()
-        if rebased_relative.exists():
-            return rebased_relative
-        return candidate
 
     parts = candidate.parts
     lowered = [str(part).lower() for part in parts]
@@ -1335,8 +1378,12 @@ def resolve_stored_project_path(path_value: str | Path | None) -> Path:
         index = lowered.index(anchor)
         relative_parts = parts[index + 1 :]
         rebased = root / Path(*relative_parts) if relative_parts else root
-        if rebased.exists():
-            return rebased
+        return rebased
+    if not candidate.is_absolute():
+        rebased_relative = PROJECT_ROOT / candidate
+        if rebased_relative.exists():
+            return rebased_relative
+        return candidate
     return candidate
 
 def stored_path_if_present(path_value: object) -> Path | None:

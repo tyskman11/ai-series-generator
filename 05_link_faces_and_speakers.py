@@ -34,6 +34,8 @@ from pipeline_common import (
     load_config,
     ok,
     open_file_default,
+    normalize_portable_project_paths,
+    portable_project_path,
     preferred_compute_label,
     preferred_execution_label,
     preferred_torch_device,
@@ -577,7 +579,7 @@ def register_new_face(
         auto_named=assigned_name == default_name,
     )
     payload["embedding"] = embedding
-    payload["preview_dir"] = str(preview_dir)
+    payload["preview_dir"] = portable_project_path(preview_dir)
     payload["samples"] = 1
     return cluster_id
 
@@ -1095,7 +1097,7 @@ def process_episode_dir(
                         float(row.get("end", 0.0)),
                         preview_dir,
                     )
-                    speaker_reference_frames = [str(path) for path in frames]
+                    speaker_reference_frames = [portable_project_path(path) for path in frames]
 
             linked_row = {
                 "scene_id": row["scene_id"],
@@ -1148,10 +1150,10 @@ def process_episode_dir(
                 "review_count": len(review_items),
             },
         )
-        write_json(resolve_project_path(cfg["paths"]["character_map"]), char_map)
-        write_json(resolve_project_path(cfg["paths"]["voice_map"]), voice_map)
-        write_json(linked_file, linked_rows)
-        write_json(resolve_project_path(cfg["paths"]["review_queue"]), {"items": review_items})
+        write_json(resolve_project_path(cfg["paths"]["character_map"]), normalize_portable_project_paths(char_map))
+        write_json(resolve_project_path(cfg["paths"]["voice_map"]), normalize_portable_project_paths(voice_map))
+        write_json(linked_file, normalize_portable_project_paths(linked_rows))
+        write_json(resolve_project_path(cfg["paths"]["review_queue"]), normalize_portable_project_paths({"items": review_items}))
         mark_step_completed(
             "05_link_faces_and_speakers",
             autosave_target,
