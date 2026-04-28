@@ -605,6 +605,16 @@ def open_preview_targets(paths: list[Path]) -> int:
     return opened
 
 
+def terminal_clickable_path(path: Path) -> str:
+    try:
+        return path.resolve().as_uri()
+    except Exception:
+        try:
+            return path.as_uri()
+        except Exception:
+            return str(path)
+
+
 def poll_terminal_line(buffer: list[str]) -> str | None:
     if current_os() != "windows":
         return None
@@ -1925,12 +1935,15 @@ def interactive_face_review(cfg: dict, char_map: dict, voice_map: dict, include_
                 print("Exact face preview files:")
                 for preview_target in preview_targets:
                     print(f"Preview target: {preview_target}")
+                    print(f"Open link: {terminal_clickable_path(preview_target)}")
             html_preview = create_face_review_html(cluster_id, payload)
             if html_preview and html_preview.exists():
                 print(f"HTML preview page: {html_preview}")
+                print(f"Open HTML link: {terminal_clickable_path(html_preview)}")
             montage = create_face_review_sheet(cluster_id, payload)
             if montage and montage.exists():
                 print(f"Contact sheet: {montage}")
+                print(f"Open contact sheet link: {terminal_clickable_path(montage)}")
             for context_path, crop_path in preview_pairs(payload):
                 if context_path:
                     print(f"Szene: {context_path}")

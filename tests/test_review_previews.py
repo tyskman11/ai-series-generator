@@ -127,6 +127,14 @@ class ReviewPreviewTests(unittest.TestCase):
             self.assertEqual(STEP06.open_preview_targets(paths), 2)
         self.assertEqual(open_file.call_count, 3)
 
+    def test_terminal_clickable_path_returns_file_uri(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            image_path = Path(tmpdir) / "scene_001_crop.jpg"
+            image_path.write_text("crop", encoding="utf-8")
+            uri = STEP06.terminal_clickable_path(image_path)
+            self.assertTrue(uri.startswith("file:"))
+            self.assertIn("scene_001_crop.jpg", uri)
+
     def test_review_previews_are_enabled_by_default_and_can_be_disabled(self) -> None:
         with mock.patch("sys.argv", ["06_review_unknowns.py"]):
             self.assertTrue(STEP06.parse_args().open_previews)
