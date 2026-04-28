@@ -97,15 +97,17 @@ class ReviewPreviewTests(unittest.TestCase):
             shell_open.assert_called_once_with(preview_path)
             popen.assert_not_called()
 
-    def test_preview_open_targets_prefers_html_preview(self) -> None:
-        html_preview = Path("preview.html")
-        montage = Path("preview.jpg")
-        with mock.patch.object(STEP06, "create_face_review_html", return_value=html_preview), mock.patch.object(
-            STEP06,
-            "create_face_review_sheet",
-            return_value=montage,
-        ), mock.patch.object(Path, "exists", return_value=True):
-            self.assertEqual(STEP06.preview_open_targets("face_001", {"preview_dir": "x"}), [html_preview])
+    def test_selected_preview_images_prefers_crop_before_context(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            preview_dir = Path(tmpdir)
+            context_path = preview_dir / "scene_001_context.jpg"
+            crop_path = preview_dir / "scene_001_crop.jpg"
+            context_path.write_text("context", encoding="utf-8")
+            crop_path.write_text("crop", encoding="utf-8")
+
+            targets = STEP06.selected_preview_images({"preview_dir": str(preview_dir)})
+
+            self.assertEqual(targets, [crop_path, context_path])
 
     def test_preview_open_targets_falls_back_to_raw_images_without_montage(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -115,14 +117,9 @@ class ReviewPreviewTests(unittest.TestCase):
             context_path.write_text("context", encoding="utf-8")
             crop_path.write_text("crop", encoding="utf-8")
 
-            with mock.patch.object(STEP06, "create_face_review_html", return_value=None), mock.patch.object(
-                STEP06,
-                "create_face_review_sheet",
-                return_value=None,
-            ):
-                targets = STEP06.preview_open_targets("face_001", {"preview_dir": str(preview_dir)})
+            targets = STEP06.preview_open_targets("face_001", {"preview_dir": str(preview_dir)})
 
-            self.assertEqual(targets, [context_path, crop_path])
+            self.assertEqual(targets, [crop_path, context_path])
 
     def test_open_preview_targets_counts_each_opened_image(self) -> None:
         paths = [Path("a.jpg"), Path("b.jpg"), Path("c.jpg")]

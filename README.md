@@ -78,7 +78,7 @@ The default path stays local-first and license-light. The project already produc
 ## In Progress
 
 - `06_review_unknowns.py` keeps reducing open manual review work through known-face matching, iterative naming propagation, and conservative `statist` auto-marking
-- `06_review_unknowns.py` now rebases stored NAS preview paths, opens browser-based HTML previews by default during interactive review, and falls back to contact sheets plus multiple OS viewer launch methods when the embedded Tk preview window cannot open
+- `06_review_unknowns.py` now rebases stored NAS preview paths, opens the exact selected face JPG files by default during interactive review, and prints those exact file paths before falling back to optional HTML/contact-sheet helpers
 - shared NAS lease handling now auto-recovers same-host stale worker locks when the recorded PID is no longer alive
 - `04_diarize_and_transcribe.py` keeps extending `speaker_unknown` rescue logic and language handling
 - `99_process_next_episode.py` is being hardened for long resumable inbox runs with autosaves and live status files
@@ -255,7 +255,7 @@ Detects faces, links them to speaker clusters, and applies rescue logic for cert
 
 ### 06 - Review Unknowns
 
-Interactive review for unknown or weakly linked face clusters. This step tries to match known characters first and can auto-mark safe low-activity background clusters as `statist`. Stored preview paths are rebased for NAS/moved workspaces; browser-based HTML previews open by default during interactive review. If the HTML preview cannot be built or the embedded preview window cannot open, the script falls back to contact sheets and then raw context/crop preview images directly in the OS viewer while keeping the terminal as the assignment fallback. Use `--no-open-previews` only when you want terminal-only review.
+Interactive review for unknown or weakly linked face clusters. This step tries to match known characters first and can auto-mark safe low-activity background clusters as `statist`. Stored preview paths are rebased for NAS/moved workspaces; the exact selected face JPG files (`*_crop.jpg` first, then matching `*_context.jpg`) open by default during interactive review. The terminal output prints those exact file paths explicitly, while optional HTML/contact-sheet helpers remain available for manual opening. Use `--no-open-previews` only when you want terminal-only review.
 
 ### 07 - Build Dataset
 
@@ -423,7 +423,7 @@ Interactive NAS review example:
 python 06_review_unknowns.py --review-faces --open-previews
 ```
 
-`--open-previews` is the default now, so `python 06_review_unknowns.py --review-faces` is enough in normal desktop use. Run this from a desktop session on the PC that should show the images. On Windows, the script now prefers a generated HTML preview page, then tries `ShellExecute`, then additional viewer launch fallbacks, and if needed opens raw preview images when no montage could be created. The terminal output now also prints the exact preview target files that were chosen, so you can open the concrete HTML or JPG path manually. On headless Linux/NAS or SSH sessions without `DISPLAY`/`WAYLAND_DISPLAY`, the script prints the preview paths and keeps terminal assignment available.
+`--open-previews` is the default now, so `python 06_review_unknowns.py --review-faces` is enough in normal desktop use. Run this from a desktop session on the PC that should show the images. On Windows, the script now opens the exact selected `*_crop.jpg` and `*_context.jpg` files first and prints those concrete paths in the terminal, so you can manually open the same files if the automatic launch still does not appear. Optional HTML/contact-sheet helper files are still generated and printed separately. On headless Linux/NAS or SSH sessions without `DISPLAY`/`WAYLAND_DISPLAY`, the script prints the preview paths and keeps terminal assignment available.
 
 ## Known Limitations
 
@@ -435,7 +435,7 @@ python 06_review_unknowns.py --review-faces --open-previews
 - `53_regenerate_weak_scenes.py` now reruns only the flagged scenes in the storyboard backend stage (`54_run_storyboard_backend.py --scene-ids`), but the render step (`15_render_episode.py`) still rebuilds the full episode package
 - automatic gate retry now performs at most one extra retry loop per failing run; if the refreshed gate still fails, the pipeline stops and leaves the queue/report for manual follow-up
 - orchestration-heavy scripts mainly use exclusive leases; the fine-grained parallelism lives in worker-heavy numbered steps underneath
-- interactive image review in `06_review_unknowns.py` needs a local desktop session for embedded Tk windows; Windows review now prefers a generated HTML preview page and otherwise launches the contact sheet or raw preview images through external viewer fallbacks, while headless NAS sessions fall back to printed preview paths
+- interactive image review in `06_review_unknowns.py` needs a local desktop session for embedded Tk windows; Windows review now launches the exact selected face JPG files first and prints those exact paths, while optional HTML/contact-sheet helpers and headless NAS fallback paths remain available
 - `release_mode` is optional and stays disabled by default until your local image/video/lip-sync outputs are good enough to gate production automatically
 - test runs may show harmless FFmpeg warnings like `moov atom not found` on stderr; these do not indicate test failures and can be ignored when exit code is 0
 

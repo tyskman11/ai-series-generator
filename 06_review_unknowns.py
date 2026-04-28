@@ -563,18 +563,10 @@ def open_preview_file(path: Path) -> bool:
     return False
 
 
-def preview_open_targets(cluster_id: str, payload: dict) -> list[Path]:
-    html_preview = create_face_review_html(cluster_id, payload)
-    if html_preview and html_preview.exists():
-        return [html_preview]
-
-    montage = create_face_review_sheet(cluster_id, payload)
-    if montage and montage.exists():
-        return [montage]
-
+def selected_preview_images(payload: dict) -> list[Path]:
     targets: list[Path] = []
     for context_path, crop_path in preview_pairs(payload):
-        for image_path in (context_path, crop_path):
+        for image_path in (crop_path, context_path):
             if image_path is None or not image_path.exists():
                 continue
             if image_path not in targets:
@@ -588,6 +580,21 @@ def preview_open_targets(cluster_id: str, payload: dict) -> list[Path]:
         if len(targets) >= 4:
             break
     return targets[:4]
+
+
+def preview_open_targets(cluster_id: str, payload: dict) -> list[Path]:
+    exact_images = selected_preview_images(payload)
+    if exact_images:
+        return exact_images
+
+    html_preview = create_face_review_html(cluster_id, payload)
+    if html_preview and html_preview.exists():
+        return [html_preview]
+
+    montage = create_face_review_sheet(cluster_id, payload)
+    if montage and montage.exists():
+        return [montage]
+    return []
 
 
 def open_preview_targets(paths: list[Path]) -> int:
@@ -1906,7 +1913,7 @@ def interactive_face_review(cfg: dict, char_map: dict, voice_map: dict, include_
         answer = ""
         while True:
             preview_targets = preview_open_targets(cluster_id, payload)
-            montage = preview_targets[0] if preview_targets and preview_targets[0].name.endswith("_montage.jpg") else None
+            preview_window_image = preview_targets[0] if preview_targets else None
             print()
             print("-" * 72)
             print_cluster(char_map, cluster_id, payload)
@@ -1914,12 +1921,16 @@ def interactive_face_review(cfg: dict, char_map: dict, voice_map: dict, include_
             print(f"Total actually still open: {total_open_count}")
             print(f"Automatic role hint: {role_hint}")
             print(f"Automatic review hint: {action_hint}")
-            if montage:
-                print(f"Contact sheet: {montage}")
             if preview_targets:
-                print("Exact preview target paths:")
+                print("Exact face preview files:")
                 for preview_target in preview_targets:
                     print(f"Preview target: {preview_target}")
+            html_preview = create_face_review_html(cluster_id, payload)
+            if html_preview and html_preview.exists():
+                print(f"HTML preview page: {html_preview}")
+            montage = create_face_review_sheet(cluster_id, payload)
+            if montage and montage.exists():
+                print(f"Contact sheet: {montage}")
             for context_path, crop_path in preview_pairs(payload):
                 if context_path:
                     print(f"Szene: {context_path}")
@@ -1936,9 +1947,9 @@ def interactive_face_review(cfg: dict, char_map: dict, voice_map: dict, include_
                     )
                 quick_assignments = known_identity_button_options(char_map, limit=16)
                 preview_result = None
-                if montage:
+                if preview_window_image:
                     preview_result = show_preview_assignment_window(
-                        montage,
+                        preview_window_image,
                         f"{cluster_id} Preview | Session: {session_remaining_count} | Open: {total_open_count}",
                         status_text=(
                             f"Remaining in this session including current case: {session_remaining_count} | "
