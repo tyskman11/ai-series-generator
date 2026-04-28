@@ -78,6 +78,7 @@ The default path stays local-first and license-light. The project already produc
 
 ## In Progress
 
+- `05_link_faces_and_speakers.py` now opens assignment previews more robustly from NAS/UNC paths by preferring a self-contained browser preview plus exact image links before falling back to the montage JPG
 - `06_review_unknowns.py` keeps reducing open manual review work through known-face matching, iterative naming propagation, and conservative `statist` auto-marking
 - `06_review_unknowns.py` now rebases stored NAS preview paths, opens the exact selected face JPG files by default during interactive review, and prints those exact file paths before falling back to optional HTML/contact-sheet helpers
 - shared NAS lease handling now auto-recovers same-host stale worker locks when the recorded PID is no longer alive
@@ -110,6 +111,7 @@ These items are implemented and should stay guarded by README updates and tests 
 - OS-specific FFmpeg detection and runtime setup are in place for Windows and Linux/NAS runs
 - `57_generate_finished_episodes.py` is the finished-episode entry point and defaults to one episode unless `--count 0` or `--endless` is used
 - generated project metadata uses portable relative paths for previews, review queues, linked speaker reference frames, and render handoff fields while legacy absolute paths are still accepted on read
+- the shared file-opening helper now uses stronger Windows/NAS fallbacks so interactive preview files are more likely to open even from UNC shares
 - release-gate, export-package, regeneration-queue, backend-benchmark, and review-preview behavior have tracked regression tests
 
 ## Planned
@@ -256,7 +258,7 @@ Extracts audio, runs Whisper, auto-detects language unless a fixed language is c
 
 ### 05 - Link Faces And Speakers
 
-Detects faces, links them to speaker clusters, and applies rescue logic for certain unresolved speaker cases.
+Detects faces, links them to speaker clusters, and applies rescue logic for certain unresolved speaker cases. When interactive assignment is enabled, the script now prints exact preview file paths plus clickable `file://` links, prefers a self-contained HTML/browser preview for NAS or UNC shares, and still keeps the montage JPG as a fallback.
 
 ### 06 - Review Unknowns
 

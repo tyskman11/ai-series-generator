@@ -6,6 +6,7 @@ import math
 import os
 import platform
 import re
+import ctypes
 import shlex
 import shutil
 import socket
@@ -2585,13 +2586,68 @@ def mark_status(path: Path, status: str, extra: dict[str, Any] | None = None) ->
 
 
 def open_file_default(path: Path) -> None:
+    if not path.exists():
+        return
     try:
-        if current_os() == "windows":
-            os.startfile(str(path))
-        elif current_os() == "linux":
-            subprocess.Popen(["xdg-open", str(path)])
+        os_name = current_os()
     except Exception:
-        pass
+        return
+    try:
+        if os_name == "windows":
+            try:
+                shell32 = ctypes.windll.shell32
+                result = shell32.ShellExecuteW(None, "open", str(path), None, None, 1)
+                if int(result) > 32:
+                    return
+            except Exception:
+                pass
+            windows_commands = [
+                [
+                    "powershell.exe",
+                    "-NoProfile",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-Command",
+                    "Start-Process -LiteralPath $args[0]",
+                    str(path),
+                ],
+                ["cmd", "/c", "start", "", str(path)],
+                ["explorer.exe", str(path)],
+            ]
+            for command in windows_commands:
+                try:
+                    subprocess.Popen(
+                        command,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                    )
+                    return
+                except Exception:
+                    continue
+            try:
+                os.startfile(str(path))  # type: ignore[attr-defined]
+            except Exception:
+                return
+        elif os_name == "linux":
+            if not os.environ.get("DISPLAY") and not os.environ.get("WAYLAND_DISPLAY"):
+                return
+            subprocess.Popen(
+                ["xdg-open", str(path)],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+    except Exception:
+        return
+
+
+def terminal_clickable_path(path: Path) -> str:
+    try:
+        return path.resolve().as_uri()
+    except Exception:
+        try:
+            return path.as_uri()
+        except Exception:
+            return str(path)
 
 
 def cosine_similarity(a: Iterable[float], b: Iterable[float]) -> float:

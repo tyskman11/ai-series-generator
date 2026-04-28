@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import argparse
+import base64
+import html
 import json
 import shutil
 import sys
@@ -46,6 +48,7 @@ from pipeline_common import (
     save_step_autosave,
     shared_worker_id_for_args,
     shared_workers_enabled_for_args,
+    terminal_clickable_path,
     mark_step_started,
     mark_step_completed,
     mark_step_failed,
@@ -210,15 +213,115 @@ def create_contact_sheet(image_paths: list[Path], output_path: Path) -> Path | N
     return output_path
 
 
+def create_preview_html(cluster_id: str, preview_files: list[Path]) -> Path | None:
+    if not preview_files:
+        return None
+    image_blocks: list[str] = []
+    for preview_path in preview_files[:8]:
+        if not preview_path.exists():
+            continue
+        try:
+            encoded = base64.b64encode(preview_path.read_bytes()).decode("ascii")
+        except Exception:
+            continue
+        image_blocks.append(
+            f"""
+            <figure>
+              <img src="data:image/jpeg;base64,{encoded}" alt="{html.escape(preview_path.name)}">
+              <figcaption>{html.escape(preview_path.name)}</figcaption>
+            </figure>
+            """
+        )
+    if not image_blocks:
+        return None
+    output_path = preview_files[0].parent / f"{cluster_id}_preview.html"
+    html_text = f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>{html.escape(cluster_id)} Preview</title>
+  <style>
+    body {{
+      font-family: Arial, sans-serif;
+      margin: 0;
+      padding: 24px;
+      background: #101218;
+      color: #f3f4f6;
+    }}
+    h1 {{
+      margin: 0 0 20px;
+      font-size: 24px;
+    }}
+    .grid {{
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+      gap: 18px;
+    }}
+    figure {{
+      margin: 0;
+      background: #1c2230;
+      border: 1px solid #334155;
+      border-radius: 12px;
+      padding: 12px;
+    }}
+    img {{
+      width: 100%;
+      height: auto;
+      display: block;
+      border-radius: 8px;
+      background: #0f172a;
+    }}
+    figcaption {{
+      margin-top: 10px;
+      font-size: 13px;
+      word-break: break-word;
+      color: #cbd5e1;
+    }}
+  </style>
+</head>
+<body>
+  <h1>{html.escape(cluster_id)} Preview</h1>
+  <div class="grid">
+    {''.join(image_blocks)}
+  </div>
+</body>
+</html>
+"""
+    output_path.write_text(html_text, encoding="utf-8")
+    return output_path
+
+
+def preview_open_targets(cluster_id: str, preview_files: list[Path], montage: Path | None) -> list[Path]:
+    html_preview = create_preview_html(cluster_id, preview_files)
+    targets: list[Path] = []
+    if html_preview and html_preview.exists():
+        targets.append(html_preview)
+    for preview_path in preview_files[:4]:
+        if preview_path.exists() and preview_path not in targets:
+            targets.append(preview_path)
+    if montage and montage.exists() and montage not in targets:
+        targets.append(montage)
+    return targets
+
+
 def ask_name(kind: str, cluster_id: str, preview_files: list[Path], auto_open: bool) -> str:
     montage = create_contact_sheet(preview_files, preview_files[0].parent / f"{cluster_id}_montage.jpg") if preview_files else None
+    open_targets = preview_open_targets(cluster_id, preview_files, montage)
     print()
     print("-" * 72)
     print(f"New assignment for {kind}: {cluster_id}")
+    for preview_path in preview_files:
+        print(f"Preview file: {preview_path}")
+        print(f"Open link: {terminal_clickable_path(preview_path)}")
+    if open_targets:
+        print(f"Preferred preview: {open_targets[0]}")
+        print(f"Preferred preview link: {terminal_clickable_path(open_targets[0])}")
     if montage:
         print(f"Contact sheet: {montage}")
-        if auto_open:
-            open_file_default(montage)
+        print(f"Open contact sheet link: {terminal_clickable_path(montage)}")
+    if auto_open:
+        for open_target in open_targets:
+            open_file_default(open_target)
     print("Enter a name, use 'noface' to ignore, or leave it empty for an automatic label.")
     return input("> Name: ").strip()
 
