@@ -79,6 +79,7 @@ The default path stays local-first and license-light. The project already produc
 
 - `06_review_unknowns.py` keeps reducing open manual review work through known-face matching, iterative naming propagation, and conservative `statist` auto-marking
 - `06_review_unknowns.py` now rebases stored NAS preview paths, opens contact sheets by default during interactive review, and falls back to multiple OS viewer launch methods when the embedded Tk preview window cannot open
+- shared NAS lease handling now auto-recovers same-host stale worker locks when the recorded PID is no longer alive
 - `04_diarize_and_transcribe.py` keeps extending `speaker_unknown` rescue logic and language handling
 - `99_process_next_episode.py` is being hardened for long resumable inbox runs with autosaves and live status files
 - `13_generate_episode.py` writes multi-reference storyboard plans and backend-ready request exports

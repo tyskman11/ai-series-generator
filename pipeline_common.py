@@ -656,6 +656,54 @@ def distributed_worker_id() -> str:
     return f"{hostname}-{os.getpid()}-{uuid.uuid4().hex[:8]}"
 
 
+def distributed_hostname_token(hostname: str | None = None) -> str:
+    source = coalesce_text(hostname or socket.gethostname())
+    return re.sub(r"[^a-z0-9]+", "-", source.strip().lower()).strip("-") or "worker"
+
+
+def parse_distributed_owner_id(owner_id: str) -> tuple[str, int]:
+    cleaned = coalesce_text(owner_id)
+    match = re.match(r"^(?P<hostname>.+)-(?P<pid>\d+)-[0-9a-f]+$", cleaned)
+    if not match:
+        return "", 0
+    hostname = distributed_hostname_token(match.group("hostname"))
+    try:
+        pid = int(match.group("pid"))
+    except Exception:
+        pid = 0
+    return hostname, pid
+
+
+def process_id_active(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def distributed_lease_is_orphaned(current: dict[str, Any]) -> bool:
+    if not isinstance(current, dict):
+        return False
+    meta = current.get("meta", {}) if isinstance(current.get("meta"), dict) else {}
+    owner_id = coalesce_text(current.get("owner_id", ""))
+    owner_hostname = distributed_hostname_token(str(meta.get("hostname", ""))) if meta.get("hostname") else ""
+    owner_pid = int(meta.get("pid", 0) or 0)
+    if not owner_hostname or owner_pid <= 0:
+        owner_hostname, owner_pid = parse_distributed_owner_id(owner_id)
+    if not owner_hostname or owner_pid <= 0:
+        return False
+    if owner_hostname != distributed_hostname_token():
+        return False
+    return not process_id_active(owner_pid)
+
+
 def distributed_worker_metadata(extra: dict[str, Any] | None = None) -> dict[str, Any]:
     payload = {
         "worker_id": distributed_worker_id(),
@@ -735,6 +783,12 @@ def acquire_distributed_lease(
             if current_owner == owner_id:
                 refresh_distributed_lease(root, lease_name, owner_id, ttl_seconds, meta=meta)
                 return load_distributed_lease(root, lease_name)
+            if distributed_lease_is_orphaned(current):
+                try:
+                    path.unlink()
+                except OSError:
+                    return None
+                continue
             if expires_at > time.time():
                 return None
             try:
@@ -830,7 +884,9 @@ def distributed_item_lease(
         return
     ttl_seconds = distributed_lease_ttl_seconds(cfg)
     interval_seconds = distributed_heartbeat_interval_seconds(cfg)
-    lease = acquire_distributed_lease(root, lease_name, worker_id, ttl_seconds, meta=meta)
+    lease_meta = distributed_worker_metadata(meta or {})
+    lease_meta["worker_id"] = worker_id
+    lease = acquire_distributed_lease(root, lease_name, worker_id, ttl_seconds, meta=lease_meta)
     if lease is None:
         yield False
         return
@@ -840,7 +896,7 @@ def distributed_item_lease(
         owner_id=worker_id,
         ttl_seconds=ttl_seconds,
         interval_seconds=interval_seconds,
-        meta_factory=lambda: meta or {},
+        meta_factory=lambda: distributed_worker_metadata(meta or {}) | {"worker_id": worker_id},
     )
     heartbeat.start()
     try:
