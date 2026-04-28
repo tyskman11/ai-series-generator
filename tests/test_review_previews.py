@@ -59,13 +59,36 @@ class ReviewPreviewTests(unittest.TestCase):
             preview_path.write_text("placeholder", encoding="utf-8")
 
             with mock.patch.object(STEP06, "current_os", return_value="windows"), mock.patch.object(
+                STEP06,
+                "windows_shell_open",
+                return_value=True,
+            ) as shell_open, mock.patch.object(
                 STEP06.subprocess,
                 "Popen",
             ) as popen:
                 self.assertTrue(STEP06.open_preview_file(preview_path))
 
-            popen.assert_called_once()
-            self.assertEqual(popen.call_args.args[0][0], "powershell.exe")
+            shell_open.assert_called_once_with(preview_path)
+            popen.assert_not_called()
+
+    def test_preview_open_targets_falls_back_to_raw_images_without_montage(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            preview_dir = Path(tmpdir)
+            context_path = preview_dir / "scene_001_context.jpg"
+            crop_path = preview_dir / "scene_001_crop.jpg"
+            context_path.write_text("context", encoding="utf-8")
+            crop_path.write_text("crop", encoding="utf-8")
+
+            with mock.patch.object(STEP06, "create_face_review_sheet", return_value=None):
+                targets = STEP06.preview_open_targets("face_001", {"preview_dir": str(preview_dir)})
+
+            self.assertEqual(targets, [context_path, crop_path])
+
+    def test_open_preview_targets_counts_each_opened_image(self) -> None:
+        paths = [Path("a.jpg"), Path("b.jpg"), Path("c.jpg")]
+        with mock.patch.object(STEP06, "open_preview_file", side_effect=[True, False, True]) as open_file:
+            self.assertEqual(STEP06.open_preview_targets(paths), 2)
+        self.assertEqual(open_file.call_count, 3)
 
     def test_review_previews_are_enabled_by_default_and_can_be_disabled(self) -> None:
         with mock.patch("sys.argv", ["06_review_unknowns.py"]):

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import ctypes
 import math
 import os
 import subprocess
@@ -403,6 +404,18 @@ def windows_preview_commands(path: Path) -> list[list[str]]:
     ]
 
 
+def windows_shell_open(path: Path) -> bool:
+    try:
+        shell32 = ctypes.windll.shell32
+    except Exception:
+        return False
+    try:
+        result = shell32.ShellExecuteW(None, "open", str(path), None, None, 1)
+    except Exception:
+        return False
+    return int(result) > 32
+
+
 def open_preview_file(path: Path) -> bool:
     if not path.exists() or not path.is_file():
         return False
@@ -412,6 +425,8 @@ def open_preview_file(path: Path) -> bool:
         return False
     try:
         if os_name == "windows":
+            if windows_shell_open(path):
+                return True
             for command in windows_preview_commands(path):
                 try:
                     subprocess.Popen(
@@ -437,6 +452,37 @@ def open_preview_file(path: Path) -> bool:
     except Exception:
         return False
     return False
+
+
+def preview_open_targets(cluster_id: str, payload: dict) -> list[Path]:
+    montage = create_face_review_sheet(cluster_id, payload)
+    if montage and montage.exists():
+        return [montage]
+
+    targets: list[Path] = []
+    for context_path, crop_path in preview_pairs(payload):
+        for image_path in (context_path, crop_path):
+            if image_path is None or not image_path.exists():
+                continue
+            if image_path not in targets:
+                targets.append(image_path)
+        if len(targets) >= 4:
+            return targets[:4]
+
+    for image_path in preview_files(payload):
+        if image_path.exists() and image_path not in targets:
+            targets.append(image_path)
+        if len(targets) >= 4:
+            break
+    return targets[:4]
+
+
+def open_preview_targets(paths: list[Path]) -> int:
+    opened = 0
+    for path in paths:
+        if open_preview_file(path):
+            opened += 1
+    return opened
 
 
 def poll_terminal_line(buffer: list[str]) -> str | None:
@@ -1746,7 +1792,8 @@ def interactive_face_review(cfg: dict, char_map: dict, voice_map: dict, include_
         action_hint = suggested_face_action_hint(payload)
         answer = ""
         while True:
-            montage = create_face_review_sheet(cluster_id, payload)
+            preview_targets = preview_open_targets(cluster_id, payload)
+            montage = preview_targets[0] if preview_targets and preview_targets[0].name.endswith("_montage.jpg") else None
             print()
             print("-" * 72)
             print_cluster(char_map, cluster_id, payload)
@@ -1763,26 +1810,31 @@ def interactive_face_review(cfg: dict, char_map: dict, voice_map: dict, include_
                     print(f"Ausschnitt: {crop_path}")
             preview_name = ""
             preview_priority: bool | None = None
-            if open_previews and montage:
-                external_preview_opened = open_preview_file(montage)
-                if external_preview_opened:
-                    info("Preview opened in the system image viewer. Enter the assignment in the terminal or in the preview window.")
+            if open_previews and preview_targets:
+                opened_count = open_preview_targets(preview_targets)
+                if opened_count:
+                    info(
+                        f"Opened {opened_count} preview image(s) in the system viewer. "
+                        "Enter the assignment in the terminal or in the preview window."
+                    )
                 quick_assignments = known_identity_button_options(char_map, limit=16)
-                preview_result = show_preview_assignment_window(
-                    montage,
-                    f"{cluster_id} Preview | Session: {session_remaining_count} | Open: {total_open_count}",
-                    status_text=(
-                        f"Remaining in this session including current case: {session_remaining_count} | "
-                        f"Total actually still open: {total_open_count} | "
-                        f"Role hint: {role_hint} | {action_hint}"
-                    ),
-                    initial_priority=identity_has_priority(char_map, str(payload.get("name", cluster_id))),
-                    quick_assignments=quick_assignments,
-                )
+                preview_result = None
+                if montage:
+                    preview_result = show_preview_assignment_window(
+                        montage,
+                        f"{cluster_id} Preview | Session: {session_remaining_count} | Open: {total_open_count}",
+                        status_text=(
+                            f"Remaining in this session including current case: {session_remaining_count} | "
+                            f"Total actually still open: {total_open_count} | "
+                            f"Role hint: {role_hint} | {action_hint}"
+                        ),
+                        initial_priority=identity_has_priority(char_map, str(payload.get("name", cluster_id))),
+                        quick_assignments=quick_assignments,
+                    )
                 if preview_result is not None:
                     preview_name = str(preview_result.get("value") or "").strip()
                     preview_priority = bool(preview_result.get("priority", False))
-                elif not external_preview_opened:
+                elif not opened_count:
                     warn(
                         "Automatic preview opening is not available in this session. "
                         "Open the contact sheet path above manually or run 06 from a desktop session with a display."

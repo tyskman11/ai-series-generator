@@ -254,7 +254,7 @@ Detects faces, links them to speaker clusters, and applies rescue logic for cert
 
 ### 06 - Review Unknowns
 
-Interactive review for unknown or weakly linked face clusters. This step tries to match known characters first and can auto-mark safe low-activity background clusters as `statist`. Stored preview paths are rebased for NAS/moved workspaces; contact sheets open by default during interactive review. If the embedded preview window cannot open, the script still tries OS viewer launchers and keeps the terminal as the assignment fallback. Use `--no-open-previews` only when you want terminal-only review.
+Interactive review for unknown or weakly linked face clusters. This step tries to match known characters first and can auto-mark safe low-activity background clusters as `statist`. Stored preview paths are rebased for NAS/moved workspaces; contact sheets open by default during interactive review. If the montage cannot be built or the embedded preview window cannot open, the script now falls back to opening raw context/crop preview images directly in the OS viewer and keeps the terminal as the assignment fallback. Use `--no-open-previews` only when you want terminal-only review.
 
 ### 07 - Build Dataset
 
@@ -422,7 +422,7 @@ Interactive NAS review example:
 python 06_review_unknowns.py --review-faces --open-previews
 ```
 
-`--open-previews` is the default now, so `python 06_review_unknowns.py --review-faces` is enough in normal desktop use. Run this from a desktop session on the PC that should show the images. On headless Linux/NAS or SSH sessions without `DISPLAY`/`WAYLAND_DISPLAY`, the script prints the contact-sheet path and keeps terminal assignment available.
+`--open-previews` is the default now, so `python 06_review_unknowns.py --review-faces` is enough in normal desktop use. Run this from a desktop session on the PC that should show the images. On Windows, the script now tries `ShellExecute`, then additional viewer launch fallbacks, and if needed opens raw preview images when no montage could be created. On headless Linux/NAS or SSH sessions without `DISPLAY`/`WAYLAND_DISPLAY`, the script prints the preview paths and keeps terminal assignment available.
 
 ## Known Limitations
 
@@ -434,7 +434,7 @@ python 06_review_unknowns.py --review-faces --open-previews
 - `53_regenerate_weak_scenes.py` now reruns only the flagged scenes in the storyboard backend stage (`54_run_storyboard_backend.py --scene-ids`), but the render step (`15_render_episode.py`) still rebuilds the full episode package
 - automatic gate retry now performs at most one extra retry loop per failing run; if the refreshed gate still fails, the pipeline stops and leaves the queue/report for manual follow-up
 - orchestration-heavy scripts mainly use exclusive leases; the fine-grained parallelism lives in worker-heavy numbered steps underneath
-- interactive image review in `06_review_unknowns.py` needs a local desktop session for embedded Tk windows; Windows review now also launches the contact sheet through external viewer fallbacks, while headless NAS sessions fall back to printed contact-sheet paths
+- interactive image review in `06_review_unknowns.py` needs a local desktop session for embedded Tk windows; Windows review now also launches the contact sheet or raw preview images through external viewer fallbacks, while headless NAS sessions fall back to printed preview paths
 - `release_mode` is optional and stays disabled by default until your local image/video/lip-sync outputs are good enough to gate production automatically
 - test runs may show harmless FFmpeg warnings like `moov atom not found` on stderr; these do not indicate test failures and can be ignored when exit code is 0
 
