@@ -89,6 +89,7 @@ The default path stays local-first and license-light. The project already produc
 - `99_process_next_episode.py` is being hardened for long resumable inbox runs with autosaves and live status files
 - `13_generate_episode.py` writes multi-reference storyboard plans and backend-ready request exports
 - `08_train_series_model.py`, `13_generate_episode.py`, `14_generate_storyboard_assets.py`, and `15_render_episode.py` now carry style constraints, remembered character continuity hints, and explicit quality targets deeper into the generated-episode path
+- `09_prepare_foundation_training.py` now finishes cleanly when no candidates are found and rebuilds its final plan from all manifest files, so NAS/shared-worker runs no longer publish a partial local subset as the final result
 - `14_generate_storyboard_assets.py` emits backend-ready scene input payloads and rebases moved artifact paths
 - `54_run_storyboard_backend.py` can materialize local scene packs and optionally call configured external storyboard runners first
 - `15_render_episode.py` now also preserves camera/control hint dictionaries correctly instead of dropping them in the render/package path, then reuses backend frames/clips when present, assembles voiced scene masters, writes delivery bundles, and keeps improving the final generated-episode package
@@ -117,6 +118,7 @@ These items are implemented and should stay guarded by README updates and tests 
 - the shared file-opening helper now uses stronger Windows/NAS fallbacks so interactive preview files are more likely to open even from UNC shares
 - shared interactive display diagnostics now warn clearly when review is started from a headless or non-desktop session
 - render-side camera/control hints no longer get lost when `camera_plan` and `control_hints` are stored as dictionaries in generated scene plans
+- foundation-training plan generation now aggregates all existing manifests before writing the final plan in shared NAS runs
 - release-gate, export-package, regeneration-queue, backend-benchmark, review-preview, display-diagnostics, and generation-quality behavior have tracked regression tests
 
 ## Planned
@@ -280,7 +282,7 @@ Builds the local heuristic series model used for episode generation and series-b
 
 ### 09 - Prepare Foundation Training
 
-Prepares image, clip, and voice assets for later training stages. This step prioritizes original dialogue recordings and language-aware voice manifests.
+Prepares image, clip, and voice assets for later training stages. This step prioritizes original dialogue recordings and language-aware voice manifests. In shared NAS runs, the final plan is now rebuilt from all written manifest files instead of only the current worker's local subset.
 
 ### 10 - Train Foundation Models
 

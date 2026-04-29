@@ -168,6 +168,37 @@ def local_download_state(target: dict) -> dict:
     }
 
 
+def resolved_download_plan_rows(targets: list[dict], downloaded: list[dict]) -> list[dict]:
+    downloaded_by_key = {
+        (coalesce_text(row.get("kind", "")), coalesce_text(row.get("model_id", ""))): dict(row)
+        for row in downloaded
+        if isinstance(row, dict)
+    }
+    rows: list[dict] = []
+    for target in targets:
+        if not isinstance(target, dict):
+            continue
+        key = (coalesce_text(target.get("kind", "")), coalesce_text(target.get("model_id", "")))
+        if key in downloaded_by_key:
+            rows.append(downloaded_by_key[key])
+            continue
+        state = local_download_state(target)
+        rows.append(
+            {
+                **target,
+                "snapshot_path": str(Path(str(target.get("target_dir", "")))),
+                "downloaded": False,
+                "updated": False,
+                "cleaned": False,
+                "revision": coalesce_text(state.get("local_revision", "")),
+                "local_model_id": coalesce_text(state.get("local_model_id", "")),
+                "ready": model_target_ready(target),
+                "has_incomplete_files": bool(incomplete_download_files(target)),
+            }
+        )
+    return rows
+
+
 def resolve_download_action(target: dict, remote_revision: str) -> str:
     if not model_target_ready(target):
         return "download"
@@ -769,6 +800,16 @@ def write_training_plan(
     return json_path, markdown_path
 
 
+def load_existing_manifests(cfg: dict) -> list[dict]:
+    manifest_root = resolve_project_path(cfg["paths"]["foundation_manifests"])
+    manifests: list[dict] = []
+    for manifest_path in sorted(manifest_root.glob("*_manifest.json")):
+        payload = read_json(manifest_path, {})
+        if isinstance(payload, dict) and payload:
+            manifests.append(payload)
+    return manifests
+
+
 def main() -> None:
     rerun_in_runtime()
     args = parse_args()
@@ -793,6 +834,11 @@ def main() -> None:
     try:
         if not candidates:
             info("No named main characters with enough material found for foundation training.")
+            mark_step_completed(
+                "09_prepare_foundation_training",
+                autosave_target,
+                {"manifest_count": 0, "plan_json": "", "plan_markdown": "", "candidate_count": 0},
+            )
             return
 
         manifests: list[dict] = []
@@ -843,11 +889,18 @@ def main() -> None:
         elif wants_downloads:
             info("No base model configured. Only training data was prepared.")
 
-        plan_json, plan_md = write_training_plan(cfg, manifests, downloaded or download_targets, coalesce_text(args.episode or ""))
+        final_manifests = load_existing_manifests(cfg)
+        plan_downloads = resolved_download_plan_rows(download_targets, downloaded)
+        plan_json, plan_md = write_training_plan(cfg, final_manifests, plan_downloads, coalesce_text(args.episode or ""))
         mark_step_completed(
             "09_prepare_foundation_training",
             autosave_target,
-            {"manifest_count": len(manifests), "plan_json": str(plan_json), "plan_markdown": str(plan_md)},
+            {
+                "manifest_count": len(final_manifests),
+                "local_manifest_count": len(manifests),
+                "plan_json": str(plan_json),
+                "plan_markdown": str(plan_md),
+            },
         )
         ok(f"Foundation Training vorbereitet: {plan_json}")
         ok(f"Trainingsplan geschrieben: {plan_md}")
