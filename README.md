@@ -96,6 +96,7 @@ The default path stays local-first and license-light. The project already produc
 - `14_generate_storyboard_assets.py` emits backend-ready scene input payloads and rebases moved artifact paths
 - `54_run_storyboard_backend.py` can materialize local scene packs and optionally call configured external storyboard runners first
 - `15_render_episode.py` now also preserves camera/control hint dictionaries correctly instead of dropping them in the render/package path, then reuses backend frames/clips when present, assembles voiced scene masters, writes delivery bundles, and keeps improving the final generated-episode package
+- `15_render_episode.py` now tolerates missing `scene_dialogue_outputs` keys in audio fallback metadata, so draft/final render does not crash on Linux/NAS when dialogue audio generation partially falls back
 - `51_export_package.py` now exports real generated-episode packages for JSON, DaVinci-style, and Premiere-style handoff folders, including resolved render profile plus release/delivery/regeneration metadata
 - `52_quality_gate.py` now writes persistent quality-gate reports, regeneration queues, and feeds that state back into episode artifacts
 - `53_regenerate_weak_scenes.py` turns quality-gate queues into retry manifests and can rerun the current full-episode retry chain while preserving scene retry state; storyboard backend stage now supports `--scene-ids` for scene-selective reruns
@@ -123,6 +124,7 @@ These items are implemented and should stay guarded by README updates and tests 
 - render-side camera/control hints no longer get lost when `camera_plan` and `control_hints` are stored as dictionaries in generated scene plans
 - foundation-training plan generation now aggregates all existing manifests before writing the final plan in shared NAS runs
 - backend fine-tune summaries are rebuilt from all existing per-character run files, and stale summary timestamps no longer block generation when the actual backend runs are newer
+- render audio fallback metadata is now normalized defensively so missing scene-dialogue maps no longer abort the final encode phase
 - the resumable `99_process_next_episode.py` batch handoff path now resolves batch jobs through the shared project root import instead of crashing during resume
 - foundation-training voice sample preparation now skips invalid directory paths instead of crashing on Linux/NAS when old metadata points at `.`
 - release-gate, export-package, regeneration-queue, backend-benchmark, review-preview, display-diagnostics, and generation-quality behavior have tracked regression tests

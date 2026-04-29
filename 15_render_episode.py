@@ -1937,6 +1937,19 @@ def collect_scene_dialogue_outputs_from_package(package_payload: dict) -> dict[s
     return outputs
 
 
+def normalized_scene_dialogue_outputs(audio_track_meta: object) -> dict[str, str]:
+    if not isinstance(audio_track_meta, dict):
+        return {}
+    outputs = audio_track_meta.get("scene_dialogue_outputs", {})
+    if not isinstance(outputs, dict):
+        return {}
+    return {
+        clean_text(scene_id): clean_text(path)
+        for scene_id, path in outputs.items()
+        if clean_text(scene_id) and clean_text(path)
+    }
+
+
 def voice_supports_language(voice: dict, language_code: str) -> bool:
     normalized = normalize_language_code(language_code)
     if not normalized:
@@ -3160,11 +3173,12 @@ def main() -> None:
             audio_render_error = str(audio_exc)
             shutil.copyfile(final_video_only_path, final_path)
             info(f"Audio render fallback active for {episode_id}: {audio_render_error}")
+        scene_dialogue_outputs = normalized_scene_dialogue_outputs(audio_track_meta)
         render_mode = choose_render_mode(len(scenes), generated_scene_video_count, bool(audio_track_meta))
         scene_master_outputs = materialize_scene_master_clips(
             ffmpeg,
             manifest_scenes,
-            audio_track_meta.get("scene_dialogue_outputs", {}) if isinstance(audio_track_meta.get("scene_dialogue_outputs", {}), dict) else {},
+            scene_dialogue_outputs,
             package_root,
         )
         for scene_meta in manifest_scenes:
@@ -3173,8 +3187,8 @@ def main() -> None:
             scene_id = clean_text(scene_meta.get("scene_id", ""))
             scene_meta["scene_dialogue_audio"] = ""
             scene_meta["scene_master_clip"] = ""
-            if isinstance(audio_track_meta.get("scene_dialogue_outputs", {}), dict):
-                scene_meta["scene_dialogue_audio"] = clean_text(audio_track_meta["scene_dialogue_outputs"].get(scene_id, ""))
+            if scene_id:
+                scene_meta["scene_dialogue_audio"] = clean_text(scene_dialogue_outputs.get(scene_id, ""))
             scene_meta["scene_master_clip"] = clean_text(scene_master_outputs.get(scene_id, ""))
         package_master_clip_paths = [*opening_clip_paths]
         for scene_meta, scene_clip_path in zip(manifest_scenes, scene_clip_paths):
