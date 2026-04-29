@@ -290,9 +290,9 @@ DEFAULT_CONFIG = {
         "enable_voice_cloning": True,
         "enable_face_clone": True,
         "enable_lipsync": True,
-        "voice_clone_engine": "pyttsx3",
+        "voice_clone_engine": "xtts",
         "require_trained_voice_models": True,
-        "allow_system_tts_fallback": True,
+        "allow_system_tts_fallback": False,
         "xtts_model_name": "tts_models/multilingual/multi-dataset/xtts_v2",
         "xtts_language": "auto",
         "xtts_license_accepted": False,
@@ -300,7 +300,7 @@ DEFAULT_CONFIG = {
         "voice_reference_max_segments": 4,
         "voice_reference_target_seconds": 16.0,
         "reference_audio_sample_rate": 24000,
-        "enable_original_line_reuse": False,
+        "enable_original_line_reuse": True,
         "original_line_similarity_threshold": 0.74,
         "original_line_min_token_overlap": 0.34,
         "max_voice_model_samples": 48,
@@ -323,14 +323,14 @@ DEFAULT_CONFIG = {
         "voice_rate": 175,
     },
     "release_mode": {
-        "enabled": False,
-        "min_episode_quality": 0.68,
-        "max_weak_scenes": 2,
-        "watch_threshold": 0.52,
+        "enabled": True,
+        "min_episode_quality": 0.9,
+        "max_weak_scenes": 0,
+        "watch_threshold": 0.82,
         "max_regeneration_batch": 8,
         "max_regeneration_retries": 3,
-        "strict_warnings": False,
-        "auto_retry_failed_gate": False,
+        "strict_warnings": True,
+        "auto_retry_failed_gate": True,
         "auto_retry_update_bible": False,
     },
     "external_backends": {
@@ -4175,6 +4175,79 @@ def queue_scenes_for_regeneration(
 
 def release_mode_enabled(config: dict[str, Any]) -> bool:
     return bool(config.get("release_mode", {}).get("enabled", False))
+
+
+def external_backend_runner_configured(config: dict[str, Any], runner_name: str) -> bool:
+    external_cfg = config.get("external_backends", {}) if isinstance(config.get("external_backends"), dict) else {}
+    runner_cfg = external_cfg.get(runner_name, {}) if isinstance(external_cfg.get(runner_name), dict) else {}
+    if not bool(runner_cfg.get("enabled", False)):
+        return False
+    command_template = runner_cfg.get("command_template", runner_cfg.get("command", []))
+    if isinstance(command_template, str):
+        return bool(command_template.strip())
+    if isinstance(command_template, list):
+        return any(str(part or "").strip() for part in command_template)
+    return False
+
+
+def quality_first_requirements_report(config: dict[str, Any]) -> dict[str, Any]:
+    cloning_cfg = config.get("cloning", {}) if isinstance(config.get("cloning"), dict) else {}
+    missing: list[str] = []
+    warnings: list[str] = []
+
+    if not release_mode_enabled(config):
+        missing.append("release_mode.enabled must be true")
+    if bool(cloning_cfg.get("allow_system_tts_fallback", True)):
+        missing.append("cloning.allow_system_tts_fallback must be false")
+    if not bool(cloning_cfg.get("enable_original_line_reuse", False)):
+        missing.append("cloning.enable_original_line_reuse must be true")
+    if not bool(cloning_cfg.get("enable_lipsync", False)):
+        missing.append("cloning.enable_lipsync must be true")
+
+    required_runners = [
+        "storyboard_scene_runner",
+        "finished_episode_image_runner",
+        "finished_episode_video_runner",
+        "finished_episode_voice_runner",
+        "finished_episode_lipsync_runner",
+        "finished_episode_master_runner",
+    ]
+    missing_runners = [runner_name for runner_name in required_runners if not external_backend_runner_configured(config, runner_name)]
+    for runner_name in missing_runners:
+        missing.append(f"external_backends.{runner_name} must be enabled with a non-empty command_template")
+
+    voice_clone_engine = str(cloning_cfg.get("voice_clone_engine", "") or "").strip().lower()
+    if voice_clone_engine in {"", "pyttsx3"}:
+        warnings.append("cloning.voice_clone_engine is still set to a fallback-oriented value")
+
+    release_cfg = config.get("release_mode", {}) if isinstance(config.get("release_mode"), dict) else {}
+    if float(release_cfg.get("min_episode_quality", 0.0) or 0.0) < 0.85:
+        warnings.append("release_mode.min_episode_quality is below the recommended quality-first threshold")
+    if int(release_cfg.get("max_weak_scenes", 0) or 0) > 0:
+        warnings.append("release_mode.max_weak_scenes still allows weak scenes to pass")
+
+    return {
+        "ready": not missing,
+        "missing": missing,
+        "warnings": warnings,
+        "required_runners": required_runners,
+        "missing_runners": missing_runners,
+    }
+
+
+def ensure_quality_first_ready(config: dict[str, Any], *, context_label: str = "quality-first episode generation") -> None:
+    report = quality_first_requirements_report(config)
+    if bool(report.get("ready", False)):
+        return
+    missing = report.get("missing", []) if isinstance(report.get("missing"), list) else []
+    warnings = report.get("warnings", []) if isinstance(report.get("warnings"), list) else []
+    detail_lines = [f"- {entry}" for entry in missing if str(entry).strip()]
+    if warnings:
+        detail_lines.extend(f"- Hinweis: {entry}" for entry in warnings if str(entry).strip())
+    details = "\n".join(detail_lines)
+    raise RuntimeError(
+        f"{context_label} is blocked until the project is configured for real original-episode quality.\n{details}"
+    )
 
 
 def release_quality_gate(

@@ -47,7 +47,7 @@ The default path stays local-first and license-light. The project already produc
 | Dataset / model | usable | Reviewed material can be rebuilt into a dataset and heuristic series model. |
 | Training stack | usable | Foundation, adapter, fine-tune, and backend-prep stages exist as explicit local steps. |
 | Episode generation | usable | New synthetic episodes, shotlists, storyboard assets, and final local renders can be produced. |
-| Finished-episode path | active | Production packages, delivery bundles, backend hooks, and quality scoring are in place, and the batch path now rejects obvious fallback-quality episodes instead of silently passing them through. |
+| Finished-episode path | quality-first | Production packages, delivery bundles, backend hooks, and quality scoring are in place, and the batch path now rejects obvious fallback-quality episodes instead of silently passing them through. |
 
 ## What Already Works Well
 
@@ -73,7 +73,7 @@ The default path stays local-first and license-light. The project already produc
 
 - finish main-character review quality in `06_review_unknowns.py`
 - keep the default path stable for large NAS-backed runs
-- replace fallback TTS and local motion fallback with real backend-generated scene audio/video more consistently
+- finish and tune the real external image/video/voice/lip-sync/master runners that the quality-first path now requires
 - keep the generation chain clearly ordered as train first, then generate/render
 - raise external-runner quality so the fully generated episode path can become the real default
 
@@ -104,6 +104,7 @@ The default path stays local-first and license-light. The project already produc
 - `53_regenerate_weak_scenes.py` turns quality-gate queues into retry manifests and can rerun the current full-episode retry chain while preserving scene retry state; storyboard backend stage now supports `--scene-ids` for scene-selective reruns
 - `52_quality_gate.py` and `53_regenerate_weak_scenes.py` now ignore empty stored artifact paths before resolving reports, packages, or delivery folders, so missing metadata cannot accidentally point at the current working directory
 - `52_quality_gate.py` now supports `--auto-retry` plus `release_mode.auto_retry_*` config so failed gates can launch one automatic retry loop, while `53_regenerate_weak_scenes.py` suppresses nested auto-retries both during its gate refresh and inside the inner rerun
+- `15_render_episode.py`, `49_refresh_after_manual_review.py`, `57_generate_finished_episodes.py`, and `99_process_next_episode.py` now stop early with a clear quality-first preflight error if release mode, original-line reuse, lipsync, or the required external image/video/voice/lipsync/master runners are not configured
 - the tracked regression suite covers export handoffs, release-gate reports, retry queues, strict warning handling, and regeneration metadata so those finished-episode contracts stay guarded
 - `16_build_series_bible.py`, `57_generate_finished_episodes.py`, and `99_process_next_episode.py` surface readiness, backend coverage, and quality scoring for generated episodes
 - `49_refresh_after_manual_review.py` and `57_generate_finished_episodes.py` now follow the real train-then-generate/render order against the current script names
@@ -120,6 +121,7 @@ These items are implemented and should stay guarded by README updates and tests 
 - script numbering is numeric only, with training before generated-episode render in the documented orchestration paths
 - OS-specific FFmpeg detection and runtime setup are in place for Windows and Linux/NAS runs
 - `57_generate_finished_episodes.py` is the finished-episode entry point and defaults to one episode unless `--count 0` or `--endless` is used
+- the default project config now targets `original_episode_quality_first`: release mode on, strict thresholds, original-line reuse on, system TTS fallback off, and lipsync on
 - generated project metadata uses portable relative paths for previews, review queues, linked speaker reference frames, and render handoff fields while legacy absolute paths are still accepted on read
 - the shared file-opening helper now uses stronger Windows/NAS fallbacks so interactive preview files are more likely to open even from UNC shares
 - shared interactive display diagnostics now warn clearly when review is started from a headless or non-desktop session
@@ -140,6 +142,7 @@ Only untouched follow-up work belongs here. If implementation has already starte
 
 - tighter worker-capability routing so GPU-heavy generation stages can prefer stronger NAS workers automatically
 - stronger backend-side scene selection so regeneration can choose better alternates automatically after quality-gate failures
+- concrete high-quality runner presets and command templates for the required storyboard/image/video/voice/lipsync/master backends
 
 ## Documentation Rule
 
@@ -223,6 +226,29 @@ Also keep the `In Progress` and `Planned` sections current.
 - `generation.quality_mode`: labels the current generated-episode prompt/continuity strategy; default is `series_consistency`
 
 Generated JSON artifacts under `characters`, `data/processed`, `generation`, and related handoff folders now prefer project-relative paths instead of machine-specific absolute paths. Older absolute paths are still rebased automatically when the workspace has been moved.
+
+The default config is now intentionally quality-first:
+
+- `release_mode.enabled = true`
+- `release_mode.min_episode_quality = 0.9`
+- `release_mode.max_weak_scenes = 0`
+- `release_mode.watch_threshold = 0.82`
+- `release_mode.strict_warnings = true`
+- `release_mode.auto_retry_failed_gate = true`
+- `cloning.allow_system_tts_fallback = false`
+- `cloning.enable_original_line_reuse = true`
+- `cloning.enable_lipsync = true`
+
+The pipeline entry points `15`, `49`, `57`, and `99` now require configured external runners for:
+
+- `storyboard_scene_runner`
+- `finished_episode_image_runner`
+- `finished_episode_video_runner`
+- `finished_episode_voice_runner`
+- `finished_episode_lipsync_runner`
+- `finished_episode_master_runner`
+
+If those runners are not enabled with real `command_template` values, the quality-first path stops immediately with a clear configuration error instead of generating a fake “final” episode.
 
 ## Quick Start
 
@@ -459,6 +485,7 @@ python 06_review_unknowns.py --review-faces --open-previews
 - the local series model is heuristic, not a large multimodal frontier model
 - without strong external image/video/voice/lip-sync backends, the project now prefers to fail the finished-episode gate instead of presenting a low-quality fallback render as a true final TV-style episode
 - the local finished episode path is structurally complete, but TV-grade visual consistency still depends on real backend generation quality and well-trained character-specific voice models
+- by default, direct render/generation entry points now refuse to run in “final episode” mode until the required external quality runners are configured
 - fully new dialogue lines still depend on generated speech when no strong original segment can be reused
 - lip-sync and generated scene video quality still depend on later backend tuning
 - `53_regenerate_weak_scenes.py` now reruns only the flagged scenes in the storyboard backend stage (`54_run_storyboard_backend.py --scene-ids`), but the render step (`15_render_episode.py`) still rebuilds the full episode package

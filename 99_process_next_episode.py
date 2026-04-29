@@ -14,6 +14,7 @@ from pipeline_common import (
     add_shared_worker_arguments,
     distributed_item_lease,
     distributed_step_runtime_root,
+    ensure_quality_first_ready,
     open_face_review_item_count,
     LiveProgressReporter,
     SCRIPT_DIR,
@@ -588,6 +589,7 @@ def main() -> None:
     args = parse_args()
     headline("Run Full Series Pipeline")
     cfg = load_config()
+    ensure_quality_first_ready(cfg, context_label="99_process_next_episode.py")
     worker_id = shared_worker_id_for_args(args)
     shared_workers = shared_workers_enabled_for_args(cfg, args)
     child_shared_args = shared_worker_cli_args(cfg, args)

@@ -11,6 +11,7 @@ from pipeline_common import (
     add_shared_worker_arguments,
     distributed_item_lease,
     distributed_step_runtime_root,
+    ensure_quality_first_ready,
     open_face_review_item_count,
     LiveProgressReporter,
     PROJECT_ROOT,
@@ -325,6 +326,7 @@ def main() -> None:
     endless = preview_endless_mode(args)
     count = 0 if endless else max(1, int(args.count))
     cfg = load_config()
+    ensure_quality_first_ready(cfg, context_label="57_generate_finished_episodes.py")
     worker_id = shared_worker_id_for_args(args)
     shared_workers = shared_workers_enabled_for_args(cfg, args)
     child_shared_args = shared_worker_cli_args(cfg, args)

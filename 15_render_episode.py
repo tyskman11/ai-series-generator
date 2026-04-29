@@ -23,6 +23,7 @@ from pipeline_common import (
     LiveProgressReporter,
     PROJECT_ROOT,
     detect_tool,
+    ensure_quality_first_ready,
     episode_quality_assessment,
     error,
     external_tool_command,
@@ -2926,6 +2927,7 @@ def main() -> None:
     args = parse_args()
     headline("Render Episode")
     cfg = load_config()
+    ensure_quality_first_ready(cfg, context_label="15_render_episode.py")
     worker_id = shared_worker_id_for_args(args)
     shared_workers = shared_workers_enabled_for_args(cfg, args)
 
