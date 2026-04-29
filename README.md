@@ -81,6 +81,7 @@ The default path stays local-first and license-light. The project already produc
 - `05_link_faces_and_speakers.py` now opens assignment previews more robustly from NAS/UNC paths by preferring a self-contained browser preview plus exact image links before falling back to the montage JPG
 - `06_review_unknowns.py` keeps reducing open manual review work through known-face matching, iterative naming propagation, and conservative `statist` auto-marking
 - `06_review_unknowns.py` now rebases stored NAS preview paths, mirrors the active review images into a local temp preview cache for GUI/local-image opening, and avoids auto-opening multiple preview windows for one case
+- `05_link_faces_and_speakers.py`, `06_review_unknowns.py`, and `pipeline_common.py` now surface shared interactive display diagnostics so desktop, NAS, and headless-session behavior is easier to see before manual review starts
 - shared NAS lease handling now auto-recovers same-host stale worker locks when the recorded PID is no longer alive
 - `05_link_faces_and_speakers.py`, `06_review_unknowns.py`, and the shared path helpers now normalize stored project paths back to relative metadata so the same workspace can move between Windows, Linux, NAS mounts, and different drive letters more safely
 - `04_diarize_and_transcribe.py` keeps extending `speaker_unknown` rescue logic and language handling
@@ -112,14 +113,15 @@ These items are implemented and should stay guarded by README updates and tests 
 - `57_generate_finished_episodes.py` is the finished-episode entry point and defaults to one episode unless `--count 0` or `--endless` is used
 - generated project metadata uses portable relative paths for previews, review queues, linked speaker reference frames, and render handoff fields while legacy absolute paths are still accepted on read
 - the shared file-opening helper now uses stronger Windows/NAS fallbacks so interactive preview files are more likely to open even from UNC shares
-- release-gate, export-package, regeneration-queue, backend-benchmark, and review-preview behavior have tracked regression tests
+- shared interactive display diagnostics now warn clearly when review is started from a headless or non-desktop session
+- release-gate, export-package, regeneration-queue, backend-benchmark, review-preview, and display-diagnostics behavior have tracked regression tests
 
 ## Planned
 
 Only untouched follow-up work belongs here. If implementation has already started, it belongs in `In Progress`.
 
 - stronger per-character continuity memory across generated episodes, including outfit and look consistency
-- automatic GUI/display diagnostics before interactive review starts on headless NAS or SSH sessions
+- tighter worker-capability routing so GPU-heavy generation stages can prefer stronger NAS workers automatically
 
 ## Documentation Rule
 
@@ -258,11 +260,11 @@ Extracts audio, runs Whisper, auto-detects language unless a fixed language is c
 
 ### 05 - Link Faces And Speakers
 
-Detects faces, links them to speaker clusters, and applies rescue logic for certain unresolved speaker cases. When interactive assignment is enabled, the script now prints exact preview file paths plus clickable `file://` links, prefers a self-contained HTML/browser preview for NAS or UNC shares, and still keeps the montage JPG as a fallback.
+Detects faces, links them to speaker clusters, and applies rescue logic for certain unresolved speaker cases. When interactive assignment is enabled, the script now prints exact preview file paths plus clickable `file://` links, prefers a self-contained HTML/browser preview for NAS or UNC shares, and still keeps the montage JPG as a fallback. The script also prints shared display/session diagnostics first, so it is obvious when a run has no interactive console or no desktop-capable GUI context.
 
 ### 06 - Review Unknowns
 
-Interactive review for unknown or weakly linked face clusters. This step tries to match known characters first and can auto-mark safe low-activity background clusters as `statist`. Stored preview paths are rebased for NAS/moved workspaces and persisted back as relative project metadata; the exact selected face JPG files (`*_crop.jpg` first, then matching `*_context.jpg`) are mirrored into a local temp preview cache so the Tk window can launch from a local path even when the project itself lives on a NAS share. Automatic preview opening now prefers the Tk window and falls back to only one local image file instead of spawning multiple viewer windows. The terminal output prints both the original preview files and the local launch targets explicitly, while contact-sheet helpers remain available for manual opening. Use `--no-open-previews` only when you want terminal-only review.
+Interactive review for unknown or weakly linked face clusters. This step tries to match known characters first and can auto-mark safe low-activity background clusters as `statist`. Stored preview paths are rebased for NAS/moved workspaces and persisted back as relative project metadata; the exact selected face JPG files (`*_crop.jpg` first, then matching `*_context.jpg`) are mirrored into a local temp preview cache so the Tk window can launch from a local path even when the project itself lives on a NAS share. Automatic preview opening now prefers the Tk window and falls back to only one local image file instead of spawning multiple viewer windows. The terminal output prints both the original preview files and the local launch targets explicitly, while contact-sheet helpers remain available for manual opening. Before review starts, the script also prints shared display/session diagnostics so headless NAS, SSH, or non-desktop runs are easier to distinguish from real GUI bugs. Use `--no-open-previews` only when you want terminal-only review.
 
 ### 07 - Build Dataset
 
@@ -430,7 +432,7 @@ Interactive NAS review example:
 python 06_review_unknowns.py --review-faces --open-previews
 ```
 
-`--open-previews` is the default now, so `python 06_review_unknowns.py --review-faces` is enough in normal desktop use. Run this from a desktop session on the PC that should show the images. On Windows, the script now mirrors the active preview set into a local temp cache, tries the Tk preview window first, and only falls back to opening one local image file if Tk is not available for that case. The terminal still prints the original source images plus the local launch paths so you can open either manually if needed. On headless Linux/NAS or SSH sessions without `DISPLAY`/`WAYLAND_DISPLAY`, the script prints the preview paths and keeps terminal assignment available.
+`--open-previews` is the default now, so `python 06_review_unknowns.py --review-faces` is enough in normal desktop use. Run this from a desktop session on the PC that should show the images. On Windows, the script now mirrors the active preview set into a local temp cache, tries the Tk preview window first, and only falls back to opening one local image file if Tk is not available for that case. The terminal still prints the original source images plus the local launch paths so you can open either manually if needed. Shared display diagnostics are printed before review starts. On headless Linux/NAS or SSH sessions without `DISPLAY`/`WAYLAND_DISPLAY`, the script prints the preview paths and keeps terminal assignment available.
 
 ## Known Limitations
 
@@ -442,7 +444,7 @@ python 06_review_unknowns.py --review-faces --open-previews
 - `53_regenerate_weak_scenes.py` now reruns only the flagged scenes in the storyboard backend stage (`54_run_storyboard_backend.py --scene-ids`), but the render step (`15_render_episode.py`) still rebuilds the full episode package
 - automatic gate retry now performs at most one extra retry loop per failing run; if the refreshed gate still fails, the pipeline stops and leaves the queue/report for manual follow-up
 - orchestration-heavy scripts mainly use exclusive leases; the fine-grained parallelism lives in worker-heavy numbered steps underneath
-- interactive image review in `06_review_unknowns.py` needs a local desktop session for embedded Tk windows; Windows review now launches the exact selected face JPG files first and prints those exact paths, while optional HTML/contact-sheet helpers and headless NAS fallback paths remain available
+- interactive image review in `06_review_unknowns.py` needs a local desktop session for embedded Tk windows; Windows review now launches the exact selected face JPG files first, prints those exact paths, and reports session/display diagnostics before the first review case
 - `release_mode` is optional and stays disabled by default until your local image/video/lip-sync outputs are good enough to gate production automatically
 - test runs may show harmless FFmpeg warnings like `moov atom not found` on stderr; these do not indicate test failures and can be ignored when exit code is 0
 

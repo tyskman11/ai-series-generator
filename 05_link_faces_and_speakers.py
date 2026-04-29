@@ -36,6 +36,7 @@ from pipeline_common import (
     load_config,
     ok,
     open_file_default,
+    print_interactive_display_diagnostics,
     normalize_portable_project_paths,
     portable_project_path,
     preferred_compute_label,
@@ -49,6 +50,7 @@ from pipeline_common import (
     shared_worker_id_for_args,
     shared_workers_enabled_for_args,
     terminal_clickable_path,
+    warn,
     mark_step_started,
     mark_step_completed,
     mark_step_failed,
@@ -1328,8 +1330,9 @@ def main() -> None:
             f"{normalized_voices} speaker entries."
         )
 
-    interactive = bool(cfg["character_detection"].get("interactive_assignment", False)) and is_interactive_session()
     auto_open = bool(cfg.get("preview_open_automatically", False))
+    interactive_requested = bool(cfg["character_detection"].get("interactive_assignment", False))
+    interactive = interactive_requested and is_interactive_session()
     sample_every = int(cfg["character_detection"].get("sample_every_n_frames", 8))
     max_faces_per_frame = int(cfg["character_detection"].get("max_faces_per_frame", 3))
     max_visible_faces_per_segment = int(cfg["character_detection"].get("max_visible_faces_per_segment", 3))
@@ -1339,6 +1342,16 @@ def main() -> None:
     info(f"Execution mode: {preferred_execution_label(cfg)}")
     info(f"Compute device: {preferred_compute_label(cfg)}")
     info(f"Face detection: {engine['mode']}")
+    if interactive_requested or auto_open:
+        display_state = print_interactive_display_diagnostics(
+            "05_link_faces_and_speakers.py",
+            require_gui=auto_open,
+        )
+        if interactive_requested and not display_state["interactive_console"]:
+            warn(
+                "Interactive assignment is enabled in the config, but this run has no interactive console. "
+                "Step 05 continues in non-interactive mode."
+            )
     if shared_workers:
         info(f"Shared NAS workers: enabled ({worker_id})")
 

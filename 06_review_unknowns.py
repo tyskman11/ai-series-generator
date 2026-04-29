@@ -24,6 +24,7 @@ from pipeline_common import (
     has_manual_person_name,
     headline,
     info,
+    interactive_display_state,
     is_background_person_name,
     is_interactive_session,
     load_config,
@@ -32,6 +33,7 @@ from pipeline_common import (
     mark_step_started,
     open_review_item_count,
     ok,
+    print_interactive_display_diagnostics,
     normalize_portable_project_paths,
     portable_project_path,
     read_json,
@@ -492,15 +494,16 @@ def create_face_review_html(cluster_id: str, payload: dict, output_dir: Path | N
 
 
 def gui_preview_available() -> bool:
+    state = interactive_display_state()
     try:
         os_name = current_os()
     except Exception:
-        return False
+        return bool(state.get("gui_available"))
     if os_name == "windows":
-        return True
+        return bool(state.get("interactive_console"))
     if os_name == "linux":
         return bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
-    return False
+    return bool(state.get("interactive_console"))
 
 
 def windows_preview_commands(path: Path) -> list[list[str]]:
@@ -1983,6 +1986,10 @@ def session_face_review_candidates(
 def interactive_face_review(cfg: dict, char_map: dict, voice_map: dict, include_named: bool, limit: int, open_previews: bool) -> None:
     if not is_interactive_session():
         raise RuntimeError("--review-faces requires an interactive console.")
+    display_state = print_interactive_display_diagnostics(
+        "06_review_unknowns.py",
+        require_gui=open_previews,
+    )
 
     skipped_clusters: set[str] = set()
     handled_count = 0
@@ -2060,7 +2067,7 @@ def interactive_face_review(cfg: dict, char_map: dict, voice_map: dict, include_
             if open_previews and preview_targets:
                 quick_assignments = known_identity_button_options(char_map, limit=16)
                 preview_result = None
-                if preview_window_image:
+                if preview_window_image and display_state.get("gui_available"):
                     preview_result = show_preview_assignment_window(
                         preview_window_image,
                         f"{cluster_id} Preview | Session: {session_remaining_count} | Open: {total_open_count}",

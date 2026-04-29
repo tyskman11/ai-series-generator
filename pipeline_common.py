@@ -2690,6 +2690,64 @@ def is_interactive_session() -> bool:
     return bool(getattr(sys.stdin, "isatty", lambda: False)())
 
 
+def interactive_display_state() -> dict[str, Any]:
+    os_name = current_os()
+    interactive_console = is_interactive_session()
+    display_env = os.environ.get("DISPLAY", "").strip()
+    wayland_env = os.environ.get("WAYLAND_DISPLAY", "").strip()
+    session_name = os.environ.get("SESSIONNAME", "").strip()
+    ssh_session = bool(
+        os.environ.get("SSH_CONNECTION", "").strip()
+        or os.environ.get("SSH_CLIENT", "").strip()
+        or os.environ.get("SSH_TTY", "").strip()
+    )
+    gui_available = False
+    reason = ""
+
+    if os_name == "windows":
+        gui_available = interactive_console
+        if not interactive_console:
+            reason = "Windows run without interactive desktop console/session."
+    elif os_name == "linux":
+        gui_available = bool(display_env or wayland_env)
+        if not gui_available:
+            reason = "Linux run without DISPLAY/WAYLAND_DISPLAY."
+    else:
+        gui_available = interactive_console
+        if not interactive_console:
+            reason = "Run without interactive console session."
+
+    return {
+        "os": os_name,
+        "interactive_console": interactive_console,
+        "gui_available": gui_available,
+        "display": display_env,
+        "wayland_display": wayland_env,
+        "session_name": session_name,
+        "ssh_session": ssh_session,
+        "reason": reason,
+    }
+
+
+def print_interactive_display_diagnostics(step_name: str, *, require_gui: bool = False) -> dict[str, Any]:
+    state = interactive_display_state()
+    display_parts = [f"os={state['os']}", f"interactive_console={state['interactive_console']}"]
+    if state["os"] == "windows" and state["session_name"]:
+        display_parts.append(f"session={state['session_name']}")
+    if state["os"] == "linux":
+        display_parts.append(f"display={'set' if state['display'] else 'missing'}")
+        display_parts.append(f"wayland={'set' if state['wayland_display'] else 'missing'}")
+    if state["ssh_session"]:
+        display_parts.append("ssh=yes")
+    info(f"{step_name} display diagnostics: {', '.join(display_parts)}")
+    if require_gui and not state["gui_available"]:
+        warn(
+            f"{step_name} GUI preview is not available in this session. "
+            f"{state['reason'] or 'No GUI session detected.'}"
+        )
+    return state
+
+
 def tokens_from_text(text: str) -> list[str]:
     return re.findall(r"[A-Za-zÄÖÜäöüß][A-Za-zÄÖÜäöüß\-']+", text)
 
