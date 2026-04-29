@@ -59,6 +59,7 @@ The default path stays local-first and license-light. The project already produc
 - local heuristic series model generation plus synthetic episode blueprints
 - storyboard seed assets and backend-ready scene request payloads
 - optional external runner hooks for storyboard, image, video, voice, lip-sync, and episode-master stages
+- scene generation now carries series-style guidance plus remembered character continuity traits through prompts, storyboard backend payloads, and render packages
 - per-scene production packages and one package-level full generated-episode contract
 - dialogue-aware final audio assembly with original-segment reuse, loudness normalization, trim/pad timing, and short fades
 - local multi-shot fallback scene videos when dedicated generated scene video is still missing
@@ -87,9 +88,10 @@ The default path stays local-first and license-light. The project already produc
 - `04_diarize_and_transcribe.py` keeps extending `speaker_unknown` rescue logic and language handling
 - `99_process_next_episode.py` is being hardened for long resumable inbox runs with autosaves and live status files
 - `13_generate_episode.py` writes multi-reference storyboard plans and backend-ready request exports
+- `08_train_series_model.py`, `13_generate_episode.py`, `14_generate_storyboard_assets.py`, and `15_render_episode.py` now carry style constraints, remembered character continuity hints, and explicit quality targets deeper into the generated-episode path
 - `14_generate_storyboard_assets.py` emits backend-ready scene input payloads and rebases moved artifact paths
 - `54_run_storyboard_backend.py` can materialize local scene packs and optionally call configured external storyboard runners first
-- `15_render_episode.py` reuses backend frames/clips when present, assembles voiced scene masters, writes delivery bundles, and keeps improving the final generated-episode package
+- `15_render_episode.py` now also preserves camera/control hint dictionaries correctly instead of dropping them in the render/package path, then reuses backend frames/clips when present, assembles voiced scene masters, writes delivery bundles, and keeps improving the final generated-episode package
 - `51_export_package.py` now exports real generated-episode packages for JSON, DaVinci-style, and Premiere-style handoff folders, including resolved render profile plus release/delivery/regeneration metadata
 - `52_quality_gate.py` now writes persistent quality-gate reports, regeneration queues, and feeds that state back into episode artifacts
 - `53_regenerate_weak_scenes.py` turns quality-gate queues into retry manifests and can rerun the current full-episode retry chain while preserving scene retry state; storyboard backend stage now supports `--scene-ids` for scene-selective reruns
@@ -114,14 +116,15 @@ These items are implemented and should stay guarded by README updates and tests 
 - generated project metadata uses portable relative paths for previews, review queues, linked speaker reference frames, and render handoff fields while legacy absolute paths are still accepted on read
 - the shared file-opening helper now uses stronger Windows/NAS fallbacks so interactive preview files are more likely to open even from UNC shares
 - shared interactive display diagnostics now warn clearly when review is started from a headless or non-desktop session
-- release-gate, export-package, regeneration-queue, backend-benchmark, review-preview, and display-diagnostics behavior have tracked regression tests
+- render-side camera/control hints no longer get lost when `camera_plan` and `control_hints` are stored as dictionaries in generated scene plans
+- release-gate, export-package, regeneration-queue, backend-benchmark, review-preview, display-diagnostics, and generation-quality behavior have tracked regression tests
 
 ## Planned
 
 Only untouched follow-up work belongs here. If implementation has already started, it belongs in `In Progress`.
 
-- stronger per-character continuity memory across generated episodes, including outfit and look consistency
 - tighter worker-capability routing so GPU-heavy generation stages can prefer stronger NAS workers automatically
+- stronger backend-side scene selection so regeneration can choose better alternates automatically after quality-gate failures
 
 ## Documentation Rule
 
@@ -202,6 +205,7 @@ Also keep the `In Progress` and `Planned` sections current.
 - `release_mode.max_regeneration_retries`: cap for how often one weak scene may stay in the retry queue before `53_regenerate_weak_scenes.py` stops requesting another rerender
 - `release_mode.auto_retry_failed_gate`: optionally lets `52_quality_gate.py` launch one automatic retry loop after a failed gate
 - `release_mode.auto_retry_update_bible`: optionally appends `16_build_series_bible.py` to that automatic retry loop
+- `generation.quality_mode`: labels the current generated-episode prompt/continuity strategy; default is `series_consistency`
 
 Generated JSON artifacts under `characters`, `data/processed`, `generation`, and related handoff folders now prefer project-relative paths instead of machine-specific absolute paths. Older absolute paths are still rebased automatically when the workspace has been moved.
 
@@ -314,11 +318,11 @@ Retry state is written back into the production package, scene packages, shotlis
 
 ### 13 - Generate Episode
 
-Generates a new synthetic episode blueprint and shotlist from the trained local model. It also writes per-scene storyboard plans and backend-ready storyboard request exports.
+Generates a new synthetic episode blueprint and shotlist from the trained local model. It also writes per-scene storyboard plans and backend-ready storyboard request exports. Those scene plans now carry remembered character continuity traits, series-style constraints, and explicit quality-target metadata.
 
 ### 14 - Generate Storyboard Assets
 
-Builds scene-level storyboard seed assets and backend input payloads under `generation/storyboard_assets/<episode>`.
+Builds scene-level storyboard seed assets and backend input payloads under `generation/storyboard_assets/<episode>`. The backend payloads now keep style constraints, character continuity hints, and quality targets so later external runners see the same guidance as the local pipeline.
 
 ### 54 - Run Storyboard Backend
 
@@ -326,7 +330,7 @@ Materializes local backend-style scene packs from the storyboard backend payload
 
 ### 15 - Render Episode
 
-Builds the draft and final local episode render, assembles dialogue audio, writes per-scene masters, refreshes the production package, and creates the final delivery bundle.
+Builds the draft and final local episode render, assembles dialogue audio, writes per-scene masters, refreshes the production package, and creates the final delivery bundle. Camera/control hint dictionaries are now preserved correctly through this stage instead of silently collapsing to empty lists.
 
 ### 16 - Build Series Bible
 
@@ -446,6 +450,7 @@ python 06_review_unknowns.py --review-faces --open-previews
 - orchestration-heavy scripts mainly use exclusive leases; the fine-grained parallelism lives in worker-heavy numbered steps underneath
 - interactive image review in `06_review_unknowns.py` needs a local desktop session for embedded Tk windows; Windows review now launches the exact selected face JPG files first, prints those exact paths, and reports session/display diagnostics before the first review case
 - `release_mode` is optional and stays disabled by default until your local image/video/lip-sync outputs are good enough to gate production automatically
+- continuity/style guidance is now propagated much more consistently, but final visual quality still depends heavily on the actual external image/video/lip-sync backends you connect
 - test runs may show harmless FFmpeg warnings like `moov atom not found` on stderr; these do not indicate test failures and can be ignored when exit code is 0
 
 ## Typical Daily Use

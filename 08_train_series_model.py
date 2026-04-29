@@ -10,8 +10,10 @@ from collections import Counter, defaultdict
 from pathlib import Path
 
 from pipeline_common import (
+    PROJECT_ROOT,
     add_shared_worker_arguments,
     coalesce_text,
+    derive_prompt_constraints_from_bible,
     display_person_name,
     distributed_item_lease,
     distributed_step_runtime_root,
@@ -22,6 +24,7 @@ from pipeline_common import (
     headline,
     info,
     keyword_token_allowed,
+    load_character_continuity_memory,
     load_config,
     mark_step_completed,
     mark_step_failed,
@@ -967,6 +970,64 @@ def choose_environment_reference(scene_characters: list[str], keyword: str, mode
     }
 
 
+def scene_character_continuity_hints(
+    scene_characters: list[str],
+    continuity_memory: dict | None,
+) -> list[dict]:
+    memory = continuity_memory if isinstance(continuity_memory, dict) else {}
+    memory_characters = memory.get("characters", {}) if isinstance(memory.get("characters"), dict) else {}
+    hints: list[dict] = []
+    for character in scene_characters:
+        entry = memory_characters.get(character, {}) if isinstance(memory_characters.get(character), dict) else {}
+        continuity = entry.get("continuity", {}) if isinstance(entry.get("continuity"), dict) else {}
+        appearances = entry.get("appearances", {})
+        appearance_count = len(appearances) if isinstance(appearances, dict) else len(appearances) if isinstance(appearances, list) else 0
+        hint = {
+            "character": character,
+            "outfit": coalesce_text(continuity.get("outfit", "")),
+            "hairstyle": coalesce_text(continuity.get("hairstyle", "")),
+            "hair_color": coalesce_text(continuity.get("hair_color", "")),
+            "accessories": coalesce_text(continuity.get("accessories", "")),
+            "voice_traits": coalesce_text(continuity.get("voice_traits", "")),
+            "last_episode_id": coalesce_text(entry.get("last_episode_id", "")),
+            "appearance_count": appearance_count,
+        }
+        if any(
+            hint[key]
+            for key in ("outfit", "hairstyle", "hair_color", "accessories", "voice_traits", "last_episode_id")
+        ):
+            hints.append(hint)
+    return hints
+
+
+def continuity_prompt_fragments(character_hints: list[dict]) -> list[str]:
+    fragments: list[str] = []
+    for hint in character_hints[:2]:
+        character = coalesce_text(hint.get("character", ""))
+        if not character:
+            continue
+        details: list[str] = []
+        for key in ("outfit", "hairstyle", "hair_color", "accessories"):
+            value = coalesce_text(hint.get(key, ""))
+            if value:
+                details.append(value)
+        if details:
+            fragments.append(f"{character} keeps {'; '.join(details[:3])}")
+    return fragments
+
+
+def normalized_style_constraints(raw_constraints: dict | None) -> dict:
+    constraints = raw_constraints if isinstance(raw_constraints, dict) else {}
+    positive = [coalesce_text(value) for value in constraints.get("positive", []) if coalesce_text(value)]
+    negative = [coalesce_text(value) for value in constraints.get("negative", []) if coalesce_text(value)]
+    guidance = constraints.get("guidance", {}) if isinstance(constraints.get("guidance"), dict) else {}
+    return {
+        "positive": positive[:6],
+        "negative": negative[:8],
+        "guidance": {key: coalesce_text(value) for key, value in guidance.items() if coalesce_text(value)},
+    }
+
+
 def build_scene_generation_plan(
     scene_id: str,
     scene_index: int,
@@ -977,9 +1038,18 @@ def build_scene_generation_plan(
     model: dict,
     used_scene_refs: set[str],
     previous_scene_id: str,
+    continuity_memory: dict | None = None,
+    style_constraints: dict | None = None,
+    quality_mode: str = "series_consistency",
 ) -> dict:
+    continuity_memory = continuity_memory if isinstance(continuity_memory, dict) else load_character_continuity_memory(PROJECT_ROOT)
+    style_constraints = style_constraints if isinstance(style_constraints, dict) else derive_prompt_constraints_from_bible(PROJECT_ROOT, {})
     reference_library = model.get("character_reference_library", {}) or {}
     camera_plan = choose_camera_plan(beat, scene_index, random.Random(scene_index + len(scene_characters)))
+    camera_plan["camera"] = camera_plan.get("shot_type", "")
+    camera_plan["focus"] = camera_plan.get("composition", "")
+    camera_plan["movement"] = camera_plan.get("camera_move", "")
+    camera_plan["lens"] = camera_plan.get("lens_hint", "")
     reference_slots: list[dict] = []
     for slot_index, character in enumerate(scene_characters[:2], start=1):
         reference_row = reference_library.get(character, {}) if isinstance(reference_library, dict) else {}
@@ -996,6 +1066,12 @@ def build_scene_generation_plan(
     environment_reference = choose_environment_reference(scene_characters, keyword, model, used_scene_refs)
     if environment_reference:
         reference_slots.append({"slot": "scene_reference", **environment_reference})
+    character_continuity = scene_character_continuity_hints(scene_characters, continuity_memory)
+    style_profile = normalized_style_constraints(style_constraints)
+    continuity_fragments = continuity_prompt_fragments(character_continuity)
+    style_positive = ", ".join(style_profile.get("positive", [])[:3])
+    style_negative = ", ".join(style_profile.get("negative", [])[:5])
+    style_guidance = style_profile.get("guidance", {}) if isinstance(style_profile.get("guidance", {}), dict) else {}
 
     positive_prompt = (
         f"storyboard frame, animated sitcom look, {camera_plan['shot_type']}, {camera_plan['composition']}, "
@@ -1004,14 +1080,26 @@ def build_scene_generation_plan(
         f"{camera_plan['pose_hint']}, keep identity, wardrobe and environment continuity, "
         f"16:9 frame, clean readable staging"
     )
+    if style_positive:
+        positive_prompt += f", style cues: {style_positive}"
+    if continuity_fragments:
+        positive_prompt += f", continuity notes: {'; '.join(continuity_fragments)}"
+    if style_guidance.get("camera"):
+        positive_prompt += f", series camera preference: {style_guidance['camera']}"
+    if style_guidance.get("angle"):
+        positive_prompt += f", preferred angle: {style_guidance['angle']}"
     negative_prompt = (
         "no collage, no split panel, no duplicate characters, no extra fingers, no warped face, "
         "no mismatched outfit, no GUI overlay, no text box, no watermark"
     )
+    if style_negative:
+        negative_prompt += f", avoid {style_negative}"
     batch_prompt_line = (
         f"{beat} | {', '.join(scene_characters[:2])} | {keyword} | {camera_plan['shot_type']} | "
         f"{camera_plan['composition']} | continuity from {previous_scene_id or 'none'}"
     )
+    if style_guidance.get("camera"):
+        batch_prompt_line += f" | style camera {style_guidance['camera']}"
     return {
         "scene_id": scene_id,
         "model_mode": "multi_reference_storyboard",
@@ -1019,12 +1107,28 @@ def build_scene_generation_plan(
         "continuity": {
             "previous_scene_id": previous_scene_id,
             "use_previous_scene_as_reference": bool(previous_scene_id),
+            "carry_forward_characters": [row.get("character", "") for row in character_continuity if row.get("character")],
         },
         "camera_plan": camera_plan,
         "control_hints": {
             "pose_guidance": camera_plan["pose_hint"],
+            "pose_emphasis": camera_plan["pose_hint"],
             "composition_guidance": camera_plan["composition"],
+            "composition_emphasis": camera_plan["composition"],
             "motion_guidance": camera_plan["camera_move"],
+            "motion_emphasis": camera_plan["camera_move"],
+            "style_camera": style_guidance.get("camera", ""),
+            "style_angle": style_guidance.get("angle", ""),
+        },
+        "style_constraints": style_profile,
+        "character_continuity": character_continuity,
+        "quality_targets": {
+            "quality_mode": quality_mode,
+            "minimum_reference_slots": max(1, min(3, len(reference_slots))),
+            "prefer_previous_scene_reference": bool(previous_scene_id),
+            "prefer_backend_character_models": bool(scene_characters),
+            "style_guidance_available": bool(style_profile.get("positive") or style_guidance),
+            "continuity_character_count": len(character_continuity),
         },
         "positive_prompt": positive_prompt,
         "negative_prompt": negative_prompt,
@@ -1043,6 +1147,9 @@ def generate_episode_package(model: dict, cfg: dict, episode_index: int = 1) -> 
         keywords = keywords[keyword_offset:] + keywords[:keyword_offset]
     target_runtime_seconds = select_target_runtime_seconds(model, cfg)
     scene_count, target_lines_per_scene = planning_targets(model, cfg, target_runtime_seconds)
+    continuity_memory = load_character_continuity_memory(PROJECT_ROOT)
+    style_constraints = derive_prompt_constraints_from_bible(PROJECT_ROOT, {})
+    quality_mode = coalesce_text(generation_cfg.get("quality_mode", "")) or "series_consistency"
     focus_characters = select_focus_characters(model, rng)
     background_characters = select_background_characters(model, count=1)
     beats = ["Cold Open", "Plan", "Komplikation", "Verwechslung", "Wendepunkt", "Auflösung"]
@@ -1104,6 +1211,9 @@ def generate_episode_package(model: dict, cfg: dict, episode_index: int = 1) -> 
             model,
             used_scene_refs,
             previous_scene_id,
+            continuity_memory=continuity_memory,
+            style_constraints=style_constraints,
+            quality_mode=quality_mode,
         )
         scenes.append(
             {
@@ -1151,6 +1261,7 @@ def generate_episode_package(model: dict, cfg: dict, episode_index: int = 1) -> 
         "episode_label": episode_label,
         "display_title": display_title,
         "generation_mode": "synthetic_preview",
+        "quality_mode": quality_mode,
         "storyboard_plan_mode": "multi_reference_storyboard",
         "target_runtime_seconds": target_runtime_seconds,
         "target_scene_count": scene_count,

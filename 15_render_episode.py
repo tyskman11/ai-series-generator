@@ -770,7 +770,13 @@ def derive_scene_visual_beats(
     scene_start = float(scene_start_seconds or 0.0)
     scene_duration = max(0.25, float(scene_duration_seconds or 0.0))
     scene_end = scene_start + scene_duration
-    camera_plan = generation_plan.get("camera_plan", []) if isinstance(generation_plan.get("camera_plan", []), list) else []
+    camera_plan_raw = generation_plan.get("camera_plan", {})
+    if isinstance(camera_plan_raw, dict):
+        camera_plan = [camera_plan_raw]
+    elif isinstance(camera_plan_raw, list):
+        camera_plan = [row for row in camera_plan_raw if isinstance(row, dict)]
+    else:
+        camera_plan = []
     beats: list[dict] = []
 
     def append_beat(
@@ -901,19 +907,55 @@ def build_video_generation_prompt(scene: dict, generation_plan: dict) -> str:
     summary = clean_text(scene.get("summary", ""))
     if summary:
         prompt_parts.append(f"scene summary: {summary}")
-    camera_plan = generation_plan.get("camera_plan", []) if isinstance(generation_plan.get("camera_plan", []), list) else []
+    camera_plan_raw = generation_plan.get("camera_plan", {})
+    if isinstance(camera_plan_raw, dict):
+        camera_plan = [camera_plan_raw]
+    elif isinstance(camera_plan_raw, list):
+        camera_plan = [row for row in camera_plan_raw if isinstance(row, dict)]
+    else:
+        camera_plan = []
     for step in camera_plan[:3]:
-        if isinstance(step, dict):
-            camera = clean_text(step.get("camera", ""))
-            focus = clean_text(step.get("focus", ""))
-            prompt_parts.append(f"camera: {camera or 'shot'} / focus: {focus or 'characters'}")
-    control_hints = generation_plan.get("control_hints", []) if isinstance(generation_plan.get("control_hints", []), list) else []
+        camera = clean_text(step.get("camera", "") or step.get("shot_type", ""))
+        focus = clean_text(step.get("focus", "") or step.get("composition", ""))
+        prompt_parts.append(f"camera: {camera or 'shot'} / focus: {focus or 'characters'}")
+    control_hints_raw = generation_plan.get("control_hints", {})
+    if isinstance(control_hints_raw, dict):
+        control_hints = [control_hints_raw]
+    elif isinstance(control_hints_raw, list):
+        control_hints = [row for row in control_hints_raw if isinstance(row, dict)]
+    else:
+        control_hints = []
     for hint in control_hints[:3]:
-        if isinstance(hint, dict):
-            label = clean_text(hint.get("hint", ""))
-            value = clean_text(hint.get("value", ""))
-            if label or value:
-                prompt_parts.append(f"{label or 'control'}: {value}")
+        label = (
+            clean_text(hint.get("hint", ""))
+            or clean_text(hint.get("pose_emphasis", ""))
+            or clean_text(hint.get("composition_emphasis", ""))
+            or clean_text(hint.get("motion_emphasis", ""))
+            or clean_text(hint.get("style_camera", ""))
+        )
+        value = (
+            clean_text(hint.get("value", ""))
+            or clean_text(hint.get("pose_guidance", ""))
+            or clean_text(hint.get("composition_guidance", ""))
+            or clean_text(hint.get("motion_guidance", ""))
+            or clean_text(hint.get("style_angle", ""))
+        )
+        if label or value:
+            prompt_parts.append(f"{label or 'control'}: {value}")
+    style_constraints = generation_plan.get("style_constraints", {}) if isinstance(generation_plan.get("style_constraints", {}), dict) else {}
+    style_positive = [clean_text(value) for value in style_constraints.get("positive", []) if clean_text(value)]
+    if style_positive:
+        prompt_parts.append(f"style: {', '.join(style_positive[:3])}")
+    character_continuity = generation_plan.get("character_continuity", []) if isinstance(generation_plan.get("character_continuity", []), list) else []
+    for hint in character_continuity[:2]:
+        if not isinstance(hint, dict):
+            continue
+        character = clean_text(hint.get("character", ""))
+        outfit = clean_text(hint.get("outfit", ""))
+        accessories = clean_text(hint.get("accessories", ""))
+        details = ", ".join(value for value in (outfit, accessories) if value)
+        if character and details:
+            prompt_parts.append(f"keep {character}: {details}")
     continuity = generation_plan.get("continuity", {}) if isinstance(generation_plan.get("continuity", {}), dict) else {}
     previous_scene_id = clean_text(continuity.get("previous_scene_id", ""))
     if previous_scene_id:
@@ -1014,6 +1056,13 @@ def build_scene_production_package(
     generation_plan = scene.get("generation_plan", {}) if isinstance(scene.get("generation_plan", {}), dict) else {}
     reference_slots = generation_plan.get("reference_slots", []) if isinstance(generation_plan.get("reference_slots", []), list) else []
     continuity = generation_plan.get("continuity", {}) if isinstance(generation_plan.get("continuity", {}), dict) else {}
+    style_constraints = generation_plan.get("style_constraints", {}) if isinstance(generation_plan.get("style_constraints", {}), dict) else {}
+    character_continuity = generation_plan.get("character_continuity", []) if isinstance(generation_plan.get("character_continuity", []), list) else []
+    quality_targets = generation_plan.get("quality_targets", {}) if isinstance(generation_plan.get("quality_targets", {}), dict) else {}
+    camera_plan_raw = generation_plan.get("camera_plan", {})
+    control_hints_raw = generation_plan.get("control_hints", {})
+    camera_plan = camera_plan_raw if isinstance(camera_plan_raw, dict) else {}
+    control_hints = control_hints_raw if isinstance(control_hints_raw, dict) else {}
     image_output_root = episode_package_root / "images" / scene_slug
     video_output_root = episode_package_root / "videos" / scene_slug
     lipsync_output_root = episode_package_root / "lipsync" / scene_slug
@@ -1090,9 +1139,12 @@ def build_scene_production_package(
         "storyboard": {
             "requires_new_storyboard_frames": True,
             "reference_slots": reference_slots,
-            "camera_plan": generation_plan.get("camera_plan", []) if isinstance(generation_plan.get("camera_plan", []), list) else [],
-            "control_hints": generation_plan.get("control_hints", []) if isinstance(generation_plan.get("control_hints", []), list) else [],
+            "camera_plan": camera_plan,
+            "control_hints": control_hints,
             "continuity": continuity,
+            "style_constraints": style_constraints,
+            "character_continuity": character_continuity,
+            "quality_targets": quality_targets,
             "scene_package_path": str(episode_package_root / "scenes" / f"{scene_slug}_production.json"),
         },
         "image_generation": {
@@ -1102,6 +1154,8 @@ def build_scene_production_package(
             "negative_prompt": clean_text(generation_plan.get("negative_prompt", "")),
             "batch_prompt_line": clean_text(generation_plan.get("batch_prompt_line", "")),
             "reference_slots": reference_slots,
+            "style_constraints": style_constraints,
+            "character_continuity": character_continuity,
             "target_outputs": {
                 "primary_frame": str(image_output_root / "frame_0001.png"),
                 "alternate_frame_dir": str(image_output_root / "alternates"),
@@ -1112,9 +1166,12 @@ def build_scene_production_package(
             "required": True,
             "mode": "new_scene_video_clip",
             "prompt": video_prompt,
-            "camera_plan": generation_plan.get("camera_plan", []) if isinstance(generation_plan.get("camera_plan", []), list) else [],
-            "control_hints": generation_plan.get("control_hints", []) if isinstance(generation_plan.get("control_hints", []), list) else [],
+            "camera_plan": camera_plan,
+            "control_hints": control_hints,
             "continuity": continuity,
+            "style_constraints": style_constraints,
+            "character_continuity": character_continuity,
+            "quality_targets": quality_targets,
             "compose_strategy": compose_strategy,
             "local_video_plan": {
                 "mode": "dialogue_timed_multi_shot_scene_video",
@@ -1168,6 +1225,9 @@ def build_scene_production_package(
             lipsync_required=bool(voice_lines),
             reference_slot_count=len(reference_slots),
             continuity_active=bool(continuity),
+            continuity_character_count=len(character_continuity),
+            style_guidance_available=bool(style_constraints.get("positive") or style_constraints.get("guidance")),
+            quality_targets_available=bool(quality_targets),
         ),
         previous_quality,
     )
@@ -1636,6 +1696,15 @@ def refresh_scene_package_outputs(scene_package: dict, package_root: Path) -> di
             lipsync_required=bool(lip_sync.get("required", False)),
             reference_slot_count=len(storyboard.get("reference_slots", [])) if isinstance(storyboard.get("reference_slots", []), list) else 0,
             continuity_active=bool(storyboard.get("continuity", {})),
+            continuity_character_count=len(storyboard.get("character_continuity", [])) if isinstance(storyboard.get("character_continuity", []), list) else 0,
+            style_guidance_available=bool(
+                isinstance(storyboard.get("style_constraints", {}), dict)
+                and (
+                    (storyboard.get("style_constraints", {}) or {}).get("positive")
+                    or (storyboard.get("style_constraints", {}) or {}).get("guidance")
+                )
+            ),
+            quality_targets_available=bool(storyboard.get("quality_targets", {})),
         ),
         previous_quality,
     )

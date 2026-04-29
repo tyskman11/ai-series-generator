@@ -1510,6 +1510,9 @@ def scene_quality_assessment(
     lipsync_required: bool = False,
     reference_slot_count: int = 0,
     continuity_active: bool = False,
+    continuity_character_count: int = 0,
+    style_guidance_available: bool = False,
+    quality_targets_available: bool = False,
 ) -> dict[str, Any]:
     outputs = current_outputs if isinstance(current_outputs, dict) else {}
     video_source_type = coalesce_text(outputs.get("video_source_type", ""))
@@ -1555,6 +1558,11 @@ def scene_quality_assessment(
     continuity_score += min(0.22, max(0, int(reference_slot_count or 0)) * 0.05)
     if continuity_active:
         continuity_score += 0.16
+    continuity_score += min(0.16, max(0, int(continuity_character_count or 0)) * 0.05)
+    if style_guidance_available:
+        continuity_score += 0.08
+    if quality_targets_available:
+        continuity_score += 0.06
     if has_visual_beat_reference_images:
         continuity_score += 0.1
     if has_generated_primary_frame:
@@ -1591,6 +1599,8 @@ def scene_quality_assessment(
         strengths.append("scene_master_ready")
     if continuity_score >= 0.75:
         strengths.append("strong_continuity_support")
+    if style_guidance_available:
+        strengths.append("series_style_guidance_present")
     if lipsync_required and lipsync_score >= 0.9:
         strengths.append("dedicated_lipsync_ready")
 
@@ -1603,6 +1613,8 @@ def scene_quality_assessment(
         weaknesses.append("scene_master_clip_missing")
     if continuity_score < 0.55:
         weaknesses.append("continuity_support_still_thin")
+    if not style_guidance_available:
+        weaknesses.append("series_style_guidance_missing")
     if lipsync_required and lipsync_score < 0.55:
         weaknesses.append("lipsync_not_ready")
 

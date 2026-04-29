@@ -6,6 +6,7 @@ import importlib.util
 from pathlib import Path
 
 from pipeline_common import (
+    PROJECT_ROOT,
     add_shared_worker_arguments,
     LiveProgressReporter,
     adapter_training_status,
@@ -20,7 +21,6 @@ from pipeline_common import (
     fine_tune_training_status,
     headline,
     info,
-    list_registered_series,
     load_config,
     load_multi_series_config,
     mark_step_completed,
@@ -32,7 +32,6 @@ from pipeline_common import (
     resolve_project_path,
     shared_worker_id_for_args,
     shared_workers_enabled_for_args,
-    switch_active_series,
     write_json,
     write_text,
 )
