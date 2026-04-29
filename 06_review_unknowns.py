@@ -65,6 +65,7 @@ EXAMPLE_FACE_HINTS = [
 ]
 REVIEW_SKIP_TOKEN = "__skip__"
 REVIEW_QUIT_TOKEN = "__quit__"
+_TK_PREVIEW_ROOT = None
 
 
 def parse_args() -> argparse.Namespace:
@@ -722,6 +723,24 @@ def prompt_priority_for_name(char_map: dict, name: str) -> bool:
     return decision in {"j", "ja", "y", "yes", "1"}
 
 
+def get_preview_tk_root(tk_module):
+    global _TK_PREVIEW_ROOT
+    root = _TK_PREVIEW_ROOT
+    if root is not None:
+        try:
+            root.winfo_exists()
+            return root
+        except Exception:
+            _TK_PREVIEW_ROOT = None
+    try:
+        root = tk_module.Tk()
+        root.withdraw()
+    except Exception:
+        return None
+    _TK_PREVIEW_ROOT = root
+    return root
+
+
 def show_preview_assignment_window(
     image_path: Path,
     title: str,
@@ -748,10 +767,25 @@ def show_preview_assignment_window(
     result: dict[str, object] = {"value": None, "priority": bool(initial_priority)}
     terminal_buffer: list[str] = []
 
-    try:
-        window = tk.Tk()
-    except Exception:
+    root = get_preview_tk_root(tk)
+    if root is None:
         return None
+    try:
+        window = tk.Toplevel(root)
+    except Exception:
+        try:
+            root.destroy()
+        except Exception:
+            pass
+        global _TK_PREVIEW_ROOT
+        _TK_PREVIEW_ROOT = None
+        root = get_preview_tk_root(tk)
+        if root is None:
+            return None
+        try:
+            window = tk.Toplevel(root)
+        except Exception:
+            return None
     window.title(title)
     try:
         window.attributes("-topmost", True)
@@ -766,6 +800,10 @@ def show_preview_assignment_window(
         if priority is not None:
             result["priority"] = bool(priority)
         try:
+            window.quit()
+        except Exception:
+            pass
+        try:
             window.destroy()
         except Exception:
             pass
@@ -776,6 +814,10 @@ def show_preview_assignment_window(
     try:
         photo = ImageTk.PhotoImage(image)
     except Exception:
+        try:
+            window.quit()
+        except Exception:
+            pass
         try:
             window.destroy()
         except Exception:
@@ -881,7 +923,14 @@ def show_preview_assignment_window(
     except Exception:
         pass
 
-    window.mainloop()
+    try:
+        window.mainloop()
+    finally:
+        try:
+            if window.winfo_exists():
+                window.destroy()
+        except Exception:
+            pass
     return result
 
 
