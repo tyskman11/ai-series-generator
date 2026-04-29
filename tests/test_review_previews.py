@@ -119,7 +119,7 @@ class ReviewPreviewTests(unittest.TestCase):
 
             targets = STEP06.preview_open_targets("face_001", {"preview_dir": str(preview_dir)})
 
-            self.assertEqual(targets, [crop_path, context_path])
+            self.assertEqual(targets, [crop_path])
 
     def test_materialize_local_preview_bundle_copies_images_for_local_gui(self) -> None:
         try:
@@ -150,13 +150,13 @@ class ReviewPreviewTests(unittest.TestCase):
             self.assertTrue(str(preview_window_image).startswith(str(local_root)))
             open_targets = bundle.get("open_targets", [])
             self.assertTrue(open_targets)
-            self.assertEqual(Path(open_targets[0]).suffix, ".html")
+            self.assertEqual(open_targets, [preview_window_image])
 
     def test_open_preview_targets_counts_each_opened_image(self) -> None:
         paths = [Path("a.jpg"), Path("b.jpg"), Path("c.jpg")]
-        with mock.patch.object(STEP06, "open_preview_file", side_effect=[True, False, True]) as open_file:
-            self.assertEqual(STEP06.open_preview_targets(paths), 2)
-        self.assertEqual(open_file.call_count, 3)
+        with mock.patch.object(STEP06, "open_preview_file", return_value=True) as open_file:
+            self.assertEqual(STEP06.open_preview_targets(paths), 1)
+        open_file.assert_called_once_with(paths[0])
 
     def test_terminal_clickable_path_returns_file_uri(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

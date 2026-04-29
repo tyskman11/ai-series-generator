@@ -591,11 +591,7 @@ def selected_preview_images(payload: dict) -> list[Path]:
 def preview_open_targets(cluster_id: str, payload: dict) -> list[Path]:
     exact_images = selected_preview_images(payload)
     if exact_images:
-        return exact_images
-
-    html_preview = create_face_review_html(cluster_id, payload)
-    if html_preview and html_preview.exists():
-        return [html_preview]
+        return [exact_images[0]]
 
     montage = create_face_review_sheet(cluster_id, payload)
     if montage and montage.exists():
@@ -629,22 +625,14 @@ def materialize_local_preview_bundle(cluster_id: str, payload: dict) -> dict[str
 
     if local_images:
         local_payload = {"preview_dir": str(cache_dir)}
-        html_preview = create_face_review_html(cluster_id, local_payload, output_dir=cache_dir)
         montage = create_face_review_sheet(cluster_id, local_payload, output_dir=cache_dir)
-        open_targets: list[Path] = []
-        if html_preview and html_preview.exists():
-            open_targets.append(html_preview)
-        for image_path in local_images[:4]:
-            if image_path not in open_targets:
-                open_targets.append(image_path)
-        if montage and montage.exists() and montage not in open_targets:
-            open_targets.append(montage)
+        launch_target = local_images[0]
+        open_targets: list[Path] = [launch_target]
         return {
             "source_images": source_images,
             "local_images": local_images,
             "open_targets": open_targets,
             "preview_window_image": local_images[0] if local_images else None,
-            "html_preview": html_preview,
             "montage": montage,
             "cache_dir": cache_dir,
         }
@@ -665,18 +653,15 @@ def materialize_local_preview_bundle(cluster_id: str, payload: dict) -> dict[str
         "local_images": [],
         "open_targets": local_targets,
         "preview_window_image": None,
-        "html_preview": local_targets[0] if local_targets else None,
         "montage": None,
         "cache_dir": cache_dir,
     }
 
 
 def open_preview_targets(paths: list[Path]) -> int:
-    opened = 0
-    for path in paths:
-        if open_preview_file(path):
-            opened += 1
-    return opened
+    if not paths:
+        return 0
+    return 1 if open_preview_file(paths[0]) else 0
 
 
 def poll_terminal_line(buffer: list[str]) -> str | None:
@@ -2010,12 +1995,6 @@ def interactive_face_review(cfg: dict, char_map: dict, voice_map: dict, include_
                 for preview_target in preview_targets:
                     print(f"Local preview target: {preview_target}")
                     print(f"Local open link: {terminal_clickable_path(preview_target)}")
-            html_preview = local_preview_bundle.get("html_preview")
-            if not isinstance(html_preview, Path):
-                html_preview = create_face_review_html(cluster_id, payload)
-            if html_preview and html_preview.exists():
-                print(f"HTML preview page: {html_preview}")
-                print(f"Open HTML link: {terminal_clickable_path(html_preview)}")
             montage = local_preview_bundle.get("montage")
             if not isinstance(montage, Path):
                 montage = create_face_review_sheet(cluster_id, payload)
@@ -2030,12 +2009,6 @@ def interactive_face_review(cfg: dict, char_map: dict, voice_map: dict, include_
             preview_name = ""
             preview_priority: bool | None = None
             if open_previews and preview_targets:
-                opened_count = open_preview_targets(preview_targets)
-                if opened_count:
-                    info(
-                        f"Opened {opened_count} preview image(s) in the system viewer. "
-                        "Enter the assignment in the terminal or in the preview window."
-                    )
                 quick_assignments = known_identity_button_options(char_map, limit=16)
                 preview_result = None
                 if preview_window_image:
@@ -2050,13 +2023,21 @@ def interactive_face_review(cfg: dict, char_map: dict, voice_map: dict, include_
                         initial_priority=identity_has_priority(char_map, str(payload.get("name", cluster_id))),
                         quick_assignments=quick_assignments,
                     )
+                opened_count = 0
+                if preview_result is None and preview_targets:
+                    opened_count = open_preview_targets(preview_targets)
+                    if opened_count:
+                        info(
+                            "Tk preview is not available for this case. "
+                            "Opened one local preview file in the system viewer instead."
+                        )
                 if preview_result is not None:
                     preview_name = str(preview_result.get("value") or "").strip()
                     preview_priority = bool(preview_result.get("priority", False))
                 elif not opened_count:
                     warn(
                         "Automatic preview opening is not available in this session. "
-                        "Open the contact sheet path above manually or run 06 from a desktop session with a display."
+                        "Open one of the local preview targets above manually or run 06 from a desktop session with a display."
                     )
             try:
                 if preview_name:
