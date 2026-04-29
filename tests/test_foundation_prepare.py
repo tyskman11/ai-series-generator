@@ -114,6 +114,95 @@ class FoundationPrepareTests(unittest.TestCase):
         self.assertEqual(payload["manifest_count"], 0)
         self.assertEqual(payload["candidate_count"], 0)
 
+    def test_voice_reference_candidates_ignore_directory_reference_audio(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            project_root = Path(tmpdir)
+            voice_samples = project_root / "voice_samples"
+            voice_models = project_root / "voice_models"
+            voice_samples.mkdir(parents=True, exist_ok=True)
+            voice_models.mkdir(parents=True, exist_ok=True)
+            valid_sample = voice_samples / "triple_g_ref.wav"
+            valid_sample.write_bytes(b"demo")
+            STEP09.write_json(
+                voice_models / "triple_g_voice_model.json",
+                {"reference_audio": "."},
+            )
+            cfg = {
+                "paths": {
+                    "voice_samples": str(voice_samples),
+                    "voice_models": str(voice_models),
+                }
+            }
+
+            with mock.patch.object(
+                STEP09,
+                "resolve_project_path",
+                side_effect=lambda relative_path: project_root / relative_path,
+            ):
+                candidates = STEP09.voice_reference_candidates(cfg, "Triple G")
+
+        self.assertEqual(candidates, [valid_sample])
+
+    def test_prepare_character_dataset_ignores_directory_audio_inputs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            project_root = Path(tmpdir)
+            voice_samples = project_root / "voice_samples"
+            voice_models = project_root / "voice_models"
+            foundation_frames = project_root / "foundation_frames"
+            foundation_video = project_root / "foundation_video"
+            foundation_voice = project_root / "foundation_voice"
+            for path in (voice_samples, voice_models, foundation_frames, foundation_video, foundation_voice):
+                path.mkdir(parents=True, exist_ok=True)
+
+            valid_reference = voice_samples / "triple_g_ref.wav"
+            valid_reference.write_bytes(b"wav")
+            STEP09.write_json(
+                voice_models / "triple_g_voice_model.json",
+                {"reference_audio": "."},
+            )
+
+            cfg = {
+                "foundation_training": {
+                    "max_frame_samples_per_character": 0,
+                    "max_video_clips_per_character": 0,
+                    "max_voice_segments_per_character": 4,
+                },
+                "paths": {
+                    "voice_samples": str(voice_samples),
+                    "voice_models": str(voice_models),
+                    "foundation_frames": str(foundation_frames),
+                    "foundation_video": str(foundation_video),
+                    "foundation_voice": str(foundation_voice),
+                },
+            }
+            character = {"name": "Triple G", "slug": "triple_g"}
+            rows = [
+                {
+                    "episode_id": "e01",
+                    "scene_id": "s01",
+                    "transcript_segments": [
+                        {
+                            "speaker_name": "Triple G",
+                            "audio_file": ".",
+                            "start": 0.0,
+                            "end": 1.0,
+                            "text": "ignored directory",
+                        }
+                    ],
+                }
+            ]
+
+            with mock.patch.object(
+                STEP09,
+                "resolve_project_path",
+                side_effect=lambda relative_path: project_root / relative_path,
+            ):
+                manifest = STEP09.prepare_character_dataset(Path("ffmpeg"), character, rows, cfg, force=False)
+
+        self.assertEqual(len(manifest["voice_samples"]), 1)
+        self.assertEqual(manifest["voice_samples"][0]["source_type"], "curated_reference")
+        self.assertTrue(manifest["voice_samples"][0]["path"].endswith("triple_g_001.wav"))
+
 
 if __name__ == "__main__":
     unittest.main()

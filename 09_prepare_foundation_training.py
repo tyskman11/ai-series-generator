@@ -349,7 +349,7 @@ def original_voice_candidates(rows: list[dict], character_name: str) -> list[dic
             if speaker_name.lower() != character_name.lower():
                 continue
             audio_path = Path(str(segment.get("audio_file", "")))
-            if not audio_path.exists():
+            if not audio_path.exists() or not audio_path.is_file():
                 continue
             start_seconds = float(segment.get("start", 0.0) or 0.0)
             end_seconds = float(segment.get("end", start_seconds) or start_seconds)
@@ -382,14 +382,15 @@ def voice_reference_candidates(cfg: dict, character_name: str) -> list[Path]:
     slug = slugify(character_name)
     matches: list[Path] = []
     for candidate in sorted(voice_samples_dir.glob(f"{slug}*.wav")):
-        matches.append(candidate)
+        if candidate.is_file():
+            matches.append(candidate)
     model_path = voice_models_dir / f"{slug}_voice_model.json"
     if model_path.exists():
         payload = read_json(model_path, {})
         ref_audio = coalesce_text(payload.get("reference_audio", ""))
         if ref_audio:
             candidate = Path(ref_audio)
-            if candidate.exists() and candidate not in matches:
+            if candidate.exists() and candidate.is_file() and candidate not in matches:
                 matches.append(candidate)
     return matches
 
@@ -671,6 +672,8 @@ def prepare_character_dataset(
     original_candidates = original_voice_candidates(rows, character["name"])
     for index, source in enumerate(original_candidates[:max_voice], start=1):
         source_path = Path(str(source.get("audio_path", "")))
+        if not source_path.is_file():
+            continue
         source_key = str(source_path.resolve()) if source_path.exists() else str(source_path)
         if not source_path.exists() or source_key in seen_sources:
             continue
@@ -697,6 +700,8 @@ def prepare_character_dataset(
         for source in voice_reference_candidates(cfg, character["name"]):
             if len(voice_samples) >= max_voice:
                 break
+            if not source.is_file():
+                continue
             source_key = str(source.resolve()) if source.exists() else str(source)
             if not source.exists() or source_key in seen_sources:
                 continue
