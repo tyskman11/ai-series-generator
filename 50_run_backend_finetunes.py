@@ -138,6 +138,34 @@ def backend_run_completed(path: Path) -> bool:
     return all(backend_artifacts_ready(backend_payload) for backend_payload in backends.values())
 
 
+def collect_existing_backend_summary_rows(cfg: dict) -> list[dict]:
+    backend_root = resolve_project_path(cfg["paths"]["foundation_backend_runs"])
+    rows: list[dict] = []
+    if not backend_root.exists():
+        return rows
+    for run_path in sorted(backend_root.glob("*/backend_fine_tune_run.json")):
+        payload = read_json(run_path, {})
+        if not isinstance(payload, dict) or not payload:
+            continue
+        rows.append(
+            {
+                "character": payload.get("character", ""),
+                "backend_run_path": str(run_path),
+                "training_ready": bool(payload.get("training_ready", False)),
+                "modalities_ready": list(payload.get("modalities_ready", []) or []),
+                "voice_quality_score": float(payload.get("voice_quality_score", 0.0) or 0.0),
+                "voice_duration_seconds": float(payload.get("voice_duration_seconds", 0.0) or 0.0),
+                "voice_clone_ready": bool(payload.get("voice_clone_ready", False)),
+                "voice_model_path": coalesce_text(payload.get("voice_model_path", "")),
+                "dominant_voice_language": coalesce_text(payload.get("dominant_voice_language", "")),
+                "backends": dict(payload.get("backends", {}) or {}),
+                "autosave": load_step_autosave("50_run_backend_finetunes", coalesce_text(payload.get("slug", ""))),
+            }
+        )
+    rows.sort(key=lambda row: coalesce_text(row.get("character", "")).lower())
+    return rows
+
+
 def backend_name_for_modality(modality: str, cfg: dict) -> str:
     backend_cfg = cfg.get("backend_fine_tune", {}) if isinstance(cfg.get("backend_fine_tune"), dict) else {}
     defaults = {
@@ -232,7 +260,6 @@ def main() -> None:
         info("No matching fine-tune profiles found for the backend run.")
         return
 
-    summary_rows: list[dict] = []
     lease_root = distributed_step_runtime_root("50_run_backend_finetunes", "characters")
     reporter = LiveProgressReporter(
         script_name="50_run_backend_finetunes.py",
@@ -294,26 +321,12 @@ def main() -> None:
                     )
                     raise
 
-            summary_rows.append(
-                {
-                    "character": payload.get("character", character_name),
-                    "backend_run_path": str(output_path),
-                    "training_ready": bool(payload.get("training_ready", False)),
-                    "modalities_ready": list(payload.get("modalities_ready", []) or []),
-                    "voice_quality_score": float(payload.get("voice_quality_score", 0.0) or 0.0),
-                    "voice_duration_seconds": float(payload.get("voice_duration_seconds", 0.0) or 0.0),
-                    "voice_clone_ready": bool(payload.get("voice_clone_ready", False)),
-                    "voice_model_path": coalesce_text(payload.get("voice_model_path", "")),
-                    "dominant_voice_language": coalesce_text(payload.get("dominant_voice_language", "")),
-                    "backends": dict(payload.get("backends", {}) or {}),
-            "autosave": load_step_autosave("50_run_backend_finetunes", autosave_target),
-                }
-            )
             reporter.update(
                 index,
                 current_label=character_name,
-                extra_label=f"Backend runs so far: {len(summary_rows)}",
+                extra_label=f"Backend run ready: {character_name}",
             )
+    summary_rows = collect_existing_backend_summary_rows(cfg)
     reporter.finish(current_label="Backend-Fine-Tunes", extra_label=f"Total backend runs: {len(summary_rows)}")
 
     summary_path = backend_run_summary_path(cfg)

@@ -3950,30 +3950,48 @@ def ensure_fine_tune_training_ready(
 
 def load_backend_run_index(cfg: dict[str, Any]) -> dict[str, dict[str, Any]]:
     summary_payload = read_json(backend_run_summary_path(cfg), {})
+    backend_root = resolve_project_path(cfg["paths"].get("foundation_backend_runs", "training/foundation/backend_runs"))
     index: dict[str, dict[str, Any]] = {}
-    for row in summary_payload.get("characters", []) or []:
-        character_name = coalesce_text(row.get("character", ""))
+
+    def merge_backend_row(source_row: dict[str, Any], run_path_value: str | Path | None = None) -> None:
+        character_name = coalesce_text(source_row.get("character", ""))
         if not character_name:
-            continue
-        run_path = resolve_stored_project_path(row.get("backend_run_path", ""))
+            return
+        run_path = resolve_stored_project_path(run_path_value if run_path_value is not None else source_row.get("backend_run_path", ""))
         run_payload = read_json(run_path, {}) if run_path.exists() else {}
-        index[_normalized_training_name(character_name)] = {
+        normalized_name = _normalized_training_name(character_name)
+        entry = {
             "character": character_name,
             "backend_run_path": run_path,
             "run_exists": run_path.exists(),
-            "training_ready": bool(row.get("training_ready", False) or run_payload.get("training_ready", False)),
-            "modalities_ready": list(row.get("modalities_ready", []) or run_payload.get("modalities_ready", []) or []),
+            "run_mtime": run_path.stat().st_mtime if run_path.exists() else 0.0,
+            "training_ready": bool(source_row.get("training_ready", False) or run_payload.get("training_ready", False)),
+            "modalities_ready": list(source_row.get("modalities_ready", []) or run_payload.get("modalities_ready", []) or []),
             "voice_duration_seconds": max(
-                float(row.get("voice_duration_seconds", 0.0) or 0.0),
+                float(source_row.get("voice_duration_seconds", 0.0) or 0.0),
                 float(run_payload.get("voice_duration_seconds", 0.0) or 0.0),
             ),
             "voice_quality_score": max(
-                float(row.get("voice_quality_score", 0.0) or 0.0),
+                float(source_row.get("voice_quality_score", 0.0) or 0.0),
                 float(run_payload.get("voice_quality_score", 0.0) or 0.0),
             ),
-            "voice_clone_ready": bool(row.get("voice_clone_ready", False) or run_payload.get("voice_clone_ready", False)),
-            "backends": dict(row.get("backends", {}) or run_payload.get("backends", {}) or {}),
+            "voice_clone_ready": bool(source_row.get("voice_clone_ready", False) or run_payload.get("voice_clone_ready", False)),
+            "backends": dict(source_row.get("backends", {}) or run_payload.get("backends", {}) or {}),
         }
+        existing = index.get(normalized_name)
+        if existing is None or float(entry.get("run_mtime", 0.0) or 0.0) >= float(existing.get("run_mtime", 0.0) or 0.0):
+            index[normalized_name] = entry
+
+    for row in summary_payload.get("characters", []) or []:
+        if isinstance(row, dict):
+            merge_backend_row(row)
+
+    if backend_root.exists():
+        for run_path in sorted(backend_root.glob("*/backend_fine_tune_run.json")):
+            run_payload = read_json(run_path, {})
+            if isinstance(run_payload, dict) and run_payload:
+                merge_backend_row(run_payload, run_path)
+
     return index
 
 
@@ -3984,11 +4002,11 @@ def backend_fine_tune_status(
 ) -> dict[str, Any]:
     summary_path = backend_run_summary_path(cfg)
     fine_tune_path = fine_tune_summary_path(cfg)
-    summary_exists = summary_path.exists()
+    index = load_backend_run_index(cfg)
+    summary_exists = summary_path.exists() or bool(index)
     fine_tune_exists = fine_tune_path.exists()
     summary_mtime = summary_path.stat().st_mtime if summary_exists else 0.0
     fine_tune_mtime = fine_tune_path.stat().st_mtime if fine_tune_exists else 0.0
-    index = load_backend_run_index(cfg) if summary_exists else {}
     missing_characters: list[str] = []
     weak_characters: list[str] = []
     for character in characters or []:
@@ -4022,11 +4040,17 @@ def backend_fine_tune_status(
                 break
         if artifact_missing:
             weak_characters.append(display_name)
-    summary_new_enough = summary_exists and (not fine_tune_exists or summary_mtime >= fine_tune_mtime)
+    latest_backend_mtime = max(
+        [summary_mtime] + [float(row.get("run_mtime", 0.0) or 0.0) for row in index.values()],
+        default=0.0,
+    )
+    summary_new_enough = summary_exists and (not fine_tune_exists or latest_backend_mtime >= fine_tune_mtime)
     return {
         "summary_path": summary_path,
         "summary_exists": summary_exists,
         "summary_new_enough": summary_new_enough,
+        "summary_mtime": summary_mtime,
+        "latest_backend_mtime": latest_backend_mtime,
         "fine_tune_summary_path": fine_tune_path,
         "fine_tune_summary_exists": fine_tune_exists,
         "character_index": index,
