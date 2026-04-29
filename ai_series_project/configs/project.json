@@ -36,6 +36,7 @@
     "storyboard_requests": "generation/storyboard_requests",
     "storyboard_assets": "generation/storyboard_assets",
     "final_episode_packages": "generation/final_episode_packages",
+    "episode_deliveries": "generation/renders/deliveries",
     "series_bible_json": "series_bible/episode_summaries/auto_series_bible.json",
     "series_bible_markdown": "series_bible/episode_summaries/auto_series_bible.md",
     "foundation_frames": "training/foundation/datasets/frames",
@@ -104,19 +105,23 @@
     "review_known_face_identity_threshold_bonus_max": 0.03,
     "review_known_face_identity_margin_bonus_max": 0.02,
     "review_known_face_identity_weak_threshold_penalty": 0.02,
-    "review_known_face_identity_weak_margin_penalty": 0.01
+    "review_known_face_identity_weak_margin_penalty": 0.01,
+    "auto_mark_statist_candidates": true,
+    "auto_statist_max_scenes": 2,
+    "auto_statist_max_detections": 12,
+    "auto_statist_max_samples": 3
   },
   "generation": {
     "default_scene_count": 6,
     "min_dialogue_lines_per_scene": 4,
     "max_dialogue_lines_per_scene": 7,
-    "quality_mode": "original_episode_quality_first",
     "seed": 42,
     "match_source_episode_runtime": true,
     "target_episode_minutes_fallback": 22.0,
     "target_scene_duration_seconds": 42.0,
     "estimated_dialogue_line_seconds": 2.7,
-    "prefer_original_dialogue_remix": false
+    "prefer_original_dialogue_remix": false,
+    "quality_mode": "original_episode_quality_first"
   },
   "foundation_training": {
     "prepare_after_batch": true,
@@ -139,7 +144,19 @@
     "use_local_character_voice_models": true,
     "min_voice_duration_seconds_total": 8.0,
     "target_voice_duration_seconds_total": 18.0,
-    "min_voice_samples_for_clone": 4
+    "min_voice_samples_for_clone": 4,
+    "image_training_batch_size": 4,
+    "image_training_lr": 1e-05,
+    "image_training_epochs": 100,
+    "video_training_batch_size": 2,
+    "video_training_lr": 5e-06,
+    "video_training_epochs": 50,
+    "voice_training_batch_size": 8,
+    "voice_training_lr": 0.0001,
+    "voice_training_epochs": 200,
+    "lipsync_model": "wav2lip",
+    "lipsync_quality_threshold": 0.75,
+    "lipsync_framesync_enabled": true
   },
   "adapter_training": {
     "auto_train_after_foundation": true,
@@ -170,17 +187,6 @@
     "image_backend": "lora-image",
     "video_backend": "motion-adapter",
     "voice_backend": "speaker-adapter"
-  },
-  "release_mode": {
-    "enabled": true,
-    "min_episode_quality": 0.9,
-    "max_weak_scenes": 0,
-    "watch_threshold": 0.82,
-    "max_regeneration_batch": 8,
-    "max_regeneration_retries": 3,
-    "strict_warnings": true,
-    "auto_retry_failed_gate": true,
-    "auto_retry_update_bible": false
   },
   "cloning": {
     "enable_voice_cloning": true,
@@ -219,14 +225,36 @@
     "voice_rate": 175,
     "include_title_cards": false
   },
+  "release_mode": {
+    "enabled": true,
+    "min_episode_quality": 0.9,
+    "max_weak_scenes": 0,
+    "watch_threshold": 0.82,
+    "max_regeneration_batch": 8,
+    "max_regeneration_retries": 3,
+    "strict_warnings": true,
+    "auto_retry_failed_gate": true,
+    "auto_retry_update_bible": false
+  },
   "external_backends": {
     "storyboard_scene_runner": {
-      "enabled": false,
-      "command_template": [],
-      "working_directory": "",
+      "enabled": true,
+      "command_template": [
+        "python",
+        "54_run_storyboard_backend.py",
+        "--episode-id",
+        "{episode_id}",
+        "--scene-ids",
+        "{scene_id}"
+      ],
+      "working_directory": ".",
       "environment": {},
+      "required_commands": [
+        "python"
+      ],
+      "required_environment_variables": [],
       "shell": false,
-      "timeout_seconds": 0,
+      "timeout_seconds": 1800,
       "skip_if_outputs_exist": true,
       "success_mode": "any",
       "success_outputs": [
@@ -234,12 +262,29 @@
       ]
     },
     "finished_episode_image_runner": {
-      "enabled": false,
-      "command_template": [],
-      "working_directory": "",
+      "enabled": true,
+      "command_template": [
+        "python",
+        "tools/quality_backends/image_runner.py",
+        "--scene-package",
+        "{scene_package_path}",
+        "--primary-frame",
+        "{primary_frame}",
+        "--alternate-frame-dir",
+        "{alternate_frame_dir}",
+        "--layered-storyboard-frame",
+        "{layered_storyboard_frame}"
+      ],
+      "working_directory": ".",
       "environment": {},
+      "required_commands": [
+        "python"
+      ],
+      "required_environment_variables": [
+        "SERIES_IMAGE_BACKEND_COMMAND"
+      ],
       "shell": false,
-      "timeout_seconds": 0,
+      "timeout_seconds": 3600,
       "skip_if_outputs_exist": true,
       "success_mode": "any",
       "success_outputs": [
@@ -247,12 +292,31 @@
       ]
     },
     "finished_episode_video_runner": {
-      "enabled": false,
-      "command_template": [],
-      "working_directory": "",
+      "enabled": true,
+      "command_template": [
+        "python",
+        "tools/quality_backends/video_runner.py",
+        "--scene-package",
+        "{scene_package_path}",
+        "--scene-video",
+        "{scene_video}",
+        "--video-preview-frame",
+        "{video_preview_frame}",
+        "--video-poster-frame",
+        "{video_poster_frame}",
+        "--primary-frame",
+        "{primary_frame}"
+      ],
+      "working_directory": ".",
       "environment": {},
+      "required_commands": [
+        "python"
+      ],
+      "required_environment_variables": [
+        "SERIES_VIDEO_BACKEND_COMMAND"
+      ],
       "shell": false,
-      "timeout_seconds": 0,
+      "timeout_seconds": 7200,
       "skip_if_outputs_exist": true,
       "success_mode": "any",
       "success_outputs": [
@@ -260,12 +324,25 @@
       ]
     },
     "finished_episode_voice_runner": {
-      "enabled": false,
-      "command_template": [],
-      "working_directory": "",
+      "enabled": true,
+      "command_template": [
+        "python",
+        "tools/quality_backends/voice_runner.py",
+        "--scene-package",
+        "{scene_package_path}",
+        "--scene-dialogue-audio",
+        "{scene_dialogue_audio}"
+      ],
+      "working_directory": ".",
       "environment": {},
+      "required_commands": [
+        "python"
+      ],
+      "required_environment_variables": [
+        "SERIES_VOICE_BACKEND_COMMAND"
+      ],
       "shell": false,
-      "timeout_seconds": 0,
+      "timeout_seconds": 3600,
       "skip_if_outputs_exist": true,
       "success_mode": "any",
       "success_outputs": [
@@ -273,12 +350,31 @@
       ]
     },
     "finished_episode_lipsync_runner": {
-      "enabled": false,
-      "command_template": [],
-      "working_directory": "",
+      "enabled": true,
+      "command_template": [
+        "python",
+        "tools/quality_backends/lipsync_runner.py",
+        "--scene-package",
+        "{scene_package_path}",
+        "--scene-video",
+        "{scene_video}",
+        "--scene-dialogue-audio",
+        "{scene_dialogue_audio}",
+        "--lipsync-video",
+        "{lipsync_video}",
+        "--lipsync-poster-frame",
+        "{lipsync_poster_frame}"
+      ],
+      "working_directory": ".",
       "environment": {},
+      "required_commands": [
+        "python"
+      ],
+      "required_environment_variables": [
+        "SERIES_LIPSYNC_BACKEND_COMMAND"
+      ],
       "shell": false,
-      "timeout_seconds": 0,
+      "timeout_seconds": 7200,
       "skip_if_outputs_exist": true,
       "success_mode": "any",
       "success_outputs": [
@@ -286,12 +382,24 @@
       ]
     },
     "finished_episode_master_runner": {
-      "enabled": false,
-      "command_template": [],
-      "working_directory": "",
+      "enabled": true,
+      "command_template": [
+        "python",
+        "tools/quality_backends/master_runner.py",
+        "--package-path",
+        "{package_path}",
+        "--final-master-episode",
+        "{final_master_episode}"
+      ],
+      "working_directory": ".",
       "environment": {},
+      "required_commands": [
+        "python",
+        "ffmpeg"
+      ],
+      "required_environment_variables": [],
       "shell": false,
-      "timeout_seconds": 0,
+      "timeout_seconds": 3600,
       "skip_if_outputs_exist": true,
       "success_mode": "any",
       "success_outputs": [

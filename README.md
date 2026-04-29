@@ -105,6 +105,8 @@ The default path stays local-first and license-light. The project already produc
 - `52_quality_gate.py` and `53_regenerate_weak_scenes.py` now ignore empty stored artifact paths before resolving reports, packages, or delivery folders, so missing metadata cannot accidentally point at the current working directory
 - `52_quality_gate.py` now supports `--auto-retry` plus `release_mode.auto_retry_*` config so failed gates can launch one automatic retry loop, while `53_regenerate_weak_scenes.py` suppresses nested auto-retries both during its gate refresh and inside the inner rerun
 - `15_render_episode.py`, `49_refresh_after_manual_review.py`, `57_generate_finished_episodes.py`, and `99_process_next_episode.py` now stop early with a clear quality-first preflight error if release mode, original-line reuse, lipsync, or the required external image/video/voice/lipsync/master runners are not configured
+- `58_configure_quality_backends.py` now writes portable built-in runner templates into `project.json`, while `tools/quality_backends/*.py` delegate image/video/voice/lipsync to machine-local backend commands through environment variables and keep the repo configuration itself portable
+- `pipeline_common.py` now checks configured runner prerequisites such as required commands, Python modules, and environment variables before the quality-first path is allowed to start
 - the tracked regression suite covers export handoffs, release-gate reports, retry queues, strict warning handling, and regeneration metadata so those finished-episode contracts stay guarded
 - `16_build_series_bible.py`, `57_generate_finished_episodes.py`, and `99_process_next_episode.py` surface readiness, backend coverage, and quality scoring for generated episodes
 - `49_refresh_after_manual_review.py` and `57_generate_finished_episodes.py` now follow the real train-then-generate/render order against the current script names
@@ -134,6 +136,7 @@ These items are implemented and should stay guarded by README updates and tests 
 - `57_generate_finished_episodes.py` now always runs `52_quality_gate.py` and refuses to accept placeholder-heavy, local-motion-fallback, or `pyttsx3` fallback episodes as finished output
 - the resumable `99_process_next_episode.py` batch handoff path now resolves batch jobs through the shared project root import instead of crashing during resume
 - foundation-training voice sample preparation now skips invalid directory paths instead of crashing on Linux/NAS when old metadata points at `.`
+- `tools/quality_backends/master_runner.py` provides a built-in FFmpeg-based episode master runner, and the quality-first prerequisite report now surfaces missing backend env vars instead of only saying the command templates are empty
 - release-gate, export-package, regeneration-queue, backend-benchmark, review-preview, display-diagnostics, and generation-quality behavior have tracked regression tests
 
 ## Planned
@@ -142,7 +145,7 @@ Only untouched follow-up work belongs here. If implementation has already starte
 
 - tighter worker-capability routing so GPU-heavy generation stages can prefer stronger NAS workers automatically
 - stronger backend-side scene selection so regeneration can choose better alternates automatically after quality-gate failures
-- concrete high-quality runner presets and command templates for the required storyboard/image/video/voice/lipsync/master backends
+- concrete machine-local backend commands for `SERIES_IMAGE_BACKEND_COMMAND`, `SERIES_VIDEO_BACKEND_COMMAND`, `SERIES_VOICE_BACKEND_COMMAND`, and `SERIES_LIPSYNC_BACKEND_COMMAND`
 
 ## Documentation Rule
 
@@ -223,7 +226,7 @@ Also keep the `In Progress` and `Planned` sections current.
 - `release_mode.max_regeneration_retries`: cap for how often one weak scene may stay in the retry queue before `53_regenerate_weak_scenes.py` stops requesting another rerender
 - `release_mode.auto_retry_failed_gate`: optionally lets `52_quality_gate.py` launch one automatic retry loop after a failed gate
 - `release_mode.auto_retry_update_bible`: optionally appends `16_build_series_bible.py` to that automatic retry loop
-- `generation.quality_mode`: labels the current generated-episode prompt/continuity strategy; default is `series_consistency`
+- `generation.quality_mode`: labels the current generated-episode prompt/continuity strategy; default is `original_episode_quality_first`
 
 Generated JSON artifacts under `characters`, `data/processed`, `generation`, and related handoff folders now prefer project-relative paths instead of machine-specific absolute paths. Older absolute paths are still rebased automatically when the workspace has been moved.
 
@@ -255,8 +258,14 @@ If those runners are not enabled with real `command_template` values, the qualit
 1. Drop new source episodes into `ai_series_project/data/inbox/episodes`.
 2. Run `python 00_prepare_runtime.py`
 3. Run `python 01_setup_project.py`
-4. Run `python 99_process_next_episode.py --skip-downloads`
-5. Review outputs in:
+4. Run `python 58_configure_quality_backends.py`
+5. Set real backend commands in your shell environment:
+   - `SERIES_IMAGE_BACKEND_COMMAND`
+   - `SERIES_VIDEO_BACKEND_COMMAND`
+   - `SERIES_VOICE_BACKEND_COMMAND`
+   - `SERIES_LIPSYNC_BACKEND_COMMAND`
+6. Run `python 99_process_next_episode.py --skip-downloads`
+7. Review outputs in:
    - `ai_series_project/generation/story_prompts`
    - `ai_series_project/generation/shotlists`
    - `ai_series_project/generation/final_episode_packages`
@@ -492,7 +501,7 @@ python 06_review_unknowns.py --review-faces --open-previews
 - automatic gate retry now performs at most one extra retry loop per failing run; if the refreshed gate still fails, the pipeline stops and leaves the queue/report for manual follow-up
 - orchestration-heavy scripts mainly use exclusive leases; the fine-grained parallelism lives in worker-heavy numbered steps underneath
 - interactive image review in `06_review_unknowns.py` needs a local desktop session for embedded Tk windows; Windows review now launches the exact selected face JPG files first, prints those exact paths, and reports session/display diagnostics before the first review case
-- `release_mode` is optional and stays disabled by default until your local image/video/lip-sync outputs are good enough to gate production automatically
+- `release_mode` now defaults to enabled quality-first mode, so the finished-episode entry points block immediately until the required backend commands and prerequisites are really present
 - continuity/style guidance is now propagated much more consistently, but final visual quality still depends heavily on the actual external image/video/lip-sync backends you connect
 - test runs may show harmless FFmpeg warnings like `moov atom not found` on stderr; these do not indicate test failures and can be ignored when exit code is 0
 

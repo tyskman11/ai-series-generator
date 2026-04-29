@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import importlib.util
 import math
 import os
 import platform
@@ -4190,6 +4191,52 @@ def external_backend_runner_configured(config: dict[str, Any], runner_name: str)
     return False
 
 
+def external_backend_runner_prerequisite_gaps(
+    config: dict[str, Any],
+    runner_name: str,
+) -> list[str]:
+    external_cfg = config.get("external_backends", {}) if isinstance(config.get("external_backends"), dict) else {}
+    runner_cfg = external_cfg.get(runner_name, {}) if isinstance(external_cfg.get(runner_name), dict) else {}
+    if not runner_cfg:
+        return []
+
+    missing: list[str] = []
+
+    required_commands = runner_cfg.get("required_commands", [])
+    if isinstance(required_commands, list):
+        for command_name in required_commands:
+            command_text = str(command_name or "").strip()
+            if not command_text:
+                continue
+            if shutil.which(command_text) is None:
+                missing.append(f"external_backends.{runner_name} requires command '{command_text}'")
+
+    required_modules = runner_cfg.get("required_python_modules", [])
+    if isinstance(required_modules, list):
+        for module_name in required_modules:
+            module_text = str(module_name or "").strip()
+            if not module_text:
+                continue
+            if importlib.util.find_spec(module_text) is None:
+                missing.append(f"external_backends.{runner_name} requires Python module '{module_text}'")
+
+    env_updates = runner_cfg.get("environment", {}) if isinstance(runner_cfg.get("environment"), dict) else {}
+    required_env = runner_cfg.get("required_environment_variables", [])
+    if isinstance(required_env, list):
+        for env_name in required_env:
+            env_key = str(env_name or "").strip()
+            if not env_key:
+                continue
+            configured_value = str(env_updates.get(env_key, "") or "").strip()
+            current_value = str(os.environ.get(env_key, "") or "").strip()
+            if not configured_value and not current_value:
+                missing.append(
+                    f"external_backends.{runner_name} requires environment variable '{env_key}'"
+                )
+
+    return missing
+
+
 def quality_first_requirements_report(config: dict[str, Any]) -> dict[str, Any]:
     cloning_cfg = config.get("cloning", {}) if isinstance(config.get("cloning"), dict) else {}
     missing: list[str] = []
@@ -4215,6 +4262,10 @@ def quality_first_requirements_report(config: dict[str, Any]) -> dict[str, Any]:
     missing_runners = [runner_name for runner_name in required_runners if not external_backend_runner_configured(config, runner_name)]
     for runner_name in missing_runners:
         missing.append(f"external_backends.{runner_name} must be enabled with a non-empty command_template")
+    for runner_name in required_runners:
+        if runner_name in missing_runners:
+            continue
+        missing.extend(external_backend_runner_prerequisite_gaps(config, runner_name))
 
     voice_clone_engine = str(cloning_cfg.get("voice_clone_engine", "") or "").strip().lower()
     if voice_clone_engine in {"", "pyttsx3"}:
