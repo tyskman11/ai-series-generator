@@ -47,7 +47,7 @@ The default path stays local-first and license-light. The project already produc
 | Dataset / model | usable | Reviewed material can be rebuilt into a dataset and heuristic series model. |
 | Training stack | usable | Foundation, adapter, fine-tune, and backend-prep stages exist as explicit local steps. |
 | Episode generation | usable | New synthetic episodes, shotlists, storyboard assets, and final local renders can be produced. |
-| Finished-episode path | active | Production packages, delivery bundles, backend hooks, and quality scoring are in place, but quality still needs tuning. |
+| Finished-episode path | active | Production packages, delivery bundles, backend hooks, and quality scoring are in place, and the batch path now rejects obvious fallback-quality episodes instead of silently passing them through. |
 
 ## What Already Works Well
 
@@ -67,13 +67,13 @@ The default path stays local-first and license-light. The project already produc
 - dedicated delivery bundles under `generation/renders/deliveries/<episode>` plus stable `generation/renders/deliveries/latest`
 - production-readiness summaries, backend-runner summaries, and heuristic scene/episode quality scoring in orchestration outputs and the series bible
 - exportable external handoff packages under `exports/packages/<episode>/<format>`, now including render profile plus release-gate and regeneration metadata
-- release-style quality-gate reports with regeneration queues, preserved retry metadata across rerenders, and optional enforcement in the main finished-episode orchestrators when `release_mode.enabled` is turned on
+- release-style quality-gate reports with regeneration queues, preserved retry metadata across rerenders, and enforced gating in the main finished-episode batch path
 
 ## Current Focus
 
 - finish main-character review quality in `06_review_unknowns.py`
 - keep the default path stable for large NAS-backed runs
-- improve the voice path so later local cloning backends can replace simple fallback TTS more often
+- replace fallback TTS and local motion fallback with real backend-generated scene audio/video more consistently
 - keep the generation chain clearly ordered as train first, then generate/render
 - raise external-runner quality so the fully generated episode path can become the real default
 
@@ -97,6 +97,7 @@ The default path stays local-first and license-light. The project already produc
 - `54_run_storyboard_backend.py` can materialize local scene packs and optionally call configured external storyboard runners first
 - `15_render_episode.py` now also preserves camera/control hint dictionaries correctly instead of dropping them in the render/package path, then reuses backend frames/clips when present, assembles voiced scene masters, writes delivery bundles, and keeps improving the final generated-episode package
 - `15_render_episode.py` now tolerates missing `scene_dialogue_outputs` keys in audio fallback metadata, so draft/final render does not crash on Linux/NAS when dialogue audio generation partially falls back
+- `15_render_episode.py` is being tightened so draft storyboard cards stay preview-only artifacts while the finished-episode fallback render uses clean scene frames instead of text-labeled debug cards
 - `57_generate_finished_episodes.py` now imports the shared logging helper correctly, so shared-worker batch generation no longer aborts immediately on startup
 - `51_export_package.py` now exports real generated-episode packages for JSON, DaVinci-style, and Premiere-style handoff folders, including resolved render profile plus release/delivery/regeneration metadata
 - `52_quality_gate.py` now writes persistent quality-gate reports, regeneration queues, and feeds that state back into episode artifacts
@@ -126,7 +127,9 @@ These items are implemented and should stay guarded by README updates and tests 
 - foundation-training plan generation now aggregates all existing manifests before writing the final plan in shared NAS runs
 - backend fine-tune summaries are rebuilt from all existing per-character run files, and stale summary timestamps no longer block generation when the actual backend runs are newer
 - render audio fallback metadata is now normalized defensively so missing scene-dialogue maps no longer abort the final encode phase
+- finished-episode fallback clips no longer reuse the text-labeled storyboard preview card as their visual source, so local fallback renders stay visually cleaner
 - finished-episode batch startup no longer crashes in shared-worker mode because the shared `info(...)` logger import is present again
+- `57_generate_finished_episodes.py` now always runs `52_quality_gate.py` and refuses to accept placeholder-heavy, local-motion-fallback, or `pyttsx3` fallback episodes as finished output
 - the resumable `99_process_next_episode.py` batch handoff path now resolves batch jobs through the shared project root import instead of crashing during resume
 - foundation-training voice sample preparation now skips invalid directory paths instead of crashing on Linux/NAS when old metadata points at `.`
 - release-gate, export-package, regeneration-queue, backend-benchmark, review-preview, display-diagnostics, and generation-quality behavior have tracked regression tests
@@ -246,7 +249,7 @@ Important: the logical run order is not strictly numeric anymore. Training must 
 
 `07 -> 08 -> 09 -> 10 -> 11 -> 12 -> 50 -> 13 -> 14 -> 54 -> 15 -> 16`
 
-If `release_mode.enabled` is turned on, the orchestrated path becomes:
+The finished-episode batch path now always includes the quality gate:
 
 `07 -> 08 -> 09 -> 10 -> 11 -> 12 -> 50 -> 13 -> 14 -> 54 -> 15 -> 52 -> 16`
 
@@ -454,7 +457,8 @@ python 06_review_unknowns.py --review-faces --open-previews
 
 - face/speaker quality still depends heavily on review quality in `06_review_unknowns.py`
 - the local series model is heuristic, not a large multimodal frontier model
-- the local finished episode is already watchable, but not yet a TV-grade final production
+- without strong external image/video/voice/lip-sync backends, the project now prefers to fail the finished-episode gate instead of presenting a low-quality fallback render as a true final TV-style episode
+- the local finished episode path is structurally complete, but TV-grade visual consistency still depends on real backend generation quality and well-trained character-specific voice models
 - fully new dialogue lines still depend on generated speech when no strong original segment can be reused
 - lip-sync and generated scene video quality still depend on later backend tuning
 - `53_regenerate_weak_scenes.py` now reruns only the flagged scenes in the storyboard backend stage (`54_run_storyboard_backend.py --scene-ids`), but the render step (`15_render_episode.py`) still rebuilds the full episode package

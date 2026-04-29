@@ -26,6 +26,7 @@ from pipeline_common import (
     mark_step_failed,
     mark_step_started,
     ok,
+    read_json,
     rerun_in_runtime,
     release_mode_enabled,
     runtime_python,
@@ -263,9 +264,57 @@ def ensure_finished_episode_outputs(cfg: dict, episode_id: str, episode_outputs:
             f"Episode {episode_id} still has pending external backend runner tasks "
             f"({backend_runner_pending_count} remaining)."
         )
-    if release_mode_enabled(cfg) and not bool(episode_outputs.get("release_gate_passed", False)):
+    if not bool(episode_outputs.get("release_gate_passed", False)):
         raise RuntimeError(
-            f"Episode {episode_id} finished without a passing release gate although release mode is enabled."
+            f"Episode {episode_id} finished without a passing release gate."
+        )
+    if str(episode_outputs.get("production_readiness", "") or "").strip().lower() != "fully_generated_episode_ready":
+        raise RuntimeError(
+            f"Episode {episode_id} is not fully generated yet "
+            f"(readiness: {episode_outputs.get('production_readiness') or 'unknown'})."
+        )
+    if int(episode_outputs.get("scenes_below_release_threshold", 0) or 0) > 0:
+        raise RuntimeError(
+            f"Episode {episode_id} still has scenes below release threshold "
+            f"({int(episode_outputs.get('scenes_below_release_threshold', 0) or 0)})."
+        )
+    if list(episode_outputs.get("remaining_backend_tasks", []) or []):
+        raise RuntimeError(
+            f"Episode {episode_id} still lists remaining backend tasks: "
+            f"{', '.join(str(task) for task in (episode_outputs.get('remaining_backend_tasks', []) or []))}"
+        )
+    render_manifest_path = Path(str(episode_outputs.get("render_manifest", "") or "").strip())
+    production_package_path = Path(str(episode_outputs.get("production_package", "") or "").strip())
+    render_manifest = read_json(render_manifest_path, {}) if render_manifest_path.exists() else {}
+    production_package = read_json(production_package_path, {}) if production_package_path.exists() else {}
+    audio_track_meta = render_manifest.get("audio_track_meta", {}) if isinstance(render_manifest.get("audio_track_meta", {}), dict) else {}
+    audio_backend = str(
+        audio_track_meta.get("audio_backend", "") or audio_track_meta.get("backend", "") or ""
+    ).strip().lower()
+    if audio_backend in {"pyttsx3", "mixed_original_segment_and_pyttsx3"}:
+        raise RuntimeError(
+            f"Episode {episode_id} still uses fallback dialogue audio backend '{audio_backend}'."
+        )
+    scenes = production_package.get("scenes", []) if isinstance(production_package.get("scenes", []), list) else []
+    placeholder_scenes: list[str] = []
+    local_fallback_scenes: list[str] = []
+    for scene in scenes:
+        if not isinstance(scene, dict):
+            continue
+        scene_id = str(scene.get("scene_id", "") or "").strip() or "scene"
+        preview_assets = scene.get("current_preview_assets", {}) if isinstance(scene.get("current_preview_assets", {}), dict) else {}
+        current_outputs = scene.get("current_generated_outputs", {}) if isinstance(scene.get("current_generated_outputs", {}), dict) else {}
+        if str(preview_assets.get("asset_source_type", "") or "").strip().lower() == "placeholder":
+            placeholder_scenes.append(scene_id)
+        if bool(current_outputs.get("local_composed_scene_video", False)):
+            local_fallback_scenes.append(scene_id)
+    if placeholder_scenes:
+        raise RuntimeError(
+            f"Episode {episode_id} still contains placeholder source scenes: {', '.join(placeholder_scenes[:8])}"
+        )
+    if local_fallback_scenes:
+        raise RuntimeError(
+            f"Episode {episode_id} still contains locally composed fallback scene videos: {', '.join(local_fallback_scenes[:8])}"
         )
     return episode_outputs
 
@@ -404,22 +453,21 @@ def main() -> None:
             )
             run_step("15_render_episode.py", env=env, shared_args=child_shared_args)
             completed_steps += 1
-            if release_mode_enabled(cfg):
-                reporter.update(
-                    preview_reporter_current(reporter, completed_steps),
-                    current_label=f"{episode_id} quality gate",
-                    extra_label="Running now: 52_quality_gate.py",
-                    force=True,
-                    scope_current=len(generated) + 1,
-                    scope_total=preview_scope_total(count, endless, len(generated)),
-                    scope_label="Episodes",
-                )
-                run_step(
-                    "52_quality_gate.py",
-                    extra_args=quality_gate_extra_args(cfg, episode_id),
-                    shared_args=child_shared_args,
-                )
-                completed_steps += 1
+            reporter.update(
+                preview_reporter_current(reporter, completed_steps),
+                current_label=f"{episode_id} quality gate",
+                extra_label="Running now: 52_quality_gate.py",
+                force=True,
+                scope_current=len(generated) + 1,
+                scope_total=preview_scope_total(count, endless, len(generated)),
+                scope_label="Episodes",
+            )
+            run_step(
+                "52_quality_gate.py",
+                extra_args=quality_gate_extra_args(cfg, episode_id),
+                shared_args=child_shared_args,
+            )
+            completed_steps += 1
             episode_outputs = generated_episode_artifacts(cfg, episode_id)
             if episode_outputs:
                 generated_outputs.append(ensure_finished_episode_outputs(cfg, episode_id, episode_outputs))
@@ -433,7 +481,7 @@ def main() -> None:
                     f"readiness={episode_outputs.get('production_readiness', '-') or '-'} | "
                     f"quality={episode_outputs.get('quality_label', '-') or '-'}:"
                     f"{int(round(float(episode_outputs.get('quality_percent', 0.0) or 0.0)))}% | "
-                    f"gate={'pass' if episode_outputs.get('release_gate_passed') else ('off' if not release_mode_enabled(cfg) else 'fail')} | "
+                    f"gate={'pass' if episode_outputs.get('release_gate_passed') else 'fail'} | "
                     f"runners={int(episode_outputs.get('backend_runner_ready_count', 0) or 0)}/"
                     f"{int(episode_outputs.get('backend_runner_expected_count', 0) or 0)}"
                 ),

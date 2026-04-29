@@ -68,22 +68,43 @@ class GenerationQualityTests(unittest.TestCase):
 
     def test_build_video_generation_prompt_reads_dict_camera_and_control_hints(self) -> None:
         prompt = STEP15.build_video_generation_prompt(
-            {"summary": "Characters recover the missing controller."},
+            {
+                "summary": "Characters recover the missing controller.",
+                "characters": ["Babe", "Kenzie"],
+                "location": "Arcade floor",
+                "mood": "tense but playful",
+            },
             {
                 "positive_prompt": "storyboard frame",
                 "camera_plan": {"camera": "medium two-shot", "focus": "balanced eye-level framing"},
                 "control_hints": {"pose_emphasis": "conversation starter beat", "style_camera": "eye-level sitcom coverage"},
                 "continuity": {"previous_scene_id": "scene_0003"},
-                "style_constraints": {"positive": ["warm neon palette"]},
+                "style_constraints": {
+                    "positive": ["warm neon palette"],
+                    "negative": ["washed out lighting"],
+                    "guidance": {"lighting": "motivated practicals"},
+                },
                 "character_continuity": [{"character": "Babe", "outfit": "blue jacket"}],
+                "quality_targets": {
+                    "desired_visual_traits": ["clean sitcom contrast"],
+                    "preserve_character_identity": True,
+                    "preserve_series_style": True,
+                },
             },
         )
 
+        self.assertIn("characters: Babe, Kenzie", prompt)
+        self.assertIn("location: Arcade floor", prompt)
+        self.assertIn("mood: tense but playful", prompt)
         self.assertIn("camera: medium two-shot", prompt)
         self.assertIn("conversation starter beat", prompt)
         self.assertIn("continuity anchor from scene_0003", prompt)
         self.assertIn("warm neon palette", prompt)
+        self.assertIn("avoid: washed out lighting", prompt)
+        self.assertIn("lighting: motivated practicals", prompt)
         self.assertIn("keep Babe: blue jacket", prompt)
+        self.assertIn("quality targets: clean sitcom contrast", prompt)
+        self.assertIn("preserve character identity", prompt)
 
     def test_scene_quality_assessment_rewards_style_and_continuity_guidance(self) -> None:
         baseline = pipeline_common.scene_quality_assessment(
@@ -107,6 +128,39 @@ class GenerationQualityTests(unittest.TestCase):
             baseline["component_scores"]["continuity"],
         )
         self.assertIn("series_style_guidance_present", improved["strengths"])
+
+    def test_scene_quality_assessment_penalizes_placeholder_and_pyttsx3_fallbacks(self) -> None:
+        fallback = pipeline_common.scene_quality_assessment(
+            scene_id="scene_0002",
+            current_outputs={
+                "asset_source_type": "placeholder",
+                "video_source_type": "local_motion_fallback",
+                "has_generated_scene_video": True,
+                "has_scene_dialogue_audio": True,
+                "has_scene_master_clip": True,
+                "audio_backend": "pyttsx3",
+                "local_composed_scene_video": True,
+            },
+            voice_required=True,
+            lipsync_required=True,
+        )
+        generated = pipeline_common.scene_quality_assessment(
+            scene_id="scene_0002",
+            current_outputs={
+                "asset_source_type": "generated_episode_frame",
+                "video_source_type": "generated_lipsync_video",
+                "has_generated_scene_video": True,
+                "has_scene_dialogue_audio": True,
+                "has_scene_master_clip": True,
+                "audio_backend": "reused_original_segments",
+            },
+            voice_required=True,
+            lipsync_required=True,
+        )
+
+        self.assertLess(fallback["component_scores"]["visual"], generated["component_scores"]["visual"])
+        self.assertLess(fallback["component_scores"]["audio"], generated["component_scores"]["audio"])
+        self.assertLess(fallback["quality_score"], generated["quality_score"])
 
 
 if __name__ == "__main__":

@@ -1515,7 +1515,9 @@ def scene_quality_assessment(
     quality_targets_available: bool = False,
 ) -> dict[str, Any]:
     outputs = current_outputs if isinstance(current_outputs, dict) else {}
+    asset_source_type = coalesce_text(outputs.get("asset_source_type", ""))
     video_source_type = coalesce_text(outputs.get("video_source_type", ""))
+    audio_backend = coalesce_text(outputs.get("audio_backend", "")).lower()
     has_generated_scene_video = bool(outputs.get("has_generated_scene_video", False))
     has_generated_primary_frame = bool(outputs.get("has_generated_primary_frame", False))
     has_scene_dialogue_audio = bool(outputs.get("has_scene_dialogue_audio", False))
@@ -1539,11 +1541,31 @@ def scene_quality_assessment(
         visual_score += 0.06
     if has_visual_beat_reference_images:
         visual_score += 0.04
+    if asset_source_type == "placeholder":
+        visual_score = min(visual_score, 0.18)
+    elif asset_source_type == "storyboard_asset" and video_source_type in {
+        "",
+        "local_motion_fallback",
+        "storyboard_motion_fallback",
+        "generated_episode_frame",
+    }:
+        visual_score = min(visual_score, 0.34)
     if local_composed_scene_video and video_source_type not in {"generated_lipsync_video", "generated_scene_video"}:
-        visual_score = min(visual_score, 0.72)
+        visual_score = min(visual_score, 0.36)
     visual_score = clamp_quality_score(visual_score)
 
-    audio_score = 1.0 if not voice_required else (0.94 if has_scene_dialogue_audio else 0.18)
+    if not voice_required:
+        audio_score = 1.0
+    elif not has_scene_dialogue_audio:
+        audio_score = 0.18
+    elif audio_backend == "pyttsx3":
+        audio_score = 0.28
+    elif "pyttsx3" in audio_backend:
+        audio_score = 0.46
+    elif audio_backend == "reused_original_segments":
+        audio_score = 0.94
+    else:
+        audio_score = 0.9
 
     lipsync_score = 1.0
     if lipsync_required:

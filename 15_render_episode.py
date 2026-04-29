@@ -282,8 +282,7 @@ def build_scene_frame(scene: dict, scene_index: int, cfg: dict, episode_id: str,
     return fit_image(source_path, width, height), meta
 
 
-def compose_scene_card(scene: dict, scene_index: int, cfg: dict, episode_id: str, assets_root: Path, width: int, height: int) -> tuple[Image.Image, dict]:
-    base, meta = build_scene_frame(scene, scene_index, cfg, episode_id, assets_root, width, height)
+def compose_scene_card_from_base(scene: dict, scene_index: int, base: Image.Image, meta: dict, width: int, height: int) -> Image.Image:
     image = base.convert("RGBA")
     overlay = Image.new("RGBA", image.size, (0, 0, 0, 0))
     draw = ImageDraw.Draw(overlay)
@@ -319,7 +318,12 @@ def compose_scene_card(scene: dict, scene_index: int, cfg: dict, episode_id: str
         fill=(242, 242, 242),
         spacing=5,
     )
-    return merged, meta
+    return merged
+
+
+def compose_scene_card(scene: dict, scene_index: int, cfg: dict, episode_id: str, assets_root: Path, width: int, height: int) -> tuple[Image.Image, dict]:
+    base, meta = build_scene_frame(scene, scene_index, cfg, episode_id, assets_root, width, height)
+    return compose_scene_card_from_base(scene, scene_index, base, meta, width, height), meta
 
 
 def title_card(width: int, height: int, episode_id: str, display_title: str, episode_title: str) -> Image.Image:
@@ -725,7 +729,7 @@ def collect_scene_motion_frames(package_root: Path, scene_id: str, fallback_fram
         for pattern in ("*.png", "*.jpg", "*.jpeg", "*.webp", "*.bmp"):
             for candidate in sorted(alternate_root.glob(pattern)):
                 add_frame("generated_alternate_frame", candidate)
-    add_frame("storyboard_card_frame", fallback_frame_path)
+    add_frame("fallback_clean_frame", fallback_frame_path)
     return frames
 
 
@@ -904,6 +908,15 @@ def build_video_generation_prompt(scene: dict, generation_plan: dict) -> str:
     positive_prompt = clean_text(generation_plan.get("positive_prompt", ""))
     if positive_prompt:
         prompt_parts.append(positive_prompt)
+    characters = ", ".join(clean_text(value) for value in (scene.get("characters", []) or []) if clean_text(value))
+    if characters:
+        prompt_parts.append(f"characters: {characters}")
+    location = clean_text(scene.get("location", ""))
+    if location:
+        prompt_parts.append(f"location: {location}")
+    mood = clean_text(scene.get("mood", ""))
+    if mood:
+        prompt_parts.append(f"mood: {mood}")
     summary = clean_text(scene.get("summary", ""))
     if summary:
         prompt_parts.append(f"scene summary: {summary}")
@@ -946,6 +959,14 @@ def build_video_generation_prompt(scene: dict, generation_plan: dict) -> str:
     style_positive = [clean_text(value) for value in style_constraints.get("positive", []) if clean_text(value)]
     if style_positive:
         prompt_parts.append(f"style: {', '.join(style_positive[:3])}")
+    style_negative = [clean_text(value) for value in style_constraints.get("negative", []) if clean_text(value)]
+    if style_negative:
+        prompt_parts.append(f"avoid: {', '.join(style_negative[:4])}")
+    style_guidance = style_constraints.get("guidance", {}) if isinstance(style_constraints.get("guidance", {}), dict) else {}
+    for key in ("camera", "angle", "lighting", "palette", "framing"):
+        value = clean_text(style_guidance.get(key, ""))
+        if value:
+            prompt_parts.append(f"{key}: {value}")
     character_continuity = generation_plan.get("character_continuity", []) if isinstance(generation_plan.get("character_continuity", []), list) else []
     for hint in character_continuity[:2]:
         if not isinstance(hint, dict):
@@ -960,6 +981,15 @@ def build_video_generation_prompt(scene: dict, generation_plan: dict) -> str:
     previous_scene_id = clean_text(continuity.get("previous_scene_id", ""))
     if previous_scene_id:
         prompt_parts.append(f"continuity anchor from {previous_scene_id}")
+    quality_targets = generation_plan.get("quality_targets", {}) if isinstance(generation_plan.get("quality_targets", {}), dict) else {}
+    if quality_targets:
+        desired = [clean_text(value) for value in quality_targets.get("desired_visual_traits", []) if clean_text(value)]
+        if desired:
+            prompt_parts.append(f"quality targets: {', '.join(desired[:4])}")
+        if bool(quality_targets.get("preserve_character_identity", False)):
+            prompt_parts.append("preserve character identity")
+        if bool(quality_targets.get("preserve_series_style", False)):
+            prompt_parts.append("preserve series style")
     return " | ".join(part for part in prompt_parts if part)
 
 
@@ -1123,11 +1153,13 @@ def build_scene_production_package(
             "preview_frame_path": clean_text(scene_manifest.get("frame_path", "")),
         },
         "current_generated_outputs": {
+            "asset_source_type": clean_text(scene_manifest.get("asset_source_type", "")),
             "video_source_type": current_video_source_type,
             "video_source_path": clean_text(scene_manifest.get("video_source_path", "")) or clean_text(current_generated_outputs.get("video_source_path", "")),
             "final_clip_path": clean_text(scene_manifest.get("final_clip_path", "")),
             "scene_dialogue_audio": clean_text(scene_manifest.get("scene_dialogue_audio", "")),
             "scene_master_clip": clean_text(scene_manifest.get("scene_master_clip", "")),
+            "audio_backend": clean_text(scene_manifest.get("audio_backend", "")),
             "has_generated_scene_video": bool(current_video_source_type),
             "has_scene_dialogue_audio": bool(clean_text(scene_manifest.get("scene_dialogue_audio", ""))),
             "has_scene_master_clip": bool(clean_text(scene_manifest.get("scene_master_clip", ""))),
@@ -3037,9 +3069,12 @@ def main() -> None:
         for index, scene in enumerate(scenes, start=1):
             scene_id = str(scene.get("scene_id", "")).strip() or f"scene_{index:04d}"
             reporter.update(index - 1, current_label=scene_id, extra_label="Running now: compose storyboard render frame", force=True)
-            scene_image, scene_meta = compose_scene_card(scene, index - 1, cfg, episode_id, assets_root, width, height)
+            scene_base_image, scene_meta = build_scene_frame(scene, index - 1, cfg, episode_id, assets_root, width, height)
+            scene_image = compose_scene_card_from_base(scene, index - 1, scene_base_image, scene_meta, width, height)
             frame_path = temp_frame_root / f"{index:04d}_{scene_id}.png"
+            clean_frame_path = temp_frame_root / f"{index:04d}_{scene_id}_clean.png"
             scene_image.save(frame_path, quality=95)
+            scene_base_image.save(clean_frame_path, quality=95)
             duration = safe_duration_seconds(scene)
             entries.append((frame_path, duration))
             scene_voice_plan = build_scene_voice_plan(
@@ -3066,7 +3101,7 @@ def main() -> None:
                     ffmpeg,
                     package_root,
                     scene_id,
-                    frame_path,
+                    clean_frame_path,
                     resolve_stored_project_path(scene_meta.get("asset_source_path", "")),
                     scene,
                     scene_visual_beats,
@@ -3102,6 +3137,7 @@ def main() -> None:
                     "title": scene.get("title", ""),
                     "duration_seconds": duration,
                     "frame_path": str(frame_path),
+                    "clean_frame_path": str(clean_frame_path),
                     "asset_source_type": scene_meta.get("asset_source_type", ""),
                     "asset_source_path": scene_meta.get("asset_source_path", ""),
                     "video_source_type": scene_video_source_type,
@@ -3174,6 +3210,7 @@ def main() -> None:
             shutil.copyfile(final_video_only_path, final_path)
             info(f"Audio render fallback active for {episode_id}: {audio_render_error}")
         scene_dialogue_outputs = normalized_scene_dialogue_outputs(audio_track_meta)
+        audio_backend_name = clean_text(audio_track_meta.get("audio_backend", "")) or clean_text(audio_track_meta.get("backend", ""))
         render_mode = choose_render_mode(len(scenes), generated_scene_video_count, bool(audio_track_meta))
         scene_master_outputs = materialize_scene_master_clips(
             ffmpeg,
@@ -3187,6 +3224,7 @@ def main() -> None:
             scene_id = clean_text(scene_meta.get("scene_id", ""))
             scene_meta["scene_dialogue_audio"] = ""
             scene_meta["scene_master_clip"] = ""
+            scene_meta["audio_backend"] = audio_backend_name
             if scene_id:
                 scene_meta["scene_dialogue_audio"] = clean_text(scene_dialogue_outputs.get(scene_id, ""))
             scene_meta["scene_master_clip"] = clean_text(scene_master_outputs.get(scene_id, ""))
@@ -3314,6 +3352,7 @@ def main() -> None:
             if scene_id and isinstance(scene_master_audio_outputs, dict):
                 scene_meta["scene_dialogue_audio"] = clean_text(scene_master_audio_outputs.get(scene_id, ""))
             scene_meta["scene_master_clip"] = clean_text(scene_master_outputs.get(scene_id, ""))
+            scene_meta["audio_backend"] = clean_text(audio_track_meta.get("audio_backend", "")) or clean_text(audio_track_meta.get("backend", ""))
         package_master_clip_paths = [*opening_clip_paths]
         for scene_meta, scene_clip_path in zip(manifest_scenes, scene_clip_paths):
             if not isinstance(scene_meta, dict):
