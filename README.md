@@ -87,6 +87,7 @@ The default path stays local-first and license-light. The project already produc
 - `05_link_faces_and_speakers.py`, `06_review_unknowns.py`, and the shared path helpers now normalize stored project paths back to relative metadata so the same workspace can move between Windows, Linux, NAS mounts, and different drive letters more safely
 - `04_diarize_and_transcribe.py` keeps extending `speaker_unknown` rescue logic and language handling
 - `99_process_next_episode.py` is being hardened for long resumable inbox runs with autosaves and live status files
+- `99_process_next_episode.py` now consistently uses the shared project root helpers for batch-job bookkeeping, avoiding resume crashes in the completed-episode handoff path
 - `13_generate_episode.py` writes multi-reference storyboard plans and backend-ready request exports
 - backend fine-tune freshness checks now accept newer per-character backend run files even when the shared summary file is older, which avoids false stale-state blocks on NAS and mixed-OS workspaces
 - `08_train_series_model.py`, `13_generate_episode.py`, `14_generate_storyboard_assets.py`, and `15_render_episode.py` now carry style constraints, remembered character continuity hints, and explicit quality targets deeper into the generated-episode path
@@ -122,6 +123,7 @@ These items are implemented and should stay guarded by README updates and tests 
 - render-side camera/control hints no longer get lost when `camera_plan` and `control_hints` are stored as dictionaries in generated scene plans
 - foundation-training plan generation now aggregates all existing manifests before writing the final plan in shared NAS runs
 - backend fine-tune summaries are rebuilt from all existing per-character run files, and stale summary timestamps no longer block generation when the actual backend runs are newer
+- the resumable `99_process_next_episode.py` batch handoff path now resolves batch jobs through the shared project root import instead of crashing during resume
 - foundation-training voice sample preparation now skips invalid directory paths instead of crashing on Linux/NAS when old metadata points at `.`
 - release-gate, export-package, regeneration-queue, backend-benchmark, review-preview, display-diagnostics, and generation-quality behavior have tracked regression tests
 

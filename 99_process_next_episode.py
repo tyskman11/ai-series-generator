@@ -9,6 +9,7 @@ from datetime import datetime
 from pathlib import Path
 
 from pipeline_common import (
+    PROJECT_ROOT,
     add_batch_job,
     add_shared_worker_arguments,
     distributed_item_lease,
