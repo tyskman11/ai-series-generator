@@ -74,6 +74,7 @@ The default path stays local-first and license-light. The project already produc
 - finish main-character review quality in `06_review_unknowns.py`
 - keep the default path stable for large NAS-backed runs
 - finish and tune the real external image/video/voice/lip-sync/master runners that the quality-first path now requires
+- keep backend tools and model downloads strictly project-local instead of depending on external folders
 - keep the generation chain clearly ordered as train first, then generate/render
 - raise external-runner quality so the fully generated episode path can become the real default
 
@@ -106,6 +107,7 @@ The default path stays local-first and license-light. The project already produc
 - `52_quality_gate.py` now supports `--auto-retry` plus `release_mode.auto_retry_*` config so failed gates can launch one automatic retry loop, while `53_regenerate_weak_scenes.py` suppresses nested auto-retries both during its gate refresh and inside the inner rerun
 - `15_render_episode.py`, `49_refresh_after_manual_review.py`, `57_generate_finished_episodes.py`, and `99_process_next_episode.py` now stop early with a clear quality-first preflight error if release mode, original-line reuse, lipsync, or the required external image/video/voice/lipsync/master runners are not configured
 - `58_configure_quality_backends.py` now writes portable built-in runner templates into `project.json`, while `tools/quality_backends/*.py` delegate image/video/voice/lipsync to machine-local backend commands through environment variables and keep the repo configuration itself portable
+- `59_prepare_quality_backends.py` now prepares backend tools and model assets only inside the project folder, tracks revisions, verifies required files, detects incomplete Hugging Face downloads, and skips re-downloads when the newest local revision is already complete
 - `pipeline_common.py` now checks configured runner prerequisites such as required commands, Python modules, and environment variables before the quality-first path is allowed to start
 - the tracked regression suite covers export handoffs, release-gate reports, retry queues, strict warning handling, and regeneration metadata so those finished-episode contracts stay guarded
 - `16_build_series_bible.py`, `57_generate_finished_episodes.py`, and `99_process_next_episode.py` surface readiness, backend coverage, and quality scoring for generated episodes
@@ -137,6 +139,7 @@ These items are implemented and should stay guarded by README updates and tests 
 - the resumable `99_process_next_episode.py` batch handoff path now resolves batch jobs through the shared project root import instead of crashing during resume
 - foundation-training voice sample preparation now skips invalid directory paths instead of crashing on Linux/NAS when old metadata points at `.`
 - `tools/quality_backends/master_runner.py` provides a built-in FFmpeg-based episode master runner, and the quality-first prerequisite report now surfaces missing backend env vars instead of only saying the command templates are empty
+- backend tool/model preparation now has a dedicated numbered step and stores project-local summaries under `ai_series_project/tools/quality_backends`
 - release-gate, export-package, regeneration-queue, backend-benchmark, review-preview, display-diagnostics, and generation-quality behavior have tracked regression tests
 
 ## Planned
@@ -146,6 +149,7 @@ Only untouched follow-up work belongs here. If implementation has already starte
 - tighter worker-capability routing so GPU-heavy generation stages can prefer stronger NAS workers automatically
 - stronger backend-side scene selection so regeneration can choose better alternates automatically after quality-gate failures
 - concrete machine-local backend commands for `SERIES_IMAGE_BACKEND_COMMAND`, `SERIES_VIDEO_BACKEND_COMMAND`, `SERIES_VOICE_BACKEND_COMMAND`, and `SERIES_LIPSYNC_BACKEND_COMMAND`
+- real project-local XTTS and lip-sync runtime integration instead of metadata-only records for those backend assets
 
 ## Documentation Rule
 
@@ -153,7 +157,7 @@ This file is mandatory documentation.
 
 Whenever you change any of the following, update `README.md` in the same task:
 
-- `00_prepare_runtime.py` through `57_generate_finished_episodes.py`
+- `00_prepare_runtime.py` through `59_prepare_quality_backends.py`
 - `99_process_next_episode.py`
 - `pipeline_common.py`
 - `ai_series_project/configs/project.json`
@@ -182,6 +186,8 @@ Also keep the `In Progress` and `Planned` sections current.
 - `52_quality_gate.py`: evaluate finished episodes against release-style thresholds and write regeneration hints
 - `53_regenerate_weak_scenes.py` to `56_restore_project.py`: regeneration, backup, and maintenance helpers
 - `57_generate_finished_episodes.py`: batch or endless finished-episode generation
+- `58_configure_quality_backends.py`: write portable quality-first runner templates into the project config
+- `59_prepare_quality_backends.py`: download/update project-local backend tools and model assets with revision checks
 - `99_process_next_episode.py`: full end-to-end coordinator
 - `backend_preset_benchmark.py`: compare backend runner presets and produce a ranked recommendation report
 
@@ -222,6 +228,9 @@ Also keep the `In Progress` and `Planned` sections current.
 `ai_series_project/configs/project.json` now also exposes:
 
 - `paths.export_packages`: root for `51_export_package.py`
+- `paths.quality_backend_tools`: project-local root for downloaded backend tools such as ComfyUI
+- `paths.quality_backend_models`: project-local root for backend model snapshots
+- `paths.quality_backend_asset_summary`: summary JSON written by `59_prepare_quality_backends.py`
 - `release_mode.*`: optional release thresholds and strictness for `52_quality_gate.py` plus the main orchestrators
 - `release_mode.max_regeneration_retries`: cap for how often one weak scene may stay in the retry queue before `53_regenerate_weak_scenes.py` stops requesting another rerender
 - `release_mode.auto_retry_failed_gate`: optionally lets `52_quality_gate.py` launch one automatic retry loop after a failed gate
@@ -259,13 +268,14 @@ If those runners are not enabled with real `command_template` values, the qualit
 2. Run `python 00_prepare_runtime.py`
 3. Run `python 01_setup_project.py`
 4. Run `python 58_configure_quality_backends.py`
-5. Set real backend commands in your shell environment:
+5. Run `python 59_prepare_quality_backends.py`
+6. Set real backend commands in your shell environment:
    - `SERIES_IMAGE_BACKEND_COMMAND`
    - `SERIES_VIDEO_BACKEND_COMMAND`
    - `SERIES_VOICE_BACKEND_COMMAND`
    - `SERIES_LIPSYNC_BACKEND_COMMAND`
-6. Run `python 99_process_next_episode.py --skip-downloads`
-7. Review outputs in:
+7. Run `python 99_process_next_episode.py --skip-downloads`
+8. Review outputs in:
    - `ai_series_project/generation/story_prompts`
    - `ai_series_project/generation/shotlists`
    - `ai_series_project/generation/final_episode_packages`
@@ -287,6 +297,10 @@ Important: the logical run order is not strictly numeric anymore. Training must 
 The finished-episode batch path now always includes the quality gate:
 
 `07 -> 08 -> 09 -> 10 -> 11 -> 12 -> 50 -> 13 -> 14 -> 54 -> 15 -> 52 -> 16`
+
+Project-local backend preparation belongs before the quality-first render path:
+
+`58 -> 59 -> 07 -> 08 -> 09 -> 10 -> 11 -> 12 -> 50 -> 13 -> 14 -> 54 -> 15 -> 52 -> 16`
 
 If `release_mode.auto_retry_failed_gate` is also turned on and weak scenes are queued, the gate can append one retry loop:
 
@@ -493,8 +507,10 @@ python 06_review_unknowns.py --review-faces --open-previews
 - face/speaker quality still depends heavily on review quality in `06_review_unknowns.py`
 - the local series model is heuristic, not a large multimodal frontier model
 - without strong external image/video/voice/lip-sync backends, the project now prefers to fail the finished-episode gate instead of presenting a low-quality fallback render as a true final TV-style episode
+- quality backend tools and model snapshots are now expected inside the project tree; external folders are no longer considered part of the supported setup
 - the local finished episode path is structurally complete, but TV-grade visual consistency still depends on real backend generation quality and well-trained character-specific voice models
 - by default, direct render/generation entry points now refuse to run in “final episode” mode until the required external quality runners are configured
+- `59_prepare_quality_backends.py` currently records XTTS and lip-sync runtime requirements project-locally, but the actual end-to-end voice/lip-sync backend commands still need to be connected
 - fully new dialogue lines still depend on generated speech when no strong original segment can be reused
 - lip-sync and generated scene video quality still depend on later backend tuning
 - `53_regenerate_weak_scenes.py` now reruns only the flagged scenes in the storyboard backend stage (`54_run_storyboard_backend.py --scene-ids`), but the render step (`15_render_episode.py`) still rebuilds the full episode package

@@ -50,7 +50,10 @@
     "foundation_finetunes": "training/foundation/finetunes",
     "foundation_backend_runs": "training/foundation/backend_runs",
     "foundation_logs": "training/foundation/logs",
-    "export_packages": "exports/packages"
+    "export_packages": "exports/packages",
+    "quality_backend_tools": "tools/quality_backends",
+    "quality_backend_models": "tools/quality_models",
+    "quality_backend_asset_summary": "tools/quality_backends/quality_backend_assets.json"
   },
   "transcription": {
     "model_name": "large-v3",
@@ -235,6 +238,66 @@
     "strict_warnings": true,
     "auto_retry_failed_gate": true,
     "auto_retry_update_bible": false
+  },
+  "quality_backend_assets": {
+    "check_for_updates": true,
+    "huggingface_token_env": "HF_TOKEN",
+    "summary_path": "tools/quality_backends/quality_backend_assets.json",
+    "targets": [
+      {
+        "name": "comfyui",
+        "kind": "git",
+        "repo_url": "https://github.com/comfyanonymous/ComfyUI.git",
+        "ref": "master",
+        "target_dir": "tools/quality_backends/comfyui",
+        "required_files": [
+          "main.py",
+          "nodes.py",
+          "server.py",
+          "requirements.txt"
+        ]
+      },
+      {
+        "name": "image_base_model",
+        "kind": "huggingface",
+        "repo_id": "stabilityai/stable-diffusion-xl-base-1.0",
+        "target_dir": "tools/quality_models/image/stabilityai__stable-diffusion-xl-base-1.0",
+        "required_patterns": [
+          "model_index.json",
+          "*.safetensors"
+        ]
+      },
+      {
+        "name": "video_base_model",
+        "kind": "huggingface",
+        "repo_id": "Lightricks/LTX-Video",
+        "target_dir": "tools/quality_models/video/Lightricks__LTX-Video",
+        "required_patterns": [
+          "*.safetensors"
+        ]
+      },
+      {
+        "name": "voice_base_model",
+        "kind": "huggingface",
+        "repo_id": "openbmb/VoxCPM2",
+        "target_dir": "tools/quality_models/voice/openbmb__VoxCPM2",
+        "required_patterns": []
+      },
+      {
+        "name": "xtts_model_name_record",
+        "kind": "metadata",
+        "repo_id": "tts_models/multilingual/multi-dataset/xtts_v2",
+        "target_dir": "tools/quality_models/voice/xtts_runtime",
+        "required_patterns": []
+      },
+      {
+        "name": "lipsync_model_name_record",
+        "kind": "metadata",
+        "repo_id": "wav2lip",
+        "target_dir": "tools/quality_models/lipsync/runtime",
+        "required_patterns": []
+      }
+    ]
   },
   "external_backends": {
     "storyboard_scene_runner": {
