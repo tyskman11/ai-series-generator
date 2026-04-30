@@ -1028,8 +1028,21 @@ def external_tool_arg(value: object) -> str:
     return text
 
 
+def resolve_external_command_binary(command_name: str) -> str:
+    text = str(command_name or "").strip()
+    if not text:
+        return text
+    lowered = text.lower()
+    if lowered in {"python", "python3", "py"}:
+        return str(runtime_python())
+    return text
+
+
 def external_tool_command(cmd: list[object]) -> list[str]:
-    return [external_tool_arg(part) for part in cmd]
+    normalized = [external_tool_arg(part) for part in cmd]
+    if normalized:
+        normalized[0] = external_tool_arg(resolve_external_command_binary(normalized[0]))
+    return normalized
 
 
 def run_command(
@@ -1058,7 +1071,11 @@ class _SafeTemplateDict(dict[str, str]):
 
 
 def _external_backend_context(context: dict[str, Any] | None) -> dict[str, str]:
-    mapping: dict[str, str] = {}
+    mapping: dict[str, str] = {
+        "python": str(runtime_python()),
+        "project_root": str(PROJECT_ROOT),
+        "script_dir": str(SCRIPT_DIR),
+    }
     for key, value in (context or {}).items():
         if not isinstance(key, str):
             continue
@@ -4271,7 +4288,10 @@ def external_backend_runner_prerequisite_gaps(
             command_text = str(command_name or "").strip()
             if not command_text:
                 continue
-            if shutil.which(command_text) is None:
+            resolved_command = resolve_external_command_binary(command_text)
+            if Path(resolved_command).exists():
+                continue
+            if shutil.which(resolved_command) is None:
                 missing.append(f"external_backends.{runner_name} requires command '{command_text}'")
 
     required_modules = runner_cfg.get("required_python_modules", [])
@@ -4298,6 +4318,34 @@ def external_backend_runner_prerequisite_gaps(
                 )
 
     return missing
+
+
+def prepare_quality_backend_assets_runtime(
+    *,
+    skip_downloads: bool = False,
+    force: bool = False,
+    quiet: bool = True,
+) -> dict[str, Any]:
+    command = [str(runtime_python()), str(SCRIPT_DIR / "59_prepare_quality_backends.py")]
+    if skip_downloads:
+        command.append("--skip-downloads")
+    if force:
+        command.append("--force")
+    completed = subprocess.run(
+        command,
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    output = completed.stdout or ""
+    if completed.returncode != 0:
+        tail = output[-2000:].strip()
+        detail = f"\n{tail}" if tail else ""
+        raise RuntimeError(f"59_prepare_quality_backends.py failed while preparing project-local backend assets.{detail}")
+    if not quiet and output.strip():
+        info(output.strip())
+    return {"returncode": int(completed.returncode), "output": output}
 
 
 def quality_first_requirements_report(config: dict[str, Any]) -> dict[str, Any]:

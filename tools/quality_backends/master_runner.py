@@ -2,12 +2,11 @@
 from __future__ import annotations
 
 import argparse
-import shutil
 import subprocess
 import tempfile
 from pathlib import Path
 
-from backend_common import ensure_parent, load_json, print_runtime_error
+from backend_common import ensure_parent, find_project_local_ffmpeg, load_json, print_runtime_error
 
 
 def parse_args() -> argparse.Namespace:
@@ -49,9 +48,7 @@ def write_concat_file(clips: list[Path], concat_path: Path) -> None:
 
 def main() -> int:
     args = parse_args()
-    ffmpeg = shutil.which("ffmpeg")
-    if not ffmpeg:
-        raise RuntimeError("ffmpeg is required for the built-in finished-episode master runner.")
+    ffmpeg = find_project_local_ffmpeg()
 
     package_payload = load_json(args.package_path)
     if not isinstance(package_payload, dict) or not package_payload:

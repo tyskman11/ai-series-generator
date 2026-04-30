@@ -12,6 +12,7 @@ from pipeline_common import (
     distributed_item_lease,
     distributed_step_runtime_root,
     ensure_quality_first_ready,
+    prepare_quality_backend_assets_runtime,
     open_face_review_item_count,
     LiveProgressReporter,
     PROJECT_ROOT,
@@ -326,7 +327,6 @@ def main() -> None:
     endless = preview_endless_mode(args)
     count = 0 if endless else max(1, int(args.count))
     cfg = load_config()
-    ensure_quality_first_ready(cfg, context_label="57_generate_finished_episodes.py")
     worker_id = shared_worker_id_for_args(args)
     shared_workers = shared_workers_enabled_for_args(cfg, args)
     child_shared_args = shared_worker_cli_args(cfg, args)
@@ -363,6 +363,8 @@ def main() -> None:
                 f"There are still {review_count} open face review cases. "
                 "Run 06_review_unknowns.py first before training, generation, or render can start."
             )
+        prepare_quality_backend_assets_runtime(skip_downloads=bool(args.skip_downloads))
+        ensure_quality_first_ready(cfg, context_label="57_generate_finished_episodes.py")
         planned_steps = planned_preview_steps_for_mode(cfg, count, endless=endless)
         reporter = LiveProgressReporter(
             script_name="57_generate_finished_episodes.py",

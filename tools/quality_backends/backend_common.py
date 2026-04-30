@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import shlex
 import subprocess
 import sys
@@ -19,6 +20,10 @@ def load_json(path: str) -> dict[str, Any]:
         return json.loads(candidate.read_text(encoding="utf-8"))
     except Exception:
         return {}
+
+
+def load_backend_context() -> dict[str, Any]:
+    return load_json(str(os.environ.get("SERIES_BACKEND_CONTEXT_JSON", "") or ""))
 
 
 def ensure_parent(path: str) -> None:
@@ -94,6 +99,44 @@ def choose_scene_package_root(scene_package_path: str) -> str:
     if candidate.exists():
         return str(candidate.parent)
     return str(Path.cwd())
+
+
+def existing_path(value: object) -> Path | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    candidate = Path(text)
+    return candidate if candidate.exists() else None
+
+
+def first_existing_path(*values: object) -> Path | None:
+    for value in values:
+        candidate = existing_path(value)
+        if candidate is not None:
+            return candidate
+    return None
+
+
+def copy_if_needed(source: Path, target: Path) -> None:
+    ensure_parent(str(target))
+    if source.resolve() == target.resolve():
+        return
+    target.write_bytes(source.read_bytes())
+
+
+def find_project_local_ffmpeg() -> str:
+    script_path = Path(__file__).resolve()
+    for parent in [script_path.parent, *script_path.parents]:
+        candidate_dir = parent / "ai_series_project" / "tools" / "ffmpeg" / "bin"
+        if candidate_dir.exists():
+            for name in ("ffmpeg.exe", "ffmpeg"):
+                candidate = candidate_dir / name
+                if candidate.exists() and candidate.is_file():
+                    return str(candidate)
+    ffmpeg = shutil.which("ffmpeg")
+    if ffmpeg:
+        return ffmpeg
+    raise RuntimeError("No FFmpeg binary found. Run 00_prepare_runtime.py so the project-local FFmpeg build is available.")
 
 
 def print_runtime_error(exc: Exception) -> int:

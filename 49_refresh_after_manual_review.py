@@ -9,6 +9,7 @@ from pipeline_common import (
     distributed_item_lease,
     distributed_step_runtime_root,
     ensure_quality_first_ready,
+    prepare_quality_backend_assets_runtime,
     open_face_review_item_count,
     LiveProgressReporter,
     SCRIPT_DIR,
@@ -131,6 +132,7 @@ def main() -> None:
     headline("Rebuild After Manual Character Review")
     cfg = load_config()
     if not args.stop_after_training:
+        prepare_quality_backend_assets_runtime(skip_downloads=bool(args.skip_downloads))
         ensure_quality_first_ready(cfg, context_label="49_refresh_after_manual_review.py")
     worker_id = shared_worker_id_for_args(args)
     shared_workers = shared_workers_enabled_for_args(cfg, args)

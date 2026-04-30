@@ -1,0 +1,72 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+from pathlib import Path
+
+from backend_common import copy_if_needed, ensure_parent, existing_path, first_existing_path, load_backend_context, load_json, print_runtime_error
+
+
+def candidate_image_paths(scene_package: dict, context: dict) -> list[Path]:
+    preview = scene_package.get("current_preview_assets", {}) if isinstance(scene_package.get("current_preview_assets"), dict) else {}
+    image_generation = scene_package.get("image_generation", {}) if isinstance(scene_package.get("image_generation"), dict) else {}
+    targets = image_generation.get("target_outputs", {}) if isinstance(image_generation.get("target_outputs"), dict) else {}
+    video_generation = scene_package.get("video_generation", {}) if isinstance(scene_package.get("video_generation"), dict) else {}
+    local_plan = video_generation.get("local_video_plan", {}) if isinstance(video_generation.get("local_video_plan"), dict) else {}
+    beats = local_plan.get("beats", []) if isinstance(local_plan.get("beats"), list) else []
+
+    candidates: list[Path] = []
+    for value in [
+        context.get("primary_frame"),
+        preview.get("preview_frame_path"),
+        preview.get("asset_source_path"),
+        targets.get("layered_storyboard_frame"),
+        context.get("layered_storyboard_frame"),
+    ]:
+        candidate = existing_path(value)
+        if candidate is not None and candidate not in candidates:
+            candidates.append(candidate)
+    for beat in beats:
+        if not isinstance(beat, dict):
+            continue
+        candidate = existing_path(beat.get("reference_image_path", ""))
+        if candidate is not None and candidate not in candidates:
+            candidates.append(candidate)
+    return candidates
+
+
+def main() -> int:
+    context = load_backend_context()
+    scene_package_path = str(context.get("scene_package", "") or "")
+    scene_package = load_json(scene_package_path)
+    if not scene_package:
+        raise RuntimeError(f"Could not load scene package: {scene_package_path}")
+
+    source = first_existing_path(*candidate_image_paths(scene_package, context))
+    if source is None:
+        raise RuntimeError("No project-local source image is available for the image backend.")
+
+    primary_frame = Path(str(context.get("primary_frame", "") or ""))
+    if not str(primary_frame):
+        raise RuntimeError("The image backend did not receive a primary frame output path.")
+    copy_if_needed(source, primary_frame)
+
+    layered_storyboard_frame = Path(str(context.get("layered_storyboard_frame", "") or ""))
+    if str(layered_storyboard_frame):
+        copy_if_needed(source, layered_storyboard_frame)
+
+    alternate_dir_text = str(context.get("alternate_frame_dir", "") or "").strip()
+    if alternate_dir_text:
+        alternate_dir = Path(alternate_dir_text)
+        ensure_parent(str(alternate_dir))
+        alternate_dir.mkdir(parents=True, exist_ok=True)
+        alternate_target = alternate_dir / f"{primary_frame.stem}_alt01{primary_frame.suffix or source.suffix or '.png'}"
+        copy_if_needed(source, alternate_target)
+
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except Exception as exc:
+        raise SystemExit(print_runtime_error(exc))

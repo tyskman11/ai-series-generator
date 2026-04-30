@@ -303,7 +303,7 @@
     "storyboard_scene_runner": {
       "enabled": true,
       "command_template": [
-        "python",
+        "{python}",
         "54_run_storyboard_backend.py",
         "--episode-id",
         "{episode_id}",
@@ -312,9 +312,7 @@
       ],
       "working_directory": ".",
       "environment": {},
-      "required_commands": [
-        "python"
-      ],
+      "required_commands": [],
       "required_environment_variables": [],
       "shell": false,
       "timeout_seconds": 1800,
@@ -327,7 +325,7 @@
     "finished_episode_image_runner": {
       "enabled": true,
       "command_template": [
-        "python",
+        "{python}",
         "tools/quality_backends/image_runner.py",
         "--scene-package",
         "{scene_package_path}",
@@ -339,10 +337,10 @@
         "{layered_storyboard_frame}"
       ],
       "working_directory": ".",
-      "environment": {},
-      "required_commands": [
-        "python"
-      ],
+      "environment": {
+        "SERIES_IMAGE_BACKEND_COMMAND": "\"{python}\" \"tools/quality_backends/project_local_image_backend.py\""
+      },
+      "required_commands": [],
       "required_environment_variables": [
         "SERIES_IMAGE_BACKEND_COMMAND"
       ],
@@ -357,7 +355,7 @@
     "finished_episode_video_runner": {
       "enabled": true,
       "command_template": [
-        "python",
+        "{python}",
         "tools/quality_backends/video_runner.py",
         "--scene-package",
         "{scene_package_path}",
@@ -371,10 +369,10 @@
         "{primary_frame}"
       ],
       "working_directory": ".",
-      "environment": {},
-      "required_commands": [
-        "python"
-      ],
+      "environment": {
+        "SERIES_VIDEO_BACKEND_COMMAND": "\"{python}\" \"tools/quality_backends/project_local_video_backend.py\""
+      },
+      "required_commands": [],
       "required_environment_variables": [
         "SERIES_VIDEO_BACKEND_COMMAND"
       ],
@@ -389,7 +387,7 @@
     "finished_episode_voice_runner": {
       "enabled": true,
       "command_template": [
-        "python",
+        "{python}",
         "tools/quality_backends/voice_runner.py",
         "--scene-package",
         "{scene_package_path}",
@@ -397,10 +395,10 @@
         "{scene_dialogue_audio}"
       ],
       "working_directory": ".",
-      "environment": {},
-      "required_commands": [
-        "python"
-      ],
+      "environment": {
+        "SERIES_VOICE_BACKEND_COMMAND": "\"{python}\" \"tools/quality_backends/project_local_voice_backend.py\""
+      },
+      "required_commands": [],
       "required_environment_variables": [
         "SERIES_VOICE_BACKEND_COMMAND"
       ],
@@ -415,7 +413,7 @@
     "finished_episode_lipsync_runner": {
       "enabled": true,
       "command_template": [
-        "python",
+        "{python}",
         "tools/quality_backends/lipsync_runner.py",
         "--scene-package",
         "{scene_package_path}",
@@ -429,10 +427,10 @@
         "{lipsync_poster_frame}"
       ],
       "working_directory": ".",
-      "environment": {},
-      "required_commands": [
-        "python"
-      ],
+      "environment": {
+        "SERIES_LIPSYNC_BACKEND_COMMAND": "\"{python}\" \"tools/quality_backends/project_local_lipsync_backend.py\""
+      },
+      "required_commands": [],
       "required_environment_variables": [
         "SERIES_LIPSYNC_BACKEND_COMMAND"
       ],
@@ -447,7 +445,7 @@
     "finished_episode_master_runner": {
       "enabled": true,
       "command_template": [
-        "python",
+        "{python}",
         "tools/quality_backends/master_runner.py",
         "--package-path",
         "{package_path}",
@@ -456,10 +454,7 @@
       ],
       "working_directory": ".",
       "environment": {},
-      "required_commands": [
-        "python",
-        "ffmpeg"
-      ],
+      "required_commands": [],
       "required_environment_variables": [],
       "shell": false,
       "timeout_seconds": 3600,

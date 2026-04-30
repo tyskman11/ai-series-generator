@@ -1,9 +1,17 @@
 from __future__ import annotations
 
+import importlib.util
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 import pipeline_common
+
+MODULE_PATH = Path(__file__).resolve().parents[1] / "58_configure_quality_backends.py"
+SPEC = importlib.util.spec_from_file_location("step58_quality_backends", MODULE_PATH)
+STEP58 = importlib.util.module_from_spec(SPEC)
+assert SPEC and SPEC.loader
+SPEC.loader.exec_module(STEP58)
 
 
 class QualityFirstModeTests(unittest.TestCase):
@@ -90,6 +98,38 @@ class QualityFirstModeTests(unittest.TestCase):
             "external_backends.finished_episode_image_runner requires environment variable 'SERIES_IMAGE_BACKEND_COMMAND'",
             report["missing"],
         )
+
+    def test_render_external_backend_template_includes_runtime_python(self) -> None:
+        rendered = pipeline_common.render_external_backend_template("{python}")
+        self.assertEqual(rendered, str(pipeline_common.runtime_python()))
+
+    def test_configured_quality_backends_use_runtime_python_and_project_local_defaults(self) -> None:
+        backends = STEP58.configured_backends()
+        image_runner = backends["finished_episode_image_runner"]
+        master_runner = backends["finished_episode_master_runner"]
+
+        self.assertEqual(image_runner["command_template"][0], "{python}")
+        self.assertEqual(image_runner["required_commands"], [])
+        self.assertIn("SERIES_IMAGE_BACKEND_COMMAND", image_runner["environment"])
+        self.assertIn("project_local_image_backend.py", image_runner["environment"]["SERIES_IMAGE_BACKEND_COMMAND"])
+        self.assertEqual(master_runner["command_template"][0], "{python}")
+        self.assertEqual(master_runner["required_commands"], [])
+
+    def test_python_command_prerequisite_uses_active_runtime(self) -> None:
+        cfg = {
+            "external_backends": {
+                "finished_episode_image_runner": {
+                    "enabled": True,
+                    "command_template": ["{python}", "runner.py"],
+                    "required_commands": ["python"],
+                }
+            }
+        }
+
+        with patch("pipeline_common.shutil.which", return_value=None):
+            missing = pipeline_common.external_backend_runner_prerequisite_gaps(cfg, "finished_episode_image_runner")
+
+        self.assertEqual(missing, [])
 
 
 if __name__ == "__main__":

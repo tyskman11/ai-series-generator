@@ -15,8 +15,10 @@ from pipeline_common import (
     info,
     load_config,
     ok,
+    pip_install_command,
     read_json,
     resolve_project_path,
+    runtime_python,
     warn,
     write_json,
 )
@@ -41,7 +43,7 @@ def ensure_runtime_package(module_name: str, package_name: str) -> None:
     except Exception:
         pass
     subprocess.run(
-        ["python", "-m", "pip", "install", package_name],
+        pip_install_command(runtime_python(), package_name),
         check=True,
     )
 
@@ -198,6 +200,7 @@ def infer_local_git_revision(target: dict[str, Any]) -> str:
     git_dir = target_dir / ".git"
     if not git_dir.exists():
         return ""
+    ensure_git_safe_directory(target_dir)
     completed = subprocess.run(
         ["git", "-C", str(target_dir), "rev-parse", "HEAD"],
         check=False,
@@ -238,8 +241,21 @@ def fetch_remote_git_revision(target: dict[str, Any]) -> str:
     )
     if completed.returncode != 0:
         raise RuntimeError(completed.stdout.strip() or f"Could not inspect {repo_url}")
-    line = completed.stdout.strip().splitlines()[0] if completed.stdout.strip() else ""
-    return line.split()[0] if line else ""
+    for line in completed.stdout.strip().splitlines():
+        parts = line.split()
+        if len(parts) >= 2 and len(parts[0]) >= 7 and all(char in "0123456789abcdefABCDEF" for char in parts[0]):
+            return parts[0]
+    raise RuntimeError(completed.stdout.strip() or f"Could not determine the remote revision for {repo_url}")
+
+
+def ensure_git_safe_directory(target_dir: Path) -> None:
+    subprocess.run(
+        ["git", "config", "--global", "--add", "safe.directory", str(target_dir)],
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
 
 
 def fetch_remote_hf_revision(api: Any, target: dict[str, Any], token: str) -> str:
@@ -270,8 +286,10 @@ def ensure_git_target(target: dict[str, Any], remote_revision: str, action: str)
     if action == "download":
         subprocess.run(["git", "clone", coalesce_text(target["repo_url"]), str(target_dir)], check=True)
     else:
+        ensure_git_safe_directory(target_dir)
         subprocess.run(["git", "-C", str(target_dir), "fetch", "origin"], check=True)
     ref = coalesce_text(target.get("ref", "master")) or "master"
+    ensure_git_safe_directory(target_dir)
     subprocess.run(["git", "-C", str(target_dir), "checkout", remote_revision or f"origin/{ref}"], check=True)
     final_revision = infer_local_git_revision(target)
     write_asset_metadata(

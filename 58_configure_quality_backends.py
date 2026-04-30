@@ -16,11 +16,15 @@ def parse_args() -> argparse.Namespace:
 
 
 def configured_backends() -> dict:
+    image_backend_command = '"{python}" "tools/quality_backends/project_local_image_backend.py"'
+    video_backend_command = '"{python}" "tools/quality_backends/project_local_video_backend.py"'
+    voice_backend_command = '"{python}" "tools/quality_backends/project_local_voice_backend.py"'
+    lipsync_backend_command = '"{python}" "tools/quality_backends/project_local_lipsync_backend.py"'
     return {
         "storyboard_scene_runner": {
             "enabled": True,
             "command_template": [
-                "python",
+                "{python}",
                 "54_run_storyboard_backend.py",
                 "--episode-id",
                 "{episode_id}",
@@ -29,7 +33,7 @@ def configured_backends() -> dict:
             ],
             "working_directory": ".",
             "environment": {},
-            "required_commands": ["python"],
+            "required_commands": [],
             "required_environment_variables": [],
             "shell": False,
             "timeout_seconds": 1800,
@@ -40,7 +44,7 @@ def configured_backends() -> dict:
         "finished_episode_image_runner": {
             "enabled": True,
             "command_template": [
-                "python",
+                "{python}",
                 "tools/quality_backends/image_runner.py",
                 "--scene-package",
                 "{scene_package_path}",
@@ -52,8 +56,8 @@ def configured_backends() -> dict:
                 "{layered_storyboard_frame}",
             ],
             "working_directory": ".",
-            "environment": {},
-            "required_commands": ["python"],
+            "environment": {"SERIES_IMAGE_BACKEND_COMMAND": image_backend_command},
+            "required_commands": [],
             "required_environment_variables": ["SERIES_IMAGE_BACKEND_COMMAND"],
             "shell": False,
             "timeout_seconds": 3600,
@@ -64,7 +68,7 @@ def configured_backends() -> dict:
         "finished_episode_video_runner": {
             "enabled": True,
             "command_template": [
-                "python",
+                "{python}",
                 "tools/quality_backends/video_runner.py",
                 "--scene-package",
                 "{scene_package_path}",
@@ -78,8 +82,8 @@ def configured_backends() -> dict:
                 "{primary_frame}",
             ],
             "working_directory": ".",
-            "environment": {},
-            "required_commands": ["python"],
+            "environment": {"SERIES_VIDEO_BACKEND_COMMAND": video_backend_command},
+            "required_commands": [],
             "required_environment_variables": ["SERIES_VIDEO_BACKEND_COMMAND"],
             "shell": False,
             "timeout_seconds": 7200,
@@ -90,7 +94,7 @@ def configured_backends() -> dict:
         "finished_episode_voice_runner": {
             "enabled": True,
             "command_template": [
-                "python",
+                "{python}",
                 "tools/quality_backends/voice_runner.py",
                 "--scene-package",
                 "{scene_package_path}",
@@ -98,8 +102,8 @@ def configured_backends() -> dict:
                 "{scene_dialogue_audio}",
             ],
             "working_directory": ".",
-            "environment": {},
-            "required_commands": ["python"],
+            "environment": {"SERIES_VOICE_BACKEND_COMMAND": voice_backend_command},
+            "required_commands": [],
             "required_environment_variables": ["SERIES_VOICE_BACKEND_COMMAND"],
             "shell": False,
             "timeout_seconds": 3600,
@@ -110,7 +114,7 @@ def configured_backends() -> dict:
         "finished_episode_lipsync_runner": {
             "enabled": True,
             "command_template": [
-                "python",
+                "{python}",
                 "tools/quality_backends/lipsync_runner.py",
                 "--scene-package",
                 "{scene_package_path}",
@@ -124,8 +128,8 @@ def configured_backends() -> dict:
                 "{lipsync_poster_frame}",
             ],
             "working_directory": ".",
-            "environment": {},
-            "required_commands": ["python"],
+            "environment": {"SERIES_LIPSYNC_BACKEND_COMMAND": lipsync_backend_command},
+            "required_commands": [],
             "required_environment_variables": ["SERIES_LIPSYNC_BACKEND_COMMAND"],
             "shell": False,
             "timeout_seconds": 7200,
@@ -136,7 +140,7 @@ def configured_backends() -> dict:
         "finished_episode_master_runner": {
             "enabled": True,
             "command_template": [
-                "python",
+                "{python}",
                 "tools/quality_backends/master_runner.py",
                 "--package-path",
                 "{package_path}",
@@ -145,7 +149,7 @@ def configured_backends() -> dict:
             ],
             "working_directory": ".",
             "environment": {},
-            "required_commands": ["python", "ffmpeg"],
+            "required_commands": [],
             "required_environment_variables": [],
             "shell": False,
             "timeout_seconds": 3600,
