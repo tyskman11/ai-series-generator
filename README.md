@@ -99,6 +99,7 @@ The default path stays local-first and license-light. The project already produc
 - `15_render_episode.py` now also preserves camera/control hint dictionaries correctly instead of dropping them in the render/package path, then reuses backend frames/clips when present, assembles voiced scene masters, writes delivery bundles, and keeps improving the final generated-episode package
 - `15_render_episode.py` now tolerates missing `scene_dialogue_outputs` keys in audio fallback metadata, so draft/final render does not crash on Linux/NAS when dialogue audio generation partially falls back
 - `15_render_episode.py` is being tightened so draft storyboard cards stay preview-only artifacts while the finished-episode fallback render uses clean scene frames instead of text-labeled debug cards
+- `54_run_storyboard_backend.py` now ignores directory placeholders such as `.` when choosing source images, so Linux/NAS runs do not crash if moved or incomplete metadata leaves a directory-like reference behind
 - `57_generate_finished_episodes.py` now imports the shared logging helper correctly, so shared-worker batch generation no longer aborts immediately on startup
 - `51_export_package.py` now exports real generated-episode packages for JSON, DaVinci-style, and Premiere-style handoff folders, including resolved render profile plus release/delivery/regeneration metadata
 - `52_quality_gate.py` now writes persistent quality-gate reports, regeneration queues, and feeds that state back into episode artifacts
@@ -138,6 +139,7 @@ These items are implemented and should stay guarded by README updates and tests 
 - `57_generate_finished_episodes.py` now always runs `52_quality_gate.py` and refuses to accept placeholder-heavy, local-motion-fallback, or `pyttsx3` fallback episodes as finished output
 - the resumable `99_process_next_episode.py` batch handoff path now resolves batch jobs through the shared project root import instead of crashing during resume
 - foundation-training voice sample preparation now skips invalid directory paths instead of crashing on Linux/NAS when old metadata points at `.`
+- storyboard backend scene materialization now skips directory placeholders like `.` instead of trying to open them as images on Linux/NAS
 - `tools/quality_backends/master_runner.py` provides a built-in FFmpeg-based episode master runner that now prefers the project-local FFmpeg binary instead of requiring a global installation
 - backend tool/model preparation now has a dedicated numbered step and stores project-local summaries under `ai_series_project/tools/quality_backends`
 - quality-first runner templates now resolve the active interpreter automatically and no longer rely on `python` being present as a shell command on Linux/NAS systems

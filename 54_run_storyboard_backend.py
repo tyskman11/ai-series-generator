@@ -106,7 +106,7 @@ def preferred_previous_frame(assets_root: Path, payload: dict) -> Path | None:
 
 def first_existing_path(paths: list[Path]) -> Path | None:
     for candidate in paths:
-        if candidate.exists() and candidate.stat().st_size > 0:
+        if candidate.exists() and candidate.is_file() and candidate.stat().st_size > 0:
             return candidate
     return None
 
