@@ -27,6 +27,17 @@ STEP53 = load_module("53_regenerate_weak_scenes.py", "step53_regeneration")
 
 
 class RegenerationQueueTests(unittest.TestCase):
+    def test_quality_gate_parse_args_accepts_shared_worker_flags(self) -> None:
+        with mock.patch(
+            "sys.argv",
+            ["52_quality_gate.py", "--episode-id", "folge_11", "--worker-id", "pc2", "--no-shared-workers"],
+        ):
+            args = STEP52.parse_args()
+
+        self.assertEqual(args.episode_id, "folge_11")
+        self.assertEqual(args.worker_id, "pc2")
+        self.assertTrue(args.no_shared_workers)
+
     def test_quality_gate_paths_ignore_empty_artifact_fields(self) -> None:
         artifacts = {"episode_id": "episode_001"}
 

@@ -9,6 +9,7 @@ from typing import Any
 
 from pipeline_common import (
     SCRIPT_DIR,
+    add_shared_worker_arguments,
     generated_episode_artifacts,
     headline,
     info,
@@ -52,6 +53,7 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help=argparse.SUPPRESS,
     )
+    add_shared_worker_arguments(parser)
     return parser.parse_args()
 
 
