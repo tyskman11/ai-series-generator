@@ -179,19 +179,39 @@ class QualityBackendAssetTests(unittest.TestCase):
                 (cache_dir / "entry.metadata").write_text("commit_hash: abc123\n", encoding="utf-8")
                 return str(local_path)
 
-            fake_hf_module = mock.Mock(snapshot_download=fake_snapshot_download)
-
-            with mock.patch.object(STEP59, "ensure_runtime_package"):
-                with mock.patch.object(STEP59, "is_windows_unc_path", return_value=True):
-                    with mock.patch.dict("sys.modules", {"huggingface_hub": fake_hf_module}):
-                        with mock.patch.object(STEP59, "cleanup_incomplete_download_files", return_value=0):
-                            with mock.patch.object(STEP59, "infer_local_hf_revision", return_value="abc123"):
-                                result = STEP59.ensure_hf_target(target, "abc123", "", "download")
+            with mock.patch.object(STEP59, "is_windows_unc_path", return_value=True):
+                with mock.patch.object(STEP59, "load_hf_snapshot_download", return_value=fake_snapshot_download):
+                    with mock.patch.object(STEP59, "cleanup_incomplete_download_files", return_value=0):
+                        with mock.patch.object(STEP59, "infer_local_hf_revision", return_value="abc123"):
+                            result = STEP59.ensure_hf_target(target, "abc123", "", "download")
 
             self.assertEqual(result["transport"], "huggingface-local-stage")
             self.assertTrue((real_target / "weights.safetensors").exists())
             self.assertNotIn("HF_HUB_DISABLE_XET", STEP59.os.environ)
             self.assertNotIn("HF_XET_HIGH_PERFORMANCE", STEP59.os.environ)
+
+    def test_load_hf_snapshot_download_sets_xet_env_before_import(self) -> None:
+        fake_snapshot_download = object()
+        imported_env: dict[str, str | None] = {}
+        real_import = __import__
+
+        def fake_import(name, globals=None, locals=None, fromlist=(), level=0):
+            if name == "huggingface_hub":
+                imported_env["HF_HUB_DISABLE_XET"] = STEP59.os.environ.get("HF_HUB_DISABLE_XET")
+                imported_env["HF_XET_HIGH_PERFORMANCE"] = STEP59.os.environ.get("HF_XET_HIGH_PERFORMANCE")
+                return mock.Mock(snapshot_download=fake_snapshot_download)
+            return real_import(name, globals, locals, fromlist, level)
+
+        with mock.patch.object(STEP59, "ensure_runtime_package"):
+            with mock.patch.dict(STEP59.sys.modules, {}, clear=False):
+                with mock.patch("builtins.__import__", side_effect=fake_import):
+                    loaded = STEP59.load_hf_snapshot_download()
+
+        self.assertIs(loaded, fake_snapshot_download)
+        self.assertEqual(imported_env["HF_HUB_DISABLE_XET"], "1")
+        self.assertEqual(imported_env["HF_XET_HIGH_PERFORMANCE"], "0")
+        self.assertNotIn("HF_HUB_DISABLE_XET", STEP59.os.environ)
+        self.assertNotIn("HF_XET_HIGH_PERFORMANCE", STEP59.os.environ)
 
     def test_ensure_git_target_falls_back_to_archive_when_checkout_is_corrupt(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

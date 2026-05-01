@@ -7,6 +7,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 from pathlib import Path
@@ -449,9 +450,18 @@ def hf_download_environment() -> Any:
             os.environ["HF_XET_HIGH_PERFORMANCE"] = previous_hf_xet
 
 
+def load_hf_snapshot_download() -> Any:
+    with hf_download_environment():
+        ensure_runtime_package("huggingface_hub", "huggingface_hub")
+        for module_name in [name for name in list(sys.modules) if name == "huggingface_hub" or name.startswith("huggingface_hub.")]:
+            sys.modules.pop(module_name, None)
+        from huggingface_hub import snapshot_download
+
+    return snapshot_download
+
+
 def ensure_hf_target(target: dict[str, Any], remote_revision: str, token: str, action: str) -> dict[str, Any]:
-    ensure_runtime_package("huggingface_hub", "huggingface_hub")
-    from huggingface_hub import snapshot_download
+    snapshot_download = load_hf_snapshot_download()
 
     target_dir = asset_target_dir(target)
     target_dir.mkdir(parents=True, exist_ok=True)
