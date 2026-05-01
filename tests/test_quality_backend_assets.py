@@ -15,6 +15,17 @@ SPEC.loader.exec_module(STEP59)
 
 
 class QualityBackendAssetTests(unittest.TestCase):
+    def test_main_reruns_in_runtime_before_work(self) -> None:
+        with mock.patch.object(STEP59, "rerun_in_runtime") as rerun_mock:
+            with mock.patch.object(STEP59, "parse_args", return_value=mock.Mock(force=False, skip_downloads=True, print_plan=True)):
+                with mock.patch.object(STEP59, "headline"):
+                    with mock.patch.object(STEP59, "load_config", return_value={}):
+                        with mock.patch.object(STEP59, "prepare_quality_backend_assets", return_value=[]):
+                            with mock.patch.object(STEP59, "write_summary", return_value=Path("summary.json")):
+                                with mock.patch.object(STEP59, "ok"):
+                                    STEP59.main()
+        rerun_mock.assert_called_once_with(str(MODULE_PATH))
+
     def test_target_required_files_ready_requires_listed_files(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

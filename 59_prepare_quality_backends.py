@@ -23,6 +23,7 @@ from pipeline_common import (
     pip_install_command,
     read_json,
     resolve_project_path,
+    rerun_in_runtime,
     runtime_python,
     warn,
     write_json,
@@ -554,6 +555,7 @@ def write_summary(cfg: dict[str, Any], rows: list[dict[str, Any]]) -> Path:
 
 
 def main() -> None:
+    rerun_in_runtime(__file__)
     args = parse_args()
     headline("Prepare Quality Backends")
     cfg = load_config()
