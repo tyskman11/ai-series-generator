@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import shutil
@@ -429,6 +430,25 @@ def ensure_git_target(target: dict[str, Any], remote_revision: str, action: str)
     }
 
 
+@contextlib.contextmanager
+def hf_download_environment() -> Any:
+    previous_disable_xet = os.environ.get("HF_HUB_DISABLE_XET")
+    previous_hf_xet = os.environ.get("HF_XET_HIGH_PERFORMANCE")
+    os.environ["HF_HUB_DISABLE_XET"] = "1"
+    os.environ["HF_XET_HIGH_PERFORMANCE"] = "0"
+    try:
+        yield
+    finally:
+        if previous_disable_xet is None:
+            os.environ.pop("HF_HUB_DISABLE_XET", None)
+        else:
+            os.environ["HF_HUB_DISABLE_XET"] = previous_disable_xet
+        if previous_hf_xet is None:
+            os.environ.pop("HF_XET_HIGH_PERFORMANCE", None)
+        else:
+            os.environ["HF_XET_HIGH_PERFORMANCE"] = previous_hf_xet
+
+
 def ensure_hf_target(target: dict[str, Any], remote_revision: str, token: str, action: str) -> dict[str, Any]:
     ensure_runtime_package("huggingface_hub", "huggingface_hub")
     from huggingface_hub import snapshot_download
@@ -443,12 +463,14 @@ def ensure_hf_target(target: dict[str, Any], remote_revision: str, token: str, a
         download_dir = Path(local_stage_root.name) / target_dir.name
         download_dir.mkdir(parents=True, exist_ok=True)
         staged_from_local_temp = True
-    snapshot_path = snapshot_download(
-        repo_id=target["repo_id"],
-        local_dir=str(download_dir),
-        token=token or None,
-        revision=remote_revision or None,
-    )
+    with hf_download_environment():
+        snapshot_path = snapshot_download(
+            repo_id=target["repo_id"],
+            local_dir=str(download_dir),
+            token=token or None,
+            revision=remote_revision or None,
+            max_workers=1,
+        )
     if staged_from_local_temp:
         if target_dir.exists():
             shutil.rmtree(target_dir)

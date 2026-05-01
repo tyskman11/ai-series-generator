@@ -159,8 +159,18 @@ class QualityBackendAssetTests(unittest.TestCase):
                 "required_files": ["weights.safetensors"],
             }
 
-            def fake_snapshot_download(*, repo_id: str, local_dir: str, token: str | None, revision: str | None) -> str:
+            def fake_snapshot_download(
+                *,
+                repo_id: str,
+                local_dir: str,
+                token: str | None,
+                revision: str | None,
+                max_workers: int,
+            ) -> str:
                 self.assertEqual(repo_id, "example/model")
+                self.assertEqual(max_workers, 1)
+                self.assertEqual(STEP59.os.environ.get("HF_HUB_DISABLE_XET"), "1")
+                self.assertEqual(STEP59.os.environ.get("HF_XET_HIGH_PERFORMANCE"), "0")
                 local_path = Path(local_dir)
                 self.assertTrue(local_path.exists())
                 (local_path / "weights.safetensors").write_text("ok", encoding="utf-8")
@@ -180,6 +190,8 @@ class QualityBackendAssetTests(unittest.TestCase):
 
             self.assertEqual(result["transport"], "huggingface-local-stage")
             self.assertTrue((real_target / "weights.safetensors").exists())
+            self.assertNotIn("HF_HUB_DISABLE_XET", STEP59.os.environ)
+            self.assertNotIn("HF_XET_HIGH_PERFORMANCE", STEP59.os.environ)
 
     def test_ensure_git_target_falls_back_to_archive_when_checkout_is_corrupt(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
