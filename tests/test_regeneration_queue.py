@@ -261,6 +261,76 @@ class RegenerationQueueTests(unittest.TestCase):
         self.assertEqual(ensure_report.call_args.kwargs["max_regeneration_retries"], 4)
         self.assertTrue(ensure_report.call_args.kwargs["refresh"])
 
+    def test_regenerate_main_allows_quality_gate_exit_code_one_during_apply(self) -> None:
+        args = argparse.Namespace(
+            episode_id="episode_001",
+            min_quality=None,
+            max_weak_scenes=None,
+            max_regeneration_batch=None,
+            refresh_quality_gate=False,
+            apply=True,
+            force=False,
+            update_bible=False,
+            max_regeneration_retries=3,
+            strict=False,
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            production_package = Path(tmpdir) / "episode_001_production_package.json"
+            production_package.write_text("{}", encoding="utf-8")
+            manifest_path = Path(tmpdir) / "episode_001_regeneration_queue.json"
+            report_path = Path(tmpdir) / "episode_001_quality_gate.json"
+            artifacts = {
+                "episode_id": "episode_001",
+                "production_package": str(production_package),
+            }
+            manifest = {
+                "regeneration_queue": [{"scene_id": "scene_001", "quality_percent": 41}],
+                "rerun_plan": [
+                    {"script": "54_run_storyboard_backend.py", "args": ["--episode-id", "episode_001", "--force"]},
+                    {"script": "15_render_episode.py", "args": ["--episode-id", "episode_001", "--force"]},
+                    {"script": "52_quality_gate.py", "args": ["--episode-id", "episode_001", "--no-auto-retry"]},
+                ],
+                "manifest_path": str(manifest_path),
+            }
+
+            def fake_run_script(script_name: str, _args: list[str], *, allow_failure: bool = False):
+                return mock.Mock(returncode=1 if script_name == "52_quality_gate.py" else 0)
+
+            with mock.patch.object(STEP53, "parse_args", return_value=args), mock.patch.object(
+                STEP53, "load_config", return_value={"release_mode": {"max_regeneration_retries": 3}}
+            ), mock.patch.object(
+                STEP53, "resolve_episode_artifacts", return_value=artifacts
+            ), mock.patch.object(
+                STEP53, "effective_retry_limit", return_value=3
+            ), mock.patch.object(
+                STEP53, "ensure_quality_gate_report", return_value=(report_path, {"regeneration_queue": manifest["regeneration_queue"]})
+            ), mock.patch.object(
+                STEP53, "queue_manifest_path", return_value=manifest_path
+            ), mock.patch.object(
+                STEP53, "build_queue_manifest", return_value=manifest
+            ), mock.patch.object(
+                STEP53, "persist_artifact_metadata"
+            ), mock.patch.object(
+                STEP53, "persist_package_scene_updates"
+            ), mock.patch.object(
+                STEP53, "update_manifest_after_apply"
+            ), mock.patch.object(
+                STEP53, "run_script", side_effect=fake_run_script
+            ) as run_script_mock, mock.patch.object(
+                STEP53, "headline"
+            ), mock.patch.object(
+                STEP53, "info"
+            ), mock.patch.object(
+                STEP53, "ok"
+            ), mock.patch.object(
+                STEP53, "rerun_in_runtime"
+            ):
+                STEP53.main()
+
+        quality_gate_calls = [call for call in run_script_mock.call_args_list if call.args[0] == "52_quality_gate.py"]
+        self.assertEqual(len(quality_gate_calls), 1)
+        self.assertTrue(quality_gate_calls[0].kwargs["allow_failure"])
+
     def test_queue_scenes_for_regeneration_honors_retry_limit(self) -> None:
         queue = queue_scenes_for_regeneration(
             [

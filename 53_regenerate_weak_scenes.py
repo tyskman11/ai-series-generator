@@ -593,7 +593,10 @@ def main() -> None:
         script_name = clean_text(step.get("script", ""))
         extra_args = [clean_text(arg) for arg in step.get("args", []) if clean_text(arg)]
         info(f"Running {script_name} {' '.join(extra_args)}".strip())
-        run_script(script_name, extra_args, allow_failure=False)
+        allow_failure = script_name == "52_quality_gate.py"
+        result = run_script(script_name, extra_args, allow_failure=allow_failure)
+        if script_name == "52_quality_gate.py" and result.returncode not in (0, 1):
+            raise RuntimeError(f"{script_name} failed with exit code {result.returncode}.")
 
     applied_at = utc_timestamp()
     refreshed_artifacts = resolve_episode_artifacts(cfg, episode_id)
