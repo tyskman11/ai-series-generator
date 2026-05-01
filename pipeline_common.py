@@ -1194,6 +1194,7 @@ def run_external_backend_runner(
     elif isinstance(command_template, list):
         rendered_command = [render_external_backend_template(part, context) for part in command_template]
         rendered_command = [part for part in rendered_command if part]
+        rendered_command = [resolve_external_backend_command_part(part) for part in rendered_command]
         if not rendered_command:
             result["status"] = "missing_command"
             return result
@@ -1254,6 +1255,21 @@ def run_external_backend_runner(
     if raise_on_failure or bool(runner_cfg.get("stop_on_error", False)):
         raise RuntimeError(f"External backend runner '{runner_name}' failed. See {log_path}")
     return result
+
+
+def resolve_external_backend_command_part(value: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return text
+    if text.startswith("-"):
+        return text
+    candidate = Path(text)
+    if candidate.is_absolute():
+        return text
+    project_candidate = (SCRIPT_DIR / candidate).resolve(strict=False)
+    if project_candidate.exists():
+        return str(project_candidate)
+    return text
 
 
 def create_tree(base: Path, tree: dict[str, Any]) -> None:

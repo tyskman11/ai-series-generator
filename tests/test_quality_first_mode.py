@@ -103,6 +103,11 @@ class QualityFirstModeTests(unittest.TestCase):
         rendered = pipeline_common.render_external_backend_template("{python}")
         self.assertEqual(rendered, str(pipeline_common.runtime_python()))
 
+    def test_resolve_external_backend_command_part_uses_project_root_for_runner_scripts(self) -> None:
+        resolved = pipeline_common.resolve_external_backend_command_part("tools/quality_backends/image_runner.py")
+        self.assertTrue(resolved.endswith("tools\\quality_backends\\image_runner.py") or resolved.endswith("tools/quality_backends/image_runner.py"))
+        self.assertTrue(Path(resolved).is_absolute())
+
     def test_configured_quality_backends_use_runtime_python_and_project_local_defaults(self) -> None:
         backends = STEP58.configured_backends()
         image_runner = backends["finished_episode_image_runner"]
