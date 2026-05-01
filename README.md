@@ -200,6 +200,8 @@ Also keep the `In Progress` and `Planned` sections current.
 - `99_process_next_episode.py`: full end-to-end coordinator
 - `backend_preset_benchmark.py`: compare backend runner presets and produce a ranked recommendation report
 
+For the full finished-episode path, the intended order is now explicit: `58 -> 59 -> 07 -> 08 -> 09 -> 10 -> 11 -> 12 -> 50 -> 13 -> 14 -> 54 -> 15 -> 52 -> 16`. That means project-local backend/tool downloads happen before training, and training happens before episode generation/rendering.
+
 ### Important Folders
 
 - `ai_series_project/data/inbox/episodes`: new source episode files
@@ -440,6 +442,8 @@ Recommended smoke run after larger pipeline changes:
 
 ```powershell
 python 05_link_faces_and_speakers.py
+python 58_configure_quality_backends.py
+python 59_prepare_quality_backends.py --skip-downloads
 python 07_build_dataset.py
 python 08_train_series_model.py
 python 09_prepare_foundation_training.py --skip-downloads
@@ -539,6 +543,9 @@ python 99_process_next_episode.py --skip-downloads
 ### Generate One New Finished Episode From Reviewed Data
 
 ```powershell
+python 58_configure_quality_backends.py
+python 59_prepare_quality_backends.py --skip-downloads
+python 07_build_dataset.py
 python 08_train_series_model.py
 python 09_prepare_foundation_training.py --skip-downloads
 python 10_train_foundation_models.py

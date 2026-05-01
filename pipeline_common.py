@@ -4342,26 +4342,29 @@ def prepare_quality_backend_assets_runtime(
     force: bool = False,
     quiet: bool = True,
 ) -> dict[str, Any]:
-    command = [str(runtime_python()), str(SCRIPT_DIR / "59_prepare_quality_backends.py")]
-    if skip_downloads:
-        command.append("--skip-downloads")
-    if force:
-        command.append("--force")
-    completed = subprocess.run(
-        command,
-        check=False,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-    )
-    output = completed.stdout or ""
-    if completed.returncode != 0:
-        tail = output[-2000:].strip()
-        detail = f"\n{tail}" if tail else ""
-        raise RuntimeError(f"59_prepare_quality_backends.py failed while preparing project-local backend assets.{detail}")
-    if not quiet and output.strip():
-        info(output.strip())
-    return {"returncode": int(completed.returncode), "output": output}
+    outputs: list[str] = []
+    for script_name in ("58_configure_quality_backends.py", "59_prepare_quality_backends.py"):
+        command = [str(runtime_python()), str(SCRIPT_DIR / script_name)]
+        if script_name == "59_prepare_quality_backends.py" and skip_downloads:
+            command.append("--skip-downloads")
+        if force:
+            command.append("--force")
+        completed = subprocess.run(
+            command,
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+        output = completed.stdout or ""
+        outputs.append(output)
+        if completed.returncode != 0:
+            tail = output[-2000:].strip()
+            detail = f"\n{tail}" if tail else ""
+            raise RuntimeError(f"{script_name} failed while preparing project-local backend assets.{detail}")
+        if not quiet and output.strip():
+            info(output.strip())
+    return {"returncode": 0, "output": "\n".join(part for part in outputs if part.strip())}
 
 
 def quality_first_requirements_report(config: dict[str, Any]) -> dict[str, Any]:
