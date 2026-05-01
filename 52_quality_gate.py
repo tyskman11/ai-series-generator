@@ -165,7 +165,8 @@ def artifact_path_exists(path_value: object) -> bool:
 
 def build_warnings(artifacts: dict[str, Any]) -> list[str]:
     warnings: list[str] = []
-    if str(artifacts.get("production_readiness", "") or "").strip().lower() != "ready":
+    readiness = str(artifacts.get("production_readiness", "") or "").strip().lower()
+    if readiness not in {"ready", "fully_generated_episode_ready"}:
         warnings.append(f"Production readiness is {artifacts.get('production_readiness') or 'unknown'}.")
     if int(artifacts.get("backend_runner_failed_count", 0) or 0) > 0:
         warnings.append(

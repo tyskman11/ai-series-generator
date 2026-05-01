@@ -86,6 +86,28 @@ class RegenerationQueueTests(unittest.TestCase):
                 package_path.parent / "episode_001_quality_gate.json",
             )
 
+    def test_build_warnings_accepts_fully_generated_episode_ready(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            production_package = root / "episode_001_production_package.json"
+            final_render = root / "episode_001_final.mp4"
+            full_generated_episode = root / "episode_001_full.mp4"
+            delivery_episode = root / "episode_001_delivery.mp4"
+            for path in (production_package, final_render, full_generated_episode, delivery_episode):
+                path.write_text("ok", encoding="utf-8")
+            warnings = STEP52.build_warnings(
+                {
+                    "production_readiness": "fully_generated_episode_ready",
+                    "backend_runner_failed_count": 0,
+                    "backend_runner_pending_count": 0,
+                    "production_package": str(production_package),
+                    "final_render": str(final_render),
+                    "full_generated_episode": str(full_generated_episode),
+                    "delivery_episode": str(delivery_episode),
+                }
+            )
+        self.assertEqual(warnings, [])
+
     def test_auto_retry_enabled_respects_no_auto_retry_override(self) -> None:
         cfg = {"release_mode": {"auto_retry_failed_gate": True}}
         self.assertFalse(
