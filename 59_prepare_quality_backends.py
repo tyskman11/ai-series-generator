@@ -16,6 +16,7 @@ from urllib.request import Request, urlopen
 from pipeline_common import (
     CONFIG_PATH,
     coalesce_text,
+    current_os,
     headline,
     info,
     load_config,
@@ -90,6 +91,10 @@ def github_archive_url(owner: str, repo: str, ref: str) -> str:
 
 def github_commit_api_url(owner: str, repo: str, ref: str) -> str:
     return f"{GITHUB_API_BASE}/repos/{owner}/{repo}/commits/{ref}"
+
+
+def is_windows_unc_path(path: Path) -> bool:
+    return current_os() == "windows" and str(path).startswith("\\\\")
 
 
 def default_quality_backend_asset_targets(cfg: dict[str, Any]) -> list[dict[str, Any]]:
@@ -401,14 +406,25 @@ def ensure_hf_target(target: dict[str, Any], remote_revision: str, token: str, a
 
     target_dir = asset_target_dir(target)
     target_dir.mkdir(parents=True, exist_ok=True)
+    download_dir = target_dir
+    staged_from_local_temp = False
+    local_stage_root: tempfile.TemporaryDirectory[str] | None = None
+    if is_windows_unc_path(target_dir):
+        local_stage_root = tempfile.TemporaryDirectory(prefix="hf-quality-backend-")
+        download_dir = Path(local_stage_root.name) / target_dir.name
+        download_dir.mkdir(parents=True, exist_ok=True)
+        staged_from_local_temp = True
     snapshot_path = snapshot_download(
         repo_id=target["repo_id"],
-        local_dir=str(target_dir),
-        local_dir_use_symlinks=False,
+        local_dir=str(download_dir),
         token=token or None,
-        resume_download=True,
         revision=remote_revision or None,
     )
+    if staged_from_local_temp:
+        if target_dir.exists():
+            shutil.rmtree(target_dir)
+        shutil.copytree(download_dir, target_dir)
+        snapshot_path = str(target_dir)
     removed_incomplete = cleanup_incomplete_download_files(target)
     final_revision = remote_revision or infer_local_hf_revision(target)
     write_asset_metadata(
@@ -420,8 +436,11 @@ def ensure_hf_target(target: dict[str, Any], remote_revision: str, token: str, a
             "updated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
             "snapshot_path": str(snapshot_path),
             "repaired_incomplete_files": removed_incomplete,
+            "transport": "huggingface-local-stage" if staged_from_local_temp else "huggingface-direct",
         },
     )
+    if local_stage_root is not None:
+        local_stage_root.cleanup()
     return {
         **target,
         "revision": final_revision,
@@ -430,6 +449,7 @@ def ensure_hf_target(target: dict[str, Any], remote_revision: str, token: str, a
         "downloaded": action == "download",
         "updated": action in {"update", "repair"},
         "repaired_incomplete_files": removed_incomplete,
+        "transport": "huggingface-local-stage" if staged_from_local_temp else "huggingface-direct",
     }
 
 

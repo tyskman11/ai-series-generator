@@ -133,6 +133,38 @@ class QualityBackendAssetTests(unittest.TestCase):
             self.assertTrue((target_dir / "main.py").exists())
             self.assertTrue((target_dir / "server.py").exists())
 
+    def test_ensure_hf_target_stages_locally_for_windows_unc_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            real_target = Path(temp_dir) / "nas-target"
+            target = {
+                "kind": "huggingface",
+                "repo_id": "example/model",
+                "target_dir": str(real_target),
+                "required_files": ["weights.safetensors"],
+            }
+
+            def fake_snapshot_download(*, repo_id: str, local_dir: str, token: str | None, revision: str | None) -> str:
+                self.assertEqual(repo_id, "example/model")
+                local_path = Path(local_dir)
+                self.assertTrue(local_path.exists())
+                (local_path / "weights.safetensors").write_text("ok", encoding="utf-8")
+                cache_dir = local_path / ".cache" / "huggingface" / "download"
+                cache_dir.mkdir(parents=True, exist_ok=True)
+                (cache_dir / "entry.metadata").write_text("commit_hash: abc123\n", encoding="utf-8")
+                return str(local_path)
+
+            fake_hf_module = mock.Mock(snapshot_download=fake_snapshot_download)
+
+            with mock.patch.object(STEP59, "ensure_runtime_package"):
+                with mock.patch.object(STEP59, "is_windows_unc_path", return_value=True):
+                    with mock.patch.dict("sys.modules", {"huggingface_hub": fake_hf_module}):
+                        with mock.patch.object(STEP59, "cleanup_incomplete_download_files", return_value=0):
+                            with mock.patch.object(STEP59, "infer_local_hf_revision", return_value="abc123"):
+                                result = STEP59.ensure_hf_target(target, "abc123", "", "download")
+
+            self.assertEqual(result["transport"], "huggingface-local-stage")
+            self.assertTrue((real_target / "weights.safetensors").exists())
+
 
 if __name__ == "__main__":
     unittest.main()
