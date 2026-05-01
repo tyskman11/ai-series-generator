@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -95,6 +96,12 @@ class QualityBackendAssetTests(unittest.TestCase):
                 revision = STEP59.fetch_remote_git_revision(target)
         self.assertEqual(revision, "abc123def456")
 
+    def test_run_git_command_always_allows_safe_directory(self) -> None:
+        with mock.patch.object(STEP59.subprocess, "run", return_value=mock.Mock(returncode=0)) as run_mock:
+            STEP59.run_git_command(["status"], target_dir=Path(r"\\server\share\repo"), check=False)
+        command = run_mock.call_args.args[0]
+        self.assertEqual(command[:3], ["git", "-c", "safe.directory=*"])
+
     def test_download_and_extract_github_archive_replaces_target_without_git(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -127,9 +134,17 @@ class QualityBackendAssetTests(unittest.TestCase):
                     self._sent = True
                     return b"zip-bytes"
 
-            with mock.patch.object(STEP59, "urlopen", return_value=FakeResponse()):
-                with mock.patch.object(STEP59.shutil, "unpack_archive", side_effect=fake_unpack_archive):
-                    STEP59.download_and_extract_github_archive(target)
+            real_move = shutil.move
+
+            def fake_move(src: str, dst: str) -> str:
+                real_move(src, dst)
+                return dst
+
+            with mock.patch.object(STEP59, "project_archive_staging_dir", return_value=root / "staging"):
+                with mock.patch.object(STEP59, "urlopen", return_value=FakeResponse()):
+                    with mock.patch.object(STEP59.shutil, "unpack_archive", side_effect=fake_unpack_archive):
+                        with mock.patch.object(STEP59.shutil, "move", side_effect=fake_move):
+                            STEP59.download_and_extract_github_archive(target)
 
             self.assertTrue((target_dir / "main.py").exists())
             self.assertTrue((target_dir / "server.py").exists())

@@ -106,9 +106,7 @@ def project_git_config_path() -> Path:
 
 
 def git_subprocess_env() -> dict[str, str]:
-    env = dict(os.environ)
-    env["GIT_CONFIG_GLOBAL"] = str(project_git_config_path())
-    return env
+    return dict(os.environ)
 
 
 def run_git_command(
@@ -118,9 +116,9 @@ def run_git_command(
     check: bool,
     capture_output: bool = False,
 ) -> subprocess.CompletedProcess[str]:
-    command = ["git"]
+    command = ["git", "-c", "safe.directory=*"]
     if target_dir is not None:
-        command.extend(["-c", f"safe.directory={target_dir}", "-C", str(target_dir)])
+        command.extend(["-C", str(target_dir)])
     command.extend(args)
     kwargs: dict[str, Any] = {
         "check": check,
@@ -333,6 +331,12 @@ def ensure_git_safe_directory(target_dir: Path) -> None:
     return
 
 
+def project_archive_staging_dir(target: dict[str, Any]) -> Path:
+    name = coalesce_text(target.get("name", target.get("repo_id", "asset"))) or "asset"
+    safe_name = "".join(char if char.isalnum() or char in {"-", "_"} else "_" for char in name)
+    return resolve_project_path(f"runtime/backend_asset_staging/{safe_name}")
+
+
 def download_and_extract_github_archive(target: dict[str, Any]) -> None:
     owner, repo = parse_github_repo(target)
     if not owner or not repo:
@@ -341,20 +345,23 @@ def download_and_extract_github_archive(target: dict[str, Any]) -> None:
     archive_url = github_archive_url(owner, repo, ref)
     target_dir = asset_target_dir(target)
     target_dir.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix="quality-backend-") as temp_dir:
-        temp_root = Path(temp_dir)
-        zip_path = temp_root / f"{repo}-{ref}.zip"
-        request = Request(archive_url, headers={"User-Agent": "ai-series-training"})
-        with urlopen(request, timeout=180) as response, zip_path.open("wb") as handle:
-            shutil.copyfileobj(response, handle)
-        shutil.unpack_archive(str(zip_path), str(temp_root))
-        extracted_candidates = [path for path in temp_root.iterdir() if path.is_dir()]
-        extracted_root = next((path for path in extracted_candidates if path.name != "__MACOSX"), None)
-        if extracted_root is None:
-            raise RuntimeError(f"Could not extract GitHub archive for {owner}/{repo}@{ref}")
-        if target_dir.exists():
-            shutil.rmtree(target_dir)
-        shutil.copytree(extracted_root, target_dir)
+    staging_root = project_archive_staging_dir(target)
+    if staging_root.exists():
+        shutil.rmtree(staging_root)
+    staging_root.mkdir(parents=True, exist_ok=True)
+    zip_path = staging_root / f"{repo}-{ref}.zip"
+    request = Request(archive_url, headers={"User-Agent": "ai-series-training"})
+    with urlopen(request, timeout=180) as response, zip_path.open("wb") as handle:
+        shutil.copyfileobj(response, handle)
+    shutil.unpack_archive(str(zip_path), str(staging_root))
+    extracted_candidates = [path for path in staging_root.iterdir() if path.is_dir()]
+    extracted_root = next((path for path in extracted_candidates if path.name != "__MACOSX"), None)
+    if extracted_root is None:
+        raise RuntimeError(f"Could not extract GitHub archive for {owner}/{repo}@{ref}")
+    if target_dir.exists():
+        shutil.rmtree(target_dir)
+    shutil.move(str(extracted_root), str(target_dir))
+    shutil.rmtree(staging_root, ignore_errors=True)
 
 
 def refresh_git_target_via_archive(target: dict[str, Any], remote_revision: str) -> str:
