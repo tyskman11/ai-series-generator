@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import subprocess
 import tempfile
 import unittest
 from unittest import mock
@@ -164,6 +165,31 @@ class QualityBackendAssetTests(unittest.TestCase):
 
             self.assertEqual(result["transport"], "huggingface-local-stage")
             self.assertTrue((real_target / "weights.safetensors").exists())
+
+    def test_ensure_git_target_falls_back_to_archive_when_checkout_is_corrupt(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            target_dir = Path(temp_dir) / "comfyui"
+            target = {
+                "name": "comfyui",
+                "kind": "git",
+                "repo_url": "https://github.com/comfyanonymous/ComfyUI.git",
+                "ref": "master",
+                "target_dir": str(target_dir),
+                "required_files": ["main.py"],
+            }
+
+            def fake_run_git_command(args, *, target_dir=None, check=False, capture_output=False):
+                if args[:1] == ["fetch"] or args[:1] == ["checkout"]:
+                    raise subprocess.CalledProcessError(returncode=128, cmd=["git", *args])
+                return mock.Mock(stdout="", returncode=0)
+
+            with mock.patch.object(STEP59, "git_command_available", return_value=True):
+                with mock.patch.object(STEP59, "run_git_command", side_effect=fake_run_git_command):
+                    with mock.patch.object(STEP59, "refresh_git_target_via_archive", return_value="abc123") as refresh_mock:
+                        result = STEP59.ensure_git_target(target, "abc123", "update")
+
+            refresh_mock.assert_called_once()
+            self.assertEqual(result["revision"], "abc123")
 
 
 if __name__ == "__main__":

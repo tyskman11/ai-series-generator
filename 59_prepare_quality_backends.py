@@ -97,6 +97,42 @@ def is_windows_unc_path(path: Path) -> bool:
     return current_os() == "windows" and str(path).startswith("\\\\")
 
 
+def project_git_config_path() -> Path:
+    config_path = resolve_project_path("runtime/git/project_git_config.ini")
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    if not config_path.exists():
+        config_path.write_text("[safe]\n", encoding="utf-8")
+    return config_path
+
+
+def git_subprocess_env() -> dict[str, str]:
+    env = dict(os.environ)
+    env["GIT_CONFIG_GLOBAL"] = str(project_git_config_path())
+    return env
+
+
+def run_git_command(
+    args: list[str],
+    *,
+    target_dir: Path | None = None,
+    check: bool,
+    capture_output: bool = False,
+) -> subprocess.CompletedProcess[str]:
+    command = ["git"]
+    if target_dir is not None:
+        command.extend(["-c", f"safe.directory={target_dir}", "-C", str(target_dir)])
+    command.extend(args)
+    kwargs: dict[str, Any] = {
+        "check": check,
+        "env": git_subprocess_env(),
+        "text": True,
+    }
+    if capture_output:
+        kwargs["stdout"] = subprocess.PIPE
+        kwargs["stderr"] = subprocess.STDOUT
+    return subprocess.run(command, **kwargs)
+
+
 def default_quality_backend_asset_targets(cfg: dict[str, Any]) -> list[dict[str, Any]]:
     foundation_cfg = cfg.get("foundation_training", {}) if isinstance(cfg.get("foundation_training"), dict) else {}
     clone_cfg = cfg.get("cloning", {}) if isinstance(cfg.get("cloning"), dict) else {}
@@ -251,14 +287,7 @@ def infer_local_git_revision(target: dict[str, Any]) -> str:
         return ""
     if not git_command_available():
         return ""
-    ensure_git_safe_directory(target_dir)
-    completed = subprocess.run(
-        ["git", "-C", str(target_dir), "rev-parse", "HEAD"],
-        check=False,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-    )
+    completed = run_git_command(["rev-parse", "HEAD"], target_dir=target_dir, check=False, capture_output=True)
     return completed.stdout.strip() if completed.returncode == 0 else ""
 
 
@@ -284,13 +313,7 @@ def fetch_remote_git_revision(target: dict[str, Any]) -> str:
     ref = coalesce_text(target.get("ref", "master")) or "master"
     repo_url = coalesce_text(target.get("repo_url", ""))
     if git_command_available():
-        completed = subprocess.run(
-            ["git", "ls-remote", repo_url, ref],
-            check=False,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-        )
+        completed = run_git_command(["ls-remote", repo_url, ref], check=False, capture_output=True)
         if completed.returncode != 0:
             raise RuntimeError(completed.stdout.strip() or f"Could not inspect {repo_url}")
         for line in completed.stdout.strip().splitlines():
@@ -307,15 +330,7 @@ def fetch_remote_git_revision(target: dict[str, Any]) -> str:
 
 
 def ensure_git_safe_directory(target_dir: Path) -> None:
-    if not git_command_available():
-        return
-    subprocess.run(
-        ["git", "config", "--global", "--add", "safe.directory", str(target_dir)],
-        check=False,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-    )
+    return
 
 
 def download_and_extract_github_archive(target: dict[str, Any]) -> None:
@@ -340,6 +355,12 @@ def download_and_extract_github_archive(target: dict[str, Any]) -> None:
         if target_dir.exists():
             shutil.rmtree(target_dir)
         shutil.copytree(extracted_root, target_dir)
+
+
+def refresh_git_target_via_archive(target: dict[str, Any], remote_revision: str) -> str:
+    warn(f"Git checkout for {target.get('name', 'git target')} is invalid or incomplete. Rebuilding it from a project-local GitHub ZIP download.")
+    download_and_extract_github_archive(target)
+    return remote_revision or coalesce_text(read_asset_metadata(target).get("revision", ""))
 
 
 def fetch_remote_hf_revision(api: Any, target: dict[str, Any], token: str) -> str:
@@ -368,15 +389,16 @@ def ensure_git_target(target: dict[str, Any], remote_revision: str, action: str)
     target_dir = asset_target_dir(target)
     target_dir.parent.mkdir(parents=True, exist_ok=True)
     if git_command_available():
-        if action == "download":
-            subprocess.run(["git", "clone", coalesce_text(target["repo_url"]), str(target_dir)], check=True)
-        else:
-            ensure_git_safe_directory(target_dir)
-            subprocess.run(["git", "-C", str(target_dir), "fetch", "origin"], check=True)
-        ref = coalesce_text(target.get("ref", "master")) or "master"
-        ensure_git_safe_directory(target_dir)
-        subprocess.run(["git", "-C", str(target_dir), "checkout", remote_revision or f"origin/{ref}"], check=True)
-        final_revision = infer_local_git_revision(target)
+        try:
+            if action == "download":
+                run_git_command(["clone", coalesce_text(target["repo_url"]), str(target_dir)], check=True)
+            else:
+                run_git_command(["fetch", "origin"], target_dir=target_dir, check=True)
+            ref = coalesce_text(target.get("ref", "master")) or "master"
+            run_git_command(["checkout", remote_revision or f"origin/{ref}"], target_dir=target_dir, check=True)
+            final_revision = infer_local_git_revision(target)
+        except subprocess.CalledProcessError:
+            final_revision = refresh_git_target_via_archive(target, remote_revision)
     else:
         download_and_extract_github_archive(target)
         final_revision = remote_revision or coalesce_text(read_asset_metadata(target).get("revision", ""))
