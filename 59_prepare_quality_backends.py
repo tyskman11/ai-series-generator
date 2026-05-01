@@ -2,11 +2,16 @@
 from __future__ import annotations
 
 import argparse
+import json
+import os
 import shutil
 import subprocess
+import tempfile
 import time
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
+from urllib.request import Request, urlopen
 
 from pipeline_common import (
     CONFIG_PATH,
@@ -24,6 +29,7 @@ from pipeline_common import (
 )
 
 DOWNLOAD_METADATA_FILE = ".quality_backend_asset.json"
+GITHUB_API_BASE = "https://api.github.com"
 
 
 def parse_args() -> argparse.Namespace:
@@ -46,6 +52,43 @@ def ensure_runtime_package(module_name: str, package_name: str) -> None:
         pip_install_command(runtime_python(), package_name),
         check=True,
     )
+
+
+def git_command_available() -> bool:
+    return shutil.which("git") is not None
+
+
+def parse_github_repo(target: dict[str, Any]) -> tuple[str, str] | tuple[None, None]:
+    repo_url = coalesce_text(target.get("repo_url", ""))
+    if not repo_url:
+        return None, None
+    parsed = urlparse(repo_url)
+    if parsed.netloc.lower() != "github.com":
+        return None, None
+    parts = [segment for segment in parsed.path.strip("/").split("/") if segment]
+    if len(parts) < 2:
+        return None, None
+    owner = parts[0]
+    repo = parts[1][:-4] if parts[1].endswith(".git") else parts[1]
+    if not owner or not repo:
+        return None, None
+    return owner, repo
+
+
+def github_request_json(url: str) -> dict[str, Any]:
+    request = Request(url, headers={"Accept": "application/vnd.github+json", "User-Agent": "ai-series-training"})
+    with urlopen(request, timeout=60) as response:
+        payload = response.read().decode("utf-8")
+    data = json.loads(payload)
+    return data if isinstance(data, dict) else {}
+
+
+def github_archive_url(owner: str, repo: str, ref: str) -> str:
+    return f"https://github.com/{owner}/{repo}/archive/refs/heads/{ref}.zip"
+
+
+def github_commit_api_url(owner: str, repo: str, ref: str) -> str:
+    return f"{GITHUB_API_BASE}/repos/{owner}/{repo}/commits/{ref}"
 
 
 def default_quality_backend_asset_targets(cfg: dict[str, Any]) -> list[dict[str, Any]]:
@@ -200,6 +243,8 @@ def infer_local_git_revision(target: dict[str, Any]) -> str:
     git_dir = target_dir / ".git"
     if not git_dir.exists():
         return ""
+    if not git_command_available():
+        return ""
     ensure_git_safe_directory(target_dir)
     completed = subprocess.run(
         ["git", "-C", str(target_dir), "rev-parse", "HEAD"],
@@ -232,23 +277,32 @@ def local_asset_state(target: dict[str, Any]) -> dict[str, Any]:
 def fetch_remote_git_revision(target: dict[str, Any]) -> str:
     ref = coalesce_text(target.get("ref", "master")) or "master"
     repo_url = coalesce_text(target.get("repo_url", ""))
-    completed = subprocess.run(
-        ["git", "ls-remote", repo_url, ref],
-        check=False,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-    )
-    if completed.returncode != 0:
-        raise RuntimeError(completed.stdout.strip() or f"Could not inspect {repo_url}")
-    for line in completed.stdout.strip().splitlines():
-        parts = line.split()
-        if len(parts) >= 2 and len(parts[0]) >= 7 and all(char in "0123456789abcdefABCDEF" for char in parts[0]):
-            return parts[0]
-    raise RuntimeError(completed.stdout.strip() or f"Could not determine the remote revision for {repo_url}")
+    if git_command_available():
+        completed = subprocess.run(
+            ["git", "ls-remote", repo_url, ref],
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+        if completed.returncode != 0:
+            raise RuntimeError(completed.stdout.strip() or f"Could not inspect {repo_url}")
+        for line in completed.stdout.strip().splitlines():
+            parts = line.split()
+            if len(parts) >= 2 and len(parts[0]) >= 7 and all(char in "0123456789abcdefABCDEF" for char in parts[0]):
+                return parts[0]
+        raise RuntimeError(completed.stdout.strip() or f"Could not determine the remote revision for {repo_url}")
+
+    owner, repo = parse_github_repo(target)
+    if owner and repo:
+        payload = github_request_json(github_commit_api_url(owner, repo, ref))
+        return coalesce_text(payload.get("sha", ""))
+    return ""
 
 
 def ensure_git_safe_directory(target_dir: Path) -> None:
+    if not git_command_available():
+        return
     subprocess.run(
         ["git", "config", "--global", "--add", "safe.directory", str(target_dir)],
         check=False,
@@ -256,6 +310,30 @@ def ensure_git_safe_directory(target_dir: Path) -> None:
         stderr=subprocess.STDOUT,
         text=True,
     )
+
+
+def download_and_extract_github_archive(target: dict[str, Any]) -> None:
+    owner, repo = parse_github_repo(target)
+    if not owner or not repo:
+        raise RuntimeError(f"Git is not available and no GitHub ZIP fallback exists for {coalesce_text(target.get('repo_url', ''))}")
+    ref = coalesce_text(target.get("ref", "master")) or "master"
+    archive_url = github_archive_url(owner, repo, ref)
+    target_dir = asset_target_dir(target)
+    target_dir.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="quality-backend-") as temp_dir:
+        temp_root = Path(temp_dir)
+        zip_path = temp_root / f"{repo}-{ref}.zip"
+        request = Request(archive_url, headers={"User-Agent": "ai-series-training"})
+        with urlopen(request, timeout=180) as response, zip_path.open("wb") as handle:
+            shutil.copyfileobj(response, handle)
+        shutil.unpack_archive(str(zip_path), str(temp_root))
+        extracted_candidates = [path for path in temp_root.iterdir() if path.is_dir()]
+        extracted_root = next((path for path in extracted_candidates if path.name != "__MACOSX"), None)
+        if extracted_root is None:
+            raise RuntimeError(f"Could not extract GitHub archive for {owner}/{repo}@{ref}")
+        if target_dir.exists():
+            shutil.rmtree(target_dir)
+        shutil.copytree(extracted_root, target_dir)
 
 
 def fetch_remote_hf_revision(api: Any, target: dict[str, Any], token: str) -> str:
@@ -283,15 +361,19 @@ def resolve_target_action(target: dict[str, Any], remote_revision: str) -> str:
 def ensure_git_target(target: dict[str, Any], remote_revision: str, action: str) -> dict[str, Any]:
     target_dir = asset_target_dir(target)
     target_dir.parent.mkdir(parents=True, exist_ok=True)
-    if action == "download":
-        subprocess.run(["git", "clone", coalesce_text(target["repo_url"]), str(target_dir)], check=True)
-    else:
+    if git_command_available():
+        if action == "download":
+            subprocess.run(["git", "clone", coalesce_text(target["repo_url"]), str(target_dir)], check=True)
+        else:
+            ensure_git_safe_directory(target_dir)
+            subprocess.run(["git", "-C", str(target_dir), "fetch", "origin"], check=True)
+        ref = coalesce_text(target.get("ref", "master")) or "master"
         ensure_git_safe_directory(target_dir)
-        subprocess.run(["git", "-C", str(target_dir), "fetch", "origin"], check=True)
-    ref = coalesce_text(target.get("ref", "master")) or "master"
-    ensure_git_safe_directory(target_dir)
-    subprocess.run(["git", "-C", str(target_dir), "checkout", remote_revision or f"origin/{ref}"], check=True)
-    final_revision = infer_local_git_revision(target)
+        subprocess.run(["git", "-C", str(target_dir), "checkout", remote_revision or f"origin/{ref}"], check=True)
+        final_revision = infer_local_git_revision(target)
+    else:
+        download_and_extract_github_archive(target)
+        final_revision = remote_revision or coalesce_text(read_asset_metadata(target).get("revision", ""))
     write_asset_metadata(
         target,
         {
@@ -300,6 +382,7 @@ def ensure_git_target(target: dict[str, Any], remote_revision: str, action: str)
             "revision": final_revision,
             "updated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
             "target_dir": str(target_dir),
+            "transport": "git" if git_command_available() else "github-zip",
         },
     )
     return {

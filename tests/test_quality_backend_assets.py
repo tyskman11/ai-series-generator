@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 
@@ -71,6 +72,55 @@ class QualityBackendAssetTests(unittest.TestCase):
         comfy = next(target for target in targets if target["name"] == "comfyui")
         self.assertEqual(comfy["target_dir"], "tools/quality_backends/comfyui")
         self.assertTrue(any(target["name"] == "video_base_model" for target in targets))
+
+    def test_fetch_remote_git_revision_uses_github_api_when_git_missing(self) -> None:
+        target = {
+            "repo_url": "https://github.com/comfyanonymous/ComfyUI.git",
+            "ref": "master",
+        }
+        with mock.patch.object(STEP59, "git_command_available", return_value=False):
+            with mock.patch.object(STEP59, "github_request_json", return_value={"sha": "abc123def456"}):
+                revision = STEP59.fetch_remote_git_revision(target)
+        self.assertEqual(revision, "abc123def456")
+
+    def test_download_and_extract_github_archive_replaces_target_without_git(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            target_dir = root / "comfyui"
+            target = {
+                "repo_url": "https://github.com/comfyanonymous/ComfyUI.git",
+                "ref": "master",
+                "target_dir": str(target_dir),
+            }
+
+            def fake_unpack_archive(_: str, destination: str) -> None:
+                extracted = Path(destination) / "ComfyUI-master"
+                extracted.mkdir(parents=True, exist_ok=True)
+                (extracted / "main.py").write_text("print('ok')", encoding="utf-8")
+                (extracted / "server.py").write_text("print('ok')", encoding="utf-8")
+
+            class FakeResponse:
+                def __init__(self) -> None:
+                    self._sent = False
+
+                def __enter__(self) -> "FakeResponse":
+                    return self
+
+                def __exit__(self, exc_type, exc, tb) -> None:
+                    return None
+
+                def read(self, size: int = -1) -> bytes:
+                    if self._sent:
+                        return b""
+                    self._sent = True
+                    return b"zip-bytes"
+
+            with mock.patch.object(STEP59, "urlopen", return_value=FakeResponse()):
+                with mock.patch.object(STEP59.shutil, "unpack_archive", side_effect=fake_unpack_archive):
+                    STEP59.download_and_extract_github_archive(target)
+
+            self.assertTrue((target_dir / "main.py").exists())
+            self.assertTrue((target_dir / "server.py").exists())
 
 
 if __name__ == "__main__":
