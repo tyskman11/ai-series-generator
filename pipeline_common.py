@@ -2265,6 +2265,37 @@ def platform_tool_filenames(tool_name: str, os_name: str | None = None) -> list[
     return [tool_name]
 
 
+@lru_cache(maxsize=8)
+def python_packaged_tool(tool_name: str) -> Path | None:
+    normalized = str(tool_name or "").strip().lower()
+    if normalized != "ffmpeg":
+        return None
+    try:
+        import imageio_ffmpeg
+    except Exception:
+        return None
+    try:
+        resolved = Path(str(imageio_ffmpeg.get_ffmpeg_exe())).resolve()
+    except Exception:
+        return None
+    return resolved if resolved.exists() else None
+
+
+def prefer_python_packaged_tool(bin_dir: Path, tool_name: str) -> bool:
+    normalized = str(tool_name or "").strip().lower()
+    if normalized != "ffmpeg":
+        return False
+    try:
+        candidate = bin_dir.resolve(strict=False)
+    except Exception:
+        candidate = bin_dir
+    default_dirs = [
+        (PROJECT_ROOT / "tools" / "ffmpeg" / "bin").resolve(strict=False),
+        (SCRIPT_DIR / "tools" / "ffmpeg" / "bin").resolve(strict=False),
+    ]
+    return any(candidate == default_dir for default_dir in default_dirs)
+
+
 def detect_tool(bin_dir: Path, tool_name: str) -> Path:
     fallback_dirs = [bin_dir]
     try:
@@ -2280,6 +2311,10 @@ def detect_tool(bin_dir: Path, tool_name: str) -> Path:
         for candidate in candidates:
             if candidate.exists():
                 return candidate
+    if prefer_python_packaged_tool(bin_dir, tool_name):
+        packaged_candidate = python_packaged_tool(tool_name)
+        if packaged_candidate is not None:
+            return packaged_candidate
     path_candidate = tool_on_path(tool_name)
     if path_candidate is not None:
         return path_candidate

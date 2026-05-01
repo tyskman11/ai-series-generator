@@ -75,7 +75,7 @@ The default path stays local-first and license-light. The project already produc
 - keep the default path stable for large NAS-backed runs
 - improve the new project-local quality backend defaults so they move closer to real original-episode output
 - keep backend tools and model downloads strictly project-local instead of depending on external folders
-- keep the generation chain clearly ordered as train first, then generate/render
+- keep the setup and generation chain clearly ordered as `00` setup/downloads first, then training, then generate/render
 - raise external-runner quality so the fully generated episode path can become the real default
 
 ## In Progress
@@ -128,7 +128,9 @@ The default path stays local-first and license-light. The project already produc
 These items are implemented and should stay guarded by README updates and tests when they change.
 
 - script numbering is numeric only, with training before generated-episode render in the documented orchestration paths
-- OS-specific FFmpeg detection and runtime setup are in place for Windows and Linux/NAS runs
+- `00_prepare_runtime.py` now owns the complete normal setup path: project structure, runtime packages, quality-backend configuration, project-local backend downloads, and FFmpeg provisioning through `imageio-ffmpeg`
+- `01_setup_project.py`, `_temp_check.py`, `_check_syntax.py`, and `99_sync_to_github.py` have been removed from the tracked project as redundant/private helper scripts
+- FFmpeg resolution now prefers the Python runtime package `imageio-ffmpeg` and still falls back safely across Windows and Linux/NAS runs
 - `57_generate_finished_episodes.py` is the finished-episode entry point and defaults to one episode unless `--count 0` or `--endless` is used
 - the default project config now targets `original_episode_quality_first`: release mode on, strict thresholds, original-line reuse on, system TTS fallback off, and lipsync on
 - generated project metadata uses portable relative paths for previews, review queues, linked speaker reference frames, and render handoff fields while legacy absolute paths are still accepted on read
@@ -144,7 +146,7 @@ These items are implemented and should stay guarded by README updates and tests 
 - the resumable `99_process_next_episode.py` batch handoff path now resolves batch jobs through the shared project root import instead of crashing during resume
 - foundation-training voice sample preparation now skips invalid directory paths instead of crashing on Linux/NAS when old metadata points at `.`
 - storyboard backend scene materialization now skips directory placeholders like `.` instead of trying to open them as images on Linux/NAS
-- `tools/quality_backends/master_runner.py` provides a built-in FFmpeg-based episode master runner that now prefers the project-local FFmpeg binary instead of requiring a global installation
+- `tools/quality_backends/master_runner.py` provides a built-in FFmpeg-based episode master runner that now prefers the Python-runtime FFmpeg executable instead of requiring a separate global installation
 - backend tool/model preparation now has a dedicated numbered step and stores project-local summaries under `ai_series_project/tools/quality_backends`
 - quality-first runner templates now resolve the active interpreter automatically and no longer rely on `python` being present as a shell command on Linux/NAS systems
 - release-gate, export-package, regeneration-queue, backend-benchmark, review-preview, display-diagnostics, and generation-quality behavior have tracked regression tests
@@ -182,7 +184,9 @@ Also keep the `In Progress` and `Planned` sections current.
 
 ### Core Numbered Scripts
 
-- `00_prepare_runtime.py` to `06_review_unknowns.py`: import, split, transcription, linking, and review
+- `00_prepare_runtime.py`: full setup for the portable runtime, folder structure, quality-backend defaults, project-local backend downloads, and Python-provided FFmpeg
+- `01` is intentionally retired because its former setup responsibilities were merged into `00_prepare_runtime.py`
+- `02_import_episode.py` to `06_review_unknowns.py`: import, split, transcription, linking, and review
 - `07_build_dataset.py` to `12_train_fine_tune_models.py`: dataset and training chain
 - `13_generate_episode.py`: generate a new synthetic episode blueprint and shotlist
 - `14_generate_storyboard_assets.py`: build storyboard seed assets and scene backend payloads
@@ -200,7 +204,7 @@ Also keep the `In Progress` and `Planned` sections current.
 - `99_process_next_episode.py`: full end-to-end coordinator
 - `backend_preset_benchmark.py`: compare backend runner presets and produce a ranked recommendation report
 
-For the full finished-episode path, the intended order is now explicit: `58 -> 59 -> 07 -> 08 -> 09 -> 10 -> 11 -> 12 -> 50 -> 13 -> 14 -> 54 -> 15 -> 52 -> 16`. That means project-local backend/tool downloads happen before training, and training happens before episode generation/rendering.
+For the full finished-episode path, the intended order is now explicit: `00 -> 07 -> 08 -> 09 -> 10 -> 11 -> 12 -> 50 -> 13 -> 14 -> 54 -> 15 -> 52 -> 16`. That means full setup and project-local downloads happen first, then training, and only then generation/rendering. `58_configure_quality_backends.py` and `59_prepare_quality_backends.py` remain available as standalone maintenance/update helpers, but `00_prepare_runtime.py` already runs them for the normal setup path.
 
 ### Important Folders
 
@@ -223,7 +227,6 @@ For the full finished-episode path, the intended order is now explicit: `58 -> 5
 - `ai_series_project/exports/packages/<episode>/<format>`: export packages for external editing or handoff tools
 - `ai_series_project/runtime/autosaves`: autosaves and resumable run state
 - `ai_series_project/runtime/distributed`: NAS/shared-worker lease files
-- `ai_series_project/tools/ffmpeg/bin`: OS-specific FFmpeg binaries
 - `tests`: tracked unit tests for export packages, quality gates, and regeneration/retry behavior
 
 ## Requirements
@@ -234,7 +237,7 @@ For the full finished-episode path, the intended order is now explicit: `58 -> 5
 - for NAS/shared-worker mode, all participating PCs must work on the same shared project contents and the same `ai_series_project/runtime/distributed` lease files; generated metadata is portable across different local mount points or drive letters
 - optional NVIDIA GPU for faster transcription, embeddings, and rendering
 
-`00_prepare_runtime.py` installs the runtime. On Linux/NAS it uses the active `python3` runtime directly with `python3 -m pip install --break-system-packages`. It also downloads the matching FFmpeg build for the current OS into `ai_series_project/tools/ffmpeg/bin`.
+`00_prepare_runtime.py` now performs the full initial setup. On Linux/NAS it uses the active `python3` runtime directly with `python3 -m pip install --break-system-packages`. It creates the project structure, installs runtime packages, writes quality-backend defaults, prepares project-local backend tools/models, and uses the FFmpeg executable that ships with the Python runtime package `imageio-ffmpeg`.
 
 `ai_series_project/configs/project.json` now also exposes:
 
@@ -277,11 +280,8 @@ If those runners are not enabled with real `command_template` values, the qualit
 
 1. Drop new source episodes into `ai_series_project/data/inbox/episodes`.
 2. Run `python 00_prepare_runtime.py`
-3. Run `python 01_setup_project.py`
-4. Run `python 58_configure_quality_backends.py`
-5. Run `python 59_prepare_quality_backends.py`
-6. Run `python 99_process_next_episode.py --skip-downloads`
-7. Review outputs in:
+3. Run `python 99_process_next_episode.py --skip-downloads`
+4. Review outputs in:
    - `ai_series_project/generation/story_prompts`
    - `ai_series_project/generation/shotlists`
    - `ai_series_project/generation/final_episode_packages`
@@ -296,17 +296,13 @@ python 57_generate_finished_episodes.py --count 1 --skip-downloads
 
 ## Workflow Summary
 
-Important: the logical run order is not strictly numeric anymore. Training must finish before final episode generation/render starts. The real finished-episode path is:
+Important: the logical run order starts with full setup. Training must finish before final episode generation/render starts. The real finished-episode path is:
 
-`07 -> 08 -> 09 -> 10 -> 11 -> 12 -> 50 -> 13 -> 14 -> 54 -> 15 -> 16`
+`00 -> 07 -> 08 -> 09 -> 10 -> 11 -> 12 -> 50 -> 13 -> 14 -> 54 -> 15 -> 16`
 
 The finished-episode batch path now always includes the quality gate:
 
-`07 -> 08 -> 09 -> 10 -> 11 -> 12 -> 50 -> 13 -> 14 -> 54 -> 15 -> 52 -> 16`
-
-Project-local backend preparation belongs before the quality-first render path, and the main entry scripts now re-run step `59` automatically:
-
-`58 -> 59 -> 07 -> 08 -> 09 -> 10 -> 11 -> 12 -> 50 -> 13 -> 14 -> 54 -> 15 -> 52 -> 16`
+`00 -> 07 -> 08 -> 09 -> 10 -> 11 -> 12 -> 50 -> 13 -> 14 -> 54 -> 15 -> 52 -> 16`
 
 If `release_mode.auto_retry_failed_gate` is also turned on and weak scenes are queued, the gate can append one retry loop:
 
@@ -314,11 +310,7 @@ If `release_mode.auto_retry_failed_gate` is also turned on and weak scenes are q
 
 ### 00 - Prepare Runtime
 
-Prepares Python dependencies, installs Torch in the correct order for Linux/NAS reliability, and downloads the matching FFmpeg binary for the current OS.
-
-### 01 - Set Up Project
-
-Creates the expected folder structure and config.
+Prepares the full portable setup: folder structure, Python dependencies, Torch in the correct order for Linux/NAS reliability, quality-backend defaults, project-local backend downloads, and Python-provided FFmpeg via `imageio-ffmpeg`.
 
 ### 02 - Import Episode
 
@@ -430,20 +422,17 @@ python -m unittest discover -s tests -v
 
 The tracked test suite currently focuses on the finished-episode handoff path: export packages, release quality gates, retry queues, strict warnings, and regeneration metadata.
 
-Quick syntax check for all pipeline and test files:
+Quick syntax check for the main pipeline and tests:
 
 ```powershell
-python _check_syntax.py
+python -m py_compile 00_prepare_runtime.py 02_import_episode.py 03_split_scenes.py 04_diarize_and_transcribe.py 05_link_faces_and_speakers.py 06_review_unknowns.py 07_build_dataset.py 08_train_series_model.py 09_prepare_foundation_training.py 10_train_foundation_models.py 11_train_adapter_models.py 12_train_fine_tune_models.py 13_generate_episode.py 14_generate_storyboard_assets.py 15_render_episode.py 16_build_series_bible.py 49_refresh_after_manual_review.py 50_run_backend_finetunes.py 51_export_package.py 52_quality_gate.py 53_regenerate_weak_scenes.py 54_run_storyboard_backend.py 55_backup_project.py 56_restore_project.py 57_generate_finished_episodes.py 58_configure_quality_backends.py 59_prepare_quality_backends.py 99_process_next_episode.py backend_preset_benchmark.py pipeline_common.py
+Get-ChildItem tests\*.py | ForEach-Object { python -m py_compile $_.FullName }
 ```
-
-`_check_syntax.py` recursively validates every `*.py` file in the project root and the `tests/` directory, excluding `__pycache__`, `runtime/`, `.venv/`, `venv/`, and `ai_series_project/`. It is a fast pre-flight check before running the full test suite or smoke runs.
 
 Recommended smoke run after larger pipeline changes:
 
 ```powershell
 python 05_link_faces_and_speakers.py
-python 58_configure_quality_backends.py
-python 59_prepare_quality_backends.py --skip-downloads
 python 07_build_dataset.py
 python 08_train_series_model.py
 python 09_prepare_foundation_training.py --skip-downloads
@@ -536,15 +525,13 @@ python 06_review_unknowns.py --review-faces --open-previews
 
 ```powershell
 python 00_prepare_runtime.py
-python 01_setup_project.py
 python 99_process_next_episode.py --skip-downloads
 ```
 
 ### Generate One New Finished Episode From Reviewed Data
 
 ```powershell
-python 58_configure_quality_backends.py
-python 59_prepare_quality_backends.py --skip-downloads
+python 00_prepare_runtime.py --skip-downloads
 python 07_build_dataset.py
 python 08_train_series_model.py
 python 09_prepare_foundation_training.py --skip-downloads

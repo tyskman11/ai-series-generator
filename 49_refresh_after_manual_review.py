@@ -9,6 +9,7 @@ from pipeline_common import (
     distributed_item_lease,
     distributed_step_runtime_root,
     ensure_quality_first_ready,
+    prepare_quality_backend_assets_runtime,
     open_face_review_item_count,
     LiveProgressReporter,
     SCRIPT_DIR,
@@ -73,21 +74,10 @@ def planned_refresh_steps(cfg: dict, skip_downloads: bool = False, stop_after_tr
     needs_foundation_training = bool(foundation_cfg.get("required_before_generate", True)) or bool(
         foundation_cfg.get("required_before_render", True)
     )
-    planned_steps: list[tuple[str, str, list[str]]] = []
-    quality_backend_args: list[str] = ["--skip-downloads"] if skip_downloads else []
-    if not stop_after_training:
-        planned_steps.extend(
-            [
-                ("58_configure_quality_backends.py", "Configure quality-first backend runner defaults", []),
-                ("59_prepare_quality_backends.py", "Download/update project-local backend tools and models", quality_backend_args),
-            ]
-        )
-    planned_steps.extend(
-        [
-            ("07_build_dataset.py", "Rebuild datasets with the latest reviewed character names", ["--force"]),
-            ("08_train_series_model.py", "Retrain the series model with the latest reviewed names", []),
-        ]
-    )
+    planned_steps: list[tuple[str, str, list[str]]] = [
+        ("07_build_dataset.py", "Rebuild datasets with the latest reviewed character names", ["--force"]),
+        ("08_train_series_model.py", "Retrain the series model with the latest reviewed names", []),
+    ]
     prepare_args = ["--force"]
     if skip_downloads:
         prepare_args.append("--skip-downloads")
@@ -141,6 +131,10 @@ def main() -> None:
     args = parse_args()
     headline("Rebuild After Manual Character Review")
     cfg = load_config()
+    if not args.stop_after_training:
+        prepare_quality_backend_assets_runtime(skip_downloads=bool(args.skip_downloads))
+        cfg = load_config()
+        ensure_quality_first_ready(cfg, context_label="49_refresh_after_manual_review.py")
     worker_id = shared_worker_id_for_args(args)
     shared_workers = shared_workers_enabled_for_args(cfg, args)
     child_shared_args = shared_worker_cli_args(cfg, args)
@@ -190,9 +184,6 @@ def main() -> None:
         )
         completed_count = 0
         for script_name, title, extra_args in planned_steps:
-            if script_name == "13_generate_episode.py":
-                cfg = load_config()
-                ensure_quality_first_ready(cfg, context_label="49_refresh_after_manual_review.py")
             reporter.update(completed_count, current_label=title, extra_label=f"Running now: {script_name}", force=True)
             run_step(script_name, title, extra_args, shared_args=child_shared_args)
             completed_count += 1

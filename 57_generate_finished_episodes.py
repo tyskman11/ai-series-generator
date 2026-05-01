@@ -12,6 +12,7 @@ from pipeline_common import (
     distributed_item_lease,
     distributed_step_runtime_root,
     ensure_quality_first_ready,
+    prepare_quality_backend_assets_runtime,
     open_face_review_item_count,
     LiveProgressReporter,
     PROJECT_ROOT,
@@ -114,10 +115,7 @@ def training_plan_rows(cfg: dict, skip_downloads: bool = False) -> list[tuple[st
         should_train_fine_tune,
         should_run_backend,
     ) = training_stage_flags(cfg)
-    quality_backend_args: list[str] = ["--skip-downloads"] if skip_downloads else []
     rows: list[tuple[str, str, list[str]]] = [
-        ("58_configure_quality_backends.py", "Configure Quality Backends", []),
-        ("59_prepare_quality_backends.py", "Prepare Quality Backends", quality_backend_args),
         ("07_build_dataset.py", "Build Datasets", []),
         ("08_train_series_model.py", "Train Series Model", []),
     ]
@@ -365,6 +363,9 @@ def main() -> None:
                 f"There are still {review_count} open face review cases. "
                 "Run 06_review_unknowns.py first before training, generation, or render can start."
             )
+        prepare_quality_backend_assets_runtime(skip_downloads=bool(args.skip_downloads))
+        cfg = load_config()
+        ensure_quality_first_ready(cfg, context_label="57_generate_finished_episodes.py")
         planned_steps = planned_preview_steps_for_mode(cfg, count, endless=endless)
         reporter = LiveProgressReporter(
             script_name="57_generate_finished_episodes.py",
@@ -379,8 +380,6 @@ def main() -> None:
             run_step(script_name, extra_args=extra_args, shared_args=child_shared_args)
             completed_steps += 1
             reporter.update(completed_steps, current_label=current_label, extra_label=f"Completed: {script_name}")
-        cfg = load_config()
-        ensure_quality_first_ready(cfg, context_label="57_generate_finished_episodes.py")
         index = 0
         while endless or index < count:
             before = latest_episode_id()

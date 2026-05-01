@@ -15,6 +15,7 @@ from pipeline_common import (
     distributed_item_lease,
     distributed_step_runtime_root,
     ensure_quality_first_ready,
+    prepare_quality_backend_assets_runtime,
     open_face_review_item_count,
     LiveProgressReporter,
     SCRIPT_DIR,
@@ -39,7 +40,7 @@ from pipeline_common import (
 
 AUTOSAVE_VERSION = 1
 AUTOSAVE_KEEP_COUNT = 2
-SETUP_STEP = "01_setup_project.py"
+SETUP_STEP = "00_prepare_runtime.py"
 EPISODE_STEPS = [
     "02_import_episode.py",
     "03_split_scenes.py",
@@ -47,8 +48,6 @@ EPISODE_STEPS = [
     "05_link_faces_and_speakers.py",
 ]
 GLOBAL_STEPS = [
-    "58_configure_quality_backends.py",
-    "59_prepare_quality_backends.py",
     "07_build_dataset.py",
     "08_train_series_model.py",
     "09_prepare_foundation_training.py",
@@ -460,10 +459,7 @@ def global_step_rows(cfg: dict, skip_downloads: bool = False) -> list[tuple[str,
     needs_foundation_training = bool(foundation_cfg.get("required_before_generate", True)) or bool(
         foundation_cfg.get("required_before_render", True)
     )
-    quality_backend_args: list[str] = ["--skip-downloads"] if skip_downloads else []
     steps: list[tuple[str, str, list[str]]] = [
-        ("58_configure_quality_backends.py", "Configure Quality Backends", []),
-        ("59_prepare_quality_backends.py", "Prepare Quality Backends", quality_backend_args),
         ("07_build_dataset.py", "Build training dataset from reviewed data", []),
         ("08_train_series_model.py", "Train Series Model", []),
     ]
@@ -551,8 +547,6 @@ def completed_global_step_labels(planned_steps: list[dict[str, object]], complet
 
 def global_step_title(script_name: str) -> str:
     titles = {
-        "58_configure_quality_backends.py": "Configure Quality Backends",
-        "59_prepare_quality_backends.py": "Prepare Quality Backends",
         "07_build_dataset.py": "Build training dataset from reviewed data",
         "08_train_series_model.py": "Train Series Model",
         "09_prepare_foundation_training.py": "Prepare Foundation Training",
@@ -596,6 +590,9 @@ def main() -> None:
     args = parse_args()
     headline("Run Full Series Pipeline")
     cfg = load_config()
+    prepare_quality_backend_assets_runtime(skip_downloads=bool(args.skip_downloads))
+    cfg = load_config()
+    ensure_quality_first_ready(cfg, context_label="99_process_next_episode.py")
     worker_id = shared_worker_id_for_args(args)
     shared_workers = shared_workers_enabled_for_args(cfg, args)
     child_shared_args = shared_worker_cli_args(cfg, args)
@@ -638,7 +635,8 @@ def main() -> None:
             state["current_phase"] = "setup"
             state["current_step"] = SETUP_STEP
             save_autosave(cfg, state, "setup_started", inbox_dir)
-            run_step(SETUP_STEP, "Set Up Project Structure", shared_args=child_shared_args)
+            setup_args = ["--skip-downloads"] if bool(args.skip_downloads) else []
+            run_step(SETUP_STEP, "Prepare Runtime And Project Setup", setup_args, shared_args=child_shared_args)
             state["setup_completed"] = True
             state["current_phase"] = None
             state["current_step"] = None
@@ -764,9 +762,6 @@ scope_label="Current Episode Steps",
         for script_name, step_title, step_args in step_rows:
             if script_name in completed_global_steps:
                 continue
-            if script_name == "13_generate_episode.py":
-                cfg = load_config()
-                ensure_quality_first_ready(cfg, context_label="99_process_next_episode.py")
             global_step_started_at = time.time()
             state["current_phase"] = "global"
             state["current_step"] = script_name
