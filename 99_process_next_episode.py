@@ -8,7 +8,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from pipeline_common import (
+from support_scripts.pipeline_common import (
     PROJECT_ROOT,
     add_batch_job,
     add_shared_worker_arguments,
@@ -809,4 +809,5 @@ if __name__ == "__main__":
     except Exception as exc:
         error(str(exc))
         raise
+
 

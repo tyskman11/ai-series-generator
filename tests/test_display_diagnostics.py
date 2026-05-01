@@ -4,7 +4,7 @@ import os
 import unittest
 from unittest import mock
 
-import pipeline_common
+from support_scripts import pipeline_common
 
 
 class DisplayDiagnosticsTests(unittest.TestCase):
@@ -72,3 +72,6 @@ class DisplayDiagnosticsTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+

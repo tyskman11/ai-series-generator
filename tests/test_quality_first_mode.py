@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-import pipeline_common
+from support_scripts import pipeline_common
 
 MODULE_PATH = Path(__file__).resolve().parents[1] / "58_configure_quality_backends.py"
 SPEC = importlib.util.spec_from_file_location("step58_quality_backends", MODULE_PATH)
@@ -131,7 +131,7 @@ class QualityFirstModeTests(unittest.TestCase):
             }
         }
 
-        with patch("pipeline_common.shutil.which", return_value=None):
+        with patch("support_scripts.pipeline_common.shutil.which", return_value=None):
             missing = pipeline_common.external_backend_runner_prerequisite_gaps(cfg, "finished_episode_image_runner")
 
         self.assertEqual(missing, [])
@@ -139,3 +139,6 @@ class QualityFirstModeTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+

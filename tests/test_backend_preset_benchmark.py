@@ -1,4 +1,4 @@
-﻿import json
+import json
 import os
 import sys
 import tempfile
@@ -10,7 +10,7 @@ from unittest.mock import patch
 # Ensure project root is on path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from backend_preset_benchmark import (
+from support_scripts.backend_preset_benchmark import (
     DEFAULT_PRESETS,
     build_test_scene,
     run_benchmark,
@@ -116,7 +116,7 @@ class BackendPresetBenchmarkTests(unittest.TestCase):
             presets = deepcopy(DEFAULT_PRESETS)
             report = run_benchmark(presets)
             # Simulate what main() does
-            from pipeline_common import write_json
+            from support_scripts.pipeline_common import write_json
             write_json(output_path, report)
             self.assertTrue(output_path.exists())
             loaded = json.loads(output_path.read_text(encoding="utf-8"))
@@ -125,3 +125,6 @@ class BackendPresetBenchmarkTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+

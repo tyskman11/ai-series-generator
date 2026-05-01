@@ -9,7 +9,7 @@ from pathlib import Path
 
 import numpy as np
 
-from pipeline_common import (
+from support_scripts.pipeline_common import (
     DistributedLeaseHeartbeat,
     LiveProgressReporter,
     PROJECT_ROOT,
@@ -1366,4 +1366,5 @@ if __name__ == "__main__":
     except Exception as exc:
         error(str(exc))
         raise
+
 

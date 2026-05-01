@@ -5,7 +5,7 @@ import argparse
 import shutil
 from pathlib import Path
 
-from pipeline_common import (
+from support_scripts.pipeline_common import (
     add_shared_worker_arguments,
     distributed_item_lease,
     distributed_step_runtime_root,
@@ -204,4 +204,5 @@ if __name__ == "__main__":
     except Exception as exc:
         error(str(exc))
         raise
+
 

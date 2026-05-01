@@ -6,7 +6,7 @@ import os
 import subprocess
 from pathlib import Path
 
-from pipeline_common import (
+from support_scripts.pipeline_common import (
     add_batch_job,
     add_shared_worker_arguments,
     distributed_item_lease,
@@ -603,4 +603,5 @@ if __name__ == "__main__":
     except Exception as exc:
         error(str(exc))
         raise
+
 

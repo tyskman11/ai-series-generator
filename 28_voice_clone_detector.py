@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 from collections import defaultdict
 
-from pipeline_common import (
+from support_scripts.pipeline_common import (
     headline,
     ok,
     info,

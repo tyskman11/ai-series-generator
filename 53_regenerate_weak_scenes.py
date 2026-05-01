@@ -7,7 +7,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from pipeline_common import (
+from support_scripts.pipeline_common import (
     SCRIPT_DIR,
     generated_episode_artifacts,
     headline,
@@ -625,3 +625,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+

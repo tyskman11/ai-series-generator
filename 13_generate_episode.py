@@ -5,7 +5,7 @@ import argparse
 import importlib.util
 from pathlib import Path
 
-from pipeline_common import (
+from support_scripts.pipeline_common import (
     PROJECT_ROOT,
     add_shared_worker_arguments,
     LiveProgressReporter,
@@ -229,4 +229,5 @@ if __name__ == "__main__":
     except Exception as exc:
         error(str(exc))
         raise
+
 

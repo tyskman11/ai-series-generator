@@ -4,7 +4,7 @@ from __future__ import annotations
 import argparse
 from copy import deepcopy
 
-from pipeline_common import headline, info, load_config, ok, quality_first_requirements_report, warn, write_json, CONFIG_PATH
+from support_scripts.pipeline_common import headline, info, load_config, ok, quality_first_requirements_report, warn, write_json, CONFIG_PATH
 
 
 def parse_args() -> argparse.Namespace:
@@ -186,3 +186,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+

@@ -6,7 +6,7 @@ import json
 from collections import defaultdict
 from pathlib import Path
 
-from pipeline_common import (
+from support_scripts.pipeline_common import (
     headline,
     load_config,
     resolve_project_path,

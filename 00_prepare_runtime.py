@@ -10,7 +10,7 @@ import sys
 import time
 from pathlib import Path
 
-from pipeline_common import (
+from support_scripts.pipeline_common import (
     SCRIPT_DIR,
     add_shared_worker_arguments,
     distributed_item_lease,
@@ -397,4 +397,5 @@ if __name__ == "__main__":
         mark_step_failed("00_prepare_runtime", str(exc), "global")
         error(str(exc))
         raise
+
 

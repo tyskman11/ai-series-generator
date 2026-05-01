@@ -20,7 +20,7 @@ def load_module(filename: str, module_name: str):
     return module
 
 
-PIPELINE = load_module("pipeline_common.py", "pipeline_common_backend_status")
+PIPELINE = load_module("support_scripts/pipeline_common.py", "pipeline_common_backend_status")
 STEP50 = load_module("50_run_backend_finetunes.py", "step50_backend_runs")
 
 
@@ -126,3 +126,6 @@ class BackendFineTuneStatusTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+

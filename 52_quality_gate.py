@@ -7,7 +7,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-from pipeline_common import (
+from support_scripts.pipeline_common import (
     SCRIPT_DIR,
     add_shared_worker_arguments,
     generated_episode_artifacts,
@@ -351,3 +351,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+

@@ -24,13 +24,16 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, Iterable
 
-SCRIPT_DIR = Path(__file__).resolve().parent
+SCRIPT_DIR = Path(__file__).resolve().parent.parent
 PROJECT_ROOT = SCRIPT_DIR / "ai_series_project"
 CONFIG_PATH = PROJECT_ROOT / "configs" / "project.json"
 VIDEO_PATTERNS = ("*.mp4", "*.mkv", "*.mov", "*.avi")
 
 try:
-    from console_colors import enable_ansi, error, headline, info, ok, warn
+    try:
+        from .console_colors import enable_ansi, error, headline, info, ok, warn
+    except Exception:
+        from support_scripts.console_colors import enable_ansi, error, headline, info, ok, warn
 
     enable_ansi()
 except Exception:

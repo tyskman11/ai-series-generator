@@ -4,7 +4,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from pipeline_common import (
+from support_scripts.pipeline_common import (
     headline,
     ok,
     load_config,

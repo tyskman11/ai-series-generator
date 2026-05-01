@@ -13,7 +13,7 @@ from pathlib import Path
 
 from PIL import Image, ImageColor, ImageDraw, ImageEnhance, ImageFilter, ImageFont, ImageOps
 
-from pipeline_common import (
+from support_scripts.pipeline_common import (
     DistributedLeaseHeartbeat,
     acquire_distributed_lease,
     add_shared_worker_arguments,
@@ -3503,3 +3503,4 @@ if __name__ == "__main__":
     except Exception as exc:
         error(str(exc))
         raise
+

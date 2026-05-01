@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from pipeline_common import acquire_distributed_lease
+from support_scripts.pipeline_common import acquire_distributed_lease
 
 
 class DistributedLeaseTests(unittest.TestCase):
@@ -31,8 +31,8 @@ class DistributedLeaseTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            with mock.patch("pipeline_common.distributed_hostname_token", return_value="master-pc"), mock.patch(
-                "pipeline_common.process_id_active",
+            with mock.patch("support_scripts.pipeline_common.distributed_hostname_token", return_value="master-pc"), mock.patch(
+                "support_scripts.pipeline_common.process_id_active",
                 return_value=False,
             ):
                 takeover = acquire_distributed_lease(lease_root, "scene_001", "worker-b", 30.0)
@@ -44,3 +44,6 @@ class DistributedLeaseTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+

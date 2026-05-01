@@ -16,7 +16,7 @@ def load_module(filename: str, module_name: str):
     return module
 
 
-PIPELINE = load_module("pipeline_common.py", "pipeline_common_step99_test")
+PIPELINE = load_module("support_scripts/pipeline_common.py", "pipeline_common_step99_test")
 STEP99 = load_module("99_process_next_episode.py", "step99_process_test")
 
 
@@ -28,3 +28,6 @@ class ProcessNextEpisodeTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+

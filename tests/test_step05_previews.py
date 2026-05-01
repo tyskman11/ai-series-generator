@@ -7,7 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-import pipeline_common
+from support_scripts import pipeline_common
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -117,3 +117,6 @@ class Step05PreviewTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+

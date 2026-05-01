@@ -6,7 +6,7 @@ import json
 import shutil
 from pathlib import Path
 
-from pipeline_common import (
+from support_scripts.pipeline_common import (
     headline,
     info,
     ok,

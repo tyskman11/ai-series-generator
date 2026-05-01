@@ -1,11 +1,11 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """Backend Preset Benchmarking Tool.
 
 Compares different backend runner presets against test scenes and produces
 a ranked recommendation report.
 
 Usage:
-    python backend_preset_benchmark.py [--preset-file PRESETS.JSON] [--output REPORT.JSON]
+    python support_scripts/backend_preset_benchmark.py [--preset-file PRESETS.JSON] [--output REPORT.JSON]
 """
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
-from pipeline_common import (
+from support_scripts.pipeline_common import (
     compare_backend_runners,
     info,
     ok,
@@ -184,3 +184,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+

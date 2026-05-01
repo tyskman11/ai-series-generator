@@ -1,4 +1,4 @@
-﻿# AI Series Training
+# AI Series Training
 
 ## Table Of Contents
 
@@ -83,7 +83,7 @@ The default path stays local-first and license-light. The project already produc
 - `05_link_faces_and_speakers.py` now opens assignment previews more robustly from NAS/UNC paths by preferring a self-contained browser preview plus exact image links before falling back to the montage JPG
 - `06_review_unknowns.py` keeps reducing open manual review work through known-face matching, iterative naming propagation, and conservative `statist` auto-marking
 - `06_review_unknowns.py` now rebases stored NAS preview paths, mirrors the active review images into a local temp preview cache for GUI/local-image opening, and avoids auto-opening multiple preview windows for one case
-- `05_link_faces_and_speakers.py`, `06_review_unknowns.py`, and `pipeline_common.py` now surface shared interactive display diagnostics so desktop, NAS, and headless-session behavior is easier to see before manual review starts
+- `05_link_faces_and_speakers.py`, `06_review_unknowns.py`, and `support_scripts/pipeline_common.py` now surface shared interactive display diagnostics so desktop, NAS, and headless-session behavior is easier to see before manual review starts
 - shared NAS lease handling now auto-recovers same-host stale worker locks when the recorded PID is no longer alive
 - `05_link_faces_and_speakers.py`, `06_review_unknowns.py`, and the shared path helpers now normalize stored project paths back to relative metadata so the same workspace can move between Windows, Linux, NAS mounts, and different drive letters more safely
 - `04_diarize_and_transcribe.py` keeps extending `speaker_unknown` rescue logic and language handling
@@ -113,15 +113,15 @@ The default path stays local-first and license-light. The project already produc
 - `58_configure_quality_backends.py` now writes portable `{python}`-based runner templates plus project-local default backend commands into `project.json`, so Linux does not depend on a `python` PATH alias or manually exported shell variables
 - `59_prepare_quality_backends.py` now prepares backend tools and model assets only inside the project folder, automatically reruns itself inside the project runtime on Windows, stages Hugging Face downloads locally before copying them into UNC/NAS project folders on Windows, disables `hf_xet` and downloads Hugging Face snapshots serially for more stable Windows/NAS model fetches, forces Git ownership checks open for this personal multi-device NAS setup, rebuilds corrupted project-local Git checkouts from a project-local GitHub ZIP staging folder and then moves them into place, uses the active runtime interpreter for package installs, tracks revisions, verifies required files, detects incomplete Hugging Face downloads, skips re-downloads when the newest local revision is already complete, and falls back to GitHub API plus ZIP downloads when Linux/NAS workers do not have `git` installed
 - project-local external backend runner script paths are now resolved against the project root before execution, so Linux/NAS runs do not accidentally look for `tools/quality_backends/*.py` inside scene or package subfolders
-- `pipeline_common.py` now checks configured runner prerequisites such as required commands, Python modules, and environment variables before the quality-first path is allowed to start
+- `support_scripts/pipeline_common.py` now checks configured runner prerequisites such as required commands, Python modules, and environment variables before the quality-first path is allowed to start
 - the tracked regression suite covers export handoffs, release-gate reports, retry queues, strict warning handling, and regeneration metadata so those finished-episode contracts stay guarded
 - `16_build_series_bible.py`, `57_generate_finished_episodes.py`, and `99_process_next_episode.py` surface readiness, backend coverage, and quality scoring for generated episodes
 - `49_refresh_after_manual_review.py` and `57_generate_finished_episodes.py` now follow the real train-then-generate/render order against the current script names
 - `49_refresh_after_manual_review.py`, `57_generate_finished_episodes.py`, and `99_process_next_episode.py` can now run `52_quality_gate.py` automatically after render when `release_mode.enabled` is active
 - `50_run_backend_finetunes.py` remains the backend-prep bridge between `12_train_fine_tune_models.py` and the actual generation/render path
 - real fully generated image/video/lip-sync quality is still active work even though the orchestration and package plumbing already exist
-- `backend_preset_benchmark.py` provides a ranked comparison of backend runner presets with composite scoring and test-scene evaluation
-- worker capability helpers exist in `pipeline_common.py`; full orchestration integration for GPU-heavy NAS scheduling is still being connected
+- `support_scripts/backend_preset_benchmark.py` provides a ranked comparison of backend runner presets with composite scoring and test-scene evaluation
+- worker capability helpers exist in `support_scripts/pipeline_common.py`; full orchestration integration for GPU-heavy NAS scheduling is still being connected
 
 ## Finished
 
@@ -130,6 +130,7 @@ These items are implemented and should stay guarded by README updates and tests 
 - script numbering is numeric only, with training before generated-episode render in the documented orchestration paths
 - `00_prepare_runtime.py` now owns the complete normal setup path: project structure, runtime packages, quality-backend configuration, project-local backend downloads, and FFmpeg provisioning through `imageio-ffmpeg`
 - `01_setup_project.py`, `_temp_check.py`, `_check_syntax.py`, and `99_sync_to_github.py` have been removed from the tracked project as redundant/private helper scripts
+- non-numbered helper modules/scripts now live under `support_scripts/`, so the project root only keeps numbered pipeline entry points
 - FFmpeg resolution now prefers the Python runtime package `imageio-ffmpeg` and still falls back safely across Windows and Linux/NAS runs
 - `57_generate_finished_episodes.py` is the finished-episode entry point and defaults to one episode unless `--count 0` or `--endless` is used
 - the default project config now targets `original_episode_quality_first`: release mode on, strict thresholds, original-line reuse on, system TTS fallback off, and lipsync on
@@ -170,7 +171,7 @@ Whenever you change any of the following, update `README.md` in the same task:
 
 - `00_prepare_runtime.py` through `59_prepare_quality_backends.py`
 - `99_process_next_episode.py`
-- `pipeline_common.py`
+- `support_scripts/pipeline_common.py`
 - `ai_series_project/configs/project.json`
 - CLI options
 - folder structure
@@ -202,7 +203,13 @@ Also keep the `In Progress` and `Planned` sections current.
 - `58_configure_quality_backends.py`: write portable quality-first runner templates into the project config
 - `59_prepare_quality_backends.py`: download/update project-local backend tools and model assets with revision checks, including GitHub ZIP fallback when `git` is missing and Xet-disabled Hugging Face downloads for Windows/NAS stability
 - `99_process_next_episode.py`: full end-to-end coordinator
-- `backend_preset_benchmark.py`: compare backend runner presets and produce a ranked recommendation report
+- `support_scripts/backend_preset_benchmark.py`: compare backend runner presets and produce a ranked recommendation report
+
+### Helper Scripts And Modules
+
+- `support_scripts/pipeline_common.py`: shared runtime helpers, path handling, progress reporting, quality-gate logic, and orchestration helpers used by the numbered scripts
+- `support_scripts/console_colors.py`: console output coloring helpers
+- `support_scripts/backend_preset_benchmark.py`: backend preset benchmark helper kept outside the numbered pipeline root
 
 For the full finished-episode path, the intended order is now explicit: `00 -> 07 -> 08 -> 09 -> 10 -> 11 -> 12 -> 50 -> 13 -> 14 -> 54 -> 15 -> 52 -> 16`. That means full setup and project-local downloads happen first, then training, and only then generation/rendering. `58_configure_quality_backends.py` and `59_prepare_quality_backends.py` remain available as standalone maintenance/update helpers, but `00_prepare_runtime.py` already runs them for the normal setup path.
 
@@ -425,7 +432,7 @@ The tracked test suite currently focuses on the finished-episode handoff path: e
 Quick syntax check for the main pipeline and tests:
 
 ```powershell
-python -m py_compile 00_prepare_runtime.py 02_import_episode.py 03_split_scenes.py 04_diarize_and_transcribe.py 05_link_faces_and_speakers.py 06_review_unknowns.py 07_build_dataset.py 08_train_series_model.py 09_prepare_foundation_training.py 10_train_foundation_models.py 11_train_adapter_models.py 12_train_fine_tune_models.py 13_generate_episode.py 14_generate_storyboard_assets.py 15_render_episode.py 16_build_series_bible.py 49_refresh_after_manual_review.py 50_run_backend_finetunes.py 51_export_package.py 52_quality_gate.py 53_regenerate_weak_scenes.py 54_run_storyboard_backend.py 55_backup_project.py 56_restore_project.py 57_generate_finished_episodes.py 58_configure_quality_backends.py 59_prepare_quality_backends.py 99_process_next_episode.py backend_preset_benchmark.py pipeline_common.py
+python -m py_compile 00_prepare_runtime.py 02_import_episode.py 03_split_scenes.py 04_diarize_and_transcribe.py 05_link_faces_and_speakers.py 06_review_unknowns.py 07_build_dataset.py 08_train_series_model.py 09_prepare_foundation_training.py 10_train_foundation_models.py 11_train_adapter_models.py 12_train_fine_tune_models.py 13_generate_episode.py 14_generate_storyboard_assets.py 15_render_episode.py 16_build_series_bible.py 49_refresh_after_manual_review.py 50_run_backend_finetunes.py 51_export_package.py 52_quality_gate.py 53_regenerate_weak_scenes.py 54_run_storyboard_backend.py 55_backup_project.py 56_restore_project.py 57_generate_finished_episodes.py 58_configure_quality_backends.py 59_prepare_quality_backends.py 99_process_next_episode.py support_scripts\\backend_preset_benchmark.py support_scripts\\pipeline_common.py support_scripts\\console_colors.py
 Get-ChildItem tests\*.py | ForEach-Object { python -m py_compile $_.FullName }
 ```
 
@@ -480,8 +487,8 @@ python 53_regenerate_weak_scenes.py --apply
 Benchmark backend runner presets:
 
 ```powershell
-python backend_preset_benchmark.py
-python backend_preset_benchmark.py --preset-file my_presets.json --output reports/benchmark.json
+python support_scripts/backend_preset_benchmark.py
+python support_scripts/backend_preset_benchmark.py --preset-file my_presets.json --output reports/benchmark.json
 ```
 
 Shared NAS transcription example:
@@ -573,3 +580,4 @@ Endless mode:
 python 57_generate_finished_episodes.py --endless --skip-downloads
 python 57_generate_finished_episodes.py --count 0 --skip-downloads
 ```
+

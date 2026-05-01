@@ -4,8 +4,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-import pipeline_common
-from pipeline_common import PROJECT_ROOT, normalize_portable_project_paths, portable_project_path, resolve_stored_project_path
+from support_scripts import pipeline_common
+from support_scripts.pipeline_common import PROJECT_ROOT, normalize_portable_project_paths, portable_project_path, resolve_stored_project_path
 
 
 class PortablePathTests(unittest.TestCase):
@@ -72,3 +72,6 @@ class PortablePathTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+

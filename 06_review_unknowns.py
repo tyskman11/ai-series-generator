@@ -12,7 +12,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-from pipeline_common import (
+from support_scripts.pipeline_common import (
     add_shared_worker_arguments,
     canonical_person_name,
     cosine_similarity,
@@ -2392,4 +2392,5 @@ if __name__ == "__main__":
     except Exception as exc:
         error(str(exc))
         raise
+
 

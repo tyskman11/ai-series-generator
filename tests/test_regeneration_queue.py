@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from pipeline_common import queue_scenes_for_regeneration, read_json, write_json
+from support_scripts.pipeline_common import queue_scenes_for_regeneration, read_json, write_json
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -641,3 +641,6 @@ class RegenerationQueueTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+

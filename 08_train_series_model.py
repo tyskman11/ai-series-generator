@@ -9,7 +9,7 @@ import time
 from collections import Counter, defaultdict
 from pathlib import Path
 
-from pipeline_common import (
+from support_scripts.pipeline_common import (
     PROJECT_ROOT,
     add_shared_worker_arguments,
     coalesce_text,
@@ -1326,4 +1326,5 @@ if __name__ == "__main__":
     except Exception as exc:
         error(str(exc))
         raise
+
 

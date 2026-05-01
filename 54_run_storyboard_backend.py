@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 from __future__ import annotations
 
 import argparse
@@ -9,7 +9,7 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageEnhance, ImageFilter, ImageOps
 
-from pipeline_common import (
+from support_scripts.pipeline_common import (
     add_shared_worker_arguments,
     detect_tool,
     distributed_item_lease,
@@ -693,3 +693,4 @@ if __name__ == "__main__":
     except Exception as exc:
         error(str(exc))
         raise
+

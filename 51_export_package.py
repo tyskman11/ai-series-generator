@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 from xml.sax.saxutils import escape
 
-from pipeline_common import (
+from support_scripts.pipeline_common import (
     generated_episode_artifacts,
     headline,
     info,
@@ -399,3 +399,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+

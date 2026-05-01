@@ -15,7 +15,7 @@ from typing import Any
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
-from pipeline_common import (
+from support_scripts.pipeline_common import (
     CONFIG_PATH,
     coalesce_text,
     current_os,
@@ -652,3 +652,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
