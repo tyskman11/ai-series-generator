@@ -44,6 +44,7 @@ from support_scripts.pipeline_common import (
     rerun_in_runtime,
     normalize_language_code,
     resolve_project_path,
+    resolve_stored_project_path,
     runtime_python,
     shared_worker_id_for_args,
     shared_workers_enabled_for_args,
@@ -286,16 +287,56 @@ def character_training_candidates(char_map: dict, series_model: dict, cfg: dict)
 
 def read_dataset_rows(cfg: dict, episode_filter: str = "") -> list[dict]:
     dataset_root = resolve_project_path(cfg["paths"]["datasets_video_training"])
+    transcript_root = resolve_project_path(cfg["paths"]["speaker_transcripts"])
     rows: list[dict] = []
     for dataset_path in sorted(dataset_root.glob("*_dataset.json")):
         episode_id = dataset_path.stem.replace("_dataset", "")
         if episode_filter and episode_filter not in {episode_id, dataset_path.name, dataset_path.stem}:
             continue
+        transcript_index = read_speaker_transcript_index(transcript_root, episode_id)
         for row in read_json(dataset_path, []):
             prepared = dict(row)
             prepared["episode_id"] = coalesce_text(row.get("episode_id", "")) or episode_id
+            prepared_segments: list[dict] = []
+            for segment in row.get("transcript_segments", []) or []:
+                if not isinstance(segment, dict):
+                    continue
+                enriched_segment = dict(segment)
+                transcript_payload = transcript_index.get(
+                    (
+                        episode_id,
+                        coalesce_text(enriched_segment.get("scene_id", "")),
+                        coalesce_text(enriched_segment.get("segment_id", "")),
+                    ),
+                    {},
+                )
+                if transcript_payload:
+                    if not coalesce_text(enriched_segment.get("audio_file", "")):
+                        enriched_segment["audio_file"] = transcript_payload.get("audio_file", "")
+                    if not coalesce_text(enriched_segment.get("language", "")):
+                        enriched_segment["language"] = transcript_payload.get("language", "")
+                    if not coalesce_text(enriched_segment.get("text", "")):
+                        enriched_segment["text"] = transcript_payload.get("text", "")
+                prepared_segments.append(enriched_segment)
+            prepared["transcript_segments"] = prepared_segments
             rows.append(prepared)
     return rows
+
+
+def read_speaker_transcript_index(transcript_root: Path, episode_id: str) -> dict[tuple[str, str, str], dict]:
+    transcript_path = transcript_root / f"{episode_id}_segments.json"
+    if not transcript_path.exists():
+        return {}
+    index: dict[tuple[str, str, str], dict] = {}
+    for row in read_json(transcript_path, []):
+        if not isinstance(row, dict):
+            continue
+        scene_id = coalesce_text(row.get("scene_id", ""))
+        segment_id = coalesce_text(row.get("segment_id", ""))
+        if not scene_id or not segment_id:
+            continue
+        index[(episode_id, scene_id, segment_id)] = row
+    return index
 
 
 def cluster_name_map(char_map: dict) -> dict[str, str]:
@@ -342,8 +383,16 @@ def collect_character_rows(rows: list[dict], character_name: str, known_clusters
     return [row for row in rows if character_name in scene_character_names(row, known_clusters)]
 
 
+def is_voice_reference_text(text: str) -> bool:
+    candidate = coalesce_text(text).strip().lower()
+    if not candidate:
+        return False
+    return candidate not in {"musik", "music", "applaus", "lachen", "gelächter", "atmen"}
+
+
 def original_voice_candidates(rows: list[dict], character_name: str) -> list[dict]:
     candidates: list[dict] = []
+    fallback_candidates: list[dict] = []
     for row in rows:
         if not isinstance(row, dict):
             continue
@@ -355,13 +404,45 @@ def original_voice_candidates(rows: list[dict], character_name: str) -> list[dic
             speaker_name = coalesce_text(segment.get("speaker_name", ""))
             if speaker_name.lower() != character_name.lower():
                 continue
-            audio_path = Path(str(segment.get("audio_file", "")))
+            audio_path = resolve_stored_project_path(segment.get("audio_file", ""))
             if not audio_path.exists() or not audio_path.is_file():
                 continue
             start_seconds = float(segment.get("start", 0.0) or 0.0)
             end_seconds = float(segment.get("end", start_seconds) or start_seconds)
             duration_seconds = max(0.0, end_seconds - start_seconds)
-            candidates.append(
+            candidate_row = {
+                "episode_id": episode_id,
+                "scene_id": scene_id,
+                "segment_id": coalesce_text(segment.get("segment_id", "")) or f"{scene_id}_voice_{index + 1:03d}",
+                "audio_path": audio_path,
+                "duration_seconds": duration_seconds,
+                "language": normalize_language_code(segment.get("language", ""), row.get("language", "")),
+                "text": coalesce_text(segment.get("text", "")),
+            }
+            candidates.append(candidate_row)
+            visible_names = [coalesce_text(name) for name in segment.get("visible_character_names", []) or [] if has_primary_person_name(name)]
+            unique_visible_names = {name.lower(): name for name in visible_names}
+            if len(unique_visible_names) == 1 and character_name.lower() in unique_visible_names and is_voice_reference_text(candidate_row["text"]):
+                fallback_candidates.append(candidate_row)
+        if candidates:
+            continue
+        for index, segment in enumerate(row.get("transcript_segments", []) or []):
+            if not isinstance(segment, dict):
+                continue
+            visible_names = [coalesce_text(name) for name in segment.get("visible_character_names", []) or [] if has_primary_person_name(name)]
+            unique_visible_names = {name.lower(): name for name in visible_names}
+            if len(unique_visible_names) != 1 or character_name.lower() not in unique_visible_names:
+                continue
+            text = coalesce_text(segment.get("text", ""))
+            if not is_voice_reference_text(text):
+                continue
+            audio_path = resolve_stored_project_path(segment.get("audio_file", ""))
+            if not audio_path.exists() or not audio_path.is_file():
+                continue
+            start_seconds = float(segment.get("start", 0.0) or 0.0)
+            end_seconds = float(segment.get("end", start_seconds) or start_seconds)
+            duration_seconds = max(0.0, end_seconds - start_seconds)
+            fallback_candidates.append(
                 {
                     "episode_id": episode_id,
                     "scene_id": scene_id,
@@ -369,10 +450,14 @@ def original_voice_candidates(rows: list[dict], character_name: str) -> list[dic
                     "audio_path": audio_path,
                     "duration_seconds": duration_seconds,
                     "language": normalize_language_code(segment.get("language", ""), row.get("language", "")),
-                    "text": coalesce_text(segment.get("text", "")),
+                    "text": text,
                 }
             )
-    candidates.sort(
+    if candidates:
+        selected = candidates
+    else:
+        selected = fallback_candidates
+    selected.sort(
         key=lambda row: (
             -float(row.get("duration_seconds", 0.0) or 0.0),
             row.get("episode_id", ""),
@@ -380,7 +465,7 @@ def original_voice_candidates(rows: list[dict], character_name: str) -> list[dic
             row.get("segment_id", ""),
         )
     )
-    return candidates
+    return selected
 
 
 def voice_reference_candidates(cfg: dict, character_name: str) -> list[Path]:
@@ -396,7 +481,7 @@ def voice_reference_candidates(cfg: dict, character_name: str) -> list[Path]:
         payload = read_json(model_path, {})
         ref_audio = coalesce_text(payload.get("reference_audio", ""))
         if ref_audio:
-            candidate = Path(ref_audio)
+            candidate = resolve_stored_project_path(ref_audio)
             if candidate.exists() and candidate.is_file() and candidate not in matches:
                 matches.append(candidate)
     return matches

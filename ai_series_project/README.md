@@ -33,6 +33,8 @@ The repository root contains the numbered pipeline scripts directly beside `ai_s
 - preprocessing from source episode to reviewed character/speaker data is usable
 - the training chain exists and is ordered before generation/rendering
 - `00_prepare_runtime.py` now owns normal setup completely, including runtime prep, backend configuration, project-local downloads, model download verification, and folder creation
+- `04_link_faces_and_speakers.py` now keeps portable segment-audio and language metadata in linked speaker rows
+- `08_prepare_foundation_training.py` now backfills missing voice-reference audio from `speaker_transcripts` for older datasets
 - the GitHub repo now treats `configs/project.template.json` as the tracked base template; the working `project.json` is generated locally
 - quality-first generation is enforced more strictly than before
 - final output quality is still limited when only the project-local fallback backends are used

@@ -61,6 +61,7 @@ from support_scripts.pipeline_common import (
     mark_step_started,
     mark_step_completed,
     mark_step_failed,
+    normalize_language_code,
     write_json,
 )
 
@@ -1212,6 +1213,7 @@ def process_episode_dir(
                     speaker_reference_frames = [portable_project_path(path) for path in frames]
 
             linked_row = {
+                "episode_id": episode_dir.name,
                 "scene_id": row["scene_id"],
                 "segment_id": row["segment_id"],
                 "start": row["start"],
@@ -1220,6 +1222,8 @@ def process_episode_dir(
                 "speaker_name": speaker_name,
                 "speaker_name_source": speaker_name_source,
                 "speaker_face_cluster": segment_linked_face,
+                "audio_file": portable_project_path(row.get("audio_file", "")),
+                "language": normalize_language_code(row.get("language", "")),
                 "text": coalesce_text(row.get("text", "")),
                 "visible_face_clusters": visible_faces,
                 "visible_character_names": visible_names,

@@ -3536,6 +3536,129 @@ class ManualNamingTests(unittest.TestCase):
 
         self.assertIn("Babe", names)
 
+    def test_foundation_read_dataset_rows_restores_audio_from_speaker_transcripts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            dataset_root = root / "datasets"
+            transcript_root = root / "speaker_transcripts"
+            dataset_root.mkdir(parents=True, exist_ok=True)
+            transcript_root.mkdir(parents=True, exist_ok=True)
+            (dataset_root / "Episode01_dataset.json").write_text(
+                json.dumps(
+                    [
+                        {
+                            "scene_id": "scene_0001",
+                            "transcript_segments": [
+                                {
+                                    "scene_id": "scene_0001",
+                                    "segment_id": "seg_001",
+                                    "speaker_name": "Kenzie",
+                                    "audio_file": "",
+                                    "language": "",
+                                    "text": "Hallo",
+                                }
+                            ],
+                        }
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            (transcript_root / "Episode01_segments.json").write_text(
+                json.dumps(
+                    [
+                        {
+                            "scene_id": "scene_0001",
+                            "segment_id": "seg_001",
+                            "audio_file": "C:/stale/audio.wav",
+                            "language": "de",
+                            "text": "Hallo",
+                        }
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            cfg = {
+                "paths": {
+                    "datasets_video_training": "datasets",
+                    "speaker_transcripts": "speaker_transcripts",
+                }
+            }
+            with mock.patch.object(STEP13, "resolve_project_path", side_effect=lambda value: root / value):
+                rows = STEP13.read_dataset_rows(cfg, "")
+
+        self.assertEqual(rows[0]["episode_id"], "Episode01")
+        self.assertEqual(rows[0]["transcript_segments"][0]["audio_file"], "C:/stale/audio.wav")
+        self.assertEqual(rows[0]["transcript_segments"][0]["language"], "de")
+
+    def test_foundation_original_voice_candidates_rebases_stored_audio_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            wav_path = root / "voice.wav"
+            with wave.open(str(wav_path), "wb") as handle:
+                handle.setnchannels(1)
+                handle.setsampwidth(2)
+                handle.setframerate(24000)
+                handle.writeframes(b"\x00\x00" * 2400)
+
+            rows = [
+                {
+                    "episode_id": "Episode01",
+                    "scene_id": "scene_0001",
+                    "transcript_segments": [
+                        {
+                            "segment_id": "seg_001",
+                            "speaker_name": "Kenzie",
+                            "audio_file": "C:/stale/voice.wav",
+                            "start": 0.0,
+                            "end": 1.0,
+                            "language": "de",
+                            "text": "Hallo",
+                        }
+                    ],
+                }
+            ]
+
+            with mock.patch.object(STEP13, "resolve_stored_project_path", return_value=wav_path):
+                candidates = STEP13.original_voice_candidates(rows, "Kenzie")
+
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(Path(candidates[0]["audio_path"]), wav_path)
+
+    def test_foundation_original_voice_candidates_can_fallback_to_single_visible_character(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            wav_path = root / "voice.wav"
+            with wave.open(str(wav_path), "wb") as handle:
+                handle.setnchannels(1)
+                handle.setsampwidth(2)
+                handle.setframerate(24000)
+                handle.writeframes(b"\x00\x00" * 2400)
+
+            rows = [
+                {
+                    "episode_id": "Episode01",
+                    "scene_id": "scene_0001",
+                    "transcript_segments": [
+                        {
+                            "segment_id": "seg_001",
+                            "speaker_name": "Triple G",
+                            "visible_character_names": ["Babe"],
+                            "audio_file": "C:/stale/voice.wav",
+                            "start": 0.0,
+                            "end": 1.0,
+                            "language": "de",
+                            "text": "Hallo",
+                        }
+                    ],
+                }
+            ]
+
+            with mock.patch.object(STEP13, "resolve_stored_project_path", return_value=wav_path):
+                candidates = STEP13.original_voice_candidates(rows, "Babe")
+
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(Path(candidates[0]["audio_path"]), wav_path)
+
     def test_split_scene_resolve_episode_file_accepts_name_and_stem(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             episodes_dir = Path(tmp)
