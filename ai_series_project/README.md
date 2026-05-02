@@ -26,21 +26,26 @@ This project turns existing TV episodes into a portable local pipeline for:
 - preparation of project-local backend tools and model downloads
 - quality-gated generation of finished synthetic episodes
 
-The repository root is intentionally minimal now: the visible project content lives inside `ai_series_project/`. Hidden Git metadata still stays one level above it.
+The project root is `KI Serien Training`. The numbered pipeline scripts live directly in that root beside `ai_series_project/`. All project data, configs, tests, support code, runtime data, and generated assets stay inside `ai_series_project/`.
 
 ## Current Status
 
 - preprocessing from source episode to reviewed character/speaker data is usable
 - the training chain exists and is ordered before generation/rendering
-- `00_prepare_runtime.py` now owns normal setup completely, including runtime prep, backend configuration, project-local downloads, and folder creation
+- `00_prepare_runtime.py` now owns normal setup completely, including runtime prep, backend configuration, project-local downloads, model download verification, and folder creation
 - quality-first generation is enforced more strictly than before
 - final output quality is still limited when only the project-local fallback backends are used
 
 ## Project Layout
 
-Run the numbered scripts from inside `ai_series_project/`.
+Run the numbered scripts from the project root `KI Serien Training`.
 
-### Main Folders
+### Project Root
+
+- `00_prepare_runtime.py` to `57_process_next_episode.py`: numbered main pipeline scripts in execution order
+- `ai_series_project/`: project-internal data, config, runtime, support code, tests, tools, training, and outputs
+
+### Main Folders Inside `ai_series_project/`
 
 - `characters/`: maps, previews, review queues, voice samples, voice models
 - `configs/`: project configuration
@@ -53,9 +58,9 @@ Run the numbered scripts from inside `ai_series_project/`.
 - `tools/`: project-local backend runners, backend tools, model assets
 - `training/`: foundation datasets, manifests, checkpoints, backend runs
 
-### Numbered Scripts
+### Numbered Scripts In Project Root
 
-- `00_prepare_runtime.py`: full setup, folder creation, runtime packages, backend config, backend/model downloads, FFmpeg via `imageio-ffmpeg`
+- `00_prepare_runtime.py`: full setup, folder creation, runtime packages, backend config, backend/model downloads, download completeness checks, FFmpeg via `imageio-ffmpeg`
 - `01_import_episode.py`
 - `02_split_scenes.py`
 - `03_diarize_and_transcribe.py`
@@ -83,7 +88,7 @@ Run the numbered scripts from inside `ai_series_project/`.
 - `56_generate_finished_episodes.py`: batch finished-episode generation
 - `57_process_next_episode.py`: full inbox-to-finished-episode orchestrator
 
-### Support Scripts
+### Support Scripts Inside `ai_series_project/support_scripts/`
 
 - `support_scripts/pipeline_common.py`: shared path handling, runtime helpers, orchestration, leases, quality gating
 - `support_scripts/console_colors.py`: console formatting
@@ -128,10 +133,10 @@ For a raw new episode source, the full order is:
 
 ## Quick Start
 
-### 1. Enter The Project Folder
+### 1. Enter The Project Root
 
 ```powershell
-cd ai_series_project
+cd "B:\PROJEKTE\ai\KI Serien Training"
 ```
 
 ### 2. Run Full Setup
@@ -214,7 +219,7 @@ Important areas:
 Run the main regression suite from inside `ai_series_project/`:
 
 ```powershell
-python -m unittest discover -s tests -v
+python -m unittest discover -s ai_series_project\tests -v
 ```
 
 Useful smoke checks:

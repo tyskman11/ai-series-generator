@@ -1,5 +1,13 @@
 ﻿from __future__ import annotations
 
+import sys
+from pathlib import Path
+
+PROJECT_DIR = Path(__file__).resolve().parents[1]
+SCRIPT_ROOT = PROJECT_DIR.parent
+if str(PROJECT_DIR) not in sys.path:
+    sys.path.insert(0, str(PROJECT_DIR))
+
 import importlib.util
 import shutil
 import subprocess
@@ -9,7 +17,7 @@ from unittest import mock
 from pathlib import Path
 
 
-MODULE_PATH = Path(__file__).resolve().parents[1] / "support_scripts/prepare_quality_backends.py"
+MODULE_PATH = PROJECT_DIR / "support_scripts/prepare_quality_backends.py"
 SPEC = importlib.util.spec_from_file_location("step59_quality_backends", MODULE_PATH)
 STEP59 = importlib.util.module_from_spec(SPEC)
 assert SPEC and SPEC.loader

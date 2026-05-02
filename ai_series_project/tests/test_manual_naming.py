@@ -1,5 +1,13 @@
 ﻿from __future__ import annotations
 
+import sys
+from pathlib import Path
+
+PROJECT_DIR = Path(__file__).resolve().parents[1]
+SCRIPT_ROOT = PROJECT_DIR.parent
+if str(PROJECT_DIR) not in sys.path:
+    sys.path.insert(0, str(PROJECT_DIR))
+
 import argparse
 import importlib.util
 import json
@@ -43,11 +51,12 @@ from support_scripts.pipeline_common import (
 )
 
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = PROJECT_DIR
 
 
 def load_module(filename: str, module_name: str):
-    spec = importlib.util.spec_from_file_location(module_name, ROOT / filename)
+    target = ROOT / filename if filename.startswith("support_scripts/") else SCRIPT_ROOT / filename
+    spec = importlib.util.spec_from_file_location(module_name, target)
     module = importlib.util.module_from_spec(spec)
     assert spec.loader is not None
     spec.loader.exec_module(module)
@@ -4795,8 +4804,8 @@ class ManualNamingTests(unittest.TestCase):
             self.assertTrue(STEP10.render_output_ready(full_path))
 
     def test_render_and_bible_scripts_use_matching_step_metadata_names(self) -> None:
-        render_source = (ROOT / "14_render_episode.py").read_text(encoding="utf-8")
-        bible_source = (ROOT / "15_build_series_bible.py").read_text(encoding="utf-8")
+        render_source = (SCRIPT_ROOT / "14_render_episode.py").read_text(encoding="utf-8")
+        bible_source = (SCRIPT_ROOT / "15_build_series_bible.py").read_text(encoding="utf-8")
 
         self.assertIn('mark_step_started("14_render_episode"', render_source)
         self.assertIn('mark_step_completed(\n            "14_render_episode"', render_source)

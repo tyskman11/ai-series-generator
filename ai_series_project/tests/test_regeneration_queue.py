@@ -1,5 +1,13 @@
 ﻿from __future__ import annotations
 
+import sys
+from pathlib import Path
+
+PROJECT_DIR = Path(__file__).resolve().parents[1]
+SCRIPT_ROOT = PROJECT_DIR.parent
+if str(PROJECT_DIR) not in sys.path:
+    sys.path.insert(0, str(PROJECT_DIR))
+
 import argparse
 import importlib.util
 import tempfile
@@ -10,11 +18,12 @@ from unittest import mock
 from support_scripts.pipeline_common import queue_scenes_for_regeneration, read_json, write_json
 
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = PROJECT_DIR
 
 
 def load_module(filename: str, module_name: str):
-    spec = importlib.util.spec_from_file_location(module_name, ROOT / filename)
+    target = ROOT / filename if filename.startswith("support_scripts/") else SCRIPT_ROOT / filename
+    spec = importlib.util.spec_from_file_location(module_name, target)
     module = importlib.util.module_from_spec(spec)
     assert spec.loader is not None
     spec.loader.exec_module(module)

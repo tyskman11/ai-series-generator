@@ -26,6 +26,7 @@ from typing import Any, Iterable
 
 SCRIPT_DIR = Path(__file__).resolve().parent.parent
 PROJECT_ROOT = SCRIPT_DIR
+WORKSPACE_ROOT = PROJECT_ROOT.parent
 HOST_RUNTIME_ROOT = PROJECT_ROOT / "runtime" / "host_runtime"
 CONFIG_PATH = PROJECT_ROOT / "configs" / "project.json"
 VIDEO_PATTERNS = ("*.mp4", "*.mkv", "*.mov", "*.avi")

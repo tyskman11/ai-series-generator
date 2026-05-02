@@ -1,5 +1,13 @@
 ﻿from __future__ import annotations
 
+import sys
+from pathlib import Path
+
+PROJECT_DIR = Path(__file__).resolve().parents[1]
+SCRIPT_ROOT = PROJECT_DIR.parent
+if str(PROJECT_DIR) not in sys.path:
+    sys.path.insert(0, str(PROJECT_DIR))
+
 import os
 import unittest
 from unittest import mock
