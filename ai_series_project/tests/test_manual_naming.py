@@ -227,6 +227,93 @@ class ManualNamingTests(unittest.TestCase):
         install_commands = [cmd for cmd in commands if "install" in cmd]
         self.assertTrue(any("torchvision" in cmd for cmd in install_commands))
 
+    def test_render_episode_audio_track_retries_missing_synthesized_line(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            final_audio = tmp / "episode.wav"
+
+            def fake_retry(target, line, render_cfg, **kwargs):
+                target.write_bytes(b"retry")
+                return True
+
+            def fake_normalize(ffmpeg, input_path, duration_seconds, output_path, sample_rate):
+                output_path.write_bytes(b"normalized")
+
+            def fake_concat(ffmpeg, segment_paths, output_path):
+                output_path.write_bytes(b"episode")
+
+            with mock.patch.object(STEP10, "materialize_original_segment_audio", return_value=""), mock.patch.object(
+                STEP10, "synthesize_voice_lines", return_value=({}, {"backend": "pyttsx3", "voice_id": "demo", "voices": []})
+            ), mock.patch.object(
+                STEP10, "synthesize_single_voice_line", side_effect=fake_retry
+            ), mock.patch.object(
+                STEP10, "normalize_line_audio", side_effect=fake_normalize
+            ), mock.patch.object(
+                STEP10, "concat_audio_segments", side_effect=fake_concat
+            ):
+                payload = STEP10.render_episode_audio_track(
+                    Path("ffmpeg"),
+                    [
+                        {
+                            "line_index": 1,
+                            "speaker_name": "Kenzie",
+                            "text": "Hallo zusammen",
+                            "estimated_duration_seconds": 1.2,
+                            "start_seconds": 0.0,
+                            "end_seconds": 1.2,
+                            "retrieval_segment": {},
+                        }
+                    ],
+                    1.2,
+                    {"audio_sample_rate": 22050},
+                    tmp,
+                    final_audio,
+                )
+                self.assertEqual(payload["audio_backend"], "pyttsx3")
+                self.assertEqual(payload["synthesized_lines"], 1)
+                self.assertTrue(final_audio.exists())
+
+    def test_render_episode_audio_track_uses_silence_for_missing_text_line(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            final_audio = tmp / "episode.wav"
+
+            def fake_silence(ffmpeg, duration_seconds, output_path, sample_rate):
+                output_path.write_bytes(b"silence")
+
+            def fake_concat(ffmpeg, segment_paths, output_path):
+                output_path.write_bytes(b"episode")
+
+            with mock.patch.object(STEP10, "materialize_original_segment_audio", return_value=""), mock.patch.object(
+                STEP10, "synthesize_voice_lines", return_value=({}, {"backend": "", "voice_id": "", "voices": []})
+            ), mock.patch.object(
+                STEP10, "synthesize_single_voice_line", return_value=False
+            ), mock.patch.object(
+                STEP10, "create_silence_audio", side_effect=fake_silence
+            ), mock.patch.object(
+                STEP10, "concat_audio_segments", side_effect=fake_concat
+            ):
+                payload = STEP10.render_episode_audio_track(
+                    Path("ffmpeg"),
+                    [
+                        {
+                            "line_index": 1,
+                            "speaker_name": "Kenzie",
+                            "text": "",
+                            "estimated_duration_seconds": 1.0,
+                            "start_seconds": 0.0,
+                            "end_seconds": 1.0,
+                            "retrieval_segment": {},
+                        }
+                    ],
+                    1.0,
+                    {"audio_sample_rate": 22050},
+                    tmp,
+                    final_audio,
+                )
+                self.assertEqual(payload["line_materializations"][0]["audio_backend"], "missing_dialogue_text_silence")
+                self.assertTrue(final_audio.exists())
+
     def test_missing_optional_runtime_components_lists_only_missing_entries(self) -> None:
         missing = STEP00.missing_optional_runtime_components(
             {

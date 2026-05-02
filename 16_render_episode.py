@@ -2112,7 +2112,7 @@ def synthesize_voice_lines(temp_root: Path, voice_plan_lines: list[dict], render
         engine.setProperty("volume", max(0.0, min(1.0, voice_volume)))
         for line in voice_plan_lines:
             line_index = int(line.get("line_index", 0) or 0)
-            text = clean_text(line.get("text", ""))
+            text = dialogue_line_text(line)
             if not text:
                 continue
             voice_profile = line.get("voice_profile", {}) if isinstance(line.get("voice_profile", {}), dict) else {}
@@ -2143,7 +2143,21 @@ def synthesize_voice_lines(temp_root: Path, voice_plan_lines: list[dict], render
 
     missing = [index for index, path in output_map.items() if not path.exists() or path.stat().st_size <= 0]
     if missing:
-        raise RuntimeError(f"Voice synthesis failed for {len(missing)} dialogue lines.")
+        line_lookup = {
+            int(line.get("line_index", 0) or 0): line
+            for line in voice_plan_lines
+            if isinstance(line, dict)
+        }
+        for line_index in list(missing):
+            line = line_lookup.get(line_index, {})
+            target = output_map.get(line_index, temp_root / f"line_{line_index:04d}_raw.wav")
+            retry_voice_id = line_voice_ids.get(line_index, default_voice_id)
+            retry_language = line_languages.get(line_index, "")
+            if synthesize_single_voice_line(target, line, render_cfg, voice_id=retry_voice_id, preferred_language=retry_language):
+                output_map[line_index] = target
+                missing.remove(line_index)
+        if missing:
+            raise RuntimeError(f"Voice synthesis failed for {len(missing)} dialogue lines.")
     return {
         **output_map,
     }, {
@@ -2154,6 +2168,69 @@ def synthesize_voice_lines(temp_root: Path, voice_plan_lines: list[dict], render
         "line_voice_ids": line_voice_ids,
         "line_languages": line_languages,
     }
+
+
+def dialogue_line_text(line: dict) -> str:
+    if not isinstance(line, dict):
+        return ""
+    retrieval_segment = line.get("retrieval_segment", {}) if isinstance(line.get("retrieval_segment", {}), dict) else {}
+    source_payload = line.get("source", {}) if isinstance(line.get("source", {}), dict) else {}
+    return (
+        clean_text(line.get("text", ""))
+        or clean_text(source_payload.get("text", ""))
+        or clean_text(retrieval_segment.get("text", ""))
+    )
+
+
+def synthesize_single_voice_line(
+    target: Path,
+    line: dict,
+    render_cfg: dict,
+    *,
+    voice_id: str = "",
+    preferred_language: str = "",
+) -> bool:
+    text = dialogue_line_text(line)
+    if not text:
+        return False
+    try:
+        import pyttsx3
+    except Exception:
+        return False
+    target.parent.mkdir(parents=True, exist_ok=True)
+    engine = None
+    try:
+        engine = pyttsx3.init()
+        voices = describe_system_voices(engine)
+        configured_voice_id = clean_text(render_cfg.get("voice_id", ""))
+        default_voice_id = voice_id or configured_voice_id or clean_text(engine.getProperty("voice"))
+        voice_profile = line.get("voice_profile", {}) if isinstance(line.get("voice_profile", {}), dict) else {}
+        effective_language = preferred_language
+        if not effective_language and bool(render_cfg.get("prefer_detected_character_language", True)):
+            effective_language = normalize_language_code(
+                line.get("language", "") or voice_profile.get("dominant_language", "")
+            )
+        resolved_voice_id = resolve_system_voice_id(
+            default_voice_id,
+            voices,
+            preferred_language=effective_language,
+            require_german=bool(render_cfg.get("prefer_german_voice", True)),
+        )
+        engine.setProperty("rate", int(render_cfg.get("voice_rate", 175) or 175))
+        engine.setProperty("volume", max(0.0, min(1.0, float(render_cfg.get("voice_volume", 1.0) or 1.0))))
+        if resolved_voice_id:
+            engine.setProperty("voice", resolved_voice_id)
+        engine.save_to_file(text, str(target))
+        engine.runAndWait()
+        return target.exists() and target.stat().st_size > 0
+    except Exception:
+        return False
+    finally:
+        if engine is not None:
+            try:
+                engine.stop()
+            except Exception:
+                pass
 
 
 def create_silence_audio(ffmpeg: Path, duration_seconds: float, output_path: Path, sample_rate: int) -> None:
@@ -2536,10 +2613,20 @@ def render_episode_audio_track(
         else:
             synthesized_source = synthesized_map.get(line_index)
             if synthesized_source is None:
-                raise RuntimeError(f"Voice synthesis input is missing for dialogue line {line_index}.")
-            normalize_line_audio(ffmpeg, synthesized_source, line_duration, normalized_path, sample_rate)
-            source_backend = "pyttsx3"
-            synthesized_lines += 1
+                retry_source = audio_root / f"line_{line_index:04d}_retry.wav"
+                if synthesize_single_voice_line(retry_source, line, render_cfg):
+                    synthesized_source = retry_source
+                    synthesized_map[line_index] = retry_source
+                else:
+                    line_text = dialogue_line_text(line)
+                    if line_text:
+                        raise RuntimeError(f"Voice synthesis input is missing for dialogue line {line_index}.")
+                    create_silence_audio(ffmpeg, max(line_duration, 0.25), normalized_path, sample_rate)
+                    source_backend = "missing_dialogue_text_silence"
+            if not source_backend:
+                normalize_line_audio(ffmpeg, synthesized_source, line_duration, normalized_path, sample_rate)
+                source_backend = "pyttsx3"
+                synthesized_lines += 1
         normalized_map[line_index] = normalized_path
         package_line_path = normalized_path
         if package_root is not None:

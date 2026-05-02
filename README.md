@@ -269,6 +269,7 @@ python -m py_compile 00_prepare_runtime.py 21_refresh_after_manual_review.py 56_
 
 - improving the real quality of project-local fallback image generation so scenes stop looking like weak placeholder composites
 - improving project-local voice generation and timing so scenes have more natural speech coverage
+- hardening render-time voice synthesis so single missing dialogue-line outputs trigger per-line retry or silence fallback instead of dropping the whole episode audio track
 - improving the project-local lip-sync path beyond simple fallback mux behavior
 - reducing external backend task failures so the quality gate can pass more often with real generated assets
 - continuing cleanup of leftover legacy wording in some logs and helper comments
