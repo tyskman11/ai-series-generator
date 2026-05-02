@@ -236,6 +236,7 @@ class RegenerationQueueTests(unittest.TestCase):
         self.assertIn("--strict", command)
         self.assertIn("--update-bible", command)
         self.assertTrue(str(command[1]).endswith("18_regenerate_weak_scenes.py"))
+        self.assertEqual(Path(command[1]).parent, STEP52.WORKSPACE_ROOT)
 
     def test_regenerate_main_refreshes_gate_when_overrides_are_passed(self) -> None:
         args = argparse.Namespace(

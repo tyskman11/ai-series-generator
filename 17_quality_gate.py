@@ -16,6 +16,7 @@ from typing import Any
 
 from support_scripts.pipeline_common import (
     SCRIPT_DIR,
+    WORKSPACE_ROOT,
     add_shared_worker_arguments,
     generated_episode_artifacts,
     headline,
@@ -112,7 +113,7 @@ def build_auto_retry_command(
     release_cfg = release_mode_config(cfg)
     command = [
         str(runtime_python()),
-        str(SCRIPT_DIR / "18_regenerate_weak_scenes.py"),
+        str(WORKSPACE_ROOT / "18_regenerate_weak_scenes.py"),
         "--episode-id",
         episode_id,
         "--apply",
@@ -324,7 +325,7 @@ def main() -> None:
             args,
             strict=strict_warnings_enabled(effective_cfg, args),
         )
-        result = subprocess.run(retry_cmd, cwd=str(SCRIPT_DIR), text=True)
+        result = subprocess.run(retry_cmd, cwd=str(WORKSPACE_ROOT), text=True)
         if result.returncode != 0:
             raise SystemExit(result.returncode)
         _refreshed_cfg, refreshed_artifacts, refreshed_report_path, refreshed_report = reload_quality_gate_report(

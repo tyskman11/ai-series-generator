@@ -264,6 +264,7 @@ python -m py_compile 00_prepare_runtime.py 21_refresh_after_manual_review.py 56_
 - project-local FFmpeg now comes from the Python runtime path instead of a separate external FFmpeg download
 - `21_refresh_after_manual_review.py`, `56_generate_finished_episodes.py`, and `57_process_next_episode.py` now begin with `00_prepare_runtime.py`
 - the documented order is now setup/downloads first, then training, then backend fine-tunes, then generate/render/gate/export
+- release-gate auto-retry now calls `18_regenerate_weak_scenes.py` from the repository root layout correctly after the root/`ai_series_project` split
 
 ## In Progress
 
