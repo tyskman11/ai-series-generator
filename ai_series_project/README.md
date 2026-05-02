@@ -206,6 +206,7 @@ The project is configured for quality-first finished-episode generation:
 - external backend runner hooks configured through project-local defaults
 - the project-local voice runner now tries real XTTS cloning before any local fallback
 - XTTS still needs `xtts_license_accepted = true` in the local `configs/project.json` and usable character reference audio
+- render-time dialogue planning now falls back directly to `characters/voice_models/<character>_voice_model.json` when `voice_map` is stale or missing a named speaker entry
 
 Important:
 

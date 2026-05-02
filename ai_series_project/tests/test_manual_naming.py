@@ -362,6 +362,36 @@ class ManualNamingTests(unittest.TestCase):
             self.assertIn(str(reference_path), payload["reference_audio_candidates"])
             self.assertIn(str(sample_path), payload["reference_audio_candidates"])
 
+    def test_voice_profile_for_speaker_name_falls_back_to_voice_model_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            voice_models = root / "characters" / "voice_models"
+            voice_models.mkdir(parents=True, exist_ok=True)
+            reference_path = root / "data" / "raw" / "audio" / "babe_ref.wav"
+            reference_path.parent.mkdir(parents=True, exist_ok=True)
+            reference_path.write_bytes(b"ref")
+            model_path = voice_models / "babe_voice_model.json"
+            model_path.write_text(
+                json.dumps(
+                    {
+                        "character": "Babe",
+                        "dominant_language": "en",
+                        "language_counts": {"en": 12},
+                        "reference_audio": str(reference_path),
+                    }
+                ),
+                encoding="utf-8",
+            )
+            cfg = {"paths": {"voice_models": str(voice_models)}}
+            with mock.patch.object(STEP10, "resolve_project_path", side_effect=lambda value: Path(value)):
+                profile = STEP10.voice_profile_for_speaker_name({}, "Babe", cfg)
+
+            self.assertEqual(profile["name"], "Babe")
+            self.assertEqual(profile["voice_model_path"], str(model_path))
+            self.assertEqual(profile["reference_audio"], str(reference_path))
+            self.assertEqual(profile["dominant_language"], "en")
+            self.assertEqual(profile["language_counts"], {"en": 12})
+
     def test_missing_optional_runtime_components_lists_only_missing_entries(self) -> None:
         missing = STEP00.missing_optional_runtime_components(
             {
@@ -2238,7 +2268,7 @@ class ManualNamingTests(unittest.TestCase):
         }
         render_cfg = {"voice_rate": 175, "audio_pad_seconds": 0.35}
 
-        plan = STEP10.build_scene_voice_plan(scene, 2.2, 5.0, library, voice_lookup, cloning_cfg, render_cfg)
+        plan = STEP10.build_scene_voice_plan(scene, 2.2, 5.0, library, voice_lookup, cloning_cfg, render_cfg, {})
 
         self.assertEqual(len(plan), 2)
         self.assertEqual(plan[0]["start_seconds"], 5.0)

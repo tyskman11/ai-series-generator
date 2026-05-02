@@ -581,6 +581,31 @@ def build_voice_lookup(cfg: dict) -> dict[str, dict]:
     return lookup
 
 
+def voice_profile_for_speaker_name(voice_lookup: dict[str, dict], speaker_name: str, cfg: dict) -> dict:
+    direct = voice_lookup.get(speaker_name, {})
+    if isinstance(direct, dict) and direct:
+        return direct
+    clean_name = clean_text(speaker_name)
+    if not clean_name:
+        return {}
+    speaker_slug = production_scene_slug(clean_name.lower())
+    voice_models_root = resolve_project_path(str((cfg.get("paths", {}) if isinstance(cfg.get("paths", {}), dict) else {}).get("voice_models", "characters/voice_models")))
+    voice_model_path = voice_models_root / f"{speaker_slug}_voice_model.json"
+    if not voice_model_path.exists():
+        return {}
+    voice_model = read_json(voice_model_path, {})
+    return {
+        "cluster_id": "",
+        "name": clean_name,
+        "linked_face_cluster": "",
+        "auto_named": False,
+        "voice_model_path": str(voice_model_path),
+        "dominant_language": normalize_language_code(voice_model.get("dominant_language", "")),
+        "language_counts": dict(voice_model.get("language_counts", {}) or {}),
+        "reference_audio": clean_text(voice_model.get("reference_audio", "")),
+    }
+
+
 def parse_dialogue_line(raw_line: str, source: dict) -> tuple[str, str]:
     line = clean_text(raw_line)
     fallback_speaker = clean_text(source.get("speaker", ""))
@@ -608,6 +633,7 @@ def build_scene_voice_plan(
     voice_lookup: dict[str, dict],
     cloning_cfg: dict,
     render_cfg: dict,
+    cfg: dict,
 ) -> list[dict]:
     dialogue_lines = scene.get("dialogue_lines", []) if isinstance(scene.get("dialogue_lines", []), list) else []
     if not dialogue_lines:
@@ -647,7 +673,7 @@ def build_scene_voice_plan(
                 "source": source,
                 "retrieval_segment": retrieval_segment or {},
                 "reference_segments": reference_segments,
-                "voice_profile": voice_lookup.get(speaker_name, {}),
+                "voice_profile": voice_profile_for_speaker_name(voice_lookup, speaker_name, cfg),
                 "raw_duration_seconds": estimate_dialogue_duration_seconds(line_text, voice_rate, audio_pad_seconds),
             }
         )
@@ -3288,6 +3314,7 @@ def main() -> None:
                 voice_lookup,
                 cloning_cfg,
                 render_cfg,
+                cfg,
             )
             scene_generation_plan = scene.get("generation_plan", {}) if isinstance(scene.get("generation_plan", {}), dict) else {}
             scene_visual_beats = derive_scene_visual_beats(
