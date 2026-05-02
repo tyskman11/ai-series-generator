@@ -182,6 +182,51 @@ class ManualNamingTests(unittest.TestCase):
         self.assertLess(install_order.index("torch"), install_order.index("face_recognition"))
         self.assertLess(install_order.index("torch"), install_order.index("speaker_embeddings"))
 
+    def test_install_torch_stack_repairs_missing_torchvision(self) -> None:
+        statuses = [
+            {
+                "available": True,
+                "stack_ready": False,
+                "cuda_available": False,
+                "torchvision_available": False,
+            },
+            {
+                "available": True,
+                "stack_ready": True,
+                "cuda_available": False,
+                "torchvision_available": True,
+            },
+        ]
+        commands: list[list[str]] = []
+
+        def fake_run(cmd, check=True):
+            commands.append(list(cmd))
+            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
+
+        with mock.patch.object(STEP00, "runtime_settings", return_value={"prefer_gpu": False, "torch_cuda_index_url": ""}), mock.patch.object(
+            STEP00, "nvidia_gpu_available", return_value=False
+        ), mock.patch.object(
+            STEP00, "torch_status", side_effect=statuses
+        ), mock.patch.object(
+            STEP00, "runtime_pip_install_command", return_value=["python", "-m", "pip", "install", "torch", "torchvision", "torchaudio"]
+        ), mock.patch.object(
+            STEP00, "run", side_effect=fake_run
+        ), mock.patch.object(
+            STEP00, "warn"
+        ), mock.patch.object(
+            STEP00, "info"
+        ), mock.patch.object(
+            STEP00, "ok"
+        ), mock.patch.object(
+            STEP00, "HOST_RUNTIME_ROOT", Path(tempfile.mkdtemp())
+        ):
+            ready, status = STEP00.install_torch_stack(Path("/usr/bin/python3"), {})
+
+        self.assertTrue(ready)
+        self.assertTrue(status["stack_ready"])
+        install_commands = [cmd for cmd in commands if "install" in cmd]
+        self.assertTrue(any("torchvision" in cmd for cmd in install_commands))
+
     def test_missing_optional_runtime_components_lists_only_missing_entries(self) -> None:
         missing = STEP00.missing_optional_runtime_components(
             {

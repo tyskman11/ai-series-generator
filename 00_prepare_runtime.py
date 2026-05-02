@@ -197,15 +197,43 @@ def torch_status(py: Path) -> dict:
             str(py),
             "-c",
             (
-                "import json, torch; "
-                "print(json.dumps({"
-                "'available': True, "
-                "'torch_version': getattr(torch, '__version__', ''), "
-                "'cuda_available': bool(torch.cuda.is_available()), "
-                "'cuda_version': str(getattr(getattr(torch, 'version', None), 'cuda', '') or ''), "
-                "'device_count': int(torch.cuda.device_count()) if torch.cuda.is_available() else 0, "
-                "'device_names': [torch.cuda.get_device_name(i) for i in range(torch.cuda.device_count())] if torch.cuda.is_available() else []"
-                "}))"
+                "import json; "
+                "payload = {"
+                "'available': False, "
+                "'stack_ready': False, "
+                "'torch_version': '', "
+                "'cuda_available': False, "
+                "'cuda_version': '', "
+                "'device_count': 0, "
+                "'device_names': [], "
+                "'torchvision_available': False, "
+                "'torchaudio_available': False, "
+                "'error': '', "
+                "'torchvision_error': '', "
+                "'torchaudio_error': ''"
+                "}; "
+                "try:\n"
+                " import torch\n"
+                " payload['available'] = True\n"
+                " payload['torch_version'] = getattr(torch, '__version__', '')\n"
+                " payload['cuda_available'] = bool(torch.cuda.is_available())\n"
+                " payload['cuda_version'] = str(getattr(getattr(torch, 'version', None), 'cuda', '') or '')\n"
+                " payload['device_count'] = int(torch.cuda.device_count()) if torch.cuda.is_available() else 0\n"
+                " payload['device_names'] = [torch.cuda.get_device_name(i) for i in range(torch.cuda.device_count())] if torch.cuda.is_available() else []\n"
+                "except Exception as exc:\n"
+                " payload['error'] = str(exc)\n"
+                "try:\n"
+                " import torchvision\n"
+                " payload['torchvision_available'] = True\n"
+                "except Exception as exc:\n"
+                " payload['torchvision_error'] = str(exc)\n"
+                "try:\n"
+                " import torchaudio\n"
+                " payload['torchaudio_available'] = True\n"
+                "except Exception as exc:\n"
+                " payload['torchaudio_error'] = str(exc)\n"
+                "payload['stack_ready'] = bool(payload['available'] and payload['torchvision_available']); "
+                "print(json.dumps(payload))"
             ),
         ],
         check=False,
@@ -213,26 +241,41 @@ def torch_status(py: Path) -> dict:
     if result.returncode != 0:
         return {
             "available": False,
+            "stack_ready": False,
             "torch_version": "",
             "cuda_available": False,
             "cuda_version": "",
             "device_count": 0,
             "device_names": [],
+            "torchvision_available": False,
+            "torchaudio_available": False,
             "error": (result.stdout or "").strip(),
+            "torchvision_error": "",
+            "torchaudio_error": "",
         }
     try:
         data = json.loads((result.stdout or "").strip())
     except Exception:
         return {
             "available": False,
+            "stack_ready": False,
             "torch_version": "",
             "cuda_available": False,
             "cuda_version": "",
             "device_count": 0,
             "device_names": [],
+            "torchvision_available": False,
+            "torchaudio_available": False,
             "error": (result.stdout or "").strip(),
+            "torchvision_error": "",
+            "torchaudio_error": "",
         }
+    data.setdefault("stack_ready", bool(data.get("available") and data.get("torchvision_available")))
+    data.setdefault("torchvision_available", False)
+    data.setdefault("torchaudio_available", False)
     data.setdefault("error", "")
+    data.setdefault("torchvision_error", "")
+    data.setdefault("torchaudio_error", "")
     return data
 
 
@@ -241,14 +284,16 @@ def install_torch_stack(py: Path, cfg: dict) -> tuple[bool, dict]:
     wants_gpu = bool(runtime_cfg.get("prefer_gpu", True)) and nvidia_gpu_available()
     cuda_index_url = str(runtime_cfg.get("torch_cuda_index_url", "") or "").strip()
     current_status = torch_status(py)
-    if current_status.get("available") and (not wants_gpu or current_status.get("cuda_available")):
-        ok("torch is already installed.")
+    if current_status.get("stack_ready") and (not wants_gpu or current_status.get("cuda_available")):
+        ok("torch runtime stack is already installed.")
         return True, current_status
 
-    if wants_gpu and not current_status.get("cuda_available"):
+    if current_status.get("available") and not current_status.get("torchvision_available"):
+        info("torch is present, but torchvision is missing. Repairing the full torch runtime stack ...")
+    elif wants_gpu and not current_status.get("cuda_available"):
         info("NVIDIA GPU detected. Trying to install a CUDA-enabled torch stack ...")
     else:
-        info("Installing torch ...")
+        info("Installing torch runtime stack ...")
 
     log_dir = HOST_RUNTIME_ROOT / "install_logs"
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -297,15 +342,15 @@ def install_torch_stack(py: Path, cfg: dict) -> tuple[bool, dict]:
         log_file = log_dir / f"{attempt_name}_{int(time.time())}.log"
         log_file.write_text(last_output, encoding="utf-8")
         current_status = torch_status(py)
-        if current_status.get("available") and (not wants_gpu or current_status.get("cuda_available")):
-            ok("torch installed successfully.")
+        if current_status.get("stack_ready") and (not wants_gpu or current_status.get("cuda_available")):
+            ok("torch runtime stack installed successfully.")
             return True, current_status
-        if result.returncode == 0 and current_status.get("available") and not wants_gpu:
-            ok("torch installed successfully.")
+        if result.returncode == 0 and current_status.get("stack_ready") and not wants_gpu:
+            ok("torch runtime stack installed successfully.")
             return True, current_status
 
-    warn("CUDA torch could not be confirmed. Falling back to CPU if needed.")
-    return bool(current_status.get("available")), current_status
+    warn("A complete torch runtime stack could not be confirmed. Falling back to CPU if needed.")
+    return bool(current_status.get("stack_ready")), current_status
 
 
 def main() -> None:
