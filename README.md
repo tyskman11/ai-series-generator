@@ -43,6 +43,7 @@ Run the numbered scripts from the project root `KI Serien Training`.
 ### Project Root
 
 - `00_prepare_runtime.py` to `57_process_next_episode.py`: numbered main pipeline scripts in execution order
+- `README.md`: root overview for the whole project
 - `ai_series_project/`: project-internal data, config, runtime, support code, tests, tools, training, and outputs
 
 ### Main Folders Inside `ai_series_project/`
@@ -147,7 +148,7 @@ python 00_prepare_runtime.py
 
 On Linux, the script uses the active `python3` interpreter and `pip --break-system-packages` when supported.
 
-If optional runtime packages such as `face_recognition/facenet-pytorch`, `speechbrain`, or `TTS` cannot be installed, `00_prepare_runtime.py` now reports `ready with limitations` instead of pretending the full stack is complete. In that case, later steps can still run, but face linking, speaker embedding quality, or higher-quality voice cloning may stay reduced until the missing package installs cleanly.
+If optional runtime packages such as `face_recognition/facenet-pytorch`, `speechbrain`, or `TTS` cannot be installed, `00_prepare_runtime.py` reports `ready with limitations` instead of pretending the full stack is complete. In that case, later steps can still run, but face linking, speaker embedding quality, or higher-quality voice cloning may stay reduced until the missing package installs cleanly.
 
 If you only want to validate the current local asset state without new downloads:
 
@@ -204,7 +205,7 @@ Important:
 
 Main config:
 
-- `configs/project.json`
+- `ai_series_project/configs/project.json`
 
 Important areas:
 
@@ -227,7 +228,7 @@ python -m unittest discover -s ai_series_project\tests -v
 Useful smoke checks:
 
 ```powershell
-python -m py_compile 00_prepare_runtime.py 48_refresh_after_manual_review.py 56_generate_finished_episodes.py 57_process_next_episode.py support_scripts\\pipeline_common.py support_scripts\\configure_quality_backends.py support_scripts\\prepare_quality_backends.py
+python -m py_compile 00_prepare_runtime.py 48_refresh_after_manual_review.py 56_generate_finished_episodes.py 57_process_next_episode.py ai_series_project\support_scripts\pipeline_common.py ai_series_project\support_scripts\configure_quality_backends.py ai_series_project\support_scripts\prepare_quality_backends.py
 ```
 
 ## Known Limitations
