@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 from __future__ import annotations
 
 import json
@@ -4230,21 +4230,21 @@ def ensure_backend_fine_tune_ready(
         return status
     if not status["summary_exists"]:
         raise RuntimeError(
-                "Backend fine-tune runs are missing. Run 49_run_backend_finetunes.py before generation or render."
+                "Backend fine-tune runs are missing. Run 12_run_backend_finetunes.py before generation or render."
         )
     if not status["summary_new_enough"]:
         raise RuntimeError(
-                "Backend fine-tune runs are older than the current fine-tune training. Run 49_run_backend_finetunes.py again after 11_train_fine_tune_models.py."
+                "Backend fine-tune runs are older than the current fine-tune training. Run 12_run_backend_finetunes.py again after 11_train_fine_tune_models.py."
         )
     if status["missing_characters"]:
         missing = ", ".join(status["missing_characters"])
         raise RuntimeError(
-                f"Backend fine-tune runs are missing for these characters: {missing}. Run 49_run_backend_finetunes.py again."
+                f"Backend fine-tune runs are missing for these characters: {missing}. Run 12_run_backend_finetunes.py again."
         )
     if status["weak_characters"]:
         weak = ", ".join(status["weak_characters"])
         raise RuntimeError(
-                f"Backend fine-tune runs are still too weak for these characters: {weak}. Run 49_run_backend_finetunes.py again."
+                f"Backend fine-tune runs are still too weak for these characters: {weak}. Run 12_run_backend_finetunes.py again."
         )
     return status
 

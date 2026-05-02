@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import sys
 from pathlib import Path
@@ -71,20 +71,20 @@ STEP04 = load_module("03_diarize_and_transcribe.py", "step04")
 STEP06 = load_module("06_build_dataset.py", "step06")
 STEP07 = load_module("07_train_series_model.py", "step07")
 STEP08 = load_module("05_review_unknowns.py", "step08")
-STEP10 = load_module("14_render_episode.py", "step10")
+STEP10 = load_module("16_render_episode.py", "step10")
 STEP10TRAIN = load_module("09_train_foundation_models.py", "step10train")
 STEP13 = load_module("08_prepare_foundation_training.py", "step13")
-STEP15 = load_module("12_generate_episode.py", "step15")
-STEP15ASSETS = load_module("13_generate_storyboard_assets.py", "step15assets")
-STEP16BACKEND = load_module("53_run_storyboard_backend.py", "step16backend")
-STEP16 = load_module("48_refresh_after_manual_review.py", "step16")
+STEP15 = load_module("13_generate_episode.py", "step15")
+STEP15ASSETS = load_module("14_generate_storyboard_assets.py", "step15assets")
+STEP16BACKEND = load_module("15_run_storyboard_backend.py", "step16backend")
+STEP16 = load_module("21_refresh_after_manual_review.py", "step16")
 STEP17 = load_module("10_train_adapter_models.py", "step17")
 STEP18 = load_module("11_train_fine_tune_models.py", "step18")
-STEP19 = load_module("49_run_backend_finetunes.py", "step19")
+STEP19 = load_module("12_run_backend_finetunes.py", "step19")
 STEP19PREVIEW = load_module("56_generate_finished_episodes.py", "step19preview")
-STEPBIBLE = load_module("15_build_series_bible.py", "stepbible")
+STEPBIBLE = load_module("19_build_series_bible.py", "stepbible")
 STEP99 = load_module("57_process_next_episode.py", "step99")
-STEPRENDER = load_module("14_render_episode.py", "steprender")
+STEPRENDER = load_module("16_render_episode.py", "steprender")
 
 
 class ManualNamingTests(unittest.TestCase):
@@ -2956,7 +2956,7 @@ class ManualNamingTests(unittest.TestCase):
             self.assertEqual(payload["voice_pack"]["original_voice_sample_count"], 2)
 
     def test_refresh_after_manual_review_parse_args(self) -> None:
-        with mock.patch("sys.argv", ["48_refresh_after_manual_review.py", "--skip-downloads", "--stop-after-training", "--allow-open-review"]):
+        with mock.patch("sys.argv", ["21_refresh_after_manual_review.py", "--skip-downloads", "--stop-after-training", "--allow-open-review"]):
             args = STEP16.parse_args()
         self.assertTrue(args.skip_downloads)
         self.assertTrue(args.stop_after_training)
@@ -2978,9 +2978,9 @@ class ManualNamingTests(unittest.TestCase):
         planned = STEP16.planned_refresh_steps(cfg, skip_downloads=True, stop_after_training=False)
         step_names = [row[0] for row in planned]
 
-        self.assertLess(step_names.index("49_run_backend_finetunes.py"), step_names.index("12_generate_episode.py"))
-        self.assertLess(step_names.index("53_run_storyboard_backend.py"), step_names.index("14_render_episode.py"))
-        self.assertLess(step_names.index("14_render_episode.py"), step_names.index("15_build_series_bible.py"))
+        self.assertLess(step_names.index("12_run_backend_finetunes.py"), step_names.index("13_generate_episode.py"))
+        self.assertLess(step_names.index("15_run_storyboard_backend.py"), step_names.index("16_render_episode.py"))
+        self.assertLess(step_names.index("16_render_episode.py"), step_names.index("19_build_series_bible.py"))
         self.assertIn("--skip-downloads", planned[2][2])
 
     def test_planned_refresh_steps_stop_after_training_excludes_generate_render_block(self) -> None:
@@ -2999,10 +2999,10 @@ class ManualNamingTests(unittest.TestCase):
         planned = STEP16.planned_refresh_steps(cfg, skip_downloads=False, stop_after_training=True)
         step_names = [row[0] for row in planned]
 
-        self.assertIn("49_run_backend_finetunes.py", step_names)
-        self.assertNotIn("12_generate_episode.py", step_names)
-        self.assertNotIn("14_render_episode.py", step_names)
-        self.assertNotIn("15_build_series_bible.py", step_names)
+        self.assertIn("12_run_backend_finetunes.py", step_names)
+        self.assertNotIn("13_generate_episode.py", step_names)
+        self.assertNotIn("16_render_episode.py", step_names)
+        self.assertNotIn("19_build_series_bible.py", step_names)
 
     def test_planned_refresh_steps_respect_disabled_optional_training_stages(self) -> None:
         cfg = {
@@ -3025,11 +3025,11 @@ class ManualNamingTests(unittest.TestCase):
             [
                 "06_build_dataset.py",
                 "07_train_series_model.py",
-                "12_generate_episode.py",
-                "13_generate_storyboard_assets.py",
-                "53_run_storyboard_backend.py",
-                "14_render_episode.py",
-                "15_build_series_bible.py",
+                "13_generate_episode.py",
+                "14_generate_storyboard_assets.py",
+                "15_run_storyboard_backend.py",
+                "16_render_episode.py",
+                "19_build_series_bible.py",
             ],
         )
 
@@ -3236,10 +3236,10 @@ class ManualNamingTests(unittest.TestCase):
         }
 
         with mock.patch.object(STEP99, "latest_generated_episode_artifacts", return_value=outputs):
-            STEP99.record_global_generated_episode_outputs(state, {}, "14_render_episode.py")
+            STEP99.record_global_generated_episode_outputs(state, {}, "16_render_episode.py")
 
         self.assertEqual(state["latest_generated_episode"]["episode_id"], "episode_200")
-        self.assertEqual(state["global_step_outputs"]["14_render_episode.py"]["production_package"], outputs["production_package"])
+        self.assertEqual(state["global_step_outputs"]["16_render_episode.py"]["production_package"], outputs["production_package"])
 
     def test_generated_episode_completion_summary_marks_missing_backend_tasks(self) -> None:
         summary = generated_episode_completion_summary(
@@ -4160,10 +4160,10 @@ class ManualNamingTests(unittest.TestCase):
 
         self.assertIn("10_train_adapter_models.py", steps)
         self.assertLess(steps.index("09_train_foundation_models.py"), steps.index("10_train_adapter_models.py"))
-        self.assertLess(steps.index("10_train_adapter_models.py"), steps.index("12_generate_episode.py"))
-        self.assertLess(steps.index("12_generate_episode.py"), steps.index("13_generate_storyboard_assets.py"))
-        self.assertLess(steps.index("13_generate_storyboard_assets.py"), steps.index("14_render_episode.py"))
-        self.assertLess(steps.index("14_render_episode.py"), steps.index("15_build_series_bible.py"))
+        self.assertLess(steps.index("10_train_adapter_models.py"), steps.index("13_generate_episode.py"))
+        self.assertLess(steps.index("13_generate_episode.py"), steps.index("14_generate_storyboard_assets.py"))
+        self.assertLess(steps.index("14_generate_storyboard_assets.py"), steps.index("16_render_episode.py"))
+        self.assertLess(steps.index("16_render_episode.py"), steps.index("19_build_series_bible.py"))
 
     def test_planned_preview_steps_builds_bible_once_after_batch(self) -> None:
         cfg = {
@@ -4175,10 +4175,10 @@ class ManualNamingTests(unittest.TestCase):
 
         steps = STEP19PREVIEW.planned_preview_steps(cfg, 3)
 
-        self.assertEqual(steps.count("12_generate_episode.py"), 3)
-        self.assertEqual(steps.count("14_render_episode.py"), 3)
-        self.assertEqual(steps.count("15_build_series_bible.py"), 1)
-        self.assertEqual(steps[-1], "15_build_series_bible.py")
+        self.assertEqual(steps.count("13_generate_episode.py"), 3)
+        self.assertEqual(steps.count("16_render_episode.py"), 3)
+        self.assertEqual(steps.count("19_build_series_bible.py"), 1)
+        self.assertEqual(steps[-1], "19_build_series_bible.py")
 
     def test_planned_preview_steps_respects_prepare_without_forced_training(self) -> None:
         cfg = {
@@ -4199,8 +4199,8 @@ class ManualNamingTests(unittest.TestCase):
         self.assertNotIn("09_train_foundation_models.py", steps)
         self.assertNotIn("10_train_adapter_models.py", steps)
         self.assertNotIn("11_train_fine_tune_models.py", steps)
-        self.assertNotIn("49_run_backend_finetunes.py", steps)
-        self.assertLess(steps.index("08_prepare_foundation_training.py"), steps.index("12_generate_episode.py"))
+        self.assertNotIn("12_run_backend_finetunes.py", steps)
+        self.assertLess(steps.index("08_prepare_foundation_training.py"), steps.index("13_generate_episode.py"))
 
     def test_planned_preview_steps_skips_nested_training_when_foundation_train_disabled(self) -> None:
         cfg = {
@@ -4223,8 +4223,8 @@ class ManualNamingTests(unittest.TestCase):
         self.assertEqual(steps.count("09_train_foundation_models.py"), 0)
         self.assertEqual(steps.count("10_train_adapter_models.py"), 0)
         self.assertEqual(steps.count("11_train_fine_tune_models.py"), 0)
-        self.assertEqual(steps.count("49_run_backend_finetunes.py"), 0)
-        self.assertEqual(steps.count("12_generate_episode.py"), 2)
+        self.assertEqual(steps.count("12_run_backend_finetunes.py"), 0)
+        self.assertEqual(steps.count("13_generate_episode.py"), 2)
 
     def test_preview_parse_args_supports_skip_downloads(self) -> None:
         with mock.patch("sys.argv", ["56_generate_finished_episodes.py", "--count", "4", "--skip-downloads"]):
@@ -4271,11 +4271,11 @@ class ManualNamingTests(unittest.TestCase):
         ), mock.patch.object(
             STEP19PREVIEW, "planned_preview_steps",
             return_value=[
-                "12_generate_episode.py",
-                "13_generate_storyboard_assets.py",
-                "53_run_storyboard_backend.py",
-                "14_render_episode.py",
-                "15_build_series_bible.py",
+                "13_generate_episode.py",
+                "14_generate_storyboard_assets.py",
+                "15_run_storyboard_backend.py",
+                "16_render_episode.py",
+                "19_build_series_bible.py",
             ],
         ), mock.patch.object(
             STEP19PREVIEW, "open_face_review_item_count", return_value=0
@@ -4335,11 +4335,11 @@ class ManualNamingTests(unittest.TestCase):
 
         steps = STEP19PREVIEW.planned_preview_steps_for_mode(cfg, 0, endless=True)
 
-        self.assertEqual(steps.count("12_generate_episode.py"), 1)
-        self.assertEqual(steps.count("13_generate_storyboard_assets.py"), 1)
-        self.assertEqual(steps.count("53_run_storyboard_backend.py"), 1)
-        self.assertEqual(steps.count("14_render_episode.py"), 1)
-        self.assertEqual(steps.count("15_build_series_bible.py"), 1)
+        self.assertEqual(steps.count("13_generate_episode.py"), 1)
+        self.assertEqual(steps.count("14_generate_storyboard_assets.py"), 1)
+        self.assertEqual(steps.count("15_run_storyboard_backend.py"), 1)
+        self.assertEqual(steps.count("16_render_episode.py"), 1)
+        self.assertEqual(steps.count("19_build_series_bible.py"), 1)
 
     def test_preview_parent_label_marks_endless_runs(self) -> None:
         self.assertEqual(STEP19PREVIEW.preview_parent_label(0, True), "Endless")
@@ -4398,14 +4398,14 @@ class ManualNamingTests(unittest.TestCase):
         snapshot = {
             "status": "running",
             "updated_at": "2026-04-18T12:00:00Z",
-            "autosave_reason": "global:14_render_episode.py",
+            "autosave_reason": "global:16_render_episode.py",
             "setup_completed": True,
             "skip_downloads": True,
             "processed_count": 3,
             "pending_inbox_count": 0,
             "current_phase": "global",
             "current_episode_name": None,
-            "current_step": "14_render_episode.py",
+            "current_step": "16_render_episode.py",
             "episode_progress": [],
             "global_progress": [],
             "latest_generated_episode": {
@@ -4443,8 +4443,8 @@ class ManualNamingTests(unittest.TestCase):
         planned_steps = [
             "06_build_dataset.py",
             "07_train_series_model.py",
-            "12_generate_episode.py",
-            "15_build_series_bible.py",
+            "13_generate_episode.py",
+            "19_build_series_bible.py",
         ]
 
         completed = STEP19PREVIEW.completed_step_labels(planned_steps, 2)
@@ -4588,7 +4588,7 @@ class ManualNamingTests(unittest.TestCase):
 
         self.assertIn("11_train_fine_tune_models.py", steps)
         self.assertLess(steps.index("10_train_adapter_models.py"), steps.index("11_train_fine_tune_models.py"))
-        self.assertLess(steps.index("11_train_fine_tune_models.py"), steps.index("12_generate_episode.py"))
+        self.assertLess(steps.index("11_train_fine_tune_models.py"), steps.index("13_generate_episode.py"))
 
     def test_backend_fine_tune_status_detects_outdated_runs(self) -> None:
         with tempfile.TemporaryDirectory(dir=str(ROOT / "tmp")) as tmp:
@@ -4620,7 +4620,7 @@ class ManualNamingTests(unittest.TestCase):
             self.assertFalse(status["summary_new_enough"])
 
     def test_backend_parse_args_supports_force(self) -> None:
-        with mock.patch("sys.argv", ["49_run_backend_finetunes.py", "--character", "Babe", "--force"]):
+        with mock.patch("sys.argv", ["12_run_backend_finetunes.py", "--character", "Babe", "--force"]):
             args = STEP19.parse_args()
 
         self.assertEqual(args.character, "Babe")
@@ -4837,9 +4837,9 @@ class ManualNamingTests(unittest.TestCase):
 
         steps = STEP99.global_steps_to_run(cfg)
 
-        self.assertIn("49_run_backend_finetunes.py", steps)
-        self.assertLess(steps.index("11_train_fine_tune_models.py"), steps.index("49_run_backend_finetunes.py"))
-        self.assertLess(steps.index("49_run_backend_finetunes.py"), steps.index("12_generate_episode.py"))
+        self.assertIn("12_run_backend_finetunes.py", steps)
+        self.assertLess(steps.index("11_train_fine_tune_models.py"), steps.index("12_run_backend_finetunes.py"))
+        self.assertLess(steps.index("12_run_backend_finetunes.py"), steps.index("13_generate_episode.py"))
 
     def test_foundation_pack_completed_requires_ready_payload(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -4865,8 +4865,8 @@ class ManualNamingTests(unittest.TestCase):
             self.assertTrue(STEP10.render_output_ready(full_path))
 
     def test_render_and_bible_scripts_use_matching_step_metadata_names(self) -> None:
-        render_source = (SCRIPT_ROOT / "14_render_episode.py").read_text(encoding="utf-8")
-        bible_source = (SCRIPT_ROOT / "15_build_series_bible.py").read_text(encoding="utf-8")
+        render_source = (SCRIPT_ROOT / "16_render_episode.py").read_text(encoding="utf-8")
+        bible_source = (SCRIPT_ROOT / "19_build_series_bible.py").read_text(encoding="utf-8")
 
         self.assertIn('mark_step_started("14_render_episode"', render_source)
         self.assertIn('mark_step_completed(\n            "14_render_episode"', render_source)

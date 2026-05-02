@@ -37,22 +37,22 @@ def parse_args() -> argparse.Namespace:
         description="Turn quality-gate regeneration hints into a retry manifest and optionally rerun weak scenes."
     )
     parser.add_argument("--episode-id", help="Target episode ID. Uses the newest generated episode by default.")
-    parser.add_argument("--min-quality", type=float, help="Forward a minimum quality override to 51_quality_gate.py.")
-    parser.add_argument("--max-weak-scenes", type=int, help="Forward a weak-scene limit override to 51_quality_gate.py.")
+    parser.add_argument("--min-quality", type=float, help="Forward a minimum quality override to 17_quality_gate.py.")
+    parser.add_argument("--max-weak-scenes", type=int, help="Forward a weak-scene limit override to 17_quality_gate.py.")
     parser.add_argument(
         "--max-regeneration-batch",
         type=int,
-        help="Forward a regeneration-batch override to 51_quality_gate.py.",
+        help="Forward a regeneration-batch override to 17_quality_gate.py.",
     )
     parser.add_argument(
         "--refresh-quality-gate",
         action="store_true",
-        help="Re-run 51_quality_gate.py before writing the regeneration manifest.",
+        help="Re-run 17_quality_gate.py before writing the regeneration manifest.",
     )
     parser.add_argument(
         "--apply",
         action="store_true",
-        help="Run the current whole-episode retry chain (54 -> 15 -> 52 and optionally 16).",
+        help="Run the current whole-episode retry chain (15 -> 16 -> 17 and optionally 19).",
     )
     parser.add_argument(
         "--force",
@@ -62,7 +62,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--update-bible",
         action="store_true",
-        help="Also rebuild 15_build_series_bible.py after a successful retry run.",
+        help="Also rebuild 19_build_series_bible.py after a successful retry run.",
     )
     parser.add_argument(
         "--max-regeneration-retries",
@@ -157,9 +157,9 @@ def ensure_quality_gate_report(
                 strict=strict,
             )
         )
-        result = run_script("51_quality_gate.py", gate_args, allow_failure=True)
+        result = run_script("17_quality_gate.py", gate_args, allow_failure=True)
         if result.returncode not in (0, 1):
-            raise RuntimeError(f"51_quality_gate.py exited unexpectedly with code {result.returncode}.")
+            raise RuntimeError(f"17_quality_gate.py exited unexpectedly with code {result.returncode}.")
     if not report_path.exists():
         raise RuntimeError(f"Quality gate report is missing: {report_path}")
     report = read_json(report_path, {})
@@ -223,17 +223,17 @@ def build_rerun_plan(
         storyboard_note = "Full episode storyboard backend rerun."
     plan: list[dict[str, Any]] = [
         {
-            "script": "53_run_storyboard_backend.py",
+            "script": "15_run_storyboard_backend.py",
             "args": storyboard_args,
             "note": storyboard_note,
         },
         {
-            "script": "14_render_episode.py",
+            "script": "16_render_episode.py",
             "args": ["--episode-id", episode_id, "--force"],
             "note": "Render retries rebuild the full episode package and master.",
         },
         {
-            "script": "51_quality_gate.py",
+            "script": "17_quality_gate.py",
             "args": gate_args,
             "note": "Recompute release status and the weak-scene queue after rerender.",
         },
@@ -241,7 +241,7 @@ def build_rerun_plan(
     if update_bible:
         plan.append(
             {
-                "script": "15_build_series_bible.py",
+                "script": "19_build_series_bible.py",
                 "args": [],
                 "note": "Refresh the series bible after the retry run.",
             }
@@ -534,7 +534,7 @@ def main() -> None:
     max_regeneration_retries = effective_retry_limit(cfg, args.max_regeneration_retries)
     refresh_quality_gate = bool(args.refresh_quality_gate or quality_gate_override_requested(args))
     if refresh_quality_gate and not args.refresh_quality_gate:
-        info("Quality gate overrides detected. Refreshing 51_quality_gate.py before building the regeneration manifest.")
+        info("Quality gate overrides detected. Refreshing 17_quality_gate.py before building the regeneration manifest.")
     report_path, report = ensure_quality_gate_report(
         cfg,
         artifacts,
@@ -601,9 +601,9 @@ def main() -> None:
         script_name = clean_text(step.get("script", ""))
         extra_args = [clean_text(arg) for arg in step.get("args", []) if clean_text(arg)]
         info(f"Running {script_name} {' '.join(extra_args)}".strip())
-        allow_failure = script_name == "51_quality_gate.py"
+        allow_failure = script_name == "17_quality_gate.py"
         result = run_script(script_name, extra_args, allow_failure=allow_failure)
-        if script_name == "51_quality_gate.py" and result.returncode not in (0, 1):
+        if script_name == "17_quality_gate.py" and result.returncode not in (0, 1):
             raise RuntimeError(f"{script_name} failed with exit code {result.returncode}.")
 
     applied_at = utc_timestamp()

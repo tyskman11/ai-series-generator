@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import sys
 from pathlib import Path
@@ -30,7 +30,7 @@ def load_module(filename: str, module_name: str):
 
 
 PIPELINE = load_module("support_scripts/pipeline_common.py", "pipeline_common_backend_status")
-STEP50 = load_module("49_run_backend_finetunes.py", "step50_backend_runs")
+STEP50 = load_module("12_run_backend_finetunes.py", "step50_backend_runs")
 
 
 class BackendFineTuneStatusTests(unittest.TestCase):

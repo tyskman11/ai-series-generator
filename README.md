@@ -26,7 +26,7 @@ This project turns existing TV episodes into a portable local pipeline for:
 - preparation of project-local backend tools and model downloads
 - quality-gated generation of finished synthetic episodes
 
-The project root is `KI Serien Training`. The numbered pipeline scripts live directly in that root beside `ai_series_project/`. All project data, configs, tests, support code, runtime data, and generated assets stay inside `ai_series_project/`.
+The repository root contains the numbered pipeline scripts directly beside `ai_series_project/`. All project data, configs, tests, support code, runtime data, and generated assets stay inside `ai_series_project/`.
 
 ## Current Status
 
@@ -38,12 +38,12 @@ The project root is `KI Serien Training`. The numbered pipeline scripts live dir
 
 ## Project Layout
 
-Run the numbered scripts from the project root `KI Serien Training`.
+Run the numbered scripts from the repository root.
 
-### Project Root
+### Repository Root
 
-- `00_prepare_runtime.py` to `57_process_next_episode.py`: numbered main pipeline scripts in execution order
-- `README.md`: root overview for the whole project
+- `00_prepare_runtime.py` to `57_process_next_episode.py`: numbered pipeline and orchestration scripts
+- `README.md`: public root overview for the whole project
 - `ai_series_project/`: project-internal data, config, runtime, support code, tests, tools, training, and outputs
 
 ### Main Folders Inside `ai_series_project/`
@@ -59,7 +59,7 @@ Run the numbered scripts from the project root `KI Serien Training`.
 - `tools/`: project-local backend runners, backend tools, model assets
 - `training/`: foundation datasets, manifests, checkpoints, backend runs
 
-### Numbered Scripts In Project Root
+### Numbered Scripts In Repository Root
 
 - `00_prepare_runtime.py`: full setup, folder creation, runtime packages, backend config, backend/model downloads, download completeness checks, FFmpeg via `imageio-ffmpeg`
 - `01_import_episode.py`
@@ -73,17 +73,17 @@ Run the numbered scripts from the project root `KI Serien Training`.
 - `09_train_foundation_models.py`
 - `10_train_adapter_models.py`
 - `11_train_fine_tune_models.py`
-- `12_generate_episode.py`
-- `13_generate_storyboard_assets.py`
-- `14_render_episode.py`
-- `15_build_series_bible.py`
-- `16_analyze_patterns.py` to `47_social_media_clips.py`: analysis, export, and helper stages
-- `48_refresh_after_manual_review.py`: rebuild from reviewed data
-- `49_run_backend_finetunes.py`
-- `50_export_package.py`
-- `51_quality_gate.py`
-- `52_regenerate_weak_scenes.py`
-- `53_run_storyboard_backend.py`
+- `12_run_backend_finetunes.py`
+- `13_generate_episode.py`
+- `14_generate_storyboard_assets.py`
+- `15_run_storyboard_backend.py`
+- `16_render_episode.py`
+- `17_quality_gate.py`
+- `18_regenerate_weak_scenes.py`
+- `19_build_series_bible.py`
+- `20_export_package.py`
+- `21_refresh_after_manual_review.py`: rebuild from reviewed data after manual review changes
+- `22_analyze_patterns.py` to `53_social_media_clips.py`: analysis, archive, export, and helper stages
 - `54_backup_project.py`
 - `55_restore_project.py`
 - `56_generate_finished_episodes.py`: batch finished-episode generation
@@ -110,34 +110,36 @@ Run the numbered scripts from the project root `KI Serien Training`.
 - project-local backend tool/model downloads
 - download completeness and revision checks
 
-### From Reviewed Data To Finished Episode
+### Main Production Chain
 
 If your review data is already ready, the intended main order is:
 
-`00 -> 06 -> 07 -> 08 -> 09 -> 10 -> 11 -> 49 -> 12 -> 13 -> 53 -> 14 -> 51 -> 15`
+`00 -> 06 -> 07 -> 08 -> 09 -> 10 -> 11 -> 12 -> 13 -> 14 -> 15 -> 16 -> 17 -> 18 -> 19 -> 20`
 
 That means:
 
 - downloads and setup happen in `00`
 - training happens before generation
-- generation and render happen only after training
+- backend fine-tune runs happen before new episode generation
+- storyboard backend materialization happens before render
+- render, quality gate, regeneration, bible, and export happen only after generation
 
 ### Full Inbox Pipeline
 
 For a raw new episode source, the full order is:
 
-`00 -> 01 -> 02 -> 03 -> 04 -> 05 -> 06 -> 07 -> 08 -> 09 -> 10 -> 11 -> 49 -> 12 -> 13 -> 53 -> 14 -> 51 -> 15`
+`00 -> 01 -> 02 -> 03 -> 04 -> 05 -> 06 -> 07 -> 08 -> 09 -> 10 -> 11 -> 12 -> 13 -> 14 -> 15 -> 16 -> 17 -> 18 -> 19 -> 20`
 
 `57_process_next_episode.py` runs that complete chain and starts with `00` automatically.
 
-`48_refresh_after_manual_review.py` and `56_generate_finished_episodes.py` also start with `00` automatically before their own main work.
+`21_refresh_after_manual_review.py` and `56_generate_finished_episodes.py` also start with `00` automatically before their own main work.
 
 ## Quick Start
 
-### 1. Enter The Project Root
+### 1. Open The Repository Root
 
 ```powershell
-cd "B:\PROJEKTE\ai\KI Serien Training"
+cd <repo-root>
 ```
 
 ### 2. Run Full Setup
@@ -183,7 +185,7 @@ python 56_generate_finished_episodes.py --count 1
 ### 5. Rebuild After Manual Review
 
 ```powershell
-python 48_refresh_after_manual_review.py
+python 21_refresh_after_manual_review.py
 ```
 
 ## Quality-First Mode
@@ -219,7 +221,7 @@ Important areas:
 
 ## Testing
 
-Run the main regression suite from the project root `KI Serien Training`:
+Run the main regression suite from the repository root:
 
 ```powershell
 python -m unittest discover -s ai_series_project\tests -v
@@ -228,7 +230,7 @@ python -m unittest discover -s ai_series_project\tests -v
 Useful smoke checks:
 
 ```powershell
-python -m py_compile 00_prepare_runtime.py 48_refresh_after_manual_review.py 56_generate_finished_episodes.py 57_process_next_episode.py ai_series_project\support_scripts\pipeline_common.py ai_series_project\support_scripts\configure_quality_backends.py ai_series_project\support_scripts\prepare_quality_backends.py
+python -m py_compile 00_prepare_runtime.py 21_refresh_after_manual_review.py 56_generate_finished_episodes.py 57_process_next_episode.py ai_series_project\support_scripts\pipeline_common.py ai_series_project\support_scripts\configure_quality_backends.py ai_series_project\support_scripts\prepare_quality_backends.py
 ```
 
 ## Known Limitations
@@ -241,13 +243,13 @@ python -m py_compile 00_prepare_runtime.py 48_refresh_after_manual_review.py 56_
 
 ## Finished
 
-- the numbered main scripts now live directly in the project root and are continuous with no gaps: `00` through `57`
+- the numbered main scripts now live directly in the repository root and are continuous with no gaps: `00` through `57`
 - `ai_series_project/` now contains the project internals only: configs, data, runtime state, tests, support scripts, backend tools, training artifacts, and generated outputs
 - `00_prepare_runtime.py` now owns the normal setup flow completely, including folder creation, backend config, and project-local downloads
 - `support_scripts/configure_quality_backends.py` and `support_scripts/prepare_quality_backends.py` remain available as internal helpers, but they are no longer part of the numbered main sequence
 - project-local FFmpeg now comes from the Python runtime path instead of a separate external FFmpeg download
-- `48_refresh_after_manual_review.py`, `56_generate_finished_episodes.py`, and `57_process_next_episode.py` now begin with `00_prepare_runtime.py`
-- the documented order is now setup/downloads first, then training, then generate/render
+- `21_refresh_after_manual_review.py`, `56_generate_finished_episodes.py`, and `57_process_next_episode.py` now begin with `00_prepare_runtime.py`
+- the documented order is now setup/downloads first, then training, then backend fine-tunes, then generate/render/gate/export
 
 ## In Progress
 

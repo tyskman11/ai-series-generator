@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import sys
 from pathlib import Path
@@ -29,7 +29,7 @@ def load_module(filename: str, module_name: str):
 
 
 STEP08 = load_module("07_train_series_model.py", "step08_generation_quality")
-STEP15 = load_module("14_render_episode.py", "step15_generation_quality")
+STEP15 = load_module("16_render_episode.py", "step15_generation_quality")
 
 
 class GenerationQualityTests(unittest.TestCase):

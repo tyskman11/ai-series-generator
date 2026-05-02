@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 from __future__ import annotations
 
 import sys
@@ -61,12 +61,12 @@ GLOBAL_STEPS = [
     "09_train_foundation_models.py",
     "10_train_adapter_models.py",
     "11_train_fine_tune_models.py",
-    "49_run_backend_finetunes.py",
-    "12_generate_episode.py",
-    "13_generate_storyboard_assets.py",
-    "53_run_storyboard_backend.py",
-    "14_render_episode.py",
-    "15_build_series_bible.py",
+    "12_run_backend_finetunes.py",
+    "13_generate_episode.py",
+    "14_generate_storyboard_assets.py",
+    "15_run_storyboard_backend.py",
+    "16_render_episode.py",
+    "19_build_series_bible.py",
 ]
 
 
@@ -480,20 +480,20 @@ def global_step_rows(cfg: dict, skip_downloads: bool = False) -> list[tuple[str,
                 if bool(fine_tune_cfg.get("auto_train_after_adapter", True)):
                     steps.append(("11_train_fine_tune_models.py", "Train Local Fine-Tune Profiles", []))
                     if bool(backend_cfg.get("auto_run_after_fine_tune", True)):
-                        steps.append(("49_run_backend_finetunes.py", "Create Concrete Backend Fine-Tune Runs", []))
+                        steps.append(("12_run_backend_finetunes.py", "Create Concrete Backend Fine-Tune Runs", []))
     steps.extend(
         [
-            ("12_generate_episode.py", "Generate New Episode From Trained Model", []),
-            ("13_generate_storyboard_assets.py", "Generate Storyboard Scene Assets", []),
-            ("53_run_storyboard_backend.py", "Materialize Storyboard Backend Frames", []),
-            ("14_render_episode.py", "Render Finished Episode", []),
+            ("13_generate_episode.py", "Generate New Episode From Trained Model", []),
+            ("14_generate_storyboard_assets.py", "Generate Storyboard Scene Assets", []),
+            ("15_run_storyboard_backend.py", "Materialize Storyboard Backend Frames", []),
+            ("16_render_episode.py", "Render Finished Episode", []),
         ]
     )
     if release_mode_enabled(cfg):
         release_cfg = cfg.get("release_mode", {}) if isinstance(cfg.get("release_mode"), dict) else {}
         quality_gate_args = ["--strict"] if bool(release_cfg.get("strict_warnings", False)) else []
-        steps.append(("51_quality_gate.py", "Run Release-Style Quality Gate", quality_gate_args))
-    steps.append(("15_build_series_bible.py", "Update Series Bible", []))
+        steps.append(("17_quality_gate.py", "Run Release-Style Quality Gate", quality_gate_args))
+    steps.append(("19_build_series_bible.py", "Update Series Bible", []))
     return steps
 
 
@@ -560,25 +560,25 @@ def global_step_title(script_name: str) -> str:
         "09_train_foundation_models.py": "Train Foundation Models",
         "10_train_adapter_models.py": "Train Local Adapter Profiles",
         "11_train_fine_tune_models.py": "Train Local Fine-Tune Profiles",
-        "49_run_backend_finetunes.py": "Create Concrete Backend Fine-Tune Runs",
-        "12_generate_episode.py": "Generate New Episode From Trained Model",
-        "13_generate_storyboard_assets.py": "Generate Storyboard Scene Assets",
-        "53_run_storyboard_backend.py": "Materialize Storyboard Backend Frames",
-        "14_render_episode.py": "Render Finished Episode",
-        "51_quality_gate.py": "Run Release-Style Quality Gate",
-        "15_build_series_bible.py": "Update Series Bible",
+        "12_run_backend_finetunes.py": "Create Concrete Backend Fine-Tune Runs",
+        "13_generate_episode.py": "Generate New Episode From Trained Model",
+        "14_generate_storyboard_assets.py": "Generate Storyboard Scene Assets",
+        "15_run_storyboard_backend.py": "Materialize Storyboard Backend Frames",
+        "16_render_episode.py": "Render Finished Episode",
+        "17_quality_gate.py": "Run Release-Style Quality Gate",
+        "19_build_series_bible.py": "Update Series Bible",
     }
     return titles[script_name]
 
 
 def record_global_generated_episode_outputs(state: dict, cfg: dict, script_name: str) -> None:
     if script_name not in {
-        "12_generate_episode.py",
-        "13_generate_storyboard_assets.py",
-        "53_run_storyboard_backend.py",
-        "14_render_episode.py",
-        "51_quality_gate.py",
-        "15_build_series_bible.py",
+        "13_generate_episode.py",
+        "14_generate_storyboard_assets.py",
+        "15_run_storyboard_backend.py",
+        "16_render_episode.py",
+        "17_quality_gate.py",
+        "19_build_series_bible.py",
     }:
         return
     outputs = latest_generated_episode_artifacts(cfg)

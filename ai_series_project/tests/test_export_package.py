@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import sys
 from pathlib import Path
@@ -26,7 +26,7 @@ def load_module(filename: str, module_name: str):
     return module
 
 
-STEP51 = load_module("50_export_package.py", "step50_export_package")
+STEP51 = load_module("20_export_package.py", "step50_export_package")
 
 
 class ExportPackageTests(unittest.TestCase):

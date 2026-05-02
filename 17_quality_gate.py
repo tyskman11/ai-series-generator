@@ -53,7 +53,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--auto-retry",
         action="store_true",
-        help="Automatically trigger 52_regenerate_weak_scenes.py --apply when the quality gate fails and weak scenes are queued.",
+        help="Automatically trigger 18_regenerate_weak_scenes.py --apply when the quality gate fails and weak scenes are queued.",
     )
     parser.add_argument(
         "--no-auto-retry",
@@ -112,7 +112,7 @@ def build_auto_retry_command(
     release_cfg = release_mode_config(cfg)
     command = [
         str(runtime_python()),
-        str(SCRIPT_DIR / "52_regenerate_weak_scenes.py"),
+        str(SCRIPT_DIR / "18_regenerate_weak_scenes.py"),
         "--episode-id",
         episode_id,
         "--apply",

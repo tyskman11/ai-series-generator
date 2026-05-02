@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 from __future__ import annotations
 
 import argparse
@@ -31,7 +31,7 @@ def configured_backends() -> dict:
             "enabled": True,
             "command_template": [
                 "{python}",
-                "53_run_storyboard_backend.py",
+                "15_run_storyboard_backend.py",
                 "--episode-id",
                 "{episode_id}",
                 "--scene-ids",

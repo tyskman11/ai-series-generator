@@ -106,22 +106,22 @@ def planned_refresh_steps(cfg: dict, skip_downloads: bool = False, stop_after_tr
                     )
                     if bool(backend_cfg.get("auto_run_after_fine_tune", True)):
                         planned_steps.append(
-                            ("49_run_backend_finetunes.py", "Create backend fine-tune runs with the latest reviewed character state", ["--force"])
+                            ("12_run_backend_finetunes.py", "Create backend fine-tune runs with the latest reviewed character state", ["--force"])
                         )
     if not stop_after_training:
         planned_steps.extend(
             [
-                ("12_generate_episode.py", "Generate a new episode from the refreshed model", []),
-                ("13_generate_storyboard_assets.py", "Generate storyboard assets for the refreshed episode", []),
-                ("53_run_storyboard_backend.py", "Materialize local storyboard backend frames for the refreshed episode", []),
-                ("14_render_episode.py", "Render the refreshed episode", []),
+                ("13_generate_episode.py", "Generate a new episode from the refreshed model", []),
+                ("14_generate_storyboard_assets.py", "Generate storyboard assets for the refreshed episode", []),
+                ("15_run_storyboard_backend.py", "Materialize local storyboard backend frames for the refreshed episode", []),
+                ("16_render_episode.py", "Render the refreshed episode", []),
             ]
         )
         if release_mode_enabled(cfg):
             release_cfg = cfg.get("release_mode", {}) if isinstance(cfg.get("release_mode"), dict) else {}
             quality_gate_args = ["--strict"] if bool(release_cfg.get("strict_warnings", False)) else []
-            planned_steps.append(("51_quality_gate.py", "Run the release-style quality gate for the refreshed episode", quality_gate_args))
-        planned_steps.append(("15_build_series_bible.py", "Update the series bible with the refreshed state", []))
+            planned_steps.append(("17_quality_gate.py", "Run the release-style quality gate for the refreshed episode", quality_gate_args))
+        planned_steps.append(("19_build_series_bible.py", "Update the series bible with the refreshed state", []))
     return planned_steps
 
 

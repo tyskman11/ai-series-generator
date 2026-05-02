@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import sys
 from pathlib import Path
@@ -30,16 +30,16 @@ def load_module(filename: str, module_name: str):
     return module
 
 
-STEP15 = load_module("14_render_episode.py", "step15_regeneration")
-STEP52 = load_module("51_quality_gate.py", "step52_regeneration")
-STEP53 = load_module("52_regenerate_weak_scenes.py", "step53_regeneration")
+STEP15 = load_module("16_render_episode.py", "step15_regeneration")
+STEP52 = load_module("17_quality_gate.py", "step52_regeneration")
+STEP53 = load_module("18_regenerate_weak_scenes.py", "step53_regeneration")
 
 
 class RegenerationQueueTests(unittest.TestCase):
     def test_quality_gate_parse_args_accepts_shared_worker_flags(self) -> None:
         with mock.patch(
             "sys.argv",
-            ["51_quality_gate.py", "--episode-id", "folge_11", "--worker-id", "pc2", "--no-shared-workers"],
+            ["17_quality_gate.py", "--episode-id", "folge_11", "--worker-id", "pc2", "--no-shared-workers"],
         ):
             args = STEP52.parse_args()
 
@@ -176,7 +176,7 @@ class RegenerationQueueTests(unittest.TestCase):
             scene_ids=["scene_001"],
         )
 
-        quality_gate_steps = [step for step in plan if step.get("script") == "51_quality_gate.py"]
+        quality_gate_steps = [step for step in plan if step.get("script") == "17_quality_gate.py"]
         self.assertEqual(len(quality_gate_steps), 1)
         quality_gate_args = quality_gate_steps[0]["args"]
         self.assertIn("--no-auto-retry", quality_gate_args)
@@ -202,7 +202,7 @@ class RegenerationQueueTests(unittest.TestCase):
 
         self.assertEqual(loaded_report_path, report_path)
         self.assertEqual(loaded_report["episode_id"], "episode_001")
-        self.assertEqual(run_script.call_args.args[0], "51_quality_gate.py")
+        self.assertEqual(run_script.call_args.args[0], "17_quality_gate.py")
         gate_args = run_script.call_args.args[1]
         self.assertIn("--no-auto-retry", gate_args)
         self.assertIn("--min-quality", gate_args)
@@ -235,7 +235,7 @@ class RegenerationQueueTests(unittest.TestCase):
         self.assertIn("4", command)
         self.assertIn("--strict", command)
         self.assertIn("--update-bible", command)
-        self.assertTrue(str(command[1]).endswith("52_regenerate_weak_scenes.py"))
+        self.assertTrue(str(command[1]).endswith("18_regenerate_weak_scenes.py"))
 
     def test_regenerate_main_refreshes_gate_when_overrides_are_passed(self) -> None:
         args = argparse.Namespace(
@@ -317,15 +317,15 @@ class RegenerationQueueTests(unittest.TestCase):
             manifest = {
                 "regeneration_queue": [{"scene_id": "scene_001", "quality_percent": 41}],
                 "rerun_plan": [
-                    {"script": "53_run_storyboard_backend.py", "args": ["--episode-id", "episode_001", "--force"]},
-                    {"script": "14_render_episode.py", "args": ["--episode-id", "episode_001", "--force"]},
-                    {"script": "51_quality_gate.py", "args": ["--episode-id", "episode_001", "--no-auto-retry"]},
+                    {"script": "15_run_storyboard_backend.py", "args": ["--episode-id", "episode_001", "--force"]},
+                    {"script": "16_render_episode.py", "args": ["--episode-id", "episode_001", "--force"]},
+                    {"script": "17_quality_gate.py", "args": ["--episode-id", "episode_001", "--no-auto-retry"]},
                 ],
                 "manifest_path": str(manifest_path),
             }
 
             def fake_run_script(script_name: str, _args: list[str], *, allow_failure: bool = False):
-                return mock.Mock(returncode=1 if script_name == "51_quality_gate.py" else 0)
+                return mock.Mock(returncode=1 if script_name == "17_quality_gate.py" else 0)
 
             with mock.patch.object(STEP53, "parse_args", return_value=args), mock.patch.object(
                 STEP53, "load_config", return_value={"release_mode": {"max_regeneration_retries": 3}}
@@ -358,7 +358,7 @@ class RegenerationQueueTests(unittest.TestCase):
             ):
                 STEP53.main()
 
-        quality_gate_calls = [call for call in run_script_mock.call_args_list if call.args[0] == "51_quality_gate.py"]
+        quality_gate_calls = [call for call in run_script_mock.call_args_list if call.args[0] == "17_quality_gate.py"]
         self.assertEqual(len(quality_gate_calls), 1)
         self.assertTrue(quality_gate_calls[0].kwargs["allow_failure"])
 
