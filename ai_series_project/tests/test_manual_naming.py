@@ -195,6 +195,53 @@ class ManualNamingTests(unittest.TestCase):
             ["face_recognition/facenet-pytorch", "voice_cloning/TTS"],
         )
 
+    def test_install_group_appends_import_validation_failures_to_log(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            fake_python = Path(tmpdir) / "python"
+            fake_python.write_text("", encoding="utf-8")
+            log_root = Path(tmpdir) / "runtime"
+
+            def fake_run(_cmd, check=True):
+                return subprocess.CompletedProcess(args=[], returncode=0, stdout="Requirement already satisfied", stderr="")
+
+            def fake_module_available(_py, module_name):
+                return module_name != "facenet_pytorch"
+
+            def fake_module_import_error(_py, module_name):
+                if module_name == "facenet_pytorch":
+                    return "ModuleNotFoundError: No module named 'facenet_pytorch'"
+                return ""
+
+            warn_messages: list[str] = []
+
+            with mock.patch.object(STEP00, "run", side_effect=fake_run), mock.patch.object(
+                STEP00, "module_available", side_effect=fake_module_available
+            ), mock.patch.object(
+                STEP00, "module_import_error", side_effect=fake_module_import_error
+            ), mock.patch.object(
+                STEP00, "runtime_pip_install_command", return_value=["python", "-m", "pip", "install", "facenet-pytorch"]
+            ), mock.patch.object(
+                STEP00, "HOST_RUNTIME_ROOT", log_root
+            ), mock.patch.object(
+                STEP00, "warn", side_effect=warn_messages.append
+            ):
+                ok = STEP00.install_group(
+                    fake_python,
+                    "face_recognition",
+                    ["facenet_pytorch"],
+                    ["facenet-pytorch"],
+                    required=False,
+                )
+
+            self.assertFalse(ok)
+            log_files = sorted((log_root / "install_logs").glob("face_recognition_*.log"))
+            self.assertTrue(log_files)
+            log_text = log_files[-1].read_text(encoding="utf-8")
+            self.assertIn("=== import validation failures ===", log_text)
+            self.assertIn("ModuleNotFoundError: No module named 'facenet_pytorch'", log_text)
+            self.assertTrue(warn_messages)
+            self.assertIn("Import test for facenet_pytorch failed", warn_messages[-1])
+
     def test_platform_tool_filenames_are_os_specific(self) -> None:
         self.assertEqual(platform_tool_filenames("ffmpeg", "windows"), ["ffmpeg.exe", "ffmpeg"])
         self.assertEqual(platform_tool_filenames("ffmpeg", "linux"), ["ffmpeg"])

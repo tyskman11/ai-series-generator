@@ -25,6 +25,15 @@ SPEC.loader.exec_module(STEP59)
 
 
 class QualityBackendAssetTests(unittest.TestCase):
+    def test_support_scripts_bootstrap_project_dir_for_direct_execution(self) -> None:
+        configure_source = (PROJECT_DIR / "support_scripts/configure_quality_backends.py").read_text(encoding="utf-8")
+        prepare_source = (PROJECT_DIR / "support_scripts/prepare_quality_backends.py").read_text(encoding="utf-8")
+
+        self.assertIn("PROJECT_DIR = Path(__file__).resolve().parents[1]", configure_source)
+        self.assertIn("sys.path.insert(0, str(PROJECT_DIR))", configure_source)
+        self.assertIn("PROJECT_DIR = Path(__file__).resolve().parents[1]", prepare_source)
+        self.assertIn("sys.path.insert(0, str(PROJECT_DIR))", prepare_source)
+
     def test_main_reruns_in_runtime_before_work(self) -> None:
         with mock.patch.object(STEP59, "rerun_in_runtime") as rerun_mock:
             with mock.patch.object(STEP59, "parse_args", return_value=mock.Mock(force=False, skip_downloads=True, print_plan=True)):

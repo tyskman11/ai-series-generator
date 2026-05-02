@@ -2,7 +2,13 @@
 from __future__ import annotations
 
 import argparse
+import sys
 from copy import deepcopy
+from pathlib import Path
+
+PROJECT_DIR = Path(__file__).resolve().parents[1]
+if str(PROJECT_DIR) not in sys.path:
+    sys.path.insert(0, str(PROJECT_DIR))
 
 from support_scripts.pipeline_common import headline, info, load_config, ok, quality_first_requirements_report, warn, write_json, CONFIG_PATH
 

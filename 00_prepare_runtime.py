@@ -91,6 +91,11 @@ def module_available(py: Path, module_name: str) -> bool:
     return result.returncode == 0
 
 
+def module_import_error(py: Path, module_name: str) -> str:
+    result = run([str(py), "-c", f"import {module_name}"], check=False)
+    return (result.stdout or "").strip()
+
+
 def runtime_pip_install_command(py: Path, *args: str) -> list[str]:
     return list(pip_install_command(py, *args))
 
@@ -150,10 +155,26 @@ def install_group(
     if result.returncode == 0 and all(module_available(py, module) for module in modules):
         ok(f"{name} installed successfully.")
         return True
+    import_failures = {
+        module: module_import_error(py, module)
+        for module in modules
+        if not module_available(py, module)
+    }
+    if import_failures:
+        with log_file.open("a", encoding="utf-8") as handle:
+            handle.write("\n\n=== import validation failures ===\n")
+            for module, output in import_failures.items():
+                handle.write(f"[{module}]\n{output or 'import failed without output'}\n")
     if required:
         error(f"{name} could not be installed. See {log_file}")
         raise RuntimeError(f"{name} could not be installed.")
-    warn(f"{name} could not be installed. See {log_file}")
+    detail = ""
+    if import_failures:
+        first_module, first_output = next(iter(import_failures.items()))
+        compact_output = " ".join((first_output or "").split())
+        if compact_output:
+            detail = f" Import test for {first_module} failed: {compact_output}"
+    warn(f"{name} could not be installed. See {log_file}.{detail}")
     return False
 
 

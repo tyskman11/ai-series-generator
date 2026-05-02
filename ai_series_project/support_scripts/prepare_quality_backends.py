@@ -15,6 +15,10 @@ from typing import Any
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
+PROJECT_DIR = Path(__file__).resolve().parents[1]
+if str(PROJECT_DIR) not in sys.path:
+    sys.path.insert(0, str(PROJECT_DIR))
+
 from support_scripts.pipeline_common import (
     CONFIG_PATH,
     coalesce_text,
