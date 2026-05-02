@@ -33,6 +33,7 @@ The repository root contains the numbered pipeline scripts directly beside `ai_s
 - preprocessing from source episode to reviewed character/speaker data is usable
 - the training chain exists and is ordered before generation/rendering
 - `00_prepare_runtime.py` now owns normal setup completely, including runtime prep, backend configuration, project-local downloads, model download verification, and folder creation
+- the GitHub repo now treats `configs/project.template.json` as the tracked base template; the working `project.json` is generated locally
 - quality-first generation is enforced more strictly than before
 - final output quality is still limited when only the project-local fallback backends are used
 
@@ -49,6 +50,8 @@ Run the numbered scripts from the repository root.
 
 - `characters/`: maps, previews, review queues, voice samples, voice models
 - `configs/`: project configuration
+- `configs/project.template.json`: tracked baseline config for new series/projects
+- `configs/project.json`: local generated working config, not intended for GitHub
 - `data/`: inbox, raw episodes, processed metadata, linked segments, datasets
 - `generation/`: prompts, storyboard requests/assets, render packages, deliveries
 - `runtime/`: autosaves, distributed leases, git helper state, backend staging, host runtime
@@ -103,6 +106,7 @@ Run the numbered scripts from the repository root.
 `00_prepare_runtime.py` must come first. It now handles:
 
 - project structure creation
+- generation of `configs/project.json` from `configs/project.template.json` when missing
 - runtime environment setup
 - project-local FFmpeg resolution from Python
 - quality-backend config writing
@@ -206,7 +210,14 @@ Important:
 
 Main config:
 
-- `configs/project.json`
+- `configs/project.template.json`: tracked GitHub baseline
+- `configs/project.json`: local working copy created by `00_prepare_runtime.py`
+
+Recommended workflow:
+
+- commit reusable defaults to `project.template.json`
+- let each machine or series create its own local `project.json`
+- avoid treating `project.json` as the public baseline for the repository
 
 Important areas:
 
@@ -245,6 +256,7 @@ python -m py_compile 00_prepare_runtime.py 21_refresh_after_manual_review.py 56_
 - the numbered main scripts now live directly in the repository root and are continuous with no gaps: `00` through `57`
 - `ai_series_project/` now contains the project internals only: configs, data, runtime state, tests, support scripts, backend tools, training artifacts, and generated outputs
 - `00_prepare_runtime.py` now owns the normal setup flow completely, including folder creation, backend config, and project-local downloads
+- the public repo now uses `project.template.json` as the tracked baseline, while `project.json` is generated locally and ignored
 - `support_scripts/configure_quality_backends.py` and `support_scripts/prepare_quality_backends.py` remain available as internal helpers, but they are no longer part of the numbered main sequence
 - project-local FFmpeg now comes from the Python runtime path instead of a separate external FFmpeg download
 - `21_refresh_after_manual_review.py`, `56_generate_finished_episodes.py`, and `57_process_next_episode.py` now begin with `00_prepare_runtime.py`

@@ -6,6 +6,7 @@ __pycache__/
 .env
 .env.*
 *.local
+configs/project.json
 
 Thumbs.db
 Desktop.ini

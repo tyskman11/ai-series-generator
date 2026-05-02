@@ -21,6 +21,7 @@ if str(PROJECT_DIR) not in sys.path:
 
 from support_scripts.pipeline_common import (
     CONFIG_PATH,
+    CONFIG_TEMPLATE_PATH,
     coalesce_text,
     current_os,
     headline,
@@ -633,6 +634,7 @@ def write_summary(cfg: dict[str, Any], rows: list[dict[str, Any]]) -> Path:
     payload = {
         "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
         "config_path": str(CONFIG_PATH),
+        "template_config_path": str(CONFIG_TEMPLATE_PATH),
         "assets": rows,
     }
     write_json(summary_path, payload)

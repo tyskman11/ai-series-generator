@@ -10,7 +10,17 @@ PROJECT_DIR = Path(__file__).resolve().parents[1]
 if str(PROJECT_DIR) not in sys.path:
     sys.path.insert(0, str(PROJECT_DIR))
 
-from support_scripts.pipeline_common import headline, info, load_config, ok, quality_first_requirements_report, warn, write_json, CONFIG_PATH
+from support_scripts.pipeline_common import (
+    CONFIG_PATH,
+    CONFIG_TEMPLATE_PATH,
+    headline,
+    info,
+    load_config,
+    ok,
+    quality_first_requirements_report,
+    warn,
+    write_json,
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -175,10 +185,11 @@ def main() -> None:
     report = quality_first_requirements_report(updated)
 
     if args.print_only:
-        info(f"Config target: {CONFIG_PATH}")
+        info(f"Working config target: {CONFIG_PATH}")
+        info(f"Template base: {CONFIG_TEMPLATE_PATH}")
     else:
         write_json(CONFIG_PATH, updated)
-        ok(f"Updated {CONFIG_PATH}")
+        ok(f"Updated working config {CONFIG_PATH}")
 
     if report.get("ready", False):
         ok("Quality-first runner prerequisites are fully satisfied.")

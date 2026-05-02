@@ -29,6 +29,7 @@ PROJECT_ROOT = SCRIPT_DIR
 WORKSPACE_ROOT = PROJECT_ROOT.parent
 HOST_RUNTIME_ROOT = PROJECT_ROOT / "runtime" / "host_runtime"
 CONFIG_PATH = PROJECT_ROOT / "configs" / "project.json"
+CONFIG_TEMPLATE_PATH = PROJECT_ROOT / "configs" / "project.template.json"
 VIDEO_PATTERNS = ("*.mp4", "*.mkv", "*.mov", "*.avi")
 
 try:
@@ -2210,11 +2211,23 @@ def list_generated_episode_artifacts(cfg: dict[str, Any], limit: int | None = No
     return rows
 
 
+def template_config() -> dict[str, Any]:
+    existing_template = read_json(CONFIG_TEMPLATE_PATH, {})
+    if not isinstance(existing_template, dict):
+        existing_template = {}
+    return deep_merge(DEFAULT_CONFIG, existing_template)
+
+
 def ensure_project_structure(config: dict[str, Any] | None = None, write_config_file: bool = False) -> dict[str, Any]:
     PROJECT_ROOT.mkdir(parents=True, exist_ok=True)
     create_tree(PROJECT_ROOT, DEFAULT_STRUCTURE)
+    if not CONFIG_TEMPLATE_PATH.exists():
+        write_json(CONFIG_TEMPLATE_PATH, DEFAULT_CONFIG)
+    template = template_config()
     existing = read_json(CONFIG_PATH, {})
-    merged = deep_merge(DEFAULT_CONFIG, existing)
+    if not isinstance(existing, dict):
+        existing = {}
+    merged = deep_merge(template, existing)
     if config:
         merged = deep_merge(merged, config)
     if write_config_file or not CONFIG_PATH.exists():

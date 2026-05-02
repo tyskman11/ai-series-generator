@@ -13,6 +13,7 @@ import importlib.util
 import json
 import os
 import random
+import support_scripts.pipeline_common as common
 import subprocess
 import tempfile
 import unittest
@@ -194,6 +195,31 @@ class ManualNamingTests(unittest.TestCase):
             missing,
             ["face_recognition/facenet-pytorch", "voice_cloning/TTS"],
         )
+
+    def test_ensure_project_structure_creates_working_config_from_template(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            project_root = Path(tmpdir) / "ai_series_project"
+            config_path = project_root / "configs" / "project.json"
+            template_path = project_root / "configs" / "project.template.json"
+            template_path.parent.mkdir(parents=True, exist_ok=True)
+            template_path.write_text(
+                json.dumps(
+                    {
+                        "generation": {"default_scene_count": 9},
+                        "runtime": {"prefer_gpu": False},
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with mock.patch.object(common, "PROJECT_ROOT", project_root), mock.patch.object(
+                common, "CONFIG_PATH", config_path
+            ), mock.patch.object(common, "CONFIG_TEMPLATE_PATH", template_path):
+                cfg = common.ensure_project_structure(write_config_file=False)
+
+            self.assertTrue(config_path.exists())
+            self.assertEqual(cfg["generation"]["default_scene_count"], 9)
+            self.assertFalse(cfg["runtime"]["prefer_gpu"])
 
     def test_install_group_appends_import_validation_failures_to_log(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

@@ -415,6 +415,7 @@ def main() -> None:
         run_setup_script(py, "support_scripts/configure_quality_backends.py")
         backend_prepare_args: list[str] = ["--skip-downloads"] if bool(args.skip_downloads) else []
         run_setup_script(py, "support_scripts/prepare_quality_backends.py", *backend_prepare_args)
+        info("Working config ready: ai_series_project/configs/project.json (generated from project.template.json when missing)")
         if torch_info.get("cuda_available"):
             device_names = ", ".join(torch_info.get("device_names") or [])
             ok(f"GPU ready for torch: {device_names}")
