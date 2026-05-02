@@ -2,9 +2,46 @@
 from __future__ import annotations
 
 import subprocess
+import textwrap
 from pathlib import Path
 
 from backend_common import copy_if_needed, ensure_parent, existing_path, find_project_local_ffmpeg, load_backend_context, load_json, print_runtime_error
+
+
+def escape_drawtext_text(value: str) -> str:
+    text = str(value or "").replace("\\", "\\\\")
+    for raw, escaped in [(":", r"\:"), ("'", r"\'"), (",", r"\,"), ("[", r"\["), ("]", r"\]"), ("%", r"\%")]:
+        text = text.replace(raw, escaped)
+    return text
+
+
+def build_subtitle_filter(scene_package: dict) -> str:
+    video_generation = scene_package.get("video_generation", {}) if isinstance(scene_package.get("video_generation"), dict) else {}
+    local_plan = video_generation.get("local_video_plan", {}) if isinstance(video_generation.get("local_video_plan"), dict) else {}
+    beats = local_plan.get("beats", []) if isinstance(local_plan.get("beats"), list) else []
+    filters: list[str] = []
+    for beat in beats:
+        if not isinstance(beat, dict):
+            continue
+        dialogue_text = str(beat.get("dialogue_text", "") or "").strip()
+        if not dialogue_text:
+            continue
+        start_seconds = max(0.0, float(beat.get("relative_start_seconds", 0.0) or 0.0))
+        end_seconds = max(start_seconds + 1.4, float(beat.get("relative_end_seconds", start_seconds + 1.4) or (start_seconds + 1.4)))
+        preview = textwrap.shorten(dialogue_text, width=110, placeholder="...")
+        escaped = escape_drawtext_text(preview)
+        enable = f"between(t\\,{start_seconds:.3f}\\,{end_seconds:.3f})"
+        filters.append(
+            f"drawbox=x=0:y=h-120:w=w:h=120:color=black@0.52:t=fill:enable='{enable}'"
+        )
+        filters.append(
+            "drawtext="
+            f"text='{escaped}':"
+            "fontcolor=white:fontsize=28:"
+            "x=(w-text_w)/2:y=h-78:"
+            f"enable='{enable}'"
+        )
+    return ",".join(filters)
 
 
 def main() -> int:
@@ -24,6 +61,10 @@ def main() -> int:
 
     ffmpeg = find_project_local_ffmpeg()
     duration_seconds = max(1.0, float(scene_package.get("duration_seconds", 8.0) or 8.0))
+    video_filter = "scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,zoompan=z='min(zoom+0.0008,1.08)':d=1:s=1280x720"
+    subtitle_filter = build_subtitle_filter(scene_package)
+    if subtitle_filter:
+        video_filter = f"{video_filter},{subtitle_filter}"
     command = [
         ffmpeg,
         "-hide_banner",
@@ -35,7 +76,7 @@ def main() -> int:
         "-t",
         f"{duration_seconds:.3f}",
         "-vf",
-        "scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,zoompan=z='min(zoom+0.0008,1.08)':d=1:s=1280x720",
+        video_filter,
         "-r",
         "30",
         "-pix_fmt",

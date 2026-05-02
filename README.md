@@ -74,6 +74,7 @@ The default path stays local-first and license-light. The project already produc
 - finish main-character review quality in `06_review_unknowns.py`
 - keep the default path stable for large NAS-backed runs
 - improve the new project-local quality backend defaults so they move closer to real original-episode output
+- stretch dialogue-heavy scenes and subtitle timing so local renders stop crushing speech into too-short clips
 - keep backend tools and model downloads strictly project-local instead of depending on external folders
 - keep the setup and generation chain clearly ordered as `00` setup/downloads first, then training, then generate/render
 - raise external-runner quality so the fully generated episode path can become the real default
@@ -99,6 +100,7 @@ The default path stays local-first and license-light. The project already produc
 - `15_render_episode.py` now also preserves camera/control hint dictionaries correctly instead of dropping them in the render/package path, then reuses backend frames/clips when present, assembles voiced scene masters, writes delivery bundles, and keeps improving the final generated-episode package
 - `15_render_episode.py` now tolerates missing `scene_dialogue_outputs` keys in audio fallback metadata, so draft/final render does not crash on Linux/NAS when dialogue audio generation partially falls back
 - `15_render_episode.py` is being tightened so draft storyboard cards stay preview-only artifacts while the finished-episode fallback render uses clean scene frames instead of text-labeled debug cards
+- `15_render_episode.py` now expands dialogue-heavy scene durations more aggressively and keeps subtitle preview lines visible longer instead of clamping most scenes to a short default window
 - `54_run_storyboard_backend.py` now ignores directory placeholders such as `.` when choosing source images, so Linux/NAS runs do not crash if moved or incomplete metadata leaves a directory-like reference behind
 - `57_generate_finished_episodes.py` now imports the shared logging helper correctly, so shared-worker batch generation no longer aborts immediately on startup
 - `51_export_package.py` now exports real generated-episode packages for JSON, DaVinci-style, and Premiere-style handoff folders, including resolved render profile plus release/delivery/regeneration metadata
@@ -113,6 +115,9 @@ The default path stays local-first and license-light. The project already produc
 - `58_configure_quality_backends.py` now writes portable `{python}`-based runner templates plus project-local default backend commands into `project.json`, so Linux does not depend on a `python` PATH alias or manually exported shell variables
 - `59_prepare_quality_backends.py` now prepares backend tools and model assets only inside the project folder, automatically reruns itself inside the project runtime on Windows, stages Hugging Face downloads locally before copying them into UNC/NAS project folders on Windows, disables `hf_xet` and downloads Hugging Face snapshots serially for more stable Windows/NAS model fetches, forces Git ownership checks open for this personal multi-device NAS setup, rebuilds corrupted project-local Git checkouts from a project-local GitHub ZIP staging folder and then moves them into place, uses the active runtime interpreter for package installs, tracks revisions, verifies required files, detects incomplete Hugging Face downloads, skips re-downloads when the newest local revision is already complete, and falls back to GitHub API plus ZIP downloads when Linux/NAS workers do not have `git` installed
 - project-local external backend runner script paths are now resolved against the project root before execution, so Linux/NAS runs do not accidentally look for `tools/quality_backends/*.py` inside scene or package subfolders
+- `tools/quality_backends/project_local_image_backend.py` now extracts a fallback frame from the referenced source scene video when no generated or prepared still frame exists, which avoids all-blue placeholder scene images in many local fallback runs
+- `tools/quality_backends/project_local_voice_backend.py` now synthesizes missing per-line fallback speech locally with `pyttsx3` when reusable line audio is not already materialized, instead of failing the whole scene voice pass immediately
+- `tools/quality_backends/project_local_video_backend.py` now burns simple timed dialogue captions into the local fallback scene video so speech remains visible even when a player does not auto-load the separate `.srt`
 - `support_scripts/pipeline_common.py` now checks configured runner prerequisites such as required commands, Python modules, and environment variables before the quality-first path is allowed to start
 - the tracked regression suite covers export handoffs, release-gate reports, retry queues, strict warning handling, and regeneration metadata so those finished-episode contracts stay guarded
 - `16_build_series_bible.py`, `57_generate_finished_episodes.py`, and `99_process_next_episode.py` surface readiness, backend coverage, and quality scoring for generated episodes
@@ -515,7 +520,7 @@ python 06_review_unknowns.py --review-faces --open-previews
 - the local finished episode path is structurally complete, but TV-grade visual consistency still depends on real backend generation quality and well-trained character-specific voice models
 - by default, direct render/generation entry points now auto-run project-local backend preparation and then refuse to run in “final episode” mode until the required quality runners are configured
 - the built-in project-local image/video/lipsync defaults are portable and runnable, but they still fall back to local asset reuse and FFmpeg composition rather than true series-grade model inference
-- the current project-local voice backend can only assemble already materialized line audio or reused source audio; full project-local XTTS generation is still unfinished
+- the current project-local voice backend can now synthesize missing fallback lines with `pyttsx3`, but full project-local XTTS-quality generation is still unfinished
 - fully new dialogue lines still depend on generated speech when no strong original segment can be reused
 - lip-sync and generated scene video quality still depend on later backend tuning
 - `53_regenerate_weak_scenes.py` now reruns only the flagged scenes in the storyboard backend stage (`54_run_storyboard_backend.py --scene-ids`), but the render step (`15_render_episode.py`) still rebuilds the full episode package

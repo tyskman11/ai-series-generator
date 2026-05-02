@@ -363,7 +363,17 @@ def closing_card(width: int, height: int, display_title: str, scene_count: int) 
 
 def safe_duration_seconds(scene: dict) -> float:
     duration = float(scene.get("estimated_runtime_seconds", 0.0) or 0.0)
-    return max(2.4, min(8.0, duration if duration > 0 else 3.8))
+    dialogue_lines = scene.get("dialogue_lines", []) if isinstance(scene.get("dialogue_lines", []), list) else []
+    dialogue_text = " ".join(clean_text(line) for line in dialogue_lines if clean_text(line))
+    dialogue_tokens = re.findall(r"\w+", dialogue_text, flags=re.UNICODE)
+    dialogue_runtime = 0.0
+    if dialogue_tokens:
+        dialogue_runtime = max(
+            0.0,
+            (len(dialogue_tokens) / 150.0) * 60.0 + max(0.8, len(dialogue_lines) * 0.35),
+        )
+    target_duration = max(duration if duration > 0 else 0.0, dialogue_runtime, 3.8)
+    return max(3.8, min(22.0, target_duration))
 
 
 def render_output_ready(path: Path) -> bool:
@@ -584,14 +594,17 @@ def build_scene_voice_plan(
         )
 
     raw_total = sum(float(row.get("raw_duration_seconds", 0.0) or 0.0) for row in prepared)
+    line_gap_seconds = 0.18 if len(prepared) > 1 else 0.0
+    raw_total_with_gaps = raw_total + max(0, len(prepared) - 1) * line_gap_seconds
+    effective_scene_duration = max(float(scene_duration_seconds or 0.0), raw_total_with_gaps, len(prepared) * 1.15)
     scale = 1.0
-    if raw_total > max(0.0, scene_duration_seconds):
-        scale = max(0.35, scene_duration_seconds / max(raw_total, 0.001))
+    if raw_total_with_gaps > effective_scene_duration:
+        scale = max(0.82, effective_scene_duration / max(raw_total_with_gaps, 0.001))
 
     cursor = float(scene_start_seconds)
-    scene_end = float(scene_start_seconds) + max(0.0, float(scene_duration_seconds))
+    scene_end = float(scene_start_seconds) + max(0.0, float(effective_scene_duration))
     plan: list[dict] = []
-    for row in prepared:
+    for row_index, row in enumerate(prepared):
         duration = round(float(row["raw_duration_seconds"]) * scale, 3)
         start_seconds = round(cursor, 3)
         end_seconds = round(min(scene_end, cursor + duration), 3)
@@ -628,6 +641,8 @@ def build_scene_voice_plan(
             }
         )
         cursor += duration
+        if row_index < len(prepared) - 1:
+            cursor = min(scene_end, cursor + line_gap_seconds)
     return plan
 
 
@@ -647,7 +662,10 @@ def render_subtitle_preview_srt(voice_plan_lines: list[dict]) -> str:
         if not text:
             continue
         start_seconds = float(line.get("start_seconds", 0.0) or 0.0)
-        end_seconds = max(start_seconds + 0.4, float(line.get("end_seconds", start_seconds + 0.4) or (start_seconds + 0.4)))
+        token_count = max(1, len(re.findall(r"\w+", text, flags=re.UNICODE)))
+        minimum_read_time = min(6.5, max(1.6, token_count * 0.28))
+        planned_end = float(line.get("end_seconds", start_seconds + minimum_read_time) or (start_seconds + minimum_read_time))
+        end_seconds = max(start_seconds + minimum_read_time, planned_end)
         blocks.append(
             "\n".join(
                 [

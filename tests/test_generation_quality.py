@@ -24,6 +24,35 @@ STEP15 = load_module("15_render_episode.py", "step15_generation_quality")
 
 
 class GenerationQualityTests(unittest.TestCase):
+    def test_safe_duration_seconds_expands_dialogue_heavy_scene(self) -> None:
+        duration = STEP15.safe_duration_seconds(
+            {
+                "estimated_runtime_seconds": 8.0,
+                "dialogue_lines": [
+                    "Babe: And of course we only notice that right in the middle of the stress.",
+                    "Triple G: Then someone must have skipped a crucial step somewhere.",
+                    "Babe: Now double is becoming bigger even though it looked simple a moment ago.",
+                ],
+            }
+        )
+
+        self.assertGreater(duration, 8.0)
+
+    def test_render_subtitle_preview_srt_keeps_lines_visible_longer(self) -> None:
+        srt = STEP15.render_subtitle_preview_srt(
+            [
+                {
+                    "speaker_name": "Babe",
+                    "text": "And of course we only notice that right in the middle of the stress.",
+                    "start_seconds": 1.0,
+                    "end_seconds": 1.4,
+                }
+            ]
+        )
+
+        self.assertIn("00:00:01,000 -->", srt)
+        self.assertNotIn("00:00:01,000 --> 00:00:01,400", srt)
+
     def test_build_scene_generation_plan_includes_style_and_continuity_guidance(self) -> None:
         with mock.patch.object(
             STEP08,

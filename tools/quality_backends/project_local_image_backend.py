@@ -1,9 +1,19 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 
-from backend_common import copy_if_needed, ensure_parent, existing_path, first_existing_path, load_backend_context, load_json, print_runtime_error
+from backend_common import (
+    copy_if_needed,
+    ensure_parent,
+    existing_path,
+    find_project_local_ffmpeg,
+    first_existing_path,
+    load_backend_context,
+    load_json,
+    print_runtime_error,
+)
 
 
 def candidate_image_paths(scene_package: dict, context: dict) -> list[Path]:
@@ -34,6 +44,39 @@ def candidate_image_paths(scene_package: dict, context: dict) -> list[Path]:
     return candidates
 
 
+def candidate_reference_videos(scene_package: dict) -> list[Path]:
+    candidates: list[Path] = []
+    for section_name in ("storyboard", "image_generation", "video_generation"):
+        section = scene_package.get(section_name, {}) if isinstance(scene_package.get(section_name), dict) else {}
+        for slot in section.get("reference_slots", []) if isinstance(section.get("reference_slots", []), list) else []:
+            if not isinstance(slot, dict):
+                continue
+            candidate = existing_path(slot.get("video_file", ""))
+            if candidate is not None and candidate not in candidates:
+                candidates.append(candidate)
+    return candidates
+
+
+def extract_reference_frame(reference_video: Path, output_path: Path) -> None:
+    ensure_parent(str(output_path))
+    ffmpeg = find_project_local_ffmpeg()
+    command = [
+        ffmpeg,
+        "-hide_banner",
+        "-y",
+        "-ss",
+        "0.8",
+        "-i",
+        str(reference_video),
+        "-frames:v",
+        "1",
+        str(output_path),
+    ]
+    completed = subprocess.run(command, check=False, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    if completed.returncode != 0 or not output_path.exists() or output_path.stat().st_size <= 0:
+        raise RuntimeError(f"Could not extract a fallback frame from {reference_video.name}. {(completed.stdout or '')[-1200:]}")
+
+
 def main() -> int:
     context = load_backend_context()
     scene_package_path = str(context.get("scene_package", "") or "")
@@ -41,14 +84,19 @@ def main() -> int:
     if not scene_package:
         raise RuntimeError(f"Could not load scene package: {scene_package_path}")
 
-    source = first_existing_path(*candidate_image_paths(scene_package, context))
-    if source is None:
-        raise RuntimeError("No project-local source image is available for the image backend.")
-
     primary_frame = Path(str(context.get("primary_frame", "") or ""))
     if not str(primary_frame):
         raise RuntimeError("The image backend did not receive a primary frame output path.")
-    copy_if_needed(source, primary_frame)
+
+    source = first_existing_path(*candidate_image_paths(scene_package, context))
+    if source is None:
+        reference_video = first_existing_path(*candidate_reference_videos(scene_package))
+        if reference_video is None:
+            raise RuntimeError("No project-local source image or reference scene video is available for the image backend.")
+        extract_reference_frame(reference_video, primary_frame)
+        source = primary_frame
+    else:
+        copy_if_needed(source, primary_frame)
 
     layered_storyboard_frame = Path(str(context.get("layered_storyboard_frame", "") or ""))
     if str(layered_storyboard_frame):
