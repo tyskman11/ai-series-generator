@@ -314,6 +314,54 @@ class ManualNamingTests(unittest.TestCase):
                 self.assertEqual(payload["line_materializations"][0]["audio_backend"], "missing_dialogue_text_silence")
                 self.assertTrue(final_audio.exists())
 
+    def test_build_voice_clone_line_package_includes_reference_audio_candidates_and_runtime(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            voice_samples = root / "characters" / "voice_samples" / "babe"
+            voice_models = root / "characters" / "voice_models"
+            voice_samples.mkdir(parents=True, exist_ok=True)
+            voice_models.mkdir(parents=True, exist_ok=True)
+            sample_path = voice_samples / "sample_01.wav"
+            sample_path.write_bytes(b"audio")
+            reference_path = root / "data" / "raw" / "audio" / "babe_ref.wav"
+            reference_path.parent.mkdir(parents=True, exist_ok=True)
+            reference_path.write_bytes(b"ref")
+            model_path = voice_models / "babe_voice_model.json"
+            model_path.write_text("{}", encoding="utf-8")
+
+            cfg = {
+                "paths": {
+                    "voice_samples": str(voice_samples.parent),
+                    "voice_models": str(voice_models),
+                },
+                "cloning": {
+                    "voice_clone_engine": "xtts",
+                    "xtts_model_name": "tts_models/multilingual/multi-dataset/xtts_v2",
+                    "xtts_language": "auto",
+                    "xtts_license_accepted": True,
+                    "allow_system_tts_fallback": False,
+                },
+            }
+            line = {
+                "line_index": 0,
+                "speaker_name": "Babe",
+                "text": "Hallo zusammen",
+                "voice_profile": {
+                    "cluster_id": "",
+                    "voice_model_path": str(model_path),
+                    "reference_audio": str(reference_path),
+                },
+                "retrieval_segment": {"audio_path": str(reference_path)},
+                "reference_segments": [{"audio_path": str(sample_path), "segment_id": "seg_1"}],
+            }
+            with mock.patch.object(STEP10, "resolve_project_path", side_effect=lambda value: Path(value)):
+                payload = STEP10.build_voice_clone_line_package(cfg, root / "generation" / "final_episode_packages" / "episode_001", line)
+
+            self.assertEqual(payload["runtime"]["engine"], "xtts")
+            self.assertTrue(payload["runtime"]["xtts_license_accepted"])
+            self.assertIn(str(reference_path), payload["reference_audio_candidates"])
+            self.assertIn(str(sample_path), payload["reference_audio_candidates"])
+
     def test_missing_optional_runtime_components_lists_only_missing_entries(self) -> None:
         missing = STEP00.missing_optional_runtime_components(
             {

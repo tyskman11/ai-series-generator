@@ -23,8 +23,46 @@ STEP59 = importlib.util.module_from_spec(SPEC)
 assert SPEC and SPEC.loader
 SPEC.loader.exec_module(STEP59)
 
+VOICE_BACKEND_PATH = PROJECT_DIR / "tools/quality_backends/project_local_voice_backend.py"
+if str(VOICE_BACKEND_PATH.parent) not in sys.path:
+    sys.path.insert(0, str(VOICE_BACKEND_PATH.parent))
+VOICE_SPEC = importlib.util.spec_from_file_location("project_local_voice_backend", VOICE_BACKEND_PATH)
+VOICE_BACKEND = importlib.util.module_from_spec(VOICE_SPEC)
+assert VOICE_SPEC and VOICE_SPEC.loader
+VOICE_SPEC.loader.exec_module(VOICE_BACKEND)
+
 
 class QualityBackendAssetTests(unittest.TestCase):
+    def test_project_local_voice_backend_collects_reference_audio_candidates(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            original_path = root / "audio" / "original.wav"
+            original_path.parent.mkdir(parents=True, exist_ok=True)
+            original_path.write_bytes(b"audio")
+            sample_dir = root / "samples"
+            sample_dir.mkdir(parents=True, exist_ok=True)
+            sample_path = sample_dir / "sample_01.wav"
+            sample_path.write_bytes(b"sample")
+            model_path = root / "voice_model.json"
+            model_path.write_text(
+                '{"reference_audio": "%s", "sample_paths": ["%s"]}' % (str(original_path).replace("\\", "\\\\"), str(sample_path).replace("\\", "\\\\")),
+                encoding="utf-8",
+            )
+
+            line = {
+                "voice_profile": {
+                    "voice_model_path": str(model_path),
+                    "reference_audio": str(original_path),
+                },
+                "original_voice_reference": {"audio_path": str(original_path)},
+                "reference_segments": [{"audio_path": str(sample_path)}],
+                "reference_audio_candidates": [str(sample_path)],
+                "candidate_sample_dirs": [str(sample_dir)],
+            }
+            references = VOICE_BACKEND.collect_reference_audio_paths(line)
+
+            self.assertEqual([path.name for path in references[:2]], ["original.wav", "sample_01.wav"])
+
     def test_support_scripts_bootstrap_project_dir_for_direct_execution(self) -> None:
         configure_source = (PROJECT_DIR / "support_scripts/configure_quality_backends.py").read_text(encoding="utf-8")
         prepare_source = (PROJECT_DIR / "support_scripts/prepare_quality_backends.py").read_text(encoding="utf-8")

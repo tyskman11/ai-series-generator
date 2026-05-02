@@ -11,6 +11,17 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+PROJECT_DIR = Path(__file__).resolve().parents[2]
+if str(PROJECT_DIR) not in sys.path:
+    sys.path.insert(0, str(PROJECT_DIR))
+
+try:
+    from support_scripts.pipeline_common import resolve_stored_project_path
+except Exception:
+    def resolve_stored_project_path(path_value: str | Path | None) -> Path:
+        text = str(path_value or "").strip()
+        return Path(text) if text else Path()
+
 
 def load_json(path: str) -> dict[str, Any]:
     candidate = Path(path)
@@ -105,13 +116,28 @@ def existing_path(value: object) -> Path | None:
     text = str(value or "").strip()
     if not text:
         return None
-    candidate = Path(text)
+    candidate = resolve_stored_project_path(text)
     return candidate if candidate.exists() else None
+
+
+def existing_file_path(value: object) -> Path | None:
+    candidate = existing_path(value)
+    if candidate is not None and candidate.is_file():
+        return candidate
+    return None
 
 
 def first_existing_path(*values: object) -> Path | None:
     for value in values:
         candidate = existing_path(value)
+        if candidate is not None:
+            return candidate
+    return None
+
+
+def first_existing_file_path(*values: object) -> Path | None:
+    for value in values:
+        candidate = existing_file_path(value)
         if candidate is not None:
             return candidate
     return None

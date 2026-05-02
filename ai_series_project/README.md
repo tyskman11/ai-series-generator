@@ -202,6 +202,8 @@ The project is configured for quality-first finished-episode generation:
 - system TTS fallback disabled in the quality-first path
 - lip-sync expected
 - external backend runner hooks configured through project-local defaults
+- the project-local voice runner now tries real XTTS cloning before any local fallback
+- XTTS still needs `xtts_license_accepted = true` in the local `configs/project.json` and usable character reference audio
 
 Important:
 
@@ -249,6 +251,7 @@ python -m py_compile 00_prepare_runtime.py 21_refresh_after_manual_review.py 56_
 
 - project-local fallback image/video generation still does not equal strong dedicated TV-quality generation backends
 - project-local lip-sync is still weaker than a full dedicated production lip-sync stack
+- project-local XTTS voice cloning still depends on clean speaker mapping and real reference segments; speakers with zero linked voice data still cannot clone correctly
 - if external runners fail repeatedly, the quality gate will keep rejecting the episode even when the render technically finishes
 - shared NAS runs still depend on file-system stability and can be slower for large backend/model downloads
 - large Hugging Face model downloads are more reliable with authentication via `HF_TOKEN`

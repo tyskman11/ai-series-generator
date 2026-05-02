@@ -490,13 +490,15 @@ def build_original_line_library(cfg: dict) -> dict[str, list[dict]]:
                 continue
             scene_id = clean_text(row.get("scene_id", "") or linked.get("scene_id", ""))
             scene_clip_path = scene_root / episode_id / f"{scene_id}.mp4" if scene_id else Path()
+            audio_path = clean_text(row.get("audio_file", ""))
+            resolved_audio_path = resolve_stored_project_path(audio_path) if audio_path else Path()
             library.setdefault(speaker_name, []).append(
                 {
                     "episode_id": episode_id,
                     "scene_id": scene_id,
                     "segment_id": segment_id,
                     "text": text,
-                    "audio_path": clean_text(row.get("audio_file", "")),
+                    "audio_path": str(resolved_audio_path) if audio_path else "",
                     "scene_clip_path": str(scene_clip_path) if scene_id else "",
                     "language": normalize_language_code(row.get("language", "")),
                     "start": float(row.get("start", 0.0) or 0.0),
@@ -504,6 +506,50 @@ def build_original_line_library(cfg: dict) -> dict[str, list[dict]]:
                 }
             )
     return library
+
+
+def collect_speaker_reference_segments(original_line_library: dict[str, list[dict]], speaker_name: str, max_segments: int) -> list[dict]:
+    entries = original_line_library.get(speaker_name, []) if isinstance(original_line_library.get(speaker_name, []), list) else []
+    ranked_entries: list[dict] = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        audio_path = clean_text(entry.get("audio_path", ""))
+        if not audio_path:
+            continue
+        resolved_audio_path = resolve_stored_project_path(audio_path)
+        if not resolved_audio_path.exists() or not resolved_audio_path.is_file():
+            continue
+        ranked_entries.append(
+            {
+                **entry,
+                "audio_path": str(resolved_audio_path),
+                "_duration": max(0.0, float(entry.get("end", 0.0) or 0.0) - float(entry.get("start", 0.0) or 0.0)),
+            }
+        )
+    ranked_entries.sort(key=lambda row: (float(row.get("_duration", 0.0) or 0.0), len(clean_text(row.get("text", "")))), reverse=True)
+    prepared: list[dict] = []
+    seen_paths: set[str] = set()
+    for entry in ranked_entries:
+        path_text = clean_text(entry.get("audio_path", ""))
+        if not path_text or path_text in seen_paths:
+            continue
+        seen_paths.add(path_text)
+        prepared.append(
+            {
+                "episode_id": clean_text(entry.get("episode_id", "")),
+                "scene_id": clean_text(entry.get("scene_id", "")),
+                "segment_id": clean_text(entry.get("segment_id", "")),
+                "text": clean_text(entry.get("text", "")),
+                "audio_path": path_text,
+                "language": normalize_language_code(entry.get("language", "")),
+                "start": float(entry.get("start", 0.0) or 0.0),
+                "end": float(entry.get("end", 0.0) or 0.0),
+            }
+        )
+        if len(prepared) >= max(1, int(max_segments or 1)):
+            break
+    return prepared
 
 
 def build_voice_lookup(cfg: dict) -> dict[str, dict]:
@@ -588,6 +634,11 @@ def build_scene_voice_plan(
             }
         elif usable_library_speaker_name(speaker_name):
             retrieval_segment = select_retrieval_segment(speaker_name, line_text, original_line_library, cloning_cfg)
+        reference_segments = collect_speaker_reference_segments(
+            original_line_library,
+            speaker_name,
+            int(cloning_cfg.get("voice_reference_max_segments", 4) or 4),
+        )
         prepared.append(
             {
                 "line_index": line_index,
@@ -595,6 +646,7 @@ def build_scene_voice_plan(
                 "text": line_text,
                 "source": source,
                 "retrieval_segment": retrieval_segment or {},
+                "reference_segments": reference_segments,
                 "voice_profile": voice_lookup.get(speaker_name, {}),
                 "raw_duration_seconds": estimate_dialogue_duration_seconds(line_text, voice_rate, audio_pad_seconds),
             }
@@ -645,6 +697,7 @@ def build_scene_voice_plan(
                     "reference_audio": clean_text(voice_profile.get("reference_audio", "")),
                 },
                 "retrieval_segment": retrieval_segment,
+                "reference_segments": row["reference_segments"] if isinstance(row.get("reference_segments", []), list) else [],
             }
         )
         cursor += duration
@@ -1025,6 +1078,8 @@ def build_voice_clone_line_package(cfg: dict, episode_package_root: Path, line: 
     speaker_slug = production_scene_slug(speaker_name.lower())
     voice_profile = line.get("voice_profile", {}) if isinstance(line.get("voice_profile", {}), dict) else {}
     retrieval_segment = line.get("retrieval_segment", {}) if isinstance(line.get("retrieval_segment", {}), dict) else {}
+    reference_segments = line.get("reference_segments", []) if isinstance(line.get("reference_segments", []), list) else []
+    cloning_cfg = cfg.get("cloning", {}) if isinstance(cfg.get("cloning", {}), dict) else {}
     voice_samples_root = resolve_project_path(str((cfg.get("paths", {}) if isinstance(cfg.get("paths", {}), dict) else {}).get("voice_samples", "characters/voice_samples")))
     voice_models_root = resolve_project_path(str((cfg.get("paths", {}) if isinstance(cfg.get("paths", {}), dict) else {}).get("voice_models", "characters/voice_models")))
     cluster_id = clean_text(voice_profile.get("cluster_id", ""))
@@ -1060,8 +1115,40 @@ def build_voice_clone_line_package(cfg: dict, episode_package_root: Path, line: 
             "match_score": float(retrieval_segment.get("match_score", 0.0) or 0.0),
             "language": normalize_language_code(retrieval_segment.get("language", "")),
         },
+        "reference_segments": [
+            {
+                "episode_id": clean_text(item.get("episode_id", "")),
+                "scene_id": clean_text(item.get("scene_id", "")),
+                "segment_id": clean_text(item.get("segment_id", "")),
+                "text": clean_text(item.get("text", "")),
+                "audio_path": clean_text(item.get("audio_path", "")),
+                "language": normalize_language_code(item.get("language", "")),
+            }
+            for item in reference_segments
+            if isinstance(item, dict) and clean_text(item.get("audio_path", ""))
+        ],
+        "reference_audio_candidates": [
+            value
+            for value in [
+                clean_text(retrieval_segment.get("audio_path", "")),
+                clean_text(voice_profile.get("reference_audio", "")),
+                *[
+                    clean_text(item.get("audio_path", ""))
+                    for item in reference_segments
+                    if isinstance(item, dict)
+                ],
+            ]
+            if value
+        ],
         "candidate_sample_dirs": [path for path in candidate_sample_dirs if path],
         "candidate_model_dirs": [path for path in candidate_model_dirs if path],
+        "runtime": {
+            "engine": clean_text(cloning_cfg.get("voice_clone_engine", "")),
+            "xtts_model_name": clean_text(cloning_cfg.get("xtts_model_name", "")),
+            "xtts_language": clean_text(cloning_cfg.get("xtts_language", "")),
+            "xtts_license_accepted": bool(cloning_cfg.get("xtts_license_accepted", False)),
+            "allow_system_tts_fallback": bool(cloning_cfg.get("allow_system_tts_fallback", False)),
+        },
         "target_output_audio": str(voice_line_output_audio_path(episode_package_root, line)),
     }
 
