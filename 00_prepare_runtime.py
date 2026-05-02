@@ -157,6 +157,19 @@ def install_group(
     return False
 
 
+def missing_optional_runtime_components(status: dict[str, bool]) -> list[str]:
+    missing: list[str] = []
+    labels = {
+        "facenet_pytorch": "face_recognition/facenet-pytorch",
+        "speaker_embeddings": "speaker_embeddings/speechbrain",
+        "voice_cloning": "voice_cloning/TTS",
+    }
+    for key, label in labels.items():
+        if not bool(status.get(key, False)):
+            missing.append(label)
+    return missing
+
+
 def torch_status(py: Path) -> dict:
     result = run(
         [
@@ -367,6 +380,13 @@ def main() -> None:
                 "speaker_embeddings": speaker_embeddings_ok,
                 "render_tts": tts_ok,
                 "voice_cloning": voice_clone_ok,
+                "missing_optional_components": missing_optional_runtime_components(
+                    {
+                        "facenet_pytorch": facenet_ok,
+                        "speaker_embeddings": speaker_embeddings_ok,
+                        "voice_cloning": voice_clone_ok,
+                    }
+                ),
                 "updated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
             },
         )
@@ -390,10 +410,29 @@ def main() -> None:
                 "torch": bool(torch_ok),
                 "cuda_available": bool(torch_info.get("cuda_available", False)),
                 "voice_cloning": bool(voice_clone_ok),
+                "facenet_pytorch": bool(facenet_ok),
+                "speaker_embeddings": bool(speaker_embeddings_ok),
                 "backend_setup_skip_downloads": bool(args.skip_downloads),
             },
         )
-        ok("Runtime and full project setup are ready.")
+        missing_optional = missing_optional_runtime_components(
+            {
+                "facenet_pytorch": facenet_ok,
+                "speaker_embeddings": speaker_embeddings_ok,
+                "voice_cloning": voice_clone_ok,
+            }
+        )
+        if missing_optional:
+            warn(
+                "Runtime and full project setup are ready with limitations. Missing optional components: "
+                + ", ".join(missing_optional)
+            )
+            warn(
+                "Steps that need face linking, speaker embeddings, or higher-quality voice cloning may stay limited "
+                "until these packages are installed successfully."
+            )
+        else:
+            ok("Runtime and full project setup are ready.")
     finally:
         lease_manager.__exit__(None, None, None)
 

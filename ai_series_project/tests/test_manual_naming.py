@@ -181,6 +181,20 @@ class ManualNamingTests(unittest.TestCase):
         self.assertLess(install_order.index("torch"), install_order.index("face_recognition"))
         self.assertLess(install_order.index("torch"), install_order.index("speaker_embeddings"))
 
+    def test_missing_optional_runtime_components_lists_only_missing_entries(self) -> None:
+        missing = STEP00.missing_optional_runtime_components(
+            {
+                "facenet_pytorch": False,
+                "speaker_embeddings": True,
+                "voice_cloning": False,
+            }
+        )
+
+        self.assertEqual(
+            missing,
+            ["face_recognition/facenet-pytorch", "voice_cloning/TTS"],
+        )
+
     def test_platform_tool_filenames_are_os_specific(self) -> None:
         self.assertEqual(platform_tool_filenames("ffmpeg", "windows"), ["ffmpeg.exe", "ffmpeg"])
         self.assertEqual(platform_tool_filenames("ffmpeg", "linux"), ["ffmpeg"])
