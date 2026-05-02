@@ -207,6 +207,8 @@ The project is configured for quality-first finished-episode generation:
 - the project-local voice runner now tries real XTTS cloning before any local fallback
 - XTTS still needs `xtts_license_accepted = true` in the local `configs/project.json` and usable character reference audio
 - render-time dialogue planning now falls back directly to `characters/voice_models/<character>_voice_model.json` when `voice_map` is stale or missing a named speaker entry
+- delegated quality-backend runners now resolve project-local backend scripts from the project root even when scene packages run from nested working directories
+- project-local quality backends now prefer the platform-correct FFmpeg binary from `runtime/host_runtime/ffmpeg/bin` before falling back to older tool copies
 
 Important:
 

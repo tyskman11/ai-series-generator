@@ -65,6 +65,30 @@ def command_shell_flag() -> bool:
     return os.name == "nt"
 
 
+def resolve_delegated_command_parts(parts: list[str]) -> list[str]:
+    resolved: list[str] = []
+    for index, raw_part in enumerate(parts):
+        part = str(raw_part or "").strip()
+        if not part:
+            continue
+        if index == 0 and part.lower() in {"python", "python3", "py"}:
+            resolved.append(sys.executable)
+            continue
+        if part.startswith("-"):
+            resolved.append(part)
+            continue
+        candidate = Path(part)
+        if candidate.is_absolute():
+            resolved.append(str(candidate))
+            continue
+        project_candidate = (PROJECT_DIR / candidate).resolve(strict=False)
+        if project_candidate.exists():
+            resolved.append(str(project_candidate))
+            continue
+        resolved.append(part)
+    return resolved
+
+
 def run_delegated_backend(
     *,
     env_var_name: str,
@@ -87,16 +111,19 @@ def run_delegated_backend(
 
     working_directory = cwd.strip() or str(Path.cwd())
     if command_shell_flag():
+        shell_parts = resolve_delegated_command_parts(shlex.split(command_text, posix=False))
+        rendered_command = subprocess.list2cmdline(shell_parts) if shell_parts else command_text
         completed = subprocess.run(
-            command_text,
+            rendered_command,
             shell=True,
             cwd=working_directory,
             env=env,
             check=False,
         )
     else:
+        command_parts = resolve_delegated_command_parts(shlex.split(command_text))
         completed = subprocess.run(
-            shlex.split(command_text),
+            command_parts,
             shell=False,
             cwd=working_directory,
             env=env,
@@ -151,14 +178,18 @@ def copy_if_needed(source: Path, target: Path) -> None:
 
 
 def find_project_local_ffmpeg() -> str:
-    script_path = Path(__file__).resolve()
-    for parent in [script_path.parent, *script_path.parents]:
-        candidate_dir = parent / "ai_series_project" / "tools" / "ffmpeg" / "bin"
-        if candidate_dir.exists():
-            for name in ("ffmpeg.exe", "ffmpeg"):
-                candidate = candidate_dir / name
-                if candidate.exists() and candidate.is_file():
-                    return str(candidate)
+    preferred_names = ("ffmpeg.exe", "ffmpeg") if os.name == "nt" else ("ffmpeg", "ffmpeg.exe")
+    candidate_dirs = [
+        PROJECT_DIR / "runtime" / "host_runtime" / "ffmpeg" / "bin",
+        PROJECT_DIR / "tools" / "ffmpeg" / "bin",
+    ]
+    for candidate_dir in candidate_dirs:
+        if not candidate_dir.exists():
+            continue
+        for name in preferred_names:
+            candidate = candidate_dir / name
+            if candidate.exists() and candidate.is_file():
+                return str(candidate)
     ffmpeg = shutil.which("ffmpeg")
     if ffmpeg:
         return ffmpeg

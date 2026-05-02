@@ -3154,7 +3154,7 @@ def main() -> None:
     headline("Render Episode")
     cfg = load_config()
     prepare_quality_backend_assets_runtime()
-    ensure_quality_first_ready(cfg, context_label="14_render_episode.py")
+    ensure_quality_first_ready(cfg, context_label="16_render_episode.py")
     worker_id = shared_worker_id_for_args(args)
     shared_workers = shared_workers_enabled_for_args(cfg, args)
 
@@ -3208,20 +3208,20 @@ def main() -> None:
     full_generated_episode_path = episode_production_package_root(cfg, episode_id) / "master" / f"{episode_id}_full_generated_episode.mp4"
 
     autosave_target = episode_id
-    mark_step_started("14_render_episode", autosave_target, {"episode_id": episode_id, "shotlist": str(shotlist_path)})
+    mark_step_started("16_render_episode", autosave_target, {"episode_id": episode_id, "shotlist": str(shotlist_path)})
     if shared_workers:
         info(f"Shared NAS workers: enabled ({worker_id})")
     reporter = LiveProgressReporter(
-        script_name="14_render_episode.py",
+        script_name="16_render_episode.py",
         total=len(scenes) + 3,
         phase_label="Render Episode",
         parent_label=episode_id,
     )
-    lease_root = distributed_step_runtime_root("14_render_episode", "episodes")
+    lease_root = distributed_step_runtime_root("16_render_episode", "episodes")
     lease_heartbeat = None
     try:
         if shared_workers:
-            lease_meta = {"step": "14_render_episode", "episode_id": episode_id, "worker_id": worker_id}
+            lease_meta = {"step": "16_render_episode", "episode_id": episode_id, "worker_id": worker_id}
             acquired = acquire_distributed_lease(
                 lease_root,
                 episode_id,
@@ -3244,7 +3244,7 @@ def main() -> None:
         if draft_path.exists() and final_path.exists() and production_package_path.exists() and not args.force:
             reporter.finish(current_label=episode_id, extra_label="Draft, final render, and production package already exist")
             mark_step_completed(
-                "14_render_episode",
+                "16_render_episode",
                 autosave_target,
                 {
                     "episode_id": episode_id,
@@ -3696,7 +3696,7 @@ def main() -> None:
 
         reporter.finish(current_label=episode_id, extra_label=f"Rendered {len(scenes)} scenes and exported the full-episode production package")
         mark_step_completed(
-            "14_render_episode",
+            "16_render_episode",
             autosave_target,
             {
                 "episode_id": episode_id,
@@ -3715,7 +3715,7 @@ def main() -> None:
         )
         ok(f"Episode rendered: {episode_id}")
     except Exception as exc:
-        mark_step_failed("14_render_episode", str(exc), autosave_target, {"episode_id": episode_id})
+        mark_step_failed("16_render_episode", str(exc), autosave_target, {"episode_id": episode_id})
         raise
     finally:
         if lease_heartbeat is not None:

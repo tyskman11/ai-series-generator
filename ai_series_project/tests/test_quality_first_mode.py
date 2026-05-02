@@ -1,19 +1,20 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
+import importlib.util
+import os
 import sys
+import tempfile
+import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 PROJECT_DIR = Path(__file__).resolve().parents[1]
 SCRIPT_ROOT = PROJECT_DIR.parent
 if str(PROJECT_DIR) not in sys.path:
     sys.path.insert(0, str(PROJECT_DIR))
 
-import importlib.util
-import unittest
-from pathlib import Path
-from unittest.mock import patch
-
 from support_scripts import pipeline_common
+from tools.quality_backends import backend_common
 
 MODULE_PATH = PROJECT_DIR / "support_scripts/configure_quality_backends.py"
 SPEC = importlib.util.spec_from_file_location("step58_quality_backends", MODULE_PATH)
@@ -113,8 +114,41 @@ class QualityFirstModeTests(unittest.TestCase):
 
     def test_resolve_external_backend_command_part_uses_project_root_for_runner_scripts(self) -> None:
         resolved = pipeline_common.resolve_external_backend_command_part("tools/quality_backends/image_runner.py")
-        self.assertTrue(resolved.endswith("tools\\quality_backends\\image_runner.py") or resolved.endswith("tools/quality_backends/image_runner.py"))
+        self.assertTrue(
+            resolved.endswith("tools\\quality_backends\\image_runner.py")
+            or resolved.endswith("tools/quality_backends/image_runner.py")
+        )
         self.assertTrue(Path(resolved).is_absolute())
+
+    def test_delegated_backend_command_parts_use_project_root_for_runner_scripts(self) -> None:
+        resolved = backend_common.resolve_delegated_command_parts(
+            ["python", "tools/quality_backends/project_local_image_backend.py", "--scene-package", "scene.json"]
+        )
+        self.assertEqual(Path(resolved[0]).name.lower(), Path(sys.executable).name.lower())
+        self.assertTrue(
+            resolved[1].endswith("tools\\quality_backends\\project_local_image_backend.py")
+            or resolved[1].endswith("tools/quality_backends/project_local_image_backend.py")
+        )
+        self.assertTrue(Path(resolved[1]).is_absolute())
+
+    def test_find_project_local_ffmpeg_prefers_platform_binary_from_runtime(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            project_root = Path(tmpdir) / "ai_series_project"
+            runtime_bin = project_root / "runtime" / "host_runtime" / "ffmpeg" / "bin"
+            tools_bin = project_root / "tools" / "ffmpeg" / "bin"
+            runtime_bin.mkdir(parents=True, exist_ok=True)
+            tools_bin.mkdir(parents=True, exist_ok=True)
+            if os.name == "nt":
+                runtime_target = runtime_bin / "ffmpeg.exe"
+                wrong_target = tools_bin / "ffmpeg"
+            else:
+                runtime_target = runtime_bin / "ffmpeg"
+                wrong_target = tools_bin / "ffmpeg.exe"
+            runtime_target.write_bytes(b"runtime")
+            wrong_target.write_bytes(b"wrong")
+            with patch.object(backend_common, "PROJECT_DIR", project_root), patch("shutil.which", return_value=""):
+                resolved = backend_common.find_project_local_ffmpeg()
+            self.assertEqual(resolved, str(runtime_target))
 
     def test_configured_quality_backends_use_runtime_python_and_project_local_defaults(self) -> None:
         backends = STEP58.configured_backends()
@@ -147,6 +181,3 @@ class QualityFirstModeTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
-
-

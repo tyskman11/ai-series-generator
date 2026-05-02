@@ -5236,11 +5236,11 @@ class ManualNamingTests(unittest.TestCase):
         render_source = (SCRIPT_ROOT / "16_render_episode.py").read_text(encoding="utf-8")
         bible_source = (SCRIPT_ROOT / "19_build_series_bible.py").read_text(encoding="utf-8")
 
-        self.assertIn('mark_step_started("14_render_episode"', render_source)
-        self.assertIn('mark_step_completed(\n            "14_render_episode"', render_source)
-        self.assertIn('mark_step_failed("14_render_episode"', render_source)
-        self.assertNotIn('mark_step_started("17_render_episode"', render_source)
-        self.assertNotIn('mark_step_failed("17_render_episode"', render_source)
+        self.assertIn('mark_step_started("16_render_episode"', render_source)
+        self.assertIn('mark_step_completed(\n            "16_render_episode"', render_source)
+        self.assertIn('mark_step_failed("16_render_episode"', render_source)
+        self.assertNotIn('mark_step_started("14_render_episode"', render_source)
+        self.assertNotIn('mark_step_failed("14_render_episode"', render_source)
 
         self.assertIn('mark_step_started("15_build_series_bible"', bible_source)
         self.assertIn('mark_step_completed(\n                "15_build_series_bible"', bible_source)
