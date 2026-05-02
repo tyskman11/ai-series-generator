@@ -109,7 +109,7 @@ Run the numbered scripts from the repository root.
 - project structure creation
 - generation of `ai_series_project/configs/project.json` from `ai_series_project/configs/project.template.json` when missing
 - runtime environment setup
-- project-local FFmpeg resolution from Python
+- project-local FFmpeg staging into `ai_series_project/runtime/host_runtime/ffmpeg/bin`
 - quality-backend config writing
 - project-local backend tool/model downloads
 - download completeness and revision checks

@@ -346,14 +346,23 @@ class ManualNamingTests(unittest.TestCase):
             self.assertEqual(detect_tool(project_like_dir, "ffmpeg"), packaged)
 
     def test_runtime_ffmpeg_path_uses_imageio_ffmpeg_from_runtime_python(self) -> None:
-        fake_binary = Path(tempfile.gettempdir()) / "runtime_ffmpeg"
-        fake_binary.write_text("binary", encoding="utf-8")
-        with mock.patch.object(
-            STEP00,
-            "run",
-            return_value=subprocess.CompletedProcess(args=[], returncode=0, stdout=str(fake_binary), stderr=""),
-        ):
-            self.assertEqual(STEP00.runtime_ffmpeg_path(Path("/fake/python")), fake_binary.resolve())
+        with tempfile.TemporaryDirectory() as tmpdir:
+            temp_root = Path(tmpdir)
+            fake_binary = temp_root / "site_runtime_ffmpeg"
+            fake_binary.write_text("binary", encoding="utf-8")
+            staged_dir = temp_root / "host_runtime"
+            with mock.patch.object(
+                STEP00,
+                "run",
+                return_value=subprocess.CompletedProcess(args=[], returncode=0, stdout=str(fake_binary), stderr=""),
+            ), mock.patch.object(
+                STEP00, "HOST_RUNTIME_ROOT", staged_dir
+            ):
+                staged = STEP00.runtime_ffmpeg_path(Path("/fake/python"))
+
+            self.assertEqual(staged.parent, staged_dir / "ffmpeg" / "bin")
+            self.assertTrue(staged.exists())
+            self.assertEqual(staged.read_text(encoding="utf-8"), "binary")
 
     def test_prepare_runtime_pip_install_command_keeps_break_system_packages_install(self) -> None:
         with mock.patch.object(

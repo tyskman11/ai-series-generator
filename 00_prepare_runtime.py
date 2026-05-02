@@ -15,6 +15,7 @@ import subprocess
 import shutil
 import sys
 import time
+import stat
 from pathlib import Path
 
 from support_scripts.pipeline_common import (
@@ -100,7 +101,7 @@ def runtime_pip_install_command(py: Path, *args: str) -> list[str]:
     return list(pip_install_command(py, *args))
 
 
-def runtime_ffmpeg_path(py: Path) -> Path:
+def packaged_ffmpeg_source_path(py: Path) -> Path:
     result = run(
         [
             str(py),
@@ -117,11 +118,31 @@ def runtime_ffmpeg_path(py: Path) -> Path:
     return resolved
 
 
+def runtime_ffmpeg_bin_dir() -> Path:
+    return HOST_RUNTIME_ROOT / "ffmpeg" / "bin"
+
+
+def stage_runtime_ffmpeg_binary(source_path: Path) -> Path:
+    target_dir = runtime_ffmpeg_bin_dir()
+    target_dir.mkdir(parents=True, exist_ok=True)
+    target_path = target_dir / source_path.name
+    if not target_path.exists() or source_path.stat().st_mtime > target_path.stat().st_mtime or source_path.stat().st_size != target_path.stat().st_size:
+        shutil.copy2(source_path, target_path)
+    if os.name != "nt":
+        current_mode = target_path.stat().st_mode
+        target_path.chmod(current_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+    return target_path.resolve()
+
+
+def runtime_ffmpeg_path(py: Path) -> Path:
+    return stage_runtime_ffmpeg_binary(packaged_ffmpeg_source_path(py))
+
+
 def install_ffmpeg_binaries(py: Path) -> dict[str, str]:
     install_group(py, "runtime_ffmpeg", ["imageio_ffmpeg"], ["imageio-ffmpeg"])
     ffmpeg_path = runtime_ffmpeg_path(py)
-    ok(f"FFmpeg ready from python runtime: {ffmpeg_path}")
-    return {"ready": "true", "ffmpeg": str(ffmpeg_path), "provider": "imageio-ffmpeg"}
+    ok(f"FFmpeg ready in project runtime: {ffmpeg_path}")
+    return {"ready": "true", "ffmpeg": str(ffmpeg_path), "provider": "imageio-ffmpeg-staged"}
 
 
 def run_setup_script(py: Path, script_name: str, *extra_args: str) -> None:

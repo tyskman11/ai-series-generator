@@ -2288,6 +2288,11 @@ def python_packaged_tool(tool_name: str) -> Path | None:
     normalized = str(tool_name or "").strip().lower()
     if normalized != "ffmpeg":
         return None
+    staged_candidate = HOST_RUNTIME_ROOT / "ffmpeg" / "bin"
+    for filename in platform_tool_filenames(tool_name):
+        candidate = (staged_candidate / filename).resolve(strict=False)
+        if candidate.exists():
+            return candidate
     try:
         import imageio_ffmpeg
     except Exception:
