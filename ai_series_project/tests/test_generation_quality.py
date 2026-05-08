@@ -212,6 +212,33 @@ class GenerationQualityTests(unittest.TestCase):
         self.assertLess(fallback["component_scores"]["audio"], generated["component_scores"]["audio"])
         self.assertLess(fallback["quality_score"], generated["quality_score"])
 
+    def test_scene_quality_assessment_reaches_100_for_complete_generated_scene(self) -> None:
+        quality = pipeline_common.scene_quality_assessment(
+            scene_id="scene_0003",
+            current_outputs={
+                "asset_source_type": "generated_episode_frame",
+                "video_source_type": "generated_lipsync_video",
+                "has_generated_scene_video": True,
+                "has_generated_primary_frame": True,
+                "has_scene_dialogue_audio": True,
+                "has_scene_master_clip": True,
+                "has_visual_beat_reference_images": True,
+                "audio_backend": "xtts_voice_clone",
+            },
+            voice_required=True,
+            lipsync_required=True,
+            reference_slot_count=5,
+            continuity_active=True,
+            continuity_character_count=4,
+            style_guidance_available=True,
+            quality_targets_available=True,
+        )
+
+        self.assertEqual(quality["quality_percent"], 100)
+        self.assertEqual(quality["component_scores"]["audio"], 1.0)
+        self.assertEqual(quality["component_scores"]["lip_sync"], 1.0)
+        self.assertEqual(quality["quality_label"], "series_quality_candidate")
+
     def test_completion_summary_requires_scene_dialogue_audio_for_fully_generated_episode(self) -> None:
         summary = pipeline_common.generated_episode_completion_summary(
             scene_count=2,

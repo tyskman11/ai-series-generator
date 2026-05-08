@@ -1632,7 +1632,7 @@ def scene_quality_assessment(
 
     visual_score = 0.24
     if video_source_type == "generated_lipsync_video":
-        visual_score = 0.96
+        visual_score = 1.0
     elif video_source_type == "generated_scene_video":
         visual_score = 0.9
     elif video_source_type == "storyboard_backend_scene_video":
@@ -1667,15 +1667,19 @@ def scene_quality_assessment(
         audio_score = 0.28
     elif "pyttsx3" in audio_backend:
         audio_score = 0.46
-    elif audio_backend == "reused_original_segments":
+    elif audio_backend in {"xtts_voice_clone", "voice_clone"} or audio_backend.endswith("_voice_clone"):
+        audio_score = 1.0
+    elif audio_backend == "xtts":
         audio_score = 0.94
+    elif audio_backend in {"reused_original_segments", "original_segment_reuse"}:
+        audio_score = 0.58
     else:
         audio_score = 0.9
 
     lipsync_score = 1.0
     if lipsync_required:
         if video_source_type == "generated_lipsync_video":
-            lipsync_score = 0.98
+            lipsync_score = 1.0
         elif has_generated_scene_video and has_scene_dialogue_audio:
             lipsync_score = 0.58
         else:
@@ -1698,7 +1702,7 @@ def scene_quality_assessment(
 
     master_score = 0.12
     if has_scene_master_clip:
-        master_score = 0.96
+        master_score = 1.0
     elif has_generated_scene_video:
         master_score = 0.52
     elif has_scene_dialogue_audio:
