@@ -308,7 +308,7 @@
       "enabled": true,
       "command_template": [
         "{python}",
-        "54_run_storyboard_backend.py",
+        "15_run_storyboard_backend.py",
         "--episode-id",
         "{episode_id}",
         "--scene-ids",

@@ -679,52 +679,194 @@ KEYWORD_BLACKLIST = {
     "net",
 }
 
-GERMAN_LANGUAGE_MARKERS = {
-    "aber",
-    "auch",
-    "das",
-    "dass",
-    "der",
-    "die",
-    "du",
-    "ein",
-    "eine",
-    "für",
-    "habe",
-    "haben",
-    "ich",
-    "ist",
-    "nicht",
-    "schon",
-    "und",
-    "was",
-    "wenn",
-    "wir",
-    "wird",
-    "zu",
+LANGUAGE_TEXT_MARKERS = {
+    "de": {
+        "aber",
+        "auch",
+        "das",
+        "dass",
+        "der",
+        "die",
+        "du",
+        "ein",
+        "eine",
+        "für",
+        "habe",
+        "haben",
+        "ich",
+        "ist",
+        "nicht",
+        "schon",
+        "und",
+        "was",
+        "wenn",
+        "wir",
+        "wird",
+        "zu",
+    },
+    "en": {
+        "and",
+        "are",
+        "but",
+        "for",
+        "have",
+        "here",
+        "how",
+        "not",
+        "that",
+        "the",
+        "this",
+        "was",
+        "we",
+        "what",
+        "when",
+        "where",
+        "why",
+        "will",
+        "with",
+        "you",
+    },
+    "fr": {
+        "alors",
+        "avec",
+        "ce",
+        "cette",
+        "dans",
+        "des",
+        "est",
+        "et",
+        "il",
+        "je",
+        "la",
+        "le",
+        "les",
+        "mais",
+        "nous",
+        "pas",
+        "pour",
+        "que",
+        "qui",
+        "vous",
+    },
+    "es": {
+        "ahora",
+        "con",
+        "de",
+        "el",
+        "ella",
+        "en",
+        "eso",
+        "esta",
+        "este",
+        "la",
+        "las",
+        "los",
+        "no",
+        "nosotros",
+        "para",
+        "pero",
+        "que",
+        "una",
+        "y",
+        "yo",
+    },
+    "it": {
+        "anche",
+        "che",
+        "con",
+        "della",
+        "di",
+        "e",
+        "il",
+        "io",
+        "la",
+        "ma",
+        "non",
+        "per",
+        "questo",
+        "sono",
+        "una",
+    },
+    "pt": {
+        "agora",
+        "com",
+        "de",
+        "e",
+        "ela",
+        "ele",
+        "esta",
+        "isso",
+        "mas",
+        "nao",
+        "não",
+        "os",
+        "para",
+        "que",
+        "uma",
+        "voce",
+        "você",
+    },
+    "nl": {
+        "als",
+        "dat",
+        "de",
+        "een",
+        "en",
+        "het",
+        "hier",
+        "ik",
+        "maar",
+        "niet",
+        "voor",
+        "wat",
+        "we",
+        "zijn",
+    },
+    "tr": {
+        "ama",
+        "ben",
+        "bir",
+        "bu",
+        "da",
+        "de",
+        "degil",
+        "değil",
+        "icin",
+        "için",
+        "ne",
+        "ve",
+        "var",
+    },
+    "pl": {
+        "ale",
+        "bez",
+        "co",
+        "dla",
+        "jest",
+        "nie",
+        "oraz",
+        "po",
+        "się",
+        "tak",
+        "to",
+        "w",
+        "z",
+        "ze",
+        "że",
+    },
 }
 
-ENGLISH_LANGUAGE_MARKERS = {
-    "and",
-    "are",
-    "but",
-    "for",
-    "have",
-    "here",
-    "how",
-    "not",
-    "that",
-    "the",
-    "this",
-    "was",
-    "we",
-    "what",
-    "when",
-    "where",
-    "why",
-    "will",
-    "with",
-    "you",
+GERMAN_LANGUAGE_MARKERS = LANGUAGE_TEXT_MARKERS["de"]
+ENGLISH_LANGUAGE_MARKERS = LANGUAGE_TEXT_MARKERS["en"]
+
+LANGUAGE_ACCENT_HINTS = {
+    "de": "äöüß",
+    "fr": "àâæçéèêëîïôœùûüÿ",
+    "es": "áéíñóúü¿¡",
+    "it": "àèéìòù",
+    "pt": "áâãàçéêíóôõú",
+    "tr": "çğıöşü",
+    "pl": "ąćęłńóśźż",
 }
 
 KEYWORD_SHORT_ALLOWLIST = {
@@ -3024,7 +3166,7 @@ def print_interactive_display_diagnostics(step_name: str, *, require_gui: bool =
 
 
 def tokens_from_text(text: str) -> list[str]:
-    return re.findall(r"[A-Za-zÄÖÜäöüß][A-Za-zÄÖÜäöüß\-']+", text)
+    return re.findall(r"[^\W\d_](?:[^\W\d_]|[-'](?=[^\W\d_]))*", text, flags=re.UNICODE)
 
 
 def is_placeholder_person_name(name: str) -> bool:
@@ -3747,17 +3889,28 @@ LANGUAGE_ALIASES = {
     "englisch": "en",
     "french": "fr",
     "francais": "fr",
+    "français": "fr",
     "spanish": "es",
     "espanol": "es",
+    "español": "es",
     "italian": "it",
     "portuguese": "pt",
+    "portugues": "pt",
+    "português": "pt",
     "dutch": "nl",
+    "nederlands": "nl",
     "turkish": "tr",
+    "türkisch": "tr",
     "polish": "pl",
+    "polski": "pl",
     "russian": "ru",
+    "русский": "ru",
     "japanese": "ja",
+    "日本語": "ja",
     "korean": "ko",
+    "한국어": "ko",
     "chinese": "zh",
+    "中文": "zh",
 }
 
 
@@ -3795,17 +3948,32 @@ def detect_language_from_text(text: object, fallback: str = "") -> str:
     content = coalesce_text(str(text or "")).lower()
     if not content:
         return normalized_fallback
+    if re.search(r"[\u3040-\u30ff]", content):
+        return "ja"
+    if re.search(r"[\uac00-\ud7af]", content):
+        return "ko"
+    if re.search(r"[\u4e00-\u9fff]", content):
+        return "zh"
+    if re.search(r"[\u0400-\u04ff]", content):
+        return "ru"
     tokens = [token.lower() for token in tokens_from_text(content)]
     if not tokens:
         return normalized_fallback
     token_set = set(tokens)
-    german_score = len(token_set & GERMAN_LANGUAGE_MARKERS)
-    english_score = len(token_set & ENGLISH_LANGUAGE_MARKERS)
-    german_score += sum(1 for char in content if char in "äöüß")
-    if german_score >= english_score + 2 and german_score >= 2:
-        return "de"
-    if english_score >= german_score + 2 and english_score >= 2:
-        return "en"
+    scores: dict[str, int] = {}
+    for language, markers in LANGUAGE_TEXT_MARKERS.items():
+        scores[language] = len(token_set & markers)
+        accent_hints = LANGUAGE_ACCENT_HINTS.get(language, "")
+        if accent_hints:
+            scores[language] += sum(1 for char in content if char in accent_hints)
+    ranked = sorted(scores.items(), key=lambda item: (-item[1], item[0]))
+    if ranked:
+        best_language, best_score = ranked[0]
+        second_score = ranked[1][1] if len(ranked) > 1 else 0
+        if best_score >= 2 and best_score >= second_score + 2:
+            return best_language
+        if best_score >= 3 and best_score > second_score:
+            return best_language
     return normalized_fallback
 
 

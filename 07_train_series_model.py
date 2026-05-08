@@ -98,6 +98,83 @@ GENERIC_TITLE_FALLBACKS = [
     "Der App-Plan",
     "Das Missverständnis",
 ]
+LOCALIZED_EPISODE_LABELS = {
+    "de": "Folge",
+    "en": "Episode",
+    "fr": "Episode",
+    "es": "Episodio",
+    "it": "Episodio",
+    "pt": "Episodio",
+    "nl": "Aflevering",
+    "tr": "Bolum",
+    "pl": "Odcinek",
+}
+LOCALIZED_TITLE_WORDS = {
+    "de": {"the": "Das", "secret": "Geheimnis", "case": "Sache", "chaos": "Chaos", "challenge": "Challenge", "problem": "Problem", "of": "um"},
+    "en": {"the": "The", "secret": "Secret", "case": "Thing", "chaos": "Chaos", "challenge": "Challenge", "problem": "Problem", "of": "of"},
+    "fr": {"the": "Le", "secret": "Secret", "case": "Affaire", "chaos": "Chaos", "challenge": "Defi", "problem": "Probleme", "of": "de"},
+    "es": {"the": "El", "secret": "Secreto", "case": "Asunto", "chaos": "Caos", "challenge": "Reto", "problem": "Problema", "of": "de"},
+    "it": {"the": "Il", "secret": "Segreto", "case": "Caso", "chaos": "Caos", "challenge": "Sfida", "problem": "Problema", "of": "di"},
+    "pt": {"the": "O", "secret": "Segredo", "case": "Caso", "chaos": "Caos", "challenge": "Desafio", "problem": "Problema", "of": "de"},
+    "nl": {"the": "Het", "secret": "Geheim", "case": "Verhaal", "chaos": "Chaos", "challenge": "Challenge", "problem": "Probleem", "of": "rond"},
+    "tr": {"the": "", "secret": "Sir", "case": "Mesele", "chaos": "Kaos", "challenge": "Meydan Okuma", "problem": "Sorun", "of": ""},
+    "pl": {"the": "", "secret": "Tajemnica", "case": "Sprawa", "chaos": "Chaos", "challenge": "Wyzwanie", "problem": "Problem", "of": ""},
+}
+LOCALIZED_GENERIC_TITLE_FALLBACKS = {
+    "en": ["The Big Plan", "The Secret Project", "The Double Mix-Up", "Total Chaos", "The Wrong Trick"],
+    "fr": ["Le Grand Plan", "Le Projet Secret", "Le Double Malentendu", "Le Chaos Total", "Le Mauvais Tour"],
+    "es": ["El Gran Plan", "El Proyecto Secreto", "La Doble Confusion", "El Caos Total", "El Truco Equivocado"],
+    "it": ["Il Grande Piano", "Il Progetto Segreto", "Il Doppio Malinteso", "Il Caos Totale", "Il Trucco Sbagliato"],
+    "pt": ["O Grande Plano", "O Projeto Secreto", "A Dupla Confusao", "O Caos Total", "O Truque Errado"],
+    "nl": ["Het Grote Plan", "Het Geheime Project", "De Dubbele Verwarring", "Totale Chaos", "De Verkeerde Truc"],
+    "tr": ["Buyuk Plan", "Gizli Proje", "Iki Kat Karisiklik", "Tam Kaos", "Yanlis Numara"],
+    "pl": ["Wielki Plan", "Tajny Projekt", "Podwojne Zamieszanie", "Totalny Chaos", "Zly Trik"],
+}
+LOCALIZED_DIALOGUE_LABELS = {
+    "de": "Dialog",
+    "en": "Dialogue",
+    "fr": "Dialogue",
+    "es": "Dialogo",
+    "it": "Dialogo",
+    "pt": "Dialogo",
+    "nl": "Dialoog",
+    "tr": "Diyalog",
+    "pl": "Dialog",
+}
+LOCALIZED_BEAT_LABELS = {
+    "de": {
+        "Cold Open": "Cold Open",
+        "Plan": "Plan",
+        "Komplikation": "Komplikation",
+        "Verwechslung": "Verwechslung",
+        "Wendepunkt": "Wendepunkt",
+        "Auflösung": "Auflösung",
+    },
+    "en": {
+        "Cold Open": "Cold Open",
+        "Plan": "Plan",
+        "Komplikation": "Complication",
+        "Verwechslung": "Mix-up",
+        "Wendepunkt": "Turning Point",
+        "Auflösung": "Resolution",
+    },
+    "fr": {
+        "Cold Open": "Ouverture",
+        "Plan": "Plan",
+        "Komplikation": "Complication",
+        "Verwechslung": "Malentendu",
+        "Wendepunkt": "Tournant",
+        "Auflösung": "Resolution",
+    },
+    "es": {
+        "Cold Open": "Apertura",
+        "Plan": "Plan",
+        "Komplikation": "Complicacion",
+        "Verwechslung": "Confusion",
+        "Wendepunkt": "Giro",
+        "Auflösung": "Resolucion",
+    },
+}
 TITLE_PHRASE_PATTERN = re.compile(
     r"\b(?P<article>Der|Die|Das)\s+(?P<noun>[A-ZÄÖÜ][A-Za-zÄÖÜäöüß-]{3,})\b"
 )
@@ -174,11 +251,31 @@ def fallback_focus_characters(count: int = 2) -> list[str]:
     return GENERIC_FOCUS_CHARACTERS[: max(2, min(count, len(GENERIC_FOCUS_CHARACTERS)))]
 
 
-def humanize_keyword(keyword: str) -> str:
+def language_family(language: str) -> str:
+    normalized = normalize_language_code(language)
+    return normalized.split("-", 1)[0] if normalized else ""
+
+
+def localized_title_words(language: str) -> dict[str, str]:
+    family = language_family(language)
+    return LOCALIZED_TITLE_WORDS.get(family, LOCALIZED_TITLE_WORDS["en"])
+
+
+def localized_beat_label(beat: str, language: str) -> str:
+    family = language_family(language)
+    labels = LOCALIZED_BEAT_LABELS.get(family) or LOCALIZED_BEAT_LABELS.get("en", {})
+    return labels.get(beat, beat)
+
+
+def localized_dialogue_label(language: str) -> str:
+    return LOCALIZED_DIALOGUE_LABELS.get(language_family(language), LOCALIZED_DIALOGUE_LABELS["en"])
+
+
+def humanize_keyword(keyword: str, language: str = "") -> str:
     cleaned = coalesce_text(keyword).replace("_", " ").replace("-", " ")
     tokens = [token for token in cleaned.split() if token]
     if not tokens:
-        return "Geheimnis"
+        return localized_title_words(language)["secret"]
     return " ".join(token.capitalize() for token in tokens[:3])
 
 
@@ -208,8 +305,9 @@ def clean_generation_keywords(keywords: object, limit: int = 20) -> list[str]:
     return cleaned
 
 
-def format_episode_number(episode_index: int) -> str:
-    return f"Folge {max(1, int(episode_index)):02d}"
+def format_episode_number(episode_index: int, language: str = "") -> str:
+    prefix = LOCALIZED_EPISODE_LABELS.get(language_family(language), "Episode")
+    return f"{prefix} {max(1, int(episode_index)):02d}"
 
 
 def build_episode_title(
@@ -218,6 +316,7 @@ def build_episode_title(
     rng: random.Random,
     episode_index: int,
     model: dict | None = None,
+    language: str = "",
 ) -> str:
     def focus_name_tokens() -> set[str]:
         tokens: set[str] = set()
@@ -327,7 +426,7 @@ def build_episode_title(
     for keyword in keywords:
         if not title_keyword_allowed_local(keyword, blocked_tokens):
             continue
-        humanized = humanize_keyword(keyword)
+        humanized = humanize_keyword(keyword, language)
         normalized = humanized.lower()
         if normalized in seen_keywords:
             continue
@@ -335,8 +434,11 @@ def build_episode_title(
         usable_keywords.append(humanized)
 
     title_seed = episode_index + len(focus_characters) + len(usable_keywords)
+    family = language_family(language)
+    words = localized_title_words(language)
     if not usable_keywords:
-        return GENERIC_TITLE_FALLBACKS[title_seed % len(GENERIC_TITLE_FALLBACKS)]
+        fallbacks = GENERIC_TITLE_FALLBACKS if family == "de" else LOCALIZED_GENERIC_TITLE_FALLBACKS.get(family, LOCALIZED_GENERIC_TITLE_FALLBACKS["en"])
+        return fallbacks[title_seed % len(fallbacks)]
 
     main_keyword = usable_keywords[0]
     secondary_keyword = usable_keywords[1] if len(usable_keywords) > 1 else ""
@@ -347,10 +449,36 @@ def build_episode_title(
         best_anchor = anchor_candidates[0][0]
         if " " in best_anchor:
             return best_anchor
-        return f"Das Geheimnis um {best_anchor}"
+        if family == "de":
+            return f"Das Geheimnis um {best_anchor}"
+        title_prefix = f"{words['the']} " if words.get("the") else ""
+        of_word = f" {words['of']} " if words.get("of") else " "
+        return f"{title_prefix}{words['secret']}{of_word}{best_anchor}".strip()
 
     candidate_titles: list[str] = []
-    if " " in main_keyword:
+    if family != "de":
+        title_prefix = f"{words['the']} " if words.get("the") else ""
+        of_word = f" {words['of']} " if words.get("of") else " "
+        if " " in main_keyword:
+            candidate_titles.extend(
+                [
+                    f"{title_prefix}{words['case']}{of_word}{main_keyword}".strip(),
+                    f"{title_prefix}{words['secret']}{of_word}{main_keyword}".strip(),
+                    f"{title_prefix}{words['chaos']}{of_word}{main_keyword}".strip(),
+                ]
+            )
+        else:
+            candidate_titles.extend(
+                [
+                    f"{title_prefix}{main_compound} {words['secret']}".strip(),
+                    f"{title_prefix}{main_compound} {words['problem']}".strip(),
+                    f"{title_prefix}{words['case']}{of_word}{main_keyword}".strip(),
+                    f"{title_prefix}{main_compound} {words['challenge']}".strip(),
+                ]
+            )
+        if secondary_keyword:
+            candidate_titles.append(f"{title_prefix}{main_compound} {humanize_keyword(secondary_keyword, language).replace(' ', '-')} {words['problem']}".strip())
+    elif " " in main_keyword:
         candidate_titles.extend(
             [
                 f"Die Sache mit {main_keyword}",
@@ -368,9 +496,9 @@ def build_episode_title(
             ]
         )
 
-    if secondary_keyword:
+    if family == "de" and secondary_keyword:
         if " " not in main_keyword and " " not in secondary_keyword:
-            candidate_titles.append(f"Das {main_compound}-{humanize_keyword(secondary_keyword).replace(' ', '-')}-Problem")
+            candidate_titles.append(f"Das {main_compound}-{humanize_keyword(secondary_keyword, language).replace(' ', '-')}-Problem")
         else:
             candidate_titles.append(f"Das Geheimnis um {main_keyword}")
 
@@ -670,6 +798,8 @@ def build_series_model(dataset_files: list, cfg: dict, char_map: dict) -> dict:
     average_scene_duration = sum(scene_durations) / max(1, len(scene_durations))
     average_segment_duration = sum(segment_durations) / max(1, len(segment_durations))
 
+    generation_cfg = cfg.get("generation", {}) if isinstance(cfg.get("generation", {}), dict) else {}
+    configured_language = normalize_language_code(generation_cfg.get("language", ""))
     return {
         "trained_at": time.strftime("%Y-%m-%d %H:%M:%S"),
         "dataset_files": [str(path) for path in dataset_files],
@@ -681,7 +811,7 @@ def build_series_model(dataset_files: list, cfg: dict, char_map: dict) -> dict:
         "speakers": dict(speaker_counter),
         "keywords": top_keywords,
         "language_counts": dict(language_counter),
-        "dominant_language": dominant_language(dict(language_counter), "de"),
+        "dominant_language": dominant_language(dict(language_counter), configured_language),
         "speaker_samples": {speaker: samples[:20] for speaker, samples in speaker_samples.items()},
         "speaker_line_library": {speaker: rows[:160] for speaker, rows in speaker_line_library.items()},
         "character_reference_library": character_reference_library,
@@ -786,93 +916,138 @@ def beat_dialogue_templates(
     speaker_b: str,
     keyword: str,
     callback: str,
-    language: str = "de",
+    language: str = "",
 ) -> list[str]:
-    topic = humanize_keyword(keyword)
-    normalized_language = normalize_language_code(language)
-    callback_line = callback or (
-        f"{speaker_a}: Wir halten uns diesmal wirklich an den Plan."
-        if normalized_language.startswith("de")
-        else f"{speaker_a}: This time we are really sticking to the plan."
-    )
-    if normalized_language.startswith("de"):
-        templates = {
+    topic = humanize_keyword(keyword, language)
+    family = language_family(language)
+    multilingual_templates = {
+        "de": {
+            "callback": f"{speaker_a}: Wir halten uns diesmal wirklich an den Plan.",
             "Cold Open": [
                 f"{speaker_a}: Die Sache mit {topic} sollte heute eigentlich ganz leicht werden.",
                 f"{speaker_b}: Genau deshalb fühlt es sich jetzt schon nach Ärger an.",
                 f"{speaker_a}: Wenn wir sofort improvisieren, endet das wieder im Chaos.",
-                callback_line,
             ],
             "Plan": [
                 f"{speaker_a}: Wir brauchen einen klaren Plan, bevor {topic} alles durcheinanderbringt.",
                 f"{speaker_b}: Dann teilen wir das Problem auf und prüfen jeden Schritt.",
                 f"{speaker_a}: Einverstanden, aber diesmal ohne spontane Abkürzungen.",
-                callback_line,
             ],
             "Komplikation": [
                 f"{speaker_b}: Jetzt wird {topic} größer, obwohl es eben noch harmlos aussah.",
                 f"{speaker_a}: Dann hat irgendwo jemand einen wichtigen Schritt übersprungen.",
                 f"{speaker_b}: Und natürlich merken wir das erst mitten im Stress.",
-                callback_line,
             ],
             "Verwechslung": [
                 f"{speaker_a}: Moment, wir reden über zwei völlig verschiedene Versionen von {topic}.",
                 f"{speaker_b}: Das erklärt, warum wir beide überzeugt waren, recht zu haben.",
                 f"{speaker_a}: Dann sortieren wir zuerst die Fakten und streiten danach weiter.",
-                callback_line,
             ],
             "Wendepunkt": [
                 f"{speaker_b}: Ich glaube, ich sehe endlich, warum {topic} die ganze Zeit blockiert war.",
                 f"{speaker_a}: Bitte sag mir, dass die Lösung nicht noch mehr Improvisation braucht.",
                 f"{speaker_b}: Nein, nur einen sauberen Schritt zurück und einen besseren Aufbau.",
-                callback_line,
             ],
             "Auflösung": [
                 f"{speaker_a}: Siehst du, mit etwas Ruhe funktioniert {topic} am Ende doch.",
                 f"{speaker_b}: Und wir haben sogar noch Zeit, das Ergebnis ordentlich zu zeigen.",
                 f"{speaker_a}: Diese Reihenfolge merken wir uns für das nächste Chaos.",
-                callback_line,
             ],
-        }
-        return templates.get(beat, templates["Plan"])
-    templates = {
-        "Cold Open": [
-            f"{speaker_a}: {topic} was supposed to be the easiest task today.",
-            f"{speaker_b}: Which is exactly why it already feels like trouble.",
-            f"{speaker_a}: If we start improvising right away, this turns into complete chaos again.",
-            callback_line,
-        ],
-        "Plan": [
-            f"{speaker_a}: We need a clear plan before {topic} throws us off balance.",
-            f"{speaker_b}: Then we break the problem into small steps and test each one.",
-            f"{speaker_a}: Fine, but this time without any spontaneous shortcuts.",
-            callback_line,
-        ],
-        "Komplikation": [
-            f"{speaker_b}: Now {topic} is becoming bigger even though it looked simple a moment ago.",
-            f"{speaker_a}: Then someone must have skipped a crucial step somewhere.",
-            f"{speaker_b}: And of course we only notice that right in the middle of the stress.",
-            callback_line,
-        ],
-        "Verwechslung": [
-            f"{speaker_a}: Wait, we are talking about two completely different versions of {topic}.",
-            f"{speaker_b}: That explains why both of us were convinced we were right.",
-            f"{speaker_a}: Then we sort the facts first and continue arguing later.",
-            callback_line,
-        ],
-        "Wendepunkt": [
-            f"{speaker_b}: I think I finally see why {topic} was blocked the whole time.",
-            f"{speaker_a}: Please tell me the solution does not require even more improvisation.",
-            f"{speaker_b}: No, just one clean step back and a better setup.",
-            callback_line,
-        ],
-        "Auflösung": [
-            f"{speaker_a}: See, with a little calm {topic} suddenly works after all.",
-            f"{speaker_b}: And we still have enough time to present the result properly.",
-            f"{speaker_a}: Let's remember this sequence for the next round of chaos.",
-            callback_line,
-        ],
+        },
+        "en": {
+            "callback": f"{speaker_a}: This time we are really sticking to the plan.",
+            "Cold Open": [
+                f"{speaker_a}: {topic} was supposed to be the easiest task today.",
+                f"{speaker_b}: Which is exactly why it already feels like trouble.",
+                f"{speaker_a}: If we start improvising right away, this turns into complete chaos again.",
+            ],
+            "Plan": [
+                f"{speaker_a}: We need a clear plan before {topic} throws us off balance.",
+                f"{speaker_b}: Then we break the problem into small steps and test each one.",
+                f"{speaker_a}: Fine, but this time without any spontaneous shortcuts.",
+            ],
+            "Komplikation": [
+                f"{speaker_b}: Now {topic} is becoming bigger even though it looked simple a moment ago.",
+                f"{speaker_a}: Then someone must have skipped a crucial step somewhere.",
+                f"{speaker_b}: And of course we only notice that right in the middle of the stress.",
+            ],
+            "Verwechslung": [
+                f"{speaker_a}: Wait, we are talking about two completely different versions of {topic}.",
+                f"{speaker_b}: That explains why both of us were convinced we were right.",
+                f"{speaker_a}: Then we sort the facts first and continue arguing later.",
+            ],
+            "Wendepunkt": [
+                f"{speaker_b}: I think I finally see why {topic} was blocked the whole time.",
+                f"{speaker_a}: Please tell me the solution does not require even more improvisation.",
+                f"{speaker_b}: No, just one clean step back and a better setup.",
+            ],
+            "Auflösung": [
+                f"{speaker_a}: See, with a little calm {topic} suddenly works after all.",
+                f"{speaker_b}: And we still have enough time to present the result properly.",
+                f"{speaker_a}: Let's remember this sequence for the next round of chaos.",
+            ],
+        },
+        "fr": {
+            "callback": f"{speaker_a}: Cette fois, on suit vraiment le plan.",
+            "Plan": [
+                f"{speaker_a}: Il nous faut un plan clair avant que {topic} complique tout.",
+                f"{speaker_b}: Alors on se calme et on vérifie chaque étape.",
+                f"{speaker_a}: D'accord, mais sans raccourci improvisé cette fois.",
+            ],
+        },
+        "es": {
+            "callback": f"{speaker_a}: Esta vez vamos a seguir el plan de verdad.",
+            "Plan": [
+                f"{speaker_a}: Necesitamos un plan claro antes de que {topic} lo complique todo.",
+                f"{speaker_b}: Entonces dividimos el problema y revisamos cada paso.",
+                f"{speaker_a}: De acuerdo, pero sin atajos improvisados esta vez.",
+            ],
+        },
+        "it": {
+            "callback": f"{speaker_a}: Questa volta seguiamo davvero il piano.",
+            "Plan": [
+                f"{speaker_a}: Ci serve un piano chiaro prima che {topic} complichi tutto.",
+                f"{speaker_b}: Allora controlliamo ogni passaggio con calma.",
+                f"{speaker_a}: Va bene, ma niente scorciatoie improvvisate.",
+            ],
+        },
+        "pt": {
+            "callback": f"{speaker_a}: Desta vez vamos seguir mesmo o plano.",
+            "Plan": [
+                f"{speaker_a}: Precisamos de um plano claro antes que {topic} complique tudo.",
+                f"{speaker_b}: Então dividimos o problema e conferimos cada passo.",
+                f"{speaker_a}: Certo, mas sem atalhos improvisados desta vez.",
+            ],
+        },
+        "nl": {
+            "callback": f"{speaker_a}: Deze keer houden we ons echt aan het plan.",
+            "Plan": [
+                f"{speaker_a}: We hebben een duidelijk plan nodig voordat {topic} alles in de war schopt.",
+                f"{speaker_b}: Dan delen we het probleem op en controleren we elke stap.",
+                f"{speaker_a}: Goed, maar deze keer zonder spontane omwegen.",
+            ],
+        },
+        "tr": {
+            "callback": f"{speaker_a}: Bu kez gerçekten plana bağlı kalıyoruz.",
+            "Plan": [
+                f"{speaker_a}: {topic} her şeyi karıştırmadan önce net bir plana ihtiyacımız var.",
+                f"{speaker_b}: O zaman sorunu parçalara ayırıp her adımı kontrol ederiz.",
+                f"{speaker_a}: Tamam, ama bu kez doğaçlama kestirme yol yok.",
+            ],
+        },
+        "pl": {
+            "callback": f"{speaker_a}: Tym razem naprawdę trzymamy się planu.",
+            "Plan": [
+                f"{speaker_a}: Potrzebujemy jasnego planu, zanim {topic} wszystko skomplikuje.",
+                f"{speaker_b}: Więc dzielimy problem na kroki i sprawdzamy każdy z nich.",
+                f"{speaker_a}: Dobrze, ale tym razem bez improwizowanych skrótów.",
+            ],
+        },
     }
+    templates = multilingual_templates.get(family, multilingual_templates["en"])
+    callback_line = callback or templates["callback"]
+    lines = templates.get(beat) or templates.get("Plan") or multilingual_templates["en"]["Plan"]
+    return [*lines, callback_line]
     return templates.get(beat, templates["Plan"])
 
 
@@ -884,7 +1059,7 @@ def build_dialogue(
     cfg: dict,
     keyword: str,
     target_length: int | None = None,
-    language: str = "de",
+    language: str = "",
 ) -> tuple[list[str], list[dict]]:
     speaker_samples = model.get("speaker_samples", {})
     speaker_line_library = model.get("speaker_line_library", {})
@@ -916,7 +1091,7 @@ def build_dialogue(
                 break
             if ":" not in line:
                 enriched_lines.append(line)
-                line_sources.append({})
+                line_sources.append({"type": "generated_template", "language": normalize_language_code(language)})
                 continue
             speaker, line_text = line.split(":", 1)
             speaker = speaker.strip()
@@ -947,6 +1122,7 @@ def build_dialogue(
                         "end": float(original_entry.get("end", 0.0) or 0.0),
                         "audio_file": original_entry.get("audio_file", ""),
                         "video_file": original_entry.get("video_file", ""),
+                        "language": normalize_language_code(original_entry.get("language", "") or language),
                     }
                 )
                 continue
@@ -954,10 +1130,11 @@ def build_dialogue(
             if sample_line:
                 used_samples.add(sample_line.lower())
                 enriched_lines.append(f"{speaker}: {sample_line}")
+                line_sources.append({"type": "speaker_sample", "language": normalize_language_code(language)})
             else:
                 suffix = f" ({line_rounds})" if line_rounds > 1 and line_text and line_text[-1] not in ".!?" else ""
                 enriched_lines.append(f"{speaker}: {line_text}{suffix}" if suffix else line)
-            line_sources.append({})
+                line_sources.append({"type": "generated_template", "language": normalize_language_code(language)})
         if line_rounds >= 12:
             break
     min_lines = int(cfg["generation"].get("min_dialogue_lines_per_scene", 4))
@@ -1078,14 +1255,22 @@ def select_background_characters(model: dict, count: int = 1) -> list[str]:
     return deduped[:count]
 
 
-def scene_title(beat: str, keyword: str) -> str:
-    return f"{beat}: {keyword.capitalize()}"
+def scene_title(beat: str, keyword: str, language: str = "") -> str:
+    return f"{localized_beat_label(beat, language)}: {keyword.capitalize()}"
 
 
-def summary_line(characters: list[str], keyword: str, beat: str) -> str:
+def summary_line(characters: list[str], keyword: str, beat: str, language: str = "") -> str:
     joined = ", ".join(characters)
-    verb = "treibt" if len(characters) == 1 else "treiben"
-    return f"{joined} {verb} das Thema '{keyword}' voran und geraten in eine typische {beat.lower()}-Situation."
+    family = language_family(language)
+    beat_label = localized_beat_label(beat, language).lower()
+    if family == "de":
+        verb = "treibt" if len(characters) == 1 else "treiben"
+        return f"{joined} {verb} das Thema '{keyword}' voran und geraten in eine typische {beat_label}-Situation."
+    if family == "fr":
+        return f"{joined} font avancer le sujet '{keyword}' et entrent dans une situation de {beat_label} typique."
+    if family == "es":
+        return f"{joined} impulsan el tema '{keyword}' y entran en una situacion tipica de {beat_label}."
+    return f"{joined} push the theme '{keyword}' forward and land in a typical {beat_label} situation."
 
 
 def choose_camera_plan(beat: str, scene_index: int, rng: random.Random) -> dict:
@@ -1200,7 +1385,7 @@ def build_scene_generation_plan(
     continuity_memory: dict | None = None,
     style_constraints: dict | None = None,
     quality_mode: str = "series_consistency",
-    series_language: str = "de",
+    series_language: str = "",
     style_descriptor: str = "",
 ) -> dict:
     continuity_memory = continuity_memory if isinstance(continuity_memory, dict) else load_character_continuity_memory(PROJECT_ROOT)
@@ -1234,7 +1419,8 @@ def build_scene_generation_plan(
     style_negative = ", ".join(style_profile.get("negative", [])[:5])
     style_guidance = style_profile.get("guidance", {}) if isinstance(style_profile.get("guidance", {}), dict) else {}
     style_descriptor = coalesce_text(style_descriptor) or "source-series faithful TV episode frame"
-    series_language = normalize_language_code(series_language) or "de"
+    series_language = normalize_language_code(series_language)
+    prompt_language = series_language or "auto-detected source language"
 
     positive_prompt = (
         f"{style_descriptor}, match original episode lighting, lensing, set design and color palette, "
@@ -1242,7 +1428,7 @@ def build_scene_generation_plan(
         f"{camera_plan['camera_move']}, {camera_plan['lens_hint']}, "
         f"characters {', '.join(scene_characters[:2])}, keyword {keyword}, beat {beat}, "
         f"{camera_plan['pose_hint']}, keep identity, wardrobe and environment continuity, "
-        f"dialogue language {series_language}, 16:9 frame, clean readable TV staging"
+        f"dialogue language {prompt_language}, 16:9 frame, clean readable TV staging"
     )
     if style_positive:
         positive_prompt += f", style cues: {style_positive}"
@@ -1289,7 +1475,7 @@ def build_scene_generation_plan(
         "character_continuity": character_continuity,
         "quality_targets": {
             "quality_mode": quality_mode,
-            "series_language": series_language,
+            "series_language": series_language or "auto",
             "source_series_style_locked": True,
             "minimum_reference_slots": max(1, min(3, len(reference_slots))),
             "prefer_previous_scene_reference": bool(previous_scene_id),
@@ -1317,9 +1503,8 @@ def generate_episode_package(model: dict, cfg: dict, episode_index: int = 1) -> 
     continuity_memory = load_character_continuity_memory(PROJECT_ROOT)
     style_constraints = derive_prompt_constraints_from_bible(PROJECT_ROOT, {})
     quality_mode = coalesce_text(generation_cfg.get("quality_mode", "")) or "series_consistency"
-    series_language = dominant_language(model.get("language_counts", {}), model.get("dominant_language", "") or generation_cfg.get("language", "de"))
-    if series_language in {"", "auto", "detect"}:
-        series_language = "de"
+    series_language = dominant_language(model.get("language_counts", {}), model.get("dominant_language", "") or generation_cfg.get("language", ""))
+    package_language = series_language or "auto"
     style_descriptor = (
         coalesce_text(generation_cfg.get("style_descriptor", ""))
         or coalesce_text(model.get("style_descriptor", ""))
@@ -1331,8 +1516,8 @@ def generate_episode_package(model: dict, cfg: dict, episode_index: int = 1) -> 
     if len(beats) > 1:
         beat_offset = episode_index % len(beats)
         beats = beats[beat_offset:] + beats[:beat_offset]
-    episode_title = build_episode_title(focus_characters, keywords, rng, episode_index, model=model)
-    episode_label = format_episode_number(episode_index)
+    episode_title = build_episode_title(focus_characters, keywords, rng, episode_index, model=model, language=series_language)
+    episode_label = format_episode_number(episode_index, series_language)
     display_title = f"{episode_label}: {episode_title}"
 
     scenes = []
@@ -1367,7 +1552,7 @@ def generate_episode_package(model: dict, cfg: dict, episode_index: int = 1) -> 
             background_name = background_characters[0]
             if background_name not in scene_characters:
                 scene_characters.append(background_name)
-        summary = summary_line(scene_characters, keyword, beat)
+        summary = summary_line(scene_characters, keyword, beat, series_language)
         dialogue, dialogue_sources = build_dialogue(
             beat,
             scene_characters,
@@ -1398,17 +1583,22 @@ def generate_episode_package(model: dict, cfg: dict, episode_index: int = 1) -> 
         scenes.append(
             {
                 "scene_id": scene_id,
-                "title": scene_title(beat, keyword),
+                "title": scene_title(beat, keyword, series_language),
                 "beat": beat,
+                "language": package_language,
                 "summary": summary,
                 "characters": scene_characters,
                 "location": f"Set {((scene_index % 3) + 1)}",
-                "mood": "energetisch" if scene_index < scene_count - 1 else "auflösend",
+                "mood": ("energetisch" if scene_index < scene_count - 1 else "auflösend") if language_family(series_language) == "de" else ("energetic" if scene_index < scene_count - 1 else "resolved"),
                 "dialogue_lines": dialogue,
                 "dialogue_sources": dialogue_sources,
                 "prompt": (
-                    f"{beat} mit {', '.join(scene_characters)}. Fokus auf {keyword}, schnelle Pointen "
-                    f"und klaren Konfliktbogen."
+                    (
+                        f"{beat} mit {', '.join(scene_characters)}. Fokus auf {keyword}, schnelle Pointen "
+                        f"und klaren Konfliktbogen."
+                    )
+                    if language_family(series_language) == "de"
+                    else f"{localized_beat_label(beat, series_language)} with {', '.join(scene_characters)}. Focus on {keyword}, clear conflict and source-language dialogue."
                 ),
                 "generation_plan": generation_plan,
                 "estimated_runtime_seconds": round(len(dialogue) * float(model.get("average_segment_duration_seconds", 2.7) or 2.7), 2),
@@ -1423,7 +1613,7 @@ def generate_episode_package(model: dict, cfg: dict, episode_index: int = 1) -> 
         scene_beats.append(beat)
         markdown_lines.extend(
             [
-                f"### {scene_id} - {scene_title(beat, keyword)}",
+                f"### {scene_id} - {scene_title(beat, keyword, series_language)}",
                 "",
                 summary,
                 "",
@@ -1435,7 +1625,7 @@ def generate_episode_package(model: dict, cfg: dict, episode_index: int = 1) -> 
                     for slot in generation_plan["reference_slots"]
                 ],
                 "",
-                "Dialog:",
+                f"{localized_dialogue_label(series_language)}:",
                 "",
                 *[f"- {line}" for line in dialogue],
                 "",
@@ -1453,7 +1643,7 @@ def generate_episode_package(model: dict, cfg: dict, episode_index: int = 1) -> 
         "display_title": display_title,
         "generation_mode": "synthetic_preview",
         "quality_mode": quality_mode,
-        "series_language": series_language,
+        "series_language": package_language,
         "style_descriptor": style_descriptor,
         "storyboard_plan_mode": "multi_reference_storyboard",
         "target_runtime_seconds": target_runtime_seconds,

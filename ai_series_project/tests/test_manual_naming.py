@@ -1848,6 +1848,7 @@ class ManualNamingTests(unittest.TestCase):
             ],
             "speakers": {"Babe Carano": 12, "Kenzie Bell": 11},
             "keywords": ["baumhaus", "spiel", "chaos"],
+            "language_counts": {"de": 8},
             "dataset_files": ["demo.json"],
             "scene_count": 10,
             "speaker_samples": {},
@@ -1984,6 +1985,50 @@ class ManualNamingTests(unittest.TestCase):
         self.assertIn("wir", first_dialogue.lower())
         self.assertNotIn("supposed to be", first_dialogue)
 
+    def test_episode_generation_does_not_force_auto_language_to_german(self) -> None:
+        model = {
+            "characters": [
+                {"name": "Alex", "scene_count": 10, "line_count": 20, "priority": True},
+                {"name": "Sam", "scene_count": 9, "line_count": 18, "priority": True},
+            ],
+            "speakers": {"Alex": 12, "Sam": 11},
+            "keywords": ["plan", "secret"],
+            "dataset_files": ["demo.json"],
+            "scene_count": 10,
+            "speaker_samples": {},
+        }
+        cfg = {"generation": {"seed": 42, "default_scene_count": 2, "language": "auto", "prefer_original_dialogue_remix": False}}
+
+        package, markdown = STEP07.generate_episode_package(model, cfg, episode_index=6)
+
+        self.assertEqual(package["series_language"], "auto")
+        self.assertEqual(package["episode_label"], "Episode 06")
+        self.assertIn("# Episode 06:", markdown)
+        self.assertIn("auto-detected source language", package["scenes"][0]["generation_plan"]["positive_prompt"])
+
+    def test_episode_generation_uses_detected_spanish_language(self) -> None:
+        model = {
+            "characters": [
+                {"name": "Luna", "scene_count": 10, "line_count": 20, "priority": True},
+                {"name": "Mateo", "scene_count": 9, "line_count": 18, "priority": True},
+            ],
+            "speakers": {"Luna": 12, "Mateo": 11},
+            "keywords": ["plan", "secreto"],
+            "language_counts": {"es": 14},
+            "dataset_files": ["demo.json"],
+            "scene_count": 10,
+            "speaker_samples": {},
+        }
+        cfg = {"generation": {"seed": 42, "default_scene_count": 2, "prefer_original_dialogue_remix": False}}
+
+        package, _markdown = STEP07.generate_episode_package(model, cfg, episode_index=7)
+        first_dialogue = "\n".join(package["scenes"][0]["dialogue_lines"])
+
+        self.assertEqual(package["series_language"], "es")
+        self.assertEqual(package["episode_label"], "Episodio 07")
+        self.assertIn("Necesitamos", first_dialogue)
+        self.assertNotIn("Wir brauchen", first_dialogue)
+
     def test_episode_runtime_matches_source_episode_average(self) -> None:
         model = {
             "source_episode_durations": {
@@ -2005,6 +2050,7 @@ class ManualNamingTests(unittest.TestCase):
             ],
             "speakers": {},
             "keywords": ["spiel", "chaos", "plan", "show"],
+            "language_counts": {"de": 12},
             "dataset_files": ["demo.json"],
             "scene_count": 20,
             "speaker_samples": {},
@@ -2057,6 +2103,7 @@ class ManualNamingTests(unittest.TestCase):
             ],
             "speakers": {},
             "keywords": ["spiel", "chaos"],
+            "language_counts": {"de": 12},
             "dataset_files": ["demo.json"],
             "scene_count": 20,
             "speaker_samples": {},
@@ -2115,6 +2162,16 @@ class ManualNamingTests(unittest.TestCase):
         selected = STEP10.resolve_system_voice_id("en-zira", voices, require_german=True)
 
         self.assertEqual(selected, "de-hedda")
+
+    def test_resolve_system_voice_id_does_not_force_german_without_language(self) -> None:
+        voices = [
+            {"id": "en-zira", "name": "Zira", "languages": ["en-US"], "is_german": False},
+            {"id": "de-hedda", "name": "Hedda", "languages": ["de-DE"], "is_german": True},
+        ]
+
+        selected = STEP10.resolve_system_voice_id("en-zira", voices)
+
+        self.assertEqual(selected, "en-zira")
 
     def test_build_dialogue_reuses_speaker_samples_when_available(self) -> None:
         model = {
@@ -4122,6 +4179,53 @@ class ManualNamingTests(unittest.TestCase):
         self.assertEqual(payload["detected_language"], "de")
         self.assertEqual(payload["segments"][0]["language"], "de")
 
+    def test_transcribe_scene_uses_non_german_text_language_when_whisper_detection_is_wrong(self) -> None:
+        class DummyModel:
+            def __init__(self) -> None:
+                self.kwargs = {}
+
+            def transcribe(self, _path, **kwargs):
+                self.kwargs = kwargs
+                return {
+                    "language": "en",
+                    "segments": [
+                        {
+                            "start": 0.0,
+                            "end": 2.0,
+                            "text": "Ahora tenemos un plan y no es tan simple.",
+                        },
+                        {
+                            "start": 2.2,
+                            "end": 4.0,
+                            "text": "Pero vamos a revisar cada paso con cuidado.",
+                        },
+                    ],
+                }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            wav_path = Path(tmp) / "scene_0001.wav"
+            with wave.open(str(wav_path), "wb") as handle:
+                handle.setnchannels(1)
+                handle.setsampwidth(2)
+                handle.setframerate(24000)
+                handle.writeframes(b"\x00\x00" * 24000)
+
+            model = DummyModel()
+            cfg = {
+                "transcription": {
+                    "language": "auto",
+                    "task": "transcribe",
+                    "merge_gap_seconds": 0.35,
+                    "min_segment_seconds": 0.6,
+                }
+            }
+
+            payload = STEP04.transcribe_scene(model, wav_path, cfg, use_fp16=False)
+
+        self.assertNotIn("language", model.kwargs)
+        self.assertEqual(payload["detected_language"], "es")
+        self.assertEqual(payload["segments"][0]["language"], "es")
+
     def test_stale_shared_transcription_run_requires_in_progress_without_cache_or_leases(self) -> None:
         self.assertTrue(
             STEP04.stale_shared_transcription_run(
@@ -5410,9 +5514,24 @@ class ManualNamingTests(unittest.TestCase):
             self.assertFalse(STEP10.render_output_ready(empty_path))
             self.assertTrue(STEP10.render_output_ready(full_path))
 
-    def test_render_and_bible_scripts_use_matching_step_metadata_names(self) -> None:
+    def test_generation_render_and_bible_scripts_use_matching_step_metadata_names(self) -> None:
+        generate_source = (SCRIPT_ROOT / "13_generate_episode.py").read_text(encoding="utf-8")
+        storyboard_source = (SCRIPT_ROOT / "14_generate_storyboard_assets.py").read_text(encoding="utf-8")
+        backend_source = (SCRIPT_ROOT / "15_run_storyboard_backend.py").read_text(encoding="utf-8")
         render_source = (SCRIPT_ROOT / "16_render_episode.py").read_text(encoding="utf-8")
         bible_source = (SCRIPT_ROOT / "19_build_series_bible.py").read_text(encoding="utf-8")
+
+        self.assertIn('mark_step_started("13_generate_episode"', generate_source)
+        self.assertIn('script_name="13_generate_episode.py"', generate_source)
+        self.assertNotIn('"12_generate_episode"', generate_source)
+
+        self.assertIn('mark_step_started("14_generate_storyboard_assets"', storyboard_source)
+        self.assertIn('script_name="14_generate_storyboard_assets.py"', storyboard_source)
+        self.assertNotIn('"13_generate_storyboard_assets"', storyboard_source)
+
+        self.assertIn('mark_step_started("15_run_storyboard_backend"', backend_source)
+        self.assertIn('script_name="15_run_storyboard_backend.py"', backend_source)
+        self.assertNotIn('"53_run_storyboard_backend"', backend_source)
 
         self.assertIn('mark_step_started("16_render_episode"', render_source)
         self.assertIn('mark_step_completed(\n            "16_render_episode"', render_source)
@@ -5420,11 +5539,11 @@ class ManualNamingTests(unittest.TestCase):
         self.assertNotIn('mark_step_started("14_render_episode"', render_source)
         self.assertNotIn('mark_step_failed("14_render_episode"', render_source)
 
-        self.assertIn('mark_step_started("15_build_series_bible"', bible_source)
-        self.assertIn('mark_step_completed(\n                "15_build_series_bible"', bible_source)
-        self.assertIn('mark_step_failed("15_build_series_bible"', bible_source)
+        self.assertIn('mark_step_started("19_build_series_bible"', bible_source)
+        self.assertIn('mark_step_completed(\n                "19_build_series_bible"', bible_source)
+        self.assertIn('mark_step_failed("19_build_series_bible"', bible_source)
         self.assertNotIn('mark_step_started("18_build_series_bible"', bible_source)
-        self.assertNotIn('mark_step_failed("17_build_series_bible"', bible_source)
+        self.assertNotIn('mark_step_failed("15_build_series_bible"', bible_source)
 
     def test_check_character_continuity_violations_detects_attribute_change(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

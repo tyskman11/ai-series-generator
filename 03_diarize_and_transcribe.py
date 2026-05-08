@@ -61,7 +61,7 @@ from support_scripts.pipeline_common import (
     write_json,
 )
 
-PROCESS_VERSION = 7
+PROCESS_VERSION = 8
 
 
 def parse_args() -> argparse.Namespace:
@@ -573,6 +573,8 @@ def process_scene(
             segment_wav = Path(cached.get("audio_file") or (audio_root / episode_name / f"{scene_file.stem}_seg_{index:03d}.wav"))
             if not segment_wav.exists():
                 cut_audio_segment(ffmpeg_path, scene_wav, segment_wav, start_sec, end_sec)
+            text = coalesce_text(str(cached.get("text", "")))
+            cached_language = normalize_language_code(cached.get("language", "")) or detect_language_from_text(text)
             rows.append(
                 {
                     "process_version": PROCESS_VERSION,
@@ -582,7 +584,8 @@ def process_scene(
                     "start": round(start_sec, 3),
                     "end": round(end_sec, 3),
                     "audio_file": str(segment_wav),
-                    "text": coalesce_text(str(cached.get("text", ""))),
+                    "text": text,
+                    "language": cached_language,
                     "voice_embedding": compute_voice_embedding(
                         scene_wav,
                         start_sec,

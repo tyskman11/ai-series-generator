@@ -640,6 +640,7 @@ def build_scene_voice_plan(
         return []
     voice_rate = int(render_cfg.get("voice_rate", 175) or 175)
     audio_pad_seconds = float(render_cfg.get("audio_pad_seconds", 0.35) or 0.35)
+    scene_language = normalize_language_code(scene.get("language", "") or scene.get("series_language", ""))
     prepared: list[dict] = []
     for line_index, raw_line in enumerate(dialogue_lines):
         source = scene_dialogue_source(scene, line_index)
@@ -699,6 +700,7 @@ def build_scene_voice_plan(
             clean_text((row["source"] or {}).get("language", ""))
             or retrieval_segment.get("language", "")
             or voice_profile.get("dominant_language", "")
+            or scene_language
         )
         plan.append(
             {
@@ -2159,7 +2161,7 @@ def voice_supports_language(voice: dict, language_code: str) -> bool:
     return any(alias in voice_name for alias in aliases.get(normalized, ()))
 
 
-def resolve_system_voice_id(default_voice_id: str, voices: list[dict], preferred_language: str = "", require_german: bool = True) -> str:
+def resolve_system_voice_id(default_voice_id: str, voices: list[dict], preferred_language: str = "", require_german: bool = False) -> str:
     target_language = normalize_language_code(preferred_language)
     if not target_language and require_german:
         target_language = "de"
@@ -2256,7 +2258,7 @@ def synthesize_voice_lines(temp_root: Path, voice_plan_lines: list[dict], render
                 default_voice_id,
                 voices,
                 preferred_language=preferred_language,
-                require_german=bool(render_cfg.get("prefer_german_voice", True)),
+                require_german=bool(render_cfg.get("prefer_german_voice", False)),
             )
             if voice_id:
                 engine.setProperty("voice", voice_id)
@@ -2345,7 +2347,7 @@ def synthesize_single_voice_line(
             default_voice_id,
             voices,
             preferred_language=effective_language,
-            require_german=bool(render_cfg.get("prefer_german_voice", True)),
+            require_german=bool(render_cfg.get("prefer_german_voice", False)),
         )
         engine.setProperty("rate", int(render_cfg.get("voice_rate", 175) or 175))
         engine.setProperty("volume", max(0.0, min(1.0, float(render_cfg.get("voice_volume", 1.0) or 1.0))))
@@ -3192,7 +3194,7 @@ def main() -> None:
     episode_id = str(shotlist.get("episode_id", shotlist_path.stem))
     scenes = shotlist.get("scenes", []) if isinstance(shotlist.get("scenes", []), list) else []
     if not scenes:
-        info("No scenes found in the shotlist. Run 12_generate_episode.py first.")
+        info("No scenes found in the shotlist. Run 13_generate_episode.py first.")
         return
 
     render_cfg = cfg.get("render", {}) if isinstance(cfg.get("render"), dict) else {}

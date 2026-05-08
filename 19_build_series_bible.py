@@ -133,12 +133,12 @@ def main() -> None:
     cfg = load_config()
     worker_id = shared_worker_id_for_args(args)
     shared_workers = shared_workers_enabled_for_args(cfg, args)
-    mark_step_started("15_build_series_bible", "global")
-    lease_root = distributed_step_runtime_root("15_build_series_bible", "global")
+    mark_step_started("19_build_series_bible", "global")
+    lease_root = distributed_step_runtime_root("19_build_series_bible", "global")
     if shared_workers:
         info(f"Shared NAS workers: enabled ({worker_id})")
     reporter = LiveProgressReporter(
-        script_name="15_build_series_bible.py",
+        script_name="19_build_series_bible.py",
         total=3,
         phase_label="Build Series Bible",
         parent_label="global",
@@ -149,7 +149,7 @@ def main() -> None:
         cfg=cfg,
         worker_id=worker_id,
         enabled=shared_workers,
-        meta={"step": "15_build_series_bible", "scope": "global", "worker_id": worker_id},
+        meta={"step": "19_build_series_bible", "scope": "global", "worker_id": worker_id},
     ) as acquired:
         if not acquired:
             info("The series bible is already being rebuilt by another worker.")
@@ -174,7 +174,7 @@ def main() -> None:
             write_text(bible_markdown_path, bible_markdown)
             reporter.finish(current_label="Series Bible", extra_label=f"Written: {bible_json_path.name} and {bible_markdown_path.name}")
             mark_step_completed(
-                "15_build_series_bible",
+                "19_build_series_bible",
                 "global",
                 {
                     "series_bible_json": str(bible_json_path),
@@ -185,7 +185,7 @@ def main() -> None:
             )
             ok("Series Bible was updated.")
         except Exception as exc:
-            mark_step_failed("15_build_series_bible", str(exc), "global")
+            mark_step_failed("19_build_series_bible", str(exc), "global")
             raise
 
 

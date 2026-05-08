@@ -17,7 +17,8 @@ venv/
 
 data/
 logs/
-tmp/
+tmp/*
+!tmp/.gitkeep
 training/
 characters/
 generation/
