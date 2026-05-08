@@ -1937,6 +1937,35 @@ class ManualNamingTests(unittest.TestCase):
 
         self.assertEqual(target_seconds, 22 * 60)
 
+    def test_generated_episode_scene_runtimes_follow_source_episode_average(self) -> None:
+        model = {
+            "characters": [
+                {"name": "Babe", "scene_count": 20, "line_count": 12, "priority": True},
+                {"name": "Kenzie", "scene_count": 18, "line_count": 10, "priority": True},
+            ],
+            "speakers": {},
+            "keywords": ["spiel", "chaos", "plan", "show"],
+            "dataset_files": ["demo.json"],
+            "scene_count": 20,
+            "speaker_samples": {},
+            "source_episode_durations": {"ep1": 21 * 60, "ep2": 23 * 60},
+            "average_segment_duration_seconds": 2.7,
+        }
+        cfg = {
+            "generation": {
+                "seed": 42,
+                "match_source_episode_runtime": True,
+                "target_episode_minutes_fallback": 22.0,
+                "target_scene_duration_seconds": 42.0,
+            }
+        }
+
+        package, _markdown = STEP07.generate_episode_package(model, cfg, episode_index=9)
+
+        total_scene_runtime = sum(float(scene.get("estimated_runtime_seconds", 0.0) or 0.0) for scene in package["scenes"])
+        self.assertAlmostEqual(total_scene_runtime, float(package["target_runtime_seconds"]), delta=1.0)
+        self.assertGreater(total_scene_runtime, 20 * 60)
+
     def test_generate_step_uses_existing_trained_model(self) -> None:
         model = {
             "characters": [

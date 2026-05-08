@@ -379,8 +379,8 @@ def safe_duration_seconds(scene: dict) -> float:
             0.0,
             (len(dialogue_tokens) / 150.0) * 60.0 + max(0.8, len(dialogue_lines) * 0.35),
         )
-    target_duration = max(duration if duration > 0 else 0.0, dialogue_runtime, 3.8)
-    return max(3.8, min(22.0, target_duration))
+    target_duration = max(duration if duration > 0 else 0.0, dialogue_runtime, 6.0)
+    return max(6.0, min(75.0, target_duration))
 
 
 def render_output_ready(path: Path) -> bool:

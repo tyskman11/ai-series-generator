@@ -47,6 +47,18 @@ class GenerationQualityTests(unittest.TestCase):
 
         self.assertGreater(duration, 8.0)
 
+    def test_safe_duration_seconds_preserves_long_planned_scene_runtime(self) -> None:
+        duration = STEP15.safe_duration_seconds(
+            {
+                "estimated_runtime_seconds": 54.0,
+                "dialogue_lines": [
+                    "Babe: We need to keep this beat long enough for an actual story turn.",
+                ],
+            }
+        )
+
+        self.assertEqual(duration, 54.0)
+
     def test_render_subtitle_preview_srt_keeps_lines_visible_longer(self) -> None:
         srt = STEP15.render_subtitle_preview_srt(
             [

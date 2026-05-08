@@ -903,6 +903,71 @@ def planning_targets(model: dict, cfg: dict, target_runtime_seconds: int) -> tup
     return target_scene_count, per_scene_lines
 
 
+def allocate_scene_runtime_seconds(
+    target_runtime_seconds: int,
+    scene_floor_seconds: list[float],
+    scene_beats: list[str] | None = None,
+) -> list[float]:
+    if not scene_floor_seconds:
+        return []
+    floors = [max(12.0, float(value or 0.0)) for value in scene_floor_seconds]
+    beats = scene_beats or []
+    beat_weight_map = {
+        "Cold Open": 0.92,
+        "Plan": 1.0,
+        "Komplikation": 1.08,
+        "Verwechslung": 1.05,
+        "Wendepunkt": 1.14,
+        "Auflösung": 0.96,
+    }
+    target_total = max(300, int(target_runtime_seconds or 0))
+    floor_total = float(sum(floors))
+
+    def rebalance_allocations(values: list[float], minimums: list[float]) -> list[float]:
+        adjusted = [round(float(value or 0.0), 2) for value in values]
+        mins = [round(float(value or 0.0), 2) for value in minimums]
+        if not adjusted:
+            return adjusted
+        delta = round(float(target_total) - sum(adjusted), 2)
+        if abs(delta) < 0.01:
+            return adjusted
+        if delta > 0:
+            adjusted[-1] = round(adjusted[-1] + delta, 2)
+            return adjusted
+        for index in range(len(adjusted) - 1, -1, -1):
+            removable = round(adjusted[index] - mins[index], 2)
+            if removable <= 0.0:
+                continue
+            step = min(removable, abs(delta))
+            adjusted[index] = round(adjusted[index] - step, 2)
+            delta = round(delta + step, 2)
+            if abs(delta) < 0.01:
+                break
+        if abs(delta) >= 0.01:
+            adjusted[-1] = round(max(mins[-1], adjusted[-1] + delta), 2)
+        return adjusted
+
+    if floor_total <= 0.0:
+        even = max(12.0, float(target_total) / max(1, len(floors)))
+        return [round(even, 2) for _ in floors]
+    if floor_total >= float(target_total):
+        scale = float(target_total) / floor_total
+        scaled = [max(6.0, round(value * scale, 2)) for value in floors]
+        return rebalance_allocations(scaled, [6.0 for _ in scaled])
+
+    remaining = float(target_total) - floor_total
+    weights: list[float] = []
+    for index, floor in enumerate(floors):
+        beat = coalesce_text(beats[index]) if index < len(beats) else ""
+        beat_weight = beat_weight_map.get(beat, 1.0)
+        weights.append(max(1.0, floor * 0.35) + beat_weight * 4.0)
+    weight_total = sum(weights) or float(len(weights))
+    allocations: list[float] = []
+    for floor, weight in zip(floors, weights):
+        allocations.append(round(floor + (remaining * (weight / weight_total)), 2))
+    return rebalance_allocations(allocations, floors)
+
+
 def select_focus_characters(model: dict, rng: random.Random, count: int = 3) -> list[str]:
     prioritized = [row["name"] for row in model.get("characters", []) if useful_character(row["name"]) and bool(row.get("priority", False))]
     candidates = prioritized or [row["name"] for row in model.get("characters", []) if useful_character(row["name"])]
@@ -1189,6 +1254,8 @@ def generate_episode_package(model: dict, cfg: dict, episode_index: int = 1) -> 
     ]
     used_scene_refs: set[str] = set()
     previous_scene_id = ""
+    scene_runtime_floors: list[float] = []
+    scene_beats: list[str] = []
     for scene_index in range(scene_count):
         beat = beats[scene_index % len(beats)]
         keyword = keywords[scene_index % len(keywords)]
@@ -1241,6 +1308,13 @@ def generate_episode_package(model: dict, cfg: dict, episode_index: int = 1) -> 
                 "estimated_runtime_seconds": round(len(dialogue) * float(model.get("average_segment_duration_seconds", 2.7) or 2.7), 2),
             }
         )
+        scene_runtime_floors.append(
+            max(
+                len(dialogue) * float(model.get("average_segment_duration_seconds", 2.7) or 2.7),
+                float(generation_cfg.get("target_scene_duration_seconds", 42.0) or 42.0) * 0.35,
+            )
+        )
+        scene_beats.append(beat)
         markdown_lines.extend(
             [
                 f"### {scene_id} - {scene_title(beat, keyword)}",
@@ -1262,6 +1336,10 @@ def generate_episode_package(model: dict, cfg: dict, episode_index: int = 1) -> 
             ]
         )
         previous_scene_id = scene_id
+
+    allocated_scene_runtimes = allocate_scene_runtime_seconds(target_runtime_seconds, scene_runtime_floors, scene_beats)
+    for scene, runtime_seconds in zip(scenes, allocated_scene_runtimes):
+        scene["estimated_runtime_seconds"] = round(float(runtime_seconds or 0.0), 2)
 
     return {
         "episode_title": episode_title,

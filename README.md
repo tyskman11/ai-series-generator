@@ -37,6 +37,7 @@ The repository root contains the numbered pipeline scripts directly beside `ai_s
 - `08_prepare_foundation_training.py` now backfills missing voice-reference audio from `speaker_transcripts` for older datasets
 - the GitHub repo now treats `ai_series_project/configs/project.template.json` as the tracked base template; the working `project.json` is generated locally
 - quality-first generation is enforced more strictly than before
+- generated episode runtime now follows the average length of the input episodes instead of collapsing toward short dialogue-only timing
 - final output quality is still limited when only the project-local fallback backends are used
 
 ## Project Layout
@@ -210,6 +211,7 @@ The project is configured for quality-first finished-episode generation:
 - render-time dialogue planning now falls back directly to `characters/voice_models/<character>_voice_model.json` when `voice_map` is stale or missing a named speaker entry
 - delegated quality-backend runners now resolve project-local backend scripts from the project root even when scene packages run from nested working directories
 - project-local quality backends now prefer the platform-correct FFmpeg binary from `ai_series_project/runtime/host_runtime/ffmpeg/bin` before falling back to older tool copies
+- render-time scene duration now respects the planned per-scene runtime from episode generation instead of compressing most scenes into a short 8 to 22 second window
 
 Important:
 
@@ -258,6 +260,7 @@ python -m py_compile 00_prepare_runtime.py 21_refresh_after_manual_review.py 56_
 - project-local fallback image/video generation still does not equal strong dedicated TV-quality generation backends
 - project-local lip-sync is still weaker than a full dedicated production lip-sync stack
 - project-local XTTS voice cloning still depends on clean speaker mapping and real reference segments; speakers with zero linked voice data still cannot clone correctly
+- when backend scene-video or scene-audio generation still fails, the render pipeline can only fall back to weaker still-frame or limited-audio modes, so the release gate will stay below TV-quality thresholds
 - if external runners fail repeatedly, the quality gate will keep rejecting the episode even when the render technically finishes
 - shared NAS runs still depend on file-system stability and can be slower for large backend/model downloads
 - large Hugging Face model downloads are more reliable with authentication via `HF_TOKEN`
