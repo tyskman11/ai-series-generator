@@ -212,6 +212,20 @@ class GenerationQualityTests(unittest.TestCase):
         self.assertLess(fallback["component_scores"]["audio"], generated["component_scores"]["audio"])
         self.assertLess(fallback["quality_score"], generated["quality_score"])
 
+    def test_completion_summary_requires_scene_dialogue_audio_for_fully_generated_episode(self) -> None:
+        summary = pipeline_common.generated_episode_completion_summary(
+            scene_count=2,
+            generated_scene_video_count=2,
+            scene_dialogue_audio_count=1,
+            scene_master_clip_count=2,
+            render_mode="full_generated_episode",
+            final_render="final.mp4",
+            full_generated_episode="master.mp4",
+        )
+
+        self.assertNotEqual(summary["production_readiness"], "fully_generated_episode_ready")
+        self.assertIn("materialize missing scene dialogue audio", summary["remaining_backend_tasks"])
+
 
 if __name__ == "__main__":
     unittest.main()

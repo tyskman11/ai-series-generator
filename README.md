@@ -38,6 +38,8 @@ The repository root contains the numbered pipeline scripts directly beside `ai_s
 - the GitHub repo now treats `ai_series_project/configs/project.template.json` as the tracked base template; the working `project.json` is generated locally
 - quality-first generation is enforced more strictly than before
 - generated episode runtime now follows the average length of the input episodes instead of collapsing toward short dialogue-only timing
+- finished-episode batches now force fresh storyboard-backend and render outputs by default so stale fallback artifacts do not silently pass through
+- the project-local voice backend now treats original dialogue audio as XTTS reference material, not as a finished generated dialogue line, when voice cloning is forced
 - final output quality is still limited when only the project-local fallback backends are used
 
 ## Project Layout
@@ -207,11 +209,13 @@ The project is configured for quality-first finished-episode generation:
 - lip-sync expected
 - external backend runner hooks configured through project-local defaults
 - the project-local voice runner now tries real XTTS cloning before any local fallback
+- `cloning.force_voice_cloning` is enabled by default, so quality-first dialogue lines must be synthesized as cloned speech instead of copied from original episode audio
 - XTTS still needs `xtts_license_accepted = true` in the local `configs/project.json` and usable character reference audio
 - render-time dialogue planning now falls back directly to `characters/voice_models/<character>_voice_model.json` when `voice_map` is stale or missing a named speaker entry
 - delegated quality-backend runners now resolve project-local backend scripts from the project root even when scene packages run from nested working directories
 - project-local quality backends now prefer the platform-correct FFmpeg binary from `ai_series_project/runtime/host_runtime/ffmpeg/bin` before falling back to older tool copies
 - render-time scene duration now respects the planned per-scene runtime from episode generation instead of compressing most scenes into a short 8 to 22 second window
+- batch and quality-gate output messages now include the generated display title, for example `Folge 19: ... (folge_19)`, instead of relying only on the technical episode ID
 
 Important:
 

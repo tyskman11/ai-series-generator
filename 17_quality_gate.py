@@ -274,8 +274,15 @@ def main() -> None:
     write_json(report_path, report)
     persist_quality_gate_result(artifacts, report_path, report)
 
-    print(f"Episode: {artifacts.get('episode_id') or '-'}")
-    print(f"Display title: {artifacts.get('display_title') or '-'}")
+    episode_id_text = str(artifacts.get("episode_id") or "-")
+    display_title_text = str(artifacts.get("display_title") or "").strip()
+    episode_label = (
+        f"{display_title_text} ({episode_id_text})"
+        if display_title_text and display_title_text != episode_id_text
+        else episode_id_text
+    )
+    print(f"Episode: {episode_label}")
+    print(f"Display title: {display_title_text or '-'}")
     print(f"Readiness: {artifacts.get('production_readiness') or '-'}")
     print(
         f"Quality: {int(artifacts.get('quality_percent', 0) or 0)}% "

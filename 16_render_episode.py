@@ -1173,6 +1173,7 @@ def build_voice_clone_line_package(cfg: dict, episode_package_root: Path, line: 
             "xtts_model_name": clean_text(cloning_cfg.get("xtts_model_name", "")),
             "xtts_language": clean_text(cloning_cfg.get("xtts_language", "")),
             "xtts_license_accepted": bool(cloning_cfg.get("xtts_license_accepted", False)),
+            "force_voice_cloning": bool(cloning_cfg.get("force_voice_cloning", True)),
             "allow_system_tts_fallback": bool(cloning_cfg.get("allow_system_tts_fallback", False)),
         },
         "target_output_audio": str(voice_line_output_audio_path(episode_package_root, line)),
@@ -1829,6 +1830,13 @@ def refresh_scene_package_outputs(scene_package: dict, package_root: Path) -> di
     scene_dialogue_audio_path = resolve_stored_project_path(scene_dialogue_audio_text) if scene_dialogue_audio_text else Path()
     scene_master_clip_path = resolve_stored_project_path(scene_master_clip_text) if scene_master_clip_text else Path()
     lipsync_video_path = resolve_stored_project_path(lipsync_video_text) if lipsync_video_text else Path()
+    voice_lines = voice_clone.get("lines", []) if isinstance(voice_clone.get("lines", []), list) else []
+    voice_runtime = {}
+    for line in voice_lines:
+        if isinstance(line, dict) and isinstance(line.get("runtime", {}), dict):
+            voice_runtime = line.get("runtime", {})
+            if voice_runtime:
+                break
     scene_video_source = first_existing_production_scene_video(package_root, scene_id)
     beat_reference_images = current_outputs.get("beat_reference_images", []) if isinstance(current_outputs.get("beat_reference_images", []), list) else []
     local_video_plan = refreshed.get("video_generation", {}).get("local_video_plan", {}) if isinstance(refreshed.get("video_generation", {}), dict) else {}
@@ -1841,6 +1849,15 @@ def refresh_scene_package_outputs(scene_package: dict, package_root: Path) -> di
     scene_visual_beat_count = int(current_outputs.get("scene_visual_beat_count", 0) or 0)
     if scene_visual_beat_count <= 0 and isinstance(local_video_plan, dict):
         scene_visual_beat_count = int(local_video_plan.get("beat_count", 0) or 0)
+    audio_backend = clean_text(current_outputs.get("audio_backend", ""))
+    if render_output_ready(scene_dialogue_audio_path) and bool(voice_clone.get("required", False)):
+        if clean_text(voice_runtime.get("engine", "")).lower() == "xtts" and bool(voice_runtime.get("force_voice_cloning", True)):
+            audio_backend = "xtts_voice_clone"
+        elif not audio_backend:
+            audio_backend = "scene_dialogue_audio"
+    local_composed_scene_video = bool(current_outputs.get("local_composed_scene_video", False))
+    if scene_video_source and scene_video_source[0] in {"generated_lipsync_video", "generated_scene_video"}:
+        local_composed_scene_video = False
     refreshed["current_generated_outputs"] = {
         **current_outputs,
         "video_source_type": scene_video_source[0] if scene_video_source else "",
@@ -1858,7 +1875,8 @@ def refresh_scene_package_outputs(scene_package: dict, package_root: Path) -> di
         "scene_visual_beat_count": scene_visual_beat_count,
         "beat_reference_images": beat_reference_images,
         "has_visual_beat_reference_images": bool(beat_reference_images),
-        "local_composed_scene_video": bool(current_outputs.get("local_composed_scene_video", False)),
+        "local_composed_scene_video": local_composed_scene_video,
+        "audio_backend": audio_backend,
     }
     refreshed["quality_assessment"] = merge_scene_regeneration_metadata(
         scene_quality_assessment(
@@ -3560,6 +3578,7 @@ def main() -> None:
             generated_scene_dialogue_audio_path = resolve_stored_project_path(generated_scene_dialogue_meta.get("audio_path", ""))
             if render_output_ready(generated_scene_dialogue_audio_path):
                 preferred_dialogue_audio_path = generated_scene_dialogue_audio_path
+                generated_scene_dialogue_meta["audio_backend"] = "xtts_voice_clone"
         scene_master_audio_outputs = (
             package_scene_dialogue_outputs
             if package_scene_dialogue_outputs
@@ -3582,7 +3601,7 @@ def main() -> None:
             if scene_id and isinstance(scene_master_audio_outputs, dict):
                 scene_meta["scene_dialogue_audio"] = clean_text(scene_master_audio_outputs.get(scene_id, ""))
             scene_meta["scene_master_clip"] = clean_text(scene_master_outputs.get(scene_id, ""))
-            scene_meta["audio_backend"] = clean_text(audio_track_meta.get("audio_backend", "")) or clean_text(audio_track_meta.get("backend", ""))
+            scene_meta["audio_backend"] = clean_text(generated_scene_dialogue_meta.get("audio_backend", "")) or clean_text(audio_track_meta.get("audio_backend", "")) or clean_text(audio_track_meta.get("backend", ""))
         package_master_clip_paths = [*opening_clip_paths]
         for scene_meta, scene_clip_path in zip(manifest_scenes, scene_clip_paths):
             if not isinstance(scene_meta, dict):
@@ -3626,6 +3645,12 @@ def main() -> None:
         )
         production_package = production_package_payload
         manifest["dialogue_audio"] = str(preferred_dialogue_audio_path) if render_output_ready(preferred_dialogue_audio_path) else ""
+        if render_output_ready(preferred_dialogue_audio_path) and clean_text(generated_scene_dialogue_meta.get("audio_backend", "")):
+            manifest["audio_track_meta"] = {
+                **(audio_track_meta if isinstance(audio_track_meta, dict) else {}),
+                "audio_backend": clean_text(generated_scene_dialogue_meta.get("audio_backend", "")),
+                "scene_dialogue_outputs": scene_master_audio_outputs,
+            }
         manifest["full_generated_episode"] = str(full_generated_episode_path)
         manifest["full_generated_episode_master_meta"] = full_generated_episode_master_meta
         manifest["scene_master_clip_count"] = len(scene_master_outputs)
@@ -3713,7 +3738,8 @@ def main() -> None:
                 "latest_delivery_episode": delivery_bundle.get("latest_watch_episode", ""),
             },
         )
-        ok(f"Episode rendered: {episode_id}")
+        rendered_title = clean_text(shotlist.get("display_title", "")) or episode_id
+        ok(f"Episode rendered: {rendered_title} ({episode_id})")
     except Exception as exc:
         mark_step_failed("16_render_episode", str(exc), autosave_target, {"episode_id": episode_id})
         raise

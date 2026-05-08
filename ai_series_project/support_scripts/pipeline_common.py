@@ -302,6 +302,7 @@ DEFAULT_CONFIG = {
         "enable_lipsync": True,
         "voice_clone_engine": "xtts",
         "require_trained_voice_models": True,
+        "force_voice_cloning": True,
         "allow_system_tts_fallback": False,
         "xtts_model_name": "tts_models/multilingual/multi-dataset/xtts_v2",
         "xtts_language": "auto",
@@ -339,6 +340,7 @@ DEFAULT_CONFIG = {
         "watch_threshold": 0.82,
         "max_regeneration_batch": 8,
         "max_regeneration_retries": 3,
+        "force_finished_episode_generation": True,
         "strict_warnings": True,
         "auto_retry_failed_gate": True,
         "auto_retry_update_bible": False,
@@ -1555,7 +1557,7 @@ def generated_episode_completion_summary(
     if scene_total > 0 and not full_generated_ready:
         remaining_backend_tasks.append("assemble the full generated episode master")
 
-    if scene_total > 0 and all_scene_videos_ready and all_scene_master_clips_ready and full_generated_ready:
+    if scene_total > 0 and all_scene_videos_ready and all_scene_dialogue_ready and all_scene_master_clips_ready and full_generated_ready:
         production_readiness = "fully_generated_episode_ready"
     elif scene_total > 0 and (master_count > 0 or full_generated_ready):
         production_readiness = "hybrid_generated_episode"

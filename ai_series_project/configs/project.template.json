@@ -197,6 +197,7 @@
     "enable_lipsync": true,
     "voice_clone_engine": "xtts",
     "require_trained_voice_models": true,
+    "force_voice_cloning": true,
     "allow_system_tts_fallback": false,
     "xtts_model_name": "tts_models/multilingual/multi-dataset/xtts_v2",
     "xtts_language": "auto",
@@ -235,6 +236,7 @@
     "watch_threshold": 0.82,
     "max_regeneration_batch": 8,
     "max_regeneration_retries": 3,
+    "force_finished_episode_generation": true,
     "strict_warnings": true,
     "auto_retry_failed_gate": true,
     "auto_retry_update_bible": false

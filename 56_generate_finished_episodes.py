@@ -150,6 +150,19 @@ def quality_gate_extra_args(cfg: dict, episode_id: str | None = None) -> list[st
     return args
 
 
+def episode_output_label(cfg: dict, episode_id: str, outputs: dict[str, object] | None = None) -> str:
+    payload = outputs if isinstance(outputs, dict) else generated_episode_artifacts(cfg, episode_id)
+    display_title = str((payload or {}).get("display_title", "") or "").strip()
+    if display_title and display_title != episode_id:
+        return f"{display_title} ({episode_id})"
+    return episode_id
+
+
+def force_finished_episode_generation(cfg: dict) -> bool:
+    release_cfg = cfg.get("release_mode", {}) if isinstance(cfg.get("release_mode"), dict) else {}
+    return bool(release_cfg.get("force_finished_episode_generation", True))
+
+
 def planned_preview_steps(cfg: dict, count: int) -> list[str]:
     return planned_preview_steps_for_mode(cfg, count, endless=False)
 
@@ -300,7 +313,7 @@ def ensure_finished_episode_outputs(cfg: dict, episode_id: str, episode_outputs:
     audio_backend = str(
         audio_track_meta.get("audio_backend", "") or audio_track_meta.get("backend", "") or ""
     ).strip().lower()
-    if audio_backend in {"pyttsx3", "mixed_original_segment_and_pyttsx3"}:
+    if audio_backend in {"pyttsx3", "mixed_original_segment_and_pyttsx3", "original_segment_reuse", "reused_original_segments"}:
         raise RuntimeError(
             f"Episode {episode_id} still uses fallback dialogue audio backend '{audio_backend}'."
         )
@@ -374,6 +387,7 @@ def main() -> None:
         run_step("00_prepare_runtime.py", extra_args=setup_args, shared_args=child_shared_args)
         cfg = load_config()
         ensure_quality_first_ready(cfg, context_label="56_generate_finished_episodes.py")
+        force_finished_outputs = force_finished_episode_generation(cfg)
         planned_steps = planned_preview_steps_for_mode(cfg, count, endless=endless)
         reporter = LiveProgressReporter(
             script_name="56_generate_finished_episodes.py",
@@ -405,10 +419,11 @@ def main() -> None:
             episode_id = latest_episode_id()
             if not episode_id or episode_id == before:
                 raise RuntimeError("Could not determine the new episode.")
+            episode_label = episode_output_label(cfg, episode_id)
             reporter.update(
                 preview_reporter_current(reporter, completed_steps),
-                current_label=episode_id,
-                extra_label=f"Episode generated: {episode_id}",
+                current_label=episode_label,
+                extra_label=f"Episode generated: {episode_label}",
                 scope_current=len(generated) + 1,
                 scope_total=preview_scope_total(count, endless, len(generated)),
                 scope_label="Episodes",
@@ -417,7 +432,7 @@ def main() -> None:
             env["SERIES_STORYBOARD_EPISODE"] = episode_id
             reporter.update(
                 preview_reporter_current(reporter, completed_steps),
-                current_label=f"{episode_id} storyboard assets",
+                current_label=f"{episode_label} storyboard assets",
                 extra_label="Running now: 14_generate_storyboard_assets.py",
                 force=True,
                 scope_current=len(generated) + 1,
@@ -428,27 +443,30 @@ def main() -> None:
             completed_steps += 1
             reporter.update(
                 preview_reporter_current(reporter, completed_steps),
-                current_label=episode_id,
-                extra_label=f"Storyboard assets ready: {episode_id}",
+                current_label=episode_label,
+                extra_label=f"Storyboard assets ready: {episode_label}",
                 scope_current=len(generated) + 1,
                 scope_total=preview_scope_total(count, endless, len(generated)),
                 scope_label="Episodes",
             )
             reporter.update(
                 preview_reporter_current(reporter, completed_steps),
-                current_label=f"{episode_id} backend frames",
+                current_label=f"{episode_label} backend frames",
                 extra_label="Running now: 15_run_storyboard_backend.py",
                 force=True,
                 scope_current=len(generated) + 1,
                 scope_total=preview_scope_total(count, endless, len(generated)),
                 scope_label="Episodes",
             )
-            run_step("15_run_storyboard_backend.py", env=env, shared_args=child_shared_args)
+            storyboard_backend_args = ["--episode-id", episode_id]
+            if force_finished_outputs:
+                storyboard_backend_args.append("--force")
+            run_step("15_run_storyboard_backend.py", env=env, extra_args=storyboard_backend_args, shared_args=child_shared_args)
             completed_steps += 1
             reporter.update(
                 preview_reporter_current(reporter, completed_steps),
-                current_label=episode_id,
-                extra_label=f"Storyboard backend frames ready: {episode_id}",
+                current_label=episode_label,
+                extra_label=f"Storyboard backend frames ready: {episode_label}",
                 scope_current=len(generated) + 1,
                 scope_total=preview_scope_total(count, endless, len(generated)),
                 scope_label="Episodes",
@@ -457,18 +475,21 @@ def main() -> None:
             env["SERIES_RENDER_EPISODE"] = episode_id
             reporter.update(
                 preview_reporter_current(reporter, completed_steps),
-                current_label=f"{episode_id} render",
+                current_label=f"{episode_label} render",
                 extra_label="Running now: 16_render_episode.py",
                 force=True,
                 scope_current=len(generated) + 1,
                 scope_total=preview_scope_total(count, endless, len(generated)),
                 scope_label="Episodes",
             )
-            run_step("16_render_episode.py", env=env, shared_args=child_shared_args)
+            render_args = ["--episode-id", episode_id]
+            if force_finished_outputs:
+                render_args.append("--force")
+            run_step("16_render_episode.py", env=env, extra_args=render_args, shared_args=child_shared_args)
             completed_steps += 1
             reporter.update(
                 preview_reporter_current(reporter, completed_steps),
-                current_label=f"{episode_id} quality gate",
+                current_label=f"{episode_label} quality gate",
                 extra_label="Running now: 17_quality_gate.py",
                 force=True,
                 scope_current=len(generated) + 1,
@@ -484,13 +505,14 @@ def main() -> None:
             episode_outputs = generated_episode_artifacts(cfg, episode_id)
             if episode_outputs:
                 generated_outputs.append(ensure_finished_episode_outputs(cfg, episode_id, episode_outputs))
+                episode_label = episode_output_label(cfg, episode_id, episode_outputs)
             else:
                 raise RuntimeError(f"Episode {episode_id} finished rendering without a recorded output bundle.")
             reporter.update(
                 preview_reporter_current(reporter, completed_steps),
-                current_label=episode_id,
+                current_label=episode_label,
                 extra_label=(
-                    f"Finished episode ready: {episode_id} | "
+                    f"Finished episode ready: {episode_label} | "
                     f"readiness={episode_outputs.get('production_readiness', '-') or '-'} | "
                     f"quality={episode_outputs.get('quality_label', '-') or '-'}:"
                     f"{int(round(float(episode_outputs.get('quality_percent', 0.0) or 0.0)))}% | "
@@ -529,9 +551,9 @@ def main() -> None:
                     scope_total=preview_scope_total(count, endless, len(generated)),
                     scope_label="Episodes",
                 )
-                ok(f"{len(generated)} episodes generated so far. Latest: {episode_id}")
+                ok(f"{len(generated)} episodes generated so far. Latest: {episode_label}")
             else:
-                ok(f"{index + 1}/{count}: {episode_id} generated and rendered.")
+                ok(f"{index + 1}/{count}: {episode_label} generated and rendered.")
             index += 1
         if not endless:
             reporter.update(completed_steps, current_label="Update series bible", extra_label="Running now: 19_build_series_bible.py", force=True)
@@ -556,7 +578,8 @@ def main() -> None:
                 "bible_updated_after_each_episode": endless,
             },
         )
-        ok(f"Done. New visible episodes: {', '.join(generated)}")
+        output_labels = [episode_output_label(cfg, episode_id) for episode_id in generated]
+        ok(f"Done. New visible episodes: {', '.join(output_labels)}")
     except KeyboardInterrupt:
         if generated and endless:
             info_message = f"Endless generation interrupted after {len(generated)} episodes. Updating the series bible one last time."

@@ -101,7 +101,11 @@ def collect_line_specs(scene_package: dict) -> list[dict]:
         if not isinstance(line, dict):
             continue
         original_reference = line.get("original_voice_reference", {}) if isinstance(line.get("original_voice_reference"), dict) else {}
-        candidate = existing_file_path(line.get("target_output_audio", "")) or existing_file_path(original_reference.get("audio_path", ""))
+        runtime_cfg = line.get("runtime", {}) if isinstance(line.get("runtime", {}), dict) else {}
+        force_voice_cloning = bool(runtime_cfg.get("force_voice_cloning", True))
+        candidate = existing_file_path(line.get("target_output_audio", ""))
+        if candidate is None and not force_voice_cloning:
+            candidate = existing_file_path(original_reference.get("audio_path", ""))
         prepared.append(
             {
                 "line_index": int(line.get("line_index", 0) or 0),
@@ -115,7 +119,8 @@ def collect_line_specs(scene_package: dict) -> list[dict]:
                 "reference_audio_candidates": line.get("reference_audio_candidates", []) if isinstance(line.get("reference_audio_candidates", []), list) else [],
                 "candidate_sample_dirs": line.get("candidate_sample_dirs", []) if isinstance(line.get("candidate_sample_dirs", []), list) else [],
                 "target_output_audio": clean_text(line.get("target_output_audio", "")),
-                "runtime": line.get("runtime", {}) if isinstance(line.get("runtime", {}), dict) else {},
+                "runtime": runtime_cfg,
+                "force_voice_cloning": force_voice_cloning,
             }
         )
     return prepared
@@ -180,7 +185,9 @@ def synthesize_missing_lines_xtts(temp_root: Path, line_specs: list[dict]) -> tu
             failures.append(f"{line['speaker_name']}: no character reference audio was found.")
             continue
         line_index = int(line.get("line_index", 0) or 0)
-        target = temp_root / f"line_{line_index:04d}_xtts.wav"
+        target_text = clean_text(line.get("target_output_audio", ""))
+        target = Path(target_text) if target_text else temp_root / f"line_{line_index:04d}_xtts.wav"
+        ensure_parent(str(target))
         try:
             synthesize_xtts_line(
                 synthesizer,
@@ -216,7 +223,9 @@ def synthesize_missing_lines_pyttsx3(temp_root: Path, line_specs: list[dict]) ->
             if line.get("audio_path") is not None or not clean_text(line.get("text", "")):
                 continue
             line_index = int(line.get("line_index", 0) or 0)
-            target = temp_root / f"line_{line_index:04d}_tts.wav"
+            target_text = clean_text(line.get("target_output_audio", ""))
+            target = Path(target_text) if target_text else temp_root / f"line_{line_index:04d}_tts.wav"
+            ensure_parent(str(target))
             engine.save_to_file(clean_text(line["text"]), str(target))
             created[line_index] = target
         if created:
@@ -235,7 +244,7 @@ def synthesize_missing_lines_pyttsx3(temp_root: Path, line_specs: list[dict]) ->
 def synthesize_missing_lines(temp_root: Path, line_specs: list[dict]) -> tuple[dict[int, Path], str]:
     created, failures = synthesize_missing_lines_xtts(temp_root, line_specs)
     if created:
-        return created, "xtts"
+        return created, "xtts_voice_clone"
     runtime_cfg = {}
     for line in line_specs:
         if isinstance(line.get("runtime", {}), dict):

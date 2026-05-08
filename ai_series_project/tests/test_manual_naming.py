@@ -2404,6 +2404,25 @@ class ManualNamingTests(unittest.TestCase):
         self.assertEqual(match[0], "storyboard_backend_scene_video")
         self.assertTrue(str(match[1]).endswith("clip.mp4"))
 
+    def test_refresh_scene_package_outputs_clears_local_fallback_after_generated_video(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            package_root = Path(tmpdir)
+            scene_video = package_root / "videos" / "scene_0001" / "scene_0001.mp4"
+            scene_video.parent.mkdir(parents=True, exist_ok=True)
+            scene_video.write_bytes(b"video")
+            scene_package = {
+                "scene_id": "scene_0001",
+                "current_generated_outputs": {
+                    "local_composed_scene_video": True,
+                    "video_source_type": "local_motion_fallback",
+                },
+            }
+
+            refreshed = STEPRENDER.refresh_scene_package_outputs(scene_package, package_root)
+
+        self.assertEqual(refreshed["current_generated_outputs"]["video_source_type"], "generated_scene_video")
+        self.assertFalse(refreshed["current_generated_outputs"]["local_composed_scene_video"])
+
     def test_materialize_scene_backend_frame_writes_scene_pack_without_ffmpeg(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
@@ -4702,7 +4721,7 @@ class ManualNamingTests(unittest.TestCase):
         ), mock.patch.object(
             STEP19PREVIEW, "ensure_quality_first_ready"
         ), mock.patch.object(
-            STEP19PREVIEW, "read_json", return_value={"audio_track_meta": {"audio_backend": "reused_original_segments"}, "scenes": []}
+            STEP19PREVIEW, "read_json", return_value={"audio_track_meta": {"audio_backend": "xtts_voice_clone"}, "scenes": []}
         ), mock.patch.object(
             STEP19PREVIEW, "mark_step_started"
         ), mock.patch.object(

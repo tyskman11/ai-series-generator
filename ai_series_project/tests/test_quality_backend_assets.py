@@ -63,6 +63,38 @@ class QualityBackendAssetTests(unittest.TestCase):
 
             self.assertEqual([path.name for path in references[:2]], ["original.wav", "sample_01.wav"])
 
+    def test_project_local_voice_backend_forced_clone_uses_original_audio_only_as_reference(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            original_path = root / "audio" / "original.wav"
+            original_path.parent.mkdir(parents=True, exist_ok=True)
+            original_path.write_bytes(b"audio")
+            output_path = root / "generated" / "line_0001.wav"
+            scene_package = {
+                "voice_clone": {
+                    "lines": [
+                        {
+                            "line_index": 1,
+                            "speaker_name": "Babe",
+                            "text": "This line must be cloned, not copied from the source.",
+                            "target_output_audio": str(output_path),
+                            "original_voice_reference": {"audio_path": str(original_path)},
+                            "runtime": {
+                                "engine": "xtts",
+                                "force_voice_cloning": True,
+                                "allow_system_tts_fallback": False,
+                            },
+                        }
+                    ]
+                }
+            }
+
+            specs = VOICE_BACKEND.collect_line_specs(scene_package)
+
+            self.assertIsNone(specs[0]["audio_path"])
+            self.assertEqual(specs[0]["reference_audio_candidates"], [])
+            self.assertTrue(specs[0]["force_voice_cloning"])
+
     def test_support_scripts_bootstrap_project_dir_for_direct_execution(self) -> None:
         configure_source = (PROJECT_DIR / "support_scripts/configure_quality_backends.py").read_text(encoding="utf-8")
         prepare_source = (PROJECT_DIR / "support_scripts/prepare_quality_backends.py").read_text(encoding="utf-8")
