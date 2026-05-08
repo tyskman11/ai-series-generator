@@ -155,6 +155,7 @@ class GenerationQualityTests(unittest.TestCase):
         self.assertIn("keep Babe: blue jacket", prompt)
         self.assertIn("quality targets: clean sitcom contrast", prompt)
         self.assertIn("preserve character identity", prompt)
+        self.assertNotIn("generic cartoon", prompt)
 
     def test_scene_quality_assessment_rewards_style_and_continuity_guidance(self) -> None:
         baseline = pipeline_common.scene_quality_assessment(

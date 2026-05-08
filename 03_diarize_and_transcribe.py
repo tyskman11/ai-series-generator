@@ -37,6 +37,7 @@ from support_scripts.pipeline_common import (
     headline,
     info,
     language_hint_from_name,
+    detect_language_from_text,
     limited_items,
     load_distributed_lease,
     load_step_autosave,
@@ -431,6 +432,12 @@ def transcribe_language_hint(cfg: dict, *source_names: object) -> str:
     return language_hint_from_name(*source_names)
 
 
+def configured_transcription_language(cfg: dict) -> str:
+    transcription_cfg = cfg.get("transcription", {}) if isinstance(cfg.get("transcription", {}), dict) else {}
+    configured = normalize_language_code(transcription_cfg.get("language", ""))
+    return "" if configured in {"", "auto", "detect"} else configured
+
+
 def active_scene_lease_ids(scene_lease_root: Path) -> list[str]:
     if not scene_lease_root.exists():
         return []
@@ -469,11 +476,23 @@ def transcribe_scene(model, scene_wav: Path, cfg: dict, use_fp16: bool) -> dict[
         "verbose": False,
         "fp16": use_fp16,
     }
+    explicit_language = configured_transcription_language(cfg)
     language_hint = transcribe_language_hint(cfg, scene_wav.name, scene_wav.stem, scene_wav.parent.name)
     if language_hint:
         transcribe_kwargs["language"] = language_hint
     result = model.transcribe(str(scene_wav), **transcribe_kwargs)
-    detected_language = normalize_language_code(language_hint or result.get("language", ""), language_hint)
+    raw_segments = result.get("segments") or []
+    text_for_language = " ".join(
+        [coalesce_text(result.get("text", ""))]
+        + [
+            coalesce_text(item.get("text", ""))
+            for item in raw_segments
+            if isinstance(item, dict)
+        ]
+    )
+    whisper_language = normalize_language_code(result.get("language", ""), language_hint)
+    text_language = detect_language_from_text(text_for_language)
+    detected_language = explicit_language or language_hint or text_language or whisper_language
     raw_segments = result.get("segments") or []
     segments = []
     for item in raw_segments:
@@ -487,7 +506,7 @@ def transcribe_scene(model, scene_wav: Path, cfg: dict, use_fp16: bool) -> dict[
                 "start": start_sec,
                 "end": end_sec,
                 "text": text,
-                "language": normalize_language_code(item.get("language", ""), detected_language),
+                "language": detect_language_from_text(text, normalize_language_code(item.get("language", ""), detected_language)),
             }
         )
     if not segments:

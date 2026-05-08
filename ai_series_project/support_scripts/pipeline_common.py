@@ -230,6 +230,8 @@ DEFAULT_CONFIG = {
         "target_scene_duration_seconds": 42.0,
         "estimated_dialogue_line_seconds": 2.7,
         "prefer_original_dialogue_remix": False,
+        "language": "auto",
+        "style_descriptor": "source-series faithful TV episode frame",
     },
     "foundation_training": {
         "prepare_after_batch": True,
@@ -514,6 +516,7 @@ GERMAN_STOPWORDS = {
     "doch",
     "dort",
     "du",
+    "eben",
     "ein",
     "eine",
     "einem",
@@ -529,6 +532,7 @@ GERMAN_STOPWORDS = {
     "hab",
     "habe",
     "haben",
+    "halt",
     "hat",
     "hier",
     "ich",
@@ -556,8 +560,10 @@ GERMAN_STOPWORDS = {
     "nach",
     "nicht",
     "noch",
+    "nochmal",
     "nur",
     "oder",
+    "schließlich",
     "schon",
     "sehr",
     "sein",
@@ -579,10 +585,14 @@ GERMAN_STOPWORDS = {
     "weil",
     "wenn",
     "wer",
+    "weshalb",
+    "weswegen",
     "wie",
     "wir",
     "wird",
     "wirst",
+    "woher",
+    "wohin",
     "wo",
     "zu",
     "zum",
@@ -622,18 +632,30 @@ KEYWORD_BLACKLIST = {
     "danke",
     "dank",
     "dieses",
+    "eigentlich",
+    "einfach",
+    "erstmal",
     "genau",
     "gesagt",
     "heißt",
+    "irgendwie",
+    "irgendwas",
+    "irgendwer",
     "immer",
     "kann",
     "komm",
     "kommt",
     "machen",
     "macht",
+    "naja",
+    "nämlich",
     "nächsten",
+    "quasi",
     "tschüss",
+    "trotzdem",
+    "überhaupt",
     "vielen",
+    "vielleicht",
     "warte",
     "war's",
     "wieso",
@@ -655,6 +677,64 @@ KEYWORD_BLACKLIST = {
     "https",
     "com",
     "net",
+}
+
+GERMAN_LANGUAGE_MARKERS = {
+    "aber",
+    "auch",
+    "das",
+    "dass",
+    "der",
+    "die",
+    "du",
+    "ein",
+    "eine",
+    "für",
+    "habe",
+    "haben",
+    "ich",
+    "ist",
+    "nicht",
+    "schon",
+    "und",
+    "was",
+    "wenn",
+    "wir",
+    "wird",
+    "zu",
+}
+
+ENGLISH_LANGUAGE_MARKERS = {
+    "and",
+    "are",
+    "but",
+    "for",
+    "have",
+    "here",
+    "how",
+    "not",
+    "that",
+    "the",
+    "this",
+    "was",
+    "we",
+    "what",
+    "when",
+    "where",
+    "why",
+    "will",
+    "with",
+    "you",
+}
+
+KEYWORD_SHORT_ALLOWLIST = {
+    "ai",
+    "app",
+    "chat",
+    "code",
+    "ki",
+    "tv",
+    "web",
 }
 
 
@@ -3614,7 +3694,7 @@ def analyze_scene_beats(
 
 def keyword_token_allowed(token: str) -> bool:
     lower = token.lower().strip("-'")
-    if len(lower) < 4:
+    if len(lower) < 4 and lower not in KEYWORD_SHORT_ALLOWLIST:
         return False
     if lower in GERMAN_STOPWORDS or lower in KEYWORD_BLACKLIST:
         return False
@@ -3708,6 +3788,25 @@ def language_hint_from_name(*values: object) -> str:
             if language:
                 return language
     return ""
+
+
+def detect_language_from_text(text: object, fallback: str = "") -> str:
+    normalized_fallback = normalize_language_code(fallback)
+    content = coalesce_text(str(text or "")).lower()
+    if not content:
+        return normalized_fallback
+    tokens = [token.lower() for token in tokens_from_text(content)]
+    if not tokens:
+        return normalized_fallback
+    token_set = set(tokens)
+    german_score = len(token_set & GERMAN_LANGUAGE_MARKERS)
+    english_score = len(token_set & ENGLISH_LANGUAGE_MARKERS)
+    german_score += sum(1 for char in content if char in "äöüß")
+    if german_score >= english_score + 2 and german_score >= 2:
+        return "de"
+    if english_score >= german_score + 2 and english_score >= 2:
+        return "en"
+    return normalized_fallback
 
 
 def merge_language_counts(*mappings: object) -> dict[str, int]:

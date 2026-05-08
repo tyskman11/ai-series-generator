@@ -124,6 +124,8 @@
     "target_scene_duration_seconds": 42.0,
     "estimated_dialogue_line_seconds": 2.7,
     "prefer_original_dialogue_remix": false,
+    "language": "auto",
+    "style_descriptor": "source-series faithful TV episode frame",
     "quality_mode": "original_episode_quality_first"
   },
   "foundation_training": {

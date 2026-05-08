@@ -24,6 +24,7 @@ from support_scripts.pipeline_common import (
     display_person_name,
     distributed_item_lease,
     distributed_step_runtime_root,
+    dominant_language,
     error,
     extract_keywords,
     has_primary_person_name,
@@ -43,6 +44,7 @@ from support_scripts.pipeline_common import (
     shared_worker_id_for_args,
     shared_workers_enabled_for_args,
     tokens_from_text,
+    normalize_language_code,
     write_json,
     write_text,
 )
@@ -178,6 +180,32 @@ def humanize_keyword(keyword: str) -> str:
     if not tokens:
         return "Geheimnis"
     return " ".join(token.capitalize() for token in tokens[:3])
+
+
+def clean_generation_keywords(keywords: object, limit: int = 20) -> list[str]:
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    if isinstance(keywords, str):
+        iterable = [keywords]
+    elif isinstance(keywords, (list, tuple, set)):
+        iterable = list(keywords)
+    else:
+        iterable = []
+    for raw_keyword in iterable:
+        keyword = coalesce_text(raw_keyword).replace("_", " ").replace("-", " ")
+        tokens = [token.lower() for token in tokens_from_text(keyword)]
+        if not tokens:
+            continue
+        if any(not keyword_token_allowed(token) for token in tokens):
+            continue
+        normalized = " ".join(tokens)
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        cleaned.append(normalized)
+        if len(cleaned) >= limit:
+            break
+    return cleaned
 
 
 def format_episode_number(episode_index: int) -> str:
@@ -545,6 +573,7 @@ def build_series_model(dataset_files: list, cfg: dict, char_map: dict) -> dict:
     scene_library = []
     speaker_counter: Counter[str] = Counter()
     keyword_counter: Counter[str] = Counter()
+    language_counter: Counter[str] = Counter()
     episode_duration_counter: defaultdict[str, float] = defaultdict(float)
     segment_durations: list[float] = []
     scene_durations: list[float] = []
@@ -561,7 +590,10 @@ def build_series_model(dataset_files: list, cfg: dict, char_map: dict) -> dict:
             transcript = coalesce_text(row.get("transcript", ""))
             if transcript:
                 transcripts.append(transcript)
-            scene_keywords = row.get("scene_keywords") or extract_keywords([transcript], limit=8)
+            row_language = normalize_language_code(row.get("detected_language", "") or row.get("language", ""))
+            if row_language:
+                language_counter[row_language] += 1
+            scene_keywords = clean_generation_keywords(row.get("scene_keywords") or extract_keywords([transcript], limit=8), limit=8)
             keyword_counter.update(scene_keywords)
             row_duration = float(row.get("duration_seconds", 0.0) or 0.0)
             episode_duration_counter[str(row.get("episode_id", ""))] += row_duration
@@ -579,6 +611,9 @@ def build_series_model(dataset_files: list, cfg: dict, char_map: dict) -> dict:
                 speaker_name = segment.get("speaker_name", "")
                 line_character_name = resolve_segment_character_name(segment, row)
                 text = coalesce_text(segment.get("text", ""))
+                segment_language = normalize_language_code(segment.get("language", "") or row_language)
+                if segment_language:
+                    language_counter[segment_language] += 1
                 if speaker_name and text:
                     segment_duration = max(0.0, float(segment.get("end", 0.0) or 0.0) - float(segment.get("start", 0.0) or 0.0))
                     if segment_duration > 0.0:
@@ -597,6 +632,7 @@ def build_series_model(dataset_files: list, cfg: dict, char_map: dict) -> dict:
                             "audio_file": segment.get("audio_file", ""),
                             "video_file": row.get("video_file", ""),
                             "keywords": scene_keywords,
+                            "language": segment_language,
                         }
                     )
                     if useful_character(sample_key):
@@ -611,6 +647,7 @@ def build_series_model(dataset_files: list, cfg: dict, char_map: dict) -> dict:
                     "transcript": transcript,
                     "video_file": row.get("video_file", ""),
                     "duration_seconds": row_duration,
+                    "language": row_language,
                 }
             )
 
@@ -626,9 +663,9 @@ def build_series_model(dataset_files: list, cfg: dict, char_map: dict) -> dict:
     for speaker, entries in linked_line_library.items():
         for entry in entries:
             append_unique_line_entry(speaker_line_library, speaker, entry)
-    top_keywords = extract_keywords(transcripts, limit=20)
+    top_keywords = clean_generation_keywords(extract_keywords(transcripts, limit=40), limit=20)
     if not top_keywords:
-        top_keywords = [keyword for keyword, _ in keyword_counter.most_common(20)]
+        top_keywords = clean_generation_keywords([keyword for keyword, _ in keyword_counter.most_common(40)], limit=20)
     markov_chain = build_markov_chain(transcripts)
     average_scene_duration = sum(scene_durations) / max(1, len(scene_durations))
     average_segment_duration = sum(segment_durations) / max(1, len(segment_durations))
@@ -643,6 +680,8 @@ def build_series_model(dataset_files: list, cfg: dict, char_map: dict) -> dict:
         ],
         "speakers": dict(speaker_counter),
         "keywords": top_keywords,
+        "language_counts": dict(language_counter),
+        "dominant_language": dominant_language(dict(language_counter), "de"),
         "speaker_samples": {speaker: samples[:20] for speaker, samples in speaker_samples.items()},
         "speaker_line_library": {speaker: rows[:160] for speaker, rows in speaker_line_library.items()},
         "character_reference_library": character_reference_library,
@@ -747,41 +786,88 @@ def beat_dialogue_templates(
     speaker_b: str,
     keyword: str,
     callback: str,
+    language: str = "de",
 ) -> list[str]:
-    callback_line = callback or f"{speaker_a}: Wir halten uns diesmal wirklich an den Plan."
+    topic = humanize_keyword(keyword)
+    normalized_language = normalize_language_code(language)
+    callback_line = callback or (
+        f"{speaker_a}: Wir halten uns diesmal wirklich an den Plan."
+        if normalized_language.startswith("de")
+        else f"{speaker_a}: This time we are really sticking to the plan."
+    )
+    if normalized_language.startswith("de"):
+        templates = {
+            "Cold Open": [
+                f"{speaker_a}: Die Sache mit {topic} sollte heute eigentlich ganz leicht werden.",
+                f"{speaker_b}: Genau deshalb fühlt es sich jetzt schon nach Ärger an.",
+                f"{speaker_a}: Wenn wir sofort improvisieren, endet das wieder im Chaos.",
+                callback_line,
+            ],
+            "Plan": [
+                f"{speaker_a}: Wir brauchen einen klaren Plan, bevor {topic} alles durcheinanderbringt.",
+                f"{speaker_b}: Dann teilen wir das Problem auf und prüfen jeden Schritt.",
+                f"{speaker_a}: Einverstanden, aber diesmal ohne spontane Abkürzungen.",
+                callback_line,
+            ],
+            "Komplikation": [
+                f"{speaker_b}: Jetzt wird {topic} größer, obwohl es eben noch harmlos aussah.",
+                f"{speaker_a}: Dann hat irgendwo jemand einen wichtigen Schritt übersprungen.",
+                f"{speaker_b}: Und natürlich merken wir das erst mitten im Stress.",
+                callback_line,
+            ],
+            "Verwechslung": [
+                f"{speaker_a}: Moment, wir reden über zwei völlig verschiedene Versionen von {topic}.",
+                f"{speaker_b}: Das erklärt, warum wir beide überzeugt waren, recht zu haben.",
+                f"{speaker_a}: Dann sortieren wir zuerst die Fakten und streiten danach weiter.",
+                callback_line,
+            ],
+            "Wendepunkt": [
+                f"{speaker_b}: Ich glaube, ich sehe endlich, warum {topic} die ganze Zeit blockiert war.",
+                f"{speaker_a}: Bitte sag mir, dass die Lösung nicht noch mehr Improvisation braucht.",
+                f"{speaker_b}: Nein, nur einen sauberen Schritt zurück und einen besseren Aufbau.",
+                callback_line,
+            ],
+            "Auflösung": [
+                f"{speaker_a}: Siehst du, mit etwas Ruhe funktioniert {topic} am Ende doch.",
+                f"{speaker_b}: Und wir haben sogar noch Zeit, das Ergebnis ordentlich zu zeigen.",
+                f"{speaker_a}: Diese Reihenfolge merken wir uns für das nächste Chaos.",
+                callback_line,
+            ],
+        }
+        return templates.get(beat, templates["Plan"])
     templates = {
         "Cold Open": [
-            f"{speaker_a}: {keyword.capitalize()} was supposed to be the easiest task today.",
+            f"{speaker_a}: {topic} was supposed to be the easiest task today.",
             f"{speaker_b}: Which is exactly why it already feels like trouble.",
             f"{speaker_a}: If we start improvising right away, this turns into complete chaos again.",
             callback_line,
         ],
         "Plan": [
-            f"{speaker_a}: We need a clear plan before {keyword} throws us off balance.",
+            f"{speaker_a}: We need a clear plan before {topic} throws us off balance.",
             f"{speaker_b}: Then we break the problem into small steps and test each one.",
             f"{speaker_a}: Fine, but this time without any spontaneous shortcuts.",
             callback_line,
         ],
         "Komplikation": [
-            f"{speaker_b}: Now {keyword} is becoming bigger even though it looked simple a moment ago.",
+            f"{speaker_b}: Now {topic} is becoming bigger even though it looked simple a moment ago.",
             f"{speaker_a}: Then someone must have skipped a crucial step somewhere.",
             f"{speaker_b}: And of course we only notice that right in the middle of the stress.",
             callback_line,
         ],
         "Verwechslung": [
-            f"{speaker_a}: Wait, we are talking about two completely different versions of {keyword}.",
+            f"{speaker_a}: Wait, we are talking about two completely different versions of {topic}.",
             f"{speaker_b}: That explains why both of us were convinced we were right.",
             f"{speaker_a}: Then we sort the facts first and continue arguing later.",
             callback_line,
         ],
         "Wendepunkt": [
-            f"{speaker_b}: I think I finally see why {keyword} was blocked the whole time.",
+            f"{speaker_b}: I think I finally see why {topic} was blocked the whole time.",
             f"{speaker_a}: Please tell me the solution does not require even more improvisation.",
             f"{speaker_b}: No, just one clean step back and a better setup.",
             callback_line,
         ],
         "Auflösung": [
-            f"{speaker_a}: See, with a little calm {keyword} suddenly works after all.",
+            f"{speaker_a}: See, with a little calm {topic} suddenly works after all.",
             f"{speaker_b}: And we still have enough time to present the result properly.",
             f"{speaker_a}: Let's remember this sequence for the next round of chaos.",
             callback_line,
@@ -798,6 +884,7 @@ def build_dialogue(
     cfg: dict,
     keyword: str,
     target_length: int | None = None,
+    language: str = "de",
 ) -> tuple[list[str], list[dict]]:
     speaker_samples = model.get("speaker_samples", {})
     speaker_line_library = model.get("speaker_line_library", {})
@@ -811,7 +898,7 @@ def build_dialogue(
     ]
     callback_candidates = [line for line in callback_candidates if len(line.split()) >= 3]
     callback = f"{speaker_a}: {rng.choice(callback_candidates)}" if callback_candidates else ""
-    base_lines = beat_dialogue_templates(beat, speaker_a, speaker_b, keyword, callback)
+    base_lines = beat_dialogue_templates(beat, speaker_a, speaker_b, keyword, callback, language=language)
     used_samples = {callback.split(":", 1)[1].strip().lower()} if callback else set()
     enriched_lines: list[str] = []
     line_sources: list[dict] = []
@@ -1113,6 +1200,8 @@ def build_scene_generation_plan(
     continuity_memory: dict | None = None,
     style_constraints: dict | None = None,
     quality_mode: str = "series_consistency",
+    series_language: str = "de",
+    style_descriptor: str = "",
 ) -> dict:
     continuity_memory = continuity_memory if isinstance(continuity_memory, dict) else load_character_continuity_memory(PROJECT_ROOT)
     style_constraints = style_constraints if isinstance(style_constraints, dict) else derive_prompt_constraints_from_bible(PROJECT_ROOT, {})
@@ -1144,13 +1233,16 @@ def build_scene_generation_plan(
     style_positive = ", ".join(style_profile.get("positive", [])[:3])
     style_negative = ", ".join(style_profile.get("negative", [])[:5])
     style_guidance = style_profile.get("guidance", {}) if isinstance(style_profile.get("guidance", {}), dict) else {}
+    style_descriptor = coalesce_text(style_descriptor) or "source-series faithful TV episode frame"
+    series_language = normalize_language_code(series_language) or "de"
 
     positive_prompt = (
-        f"storyboard frame, animated sitcom look, {camera_plan['shot_type']}, {camera_plan['composition']}, "
+        f"{style_descriptor}, match original episode lighting, lensing, set design and color palette, "
+        f"{camera_plan['shot_type']}, {camera_plan['composition']}, "
         f"{camera_plan['camera_move']}, {camera_plan['lens_hint']}, "
         f"characters {', '.join(scene_characters[:2])}, keyword {keyword}, beat {beat}, "
         f"{camera_plan['pose_hint']}, keep identity, wardrobe and environment continuity, "
-        f"16:9 frame, clean readable staging"
+        f"dialogue language {series_language}, 16:9 frame, clean readable TV staging"
     )
     if style_positive:
         positive_prompt += f", style cues: {style_positive}"
@@ -1162,13 +1254,14 @@ def build_scene_generation_plan(
         positive_prompt += f", preferred angle: {style_guidance['angle']}"
     negative_prompt = (
         "no collage, no split panel, no duplicate characters, no extra fingers, no warped face, "
-        "no mismatched outfit, no GUI overlay, no text box, no watermark"
+        "no mismatched outfit, no generic cartoon style, no blue placeholder frame, no filtered still-frame slideshow, "
+        "no GUI overlay, no text box, no watermark"
     )
     if style_negative:
         negative_prompt += f", avoid {style_negative}"
     batch_prompt_line = (
         f"{beat} | {', '.join(scene_characters[:2])} | {keyword} | {camera_plan['shot_type']} | "
-        f"{camera_plan['composition']} | continuity from {previous_scene_id or 'none'}"
+        f"{camera_plan['composition']} | match original episode style | continuity from {previous_scene_id or 'none'}"
     )
     if style_guidance.get("camera"):
         batch_prompt_line += f" | style camera {style_guidance['camera']}"
@@ -1196,6 +1289,8 @@ def build_scene_generation_plan(
         "character_continuity": character_continuity,
         "quality_targets": {
             "quality_mode": quality_mode,
+            "series_language": series_language,
+            "source_series_style_locked": True,
             "minimum_reference_slots": max(1, min(3, len(reference_slots))),
             "prefer_previous_scene_reference": bool(previous_scene_id),
             "prefer_backend_character_models": bool(scene_characters),
@@ -1213,7 +1308,7 @@ def generate_episode_package(model: dict, cfg: dict, episode_index: int = 1) -> 
     generation_cfg = cfg.get("generation", {})
     rng_seed = int(generation_cfg.get("seed", 42)) + len(model.get("dataset_files", [])) + (episode_index * 101)
     rng = random.Random(rng_seed)
-    keywords = model.get("keywords", []) or ["idee", "chaos", "plan", "showdown"]
+    keywords = clean_generation_keywords(model.get("keywords", []), limit=20) or ["idee", "chaos", "plan", "showdown"]
     if len(keywords) > 1:
         keyword_offset = episode_index % len(keywords)
         keywords = keywords[keyword_offset:] + keywords[:keyword_offset]
@@ -1222,6 +1317,14 @@ def generate_episode_package(model: dict, cfg: dict, episode_index: int = 1) -> 
     continuity_memory = load_character_continuity_memory(PROJECT_ROOT)
     style_constraints = derive_prompt_constraints_from_bible(PROJECT_ROOT, {})
     quality_mode = coalesce_text(generation_cfg.get("quality_mode", "")) or "series_consistency"
+    series_language = dominant_language(model.get("language_counts", {}), model.get("dominant_language", "") or generation_cfg.get("language", "de"))
+    if series_language in {"", "auto", "detect"}:
+        series_language = "de"
+    style_descriptor = (
+        coalesce_text(generation_cfg.get("style_descriptor", ""))
+        or coalesce_text(model.get("style_descriptor", ""))
+        or "source-series faithful TV episode frame"
+    )
     focus_characters = select_focus_characters(model, rng)
     background_characters = select_background_characters(model, count=1)
     beats = ["Cold Open", "Plan", "Komplikation", "Verwechslung", "Wendepunkt", "Auflösung"]
@@ -1273,6 +1376,7 @@ def generate_episode_package(model: dict, cfg: dict, episode_index: int = 1) -> 
             cfg,
             keyword,
             target_length=target_lines_per_scene,
+            language=series_language,
         )
         scene_id = f"scene_{scene_index + 1:04d}"
         generation_plan = build_scene_generation_plan(
@@ -1288,6 +1392,8 @@ def generate_episode_package(model: dict, cfg: dict, episode_index: int = 1) -> 
             continuity_memory=continuity_memory,
             style_constraints=style_constraints,
             quality_mode=quality_mode,
+            series_language=series_language,
+            style_descriptor=style_descriptor,
         )
         scenes.append(
             {
@@ -1347,6 +1453,8 @@ def generate_episode_package(model: dict, cfg: dict, episode_index: int = 1) -> 
         "display_title": display_title,
         "generation_mode": "synthetic_preview",
         "quality_mode": quality_mode,
+        "series_language": series_language,
+        "style_descriptor": style_descriptor,
         "storyboard_plan_mode": "multi_reference_storyboard",
         "target_runtime_seconds": target_runtime_seconds,
         "target_scene_count": scene_count,

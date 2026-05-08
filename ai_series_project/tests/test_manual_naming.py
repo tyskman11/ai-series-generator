@@ -1866,7 +1866,7 @@ class ManualNamingTests(unittest.TestCase):
     def test_episode_title_filters_weak_keywords_and_uses_clean_fallback(self) -> None:
         title = STEP07.build_episode_title(
             ["Babe Carano", "Kenzie Bell"],
-            ["weiß", "wieder", "soll", "meinem"],
+            ["weiß", "wieder", "soll", "meinem", "weswegen", "halt"],
             random.Random(42),
             12,
         )
@@ -1875,7 +1875,45 @@ class ManualNamingTests(unittest.TestCase):
         self.assertNotIn("Wieder", title)
         self.assertNotIn("Soll", title)
         self.assertNotIn("Meinem", title)
+        self.assertNotIn("Weswegen", title)
+        self.assertNotIn("Halt", title)
         self.assertTrue(title)
+
+    def test_extract_keywords_filters_dialogue_fillers(self) -> None:
+        keywords = common.extract_keywords(
+            [
+                "Weswegen halt eigentlich irgendwas passiert, ist nicht das Thema.",
+                "Die App, der Plan und das Turnier treiben die Szene wirklich voran.",
+            ],
+            limit=10,
+        )
+
+        self.assertNotIn("weswegen", keywords)
+        self.assertNotIn("halt", keywords)
+        self.assertIn("app", keywords)
+        self.assertIn("turnier", keywords)
+
+    def test_episode_generation_filters_filler_keywords_before_scene_plan(self) -> None:
+        model = {
+            "characters": [
+                {"name": "Babe Carano", "scene_count": 10, "line_count": 20, "priority": True},
+                {"name": "Kenzie Bell", "scene_count": 9, "line_count": 18, "priority": True},
+            ],
+            "speakers": {"Babe Carano": 12, "Kenzie Bell": 11},
+            "keywords": ["weswegen", "halt", "spiel", "chaos"],
+            "language_counts": {"de": 8},
+            "dataset_files": ["demo.json"],
+            "scene_count": 10,
+            "speaker_samples": {},
+        }
+        cfg = {"generation": {"seed": 42, "default_scene_count": 2}}
+
+        package, _markdown = STEP07.generate_episode_package(model, cfg, episode_index=4)
+
+        self.assertNotIn("weswegen", package["keywords"])
+        self.assertNotIn("halt", package["keywords"])
+        self.assertIn("spiel", package["keywords"])
+        self.assertTrue(all("Weswegen" not in scene["title"] for scene in package["scenes"]))
 
     def test_episode_title_prefers_original_dialogue_anchor(self) -> None:
         model = {
@@ -1924,6 +1962,28 @@ class ManualNamingTests(unittest.TestCase):
 
         self.assertIn("Rollerteller", package["episode_title"])
 
+    def test_episode_generation_uses_detected_series_language_for_dialogue_templates(self) -> None:
+        model = {
+            "characters": [
+                {"name": "Babe Carano", "scene_count": 10, "line_count": 20, "priority": True},
+                {"name": "Kenzie Bell", "scene_count": 9, "line_count": 18, "priority": True},
+            ],
+            "speakers": {"Babe Carano": 12, "Kenzie Bell": 11},
+            "keywords": ["app", "plan"],
+            "language_counts": {"de": 12},
+            "dataset_files": ["demo.json"],
+            "scene_count": 10,
+            "speaker_samples": {},
+        }
+        cfg = {"generation": {"seed": 42, "default_scene_count": 2, "prefer_original_dialogue_remix": False}}
+
+        package, _markdown = STEP07.generate_episode_package(model, cfg, episode_index=3)
+        first_dialogue = "\n".join(package["scenes"][0]["dialogue_lines"])
+
+        self.assertEqual(package["series_language"], "de")
+        self.assertIn("wir", first_dialogue.lower())
+        self.assertNotIn("supposed to be", first_dialogue)
+
     def test_episode_runtime_matches_source_episode_average(self) -> None:
         model = {
             "source_episode_durations": {
@@ -1965,6 +2025,29 @@ class ManualNamingTests(unittest.TestCase):
         total_scene_runtime = sum(float(scene.get("estimated_runtime_seconds", 0.0) or 0.0) for scene in package["scenes"])
         self.assertAlmostEqual(total_scene_runtime, float(package["target_runtime_seconds"]), delta=1.0)
         self.assertGreater(total_scene_runtime, 20 * 60)
+
+    def test_scene_generation_plan_locks_to_source_series_style(self) -> None:
+        plan = STEP07.build_scene_generation_plan(
+            "scene_0001",
+            0,
+            "Plan",
+            "app",
+            ["Babe Carano", "Kenzie Bell"],
+            "Babe und Kenzie prüfen den Plan.",
+            {"character_reference_library": {}},
+            set(),
+            "",
+            continuity_memory={},
+            style_constraints={"positive": ["clean sitcom contrast"], "negative": ["blue placeholder"]},
+            series_language="de",
+            style_descriptor="original live-action sitcom frame",
+        )
+
+        self.assertIn("original live-action sitcom frame", plan["positive_prompt"])
+        self.assertIn("match original episode lighting", plan["positive_prompt"])
+        self.assertIn("dialogue language de", plan["positive_prompt"])
+        self.assertIn("no blue placeholder frame", plan["negative_prompt"])
+        self.assertTrue(plan["quality_targets"]["source_series_style_locked"])
 
     def test_generate_step_uses_existing_trained_model(self) -> None:
         model = {
@@ -3989,6 +4072,53 @@ class ManualNamingTests(unittest.TestCase):
             payload = STEP04.transcribe_scene(model, wav_path, cfg, use_fp16=False)
 
         self.assertEqual(model.kwargs.get("language"), "de")
+        self.assertEqual(payload["detected_language"], "de")
+        self.assertEqual(payload["segments"][0]["language"], "de")
+
+    def test_transcribe_scene_uses_text_language_when_whisper_detection_is_wrong(self) -> None:
+        class DummyModel:
+            def __init__(self) -> None:
+                self.kwargs = {}
+
+            def transcribe(self, _path, **kwargs):
+                self.kwargs = kwargs
+                return {
+                    "language": "en",
+                    "segments": [
+                        {
+                            "start": 0.0,
+                            "end": 2.0,
+                            "text": "Ich habe den Plan und das ist nicht richtig.",
+                        },
+                        {
+                            "start": 2.2,
+                            "end": 4.0,
+                            "text": "Wir machen das jetzt anders.",
+                        },
+                    ],
+                }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            wav_path = Path(tmp) / "scene_0001.wav"
+            with wave.open(str(wav_path), "wb") as handle:
+                handle.setnchannels(1)
+                handle.setsampwidth(2)
+                handle.setframerate(24000)
+                handle.writeframes(b"\x00\x00" * 24000)
+
+            model = DummyModel()
+            cfg = {
+                "transcription": {
+                    "language": "auto",
+                    "task": "transcribe",
+                    "merge_gap_seconds": 0.35,
+                    "min_segment_seconds": 0.6,
+                }
+            }
+
+            payload = STEP04.transcribe_scene(model, wav_path, cfg, use_fp16=False)
+
+        self.assertNotIn("language", model.kwargs)
         self.assertEqual(payload["detected_language"], "de")
         self.assertEqual(payload["segments"][0]["language"], "de")
 

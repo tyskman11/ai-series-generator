@@ -40,6 +40,9 @@ The repository root contains the numbered pipeline scripts directly beside `ai_s
 - generated episode runtime now follows the average length of the input episodes instead of collapsing toward short dialogue-only timing
 - finished-episode batches now force fresh storyboard-backend and render outputs by default so stale fallback artifacts do not silently pass through
 - the project-local voice backend now treats original dialogue audio as XTTS reference material, not as a finished generated dialogue line, when voice cloning is forced
+- automatic transcription now cross-checks Whisper language detection against transcript text so German source episodes are less likely to be mislabeled as English
+- generated story keywords now filter German filler/function words such as `halt`, `weswegen`, `eigentlich`, and `irgendwie`
+- episode generation now carries the detected series language into dialogue templates and asks visual backends for source-series-faithful TV framing instead of generic cartoon-style prompts
 - final output quality is still limited when only the project-local fallback backends are used
 
 ## Project Layout
@@ -217,6 +220,7 @@ The project is configured for quality-first finished-episode generation:
 - render-time scene duration now respects the planned per-scene runtime from episode generation instead of compressing most scenes into a short 8 to 22 second window
 - batch and quality-gate output messages now include the generated display title, for example `Folge 19: ... (folge_19)`, instead of relying only on the technical episode ID
 - the quality score can reach `100%` only when generated scene video/lip-sync, cloned dialogue audio, scene mastering, and style/continuity support are all complete
+- generation prompts now include source-series style locks, detected dialogue language, and stronger negative prompts against blue placeholders, filtered still-frame slideshows, and generic cartoon output
 
 Important:
 
