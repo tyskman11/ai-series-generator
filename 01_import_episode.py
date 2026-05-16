@@ -39,6 +39,10 @@ from support_scripts.pipeline_common import (
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Import new episodes from the inbox folder")
     parser.add_argument(
+        "--episode-file",
+        help="Import exactly this inbox file by name or stem instead of auto-selecting the next one.",
+    )
+    parser.add_argument(
         "--all",
         action="store_true",
         help="Import all episodes currently present in the inbox folder instead of only the next one.",
@@ -92,6 +96,22 @@ def purge_already_processed_inbox_videos(
         video.unlink()
         removed += 1
     return removed
+
+
+def resolve_requested_episode_file(inbox_dir: Path, episode_file: str | None) -> Path | None:
+    requested = str(episode_file or "").strip()
+    if not requested:
+        return None
+    requested_path = Path(requested)
+    requested_name = requested_path.name
+    requested_stem = requested_path.stem or requested
+    direct = inbox_dir / requested_name
+    if direct.is_file():
+        return direct
+    for video in list_videos(inbox_dir):
+        if video.name == requested_name or video.stem == requested_stem or video.stem == requested:
+            return video
+    raise FileNotFoundError(f"Inbox episode file not found: {episode_file}")
 
 
 def import_single_episode(video: Path, episodes_dir: Path, metadata_dir: Path) -> bool:
@@ -162,6 +182,25 @@ def main() -> None:
         info(f"Shared NAS workers: enabled ({worker_id})")
 
     lease_root = distributed_step_runtime_root("01_import_episode", "inbox")
+
+    if args.episode_file:
+        video = resolve_requested_episode_file(inbox_dir, args.episode_file)
+        if video is None:
+            info("No matching episode file found in the inbox folder.")
+            return
+        with distributed_item_lease(
+            root=lease_root,
+            lease_name=video.name,
+            cfg=cfg,
+            worker_id=worker_id,
+            enabled=shared_workers,
+            meta={"step": "01_import_episode", "video": video.name, "episode_id": video.stem, "worker_id": worker_id},
+        ) as acquired:
+            if not acquired or not video.exists():
+                info("The requested inbox episode is already being imported by another worker.")
+                return
+            import_single_episode(video, episodes_dir, metadata_dir)
+        return
 
     imported = 0
     if args.all:

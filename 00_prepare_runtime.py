@@ -88,13 +88,56 @@ def ensure_venv() -> Path:
 
 
 def module_available(py: Path, module_name: str) -> bool:
-    result = run([str(py), "-c", f"import {module_name}"], check=False)
+    try:
+        result = subprocess.run(
+            [
+                str(py),
+                "-c",
+                (
+                    "import importlib.util, sys; "
+                    f"sys.exit(0 if importlib.util.find_spec({module_name!r}) is not None else 1)"
+                ),
+            ],
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            timeout=15,
+        )
+    except subprocess.TimeoutExpired:
+        return False
     return result.returncode == 0
 
 
 def module_import_error(py: Path, module_name: str) -> str:
-    result = run([str(py), "-c", f"import {module_name}"], check=False)
+    try:
+        result = subprocess.run(
+            [str(py), "-c", f"import {module_name}"],
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            timeout=45,
+        )
+    except subprocess.TimeoutExpired:
+        return f"import timed out after 45 seconds: {module_name}"
     return (result.stdout or "").strip()
+
+
+def package_query_name(package_name: str) -> str:
+    text = str(package_name or "").strip()
+    for separator in ("[", "==", ">=", "<=", "~=", ">", "<"):
+        if separator in text:
+            text = text.split(separator, 1)[0]
+    return text.strip()
+
+
+def package_installed(py: Path, package_name: str) -> bool:
+    query = package_query_name(package_name)
+    if not query:
+        return False
+    result = run([str(py), "-m", "pip", "show", query], check=False)
+    return result.returncode == 0
 
 
 def runtime_pip_install_command(py: Path, *args: str) -> list[str]:
@@ -164,6 +207,28 @@ def install_group(
     if all(module_available(py, module) for module in modules):
         ok(f"{name} already present.")
         return True
+    if not required and packages and all(package_installed(py, package) for package in packages):
+        log_dir = HOST_RUNTIME_ROOT / "install_logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        log_file = log_dir / f"{name}_{int(time.time())}.log"
+        import_failures = {
+            module: module_import_error(py, module)
+            for module in modules
+            if not module_available(py, module)
+        }
+        with log_file.open("w", encoding="utf-8") as handle:
+            handle.write("Optional package is already installed, but import validation failed. Skipping automatic repair install.\n")
+            handle.write("\n=== import validation failures ===\n")
+            for module, output in import_failures.items():
+                handle.write(f"[{module}]\n{output or 'import failed without output'}\n")
+        detail = ""
+        if import_failures:
+            first_module, first_output = next(iter(import_failures.items()))
+            compact_output = " ".join((first_output or "").split())
+            if compact_output:
+                detail = f" Import test for {first_module} failed: {compact_output}"
+        warn(f"{name} is installed but not import-ready. See {log_file}.{detail}")
+        return False
     info(f"Installing {name} ...")
     result = run(
         runtime_pip_install_command(py, "--upgrade", *(pip_extra_args or []), *packages),
@@ -205,6 +270,7 @@ def missing_optional_runtime_components(status: dict[str, bool]) -> list[str]:
         "facenet_pytorch": "face_recognition/facenet-pytorch",
         "speaker_embeddings": "speaker_embeddings/speechbrain",
         "voice_cloning": "voice_cloning/TTS",
+        "quality_generation": "quality_generation/diffusers",
     }
     for key, label in labels.items():
         if not bool(status.get(key, False)):
@@ -213,49 +279,50 @@ def missing_optional_runtime_components(status: dict[str, bool]) -> list[str]:
 
 
 def torch_status(py: Path) -> dict:
+    probe = """
+import json
+payload = {
+    'available': False,
+    'stack_ready': False,
+    'torch_version': '',
+    'cuda_available': False,
+    'cuda_version': '',
+    'device_count': 0,
+    'device_names': [],
+    'torchvision_available': False,
+    'torchaudio_available': False,
+    'error': '',
+    'torchvision_error': '',
+    'torchaudio_error': '',
+}
+try:
+    import torch
+    payload['available'] = True
+    payload['torch_version'] = getattr(torch, '__version__', '')
+    payload['cuda_available'] = bool(torch.cuda.is_available())
+    payload['cuda_version'] = str(getattr(getattr(torch, 'version', None), 'cuda', '') or '')
+    payload['device_count'] = int(torch.cuda.device_count()) if torch.cuda.is_available() else 0
+    payload['device_names'] = [torch.cuda.get_device_name(i) for i in range(torch.cuda.device_count())] if torch.cuda.is_available() else []
+except Exception as exc:
+    payload['error'] = str(exc)
+try:
+    import torchvision
+    payload['torchvision_available'] = True
+except Exception as exc:
+    payload['torchvision_error'] = str(exc)
+try:
+    import torchaudio
+    payload['torchaudio_available'] = True
+except Exception as exc:
+    payload['torchaudio_error'] = str(exc)
+payload['stack_ready'] = bool(payload['available'] and payload['torchvision_available'])
+print(json.dumps(payload))
+""".strip()
     result = run(
         [
             str(py),
             "-c",
-            (
-                "import json; "
-                "payload = {"
-                "'available': False, "
-                "'stack_ready': False, "
-                "'torch_version': '', "
-                "'cuda_available': False, "
-                "'cuda_version': '', "
-                "'device_count': 0, "
-                "'device_names': [], "
-                "'torchvision_available': False, "
-                "'torchaudio_available': False, "
-                "'error': '', "
-                "'torchvision_error': '', "
-                "'torchaudio_error': ''"
-                "}; "
-                "try:\n"
-                " import torch\n"
-                " payload['available'] = True\n"
-                " payload['torch_version'] = getattr(torch, '__version__', '')\n"
-                " payload['cuda_available'] = bool(torch.cuda.is_available())\n"
-                " payload['cuda_version'] = str(getattr(getattr(torch, 'version', None), 'cuda', '') or '')\n"
-                " payload['device_count'] = int(torch.cuda.device_count()) if torch.cuda.is_available() else 0\n"
-                " payload['device_names'] = [torch.cuda.get_device_name(i) for i in range(torch.cuda.device_count())] if torch.cuda.is_available() else []\n"
-                "except Exception as exc:\n"
-                " payload['error'] = str(exc)\n"
-                "try:\n"
-                " import torchvision\n"
-                " payload['torchvision_available'] = True\n"
-                "except Exception as exc:\n"
-                " payload['torchvision_error'] = str(exc)\n"
-                "try:\n"
-                " import torchaudio\n"
-                " payload['torchaudio_available'] = True\n"
-                "except Exception as exc:\n"
-                " payload['torchaudio_error'] = str(exc)\n"
-                "payload['stack_ready'] = bool(payload['available'] and payload['torchvision_available']); "
-                "print(json.dumps(payload))"
-            ),
+            probe,
         ],
         check=False,
     )
@@ -318,7 +385,8 @@ def install_torch_stack(py: Path, cfg: dict) -> tuple[bool, dict]:
 
     log_dir = HOST_RUNTIME_ROOT / "install_logs"
     log_dir.mkdir(parents=True, exist_ok=True)
-    run([str(py), "-m", "pip", "uninstall", "-y", "torch", "torchvision", "torchaudio"], check=False)
+    if str(os.environ.get("SERIES_FORCE_TORCH_REINSTALL", "")).strip().lower() in {"1", "true", "yes", "y"}:
+        run([str(py), "-m", "pip", "uninstall", "-y", "torch", "torchvision", "torchaudio"], check=False)
     attempts: list[tuple[str, list[str]]] = []
     if wants_gpu and cuda_index_url:
         attempts.append(
@@ -328,8 +396,6 @@ def install_torch_stack(py: Path, cfg: dict) -> tuple[bool, dict]:
                     *runtime_pip_install_command(
                         py,
                         "--upgrade",
-                        "--force-reinstall",
-                        "--no-cache-dir",
                         "--index-url",
                         cuda_index_url,
                         "torch",
@@ -342,14 +408,12 @@ def install_torch_stack(py: Path, cfg: dict) -> tuple[bool, dict]:
     attempts.append(
         (
             "torch_default",
-                [
-                    *runtime_pip_install_command(
-                        py,
-                        "--upgrade",
-                        "--force-reinstall",
-                        "--no-cache-dir",
-                        "torch",
-                        "torchvision",
+            [
+                *runtime_pip_install_command(
+                    py,
+                    "--upgrade",
+                    "torch",
+                    "torchvision",
                     "torchaudio",
                 ),
             ],
@@ -423,6 +487,13 @@ def main() -> None:
             ["whisper"],
             ["openai-whisper"],
         )
+        quality_generation_ok = install_group(
+            py,
+            "quality_generation",
+            ["diffusers", "accelerate", "transformers", "safetensors"],
+            ["diffusers", "accelerate", "transformers", "safetensors"],
+            required=False,
+        )
         facenet_ok = install_group(
             py,
             "face_recognition",
@@ -463,6 +534,7 @@ def main() -> None:
                 "core_ai": core_ok,
                 "scene_detection": scene_ok,
                 "speech_to_text": whisper_ok,
+                "quality_generation": quality_generation_ok,
                 "facenet_pytorch": facenet_ok,
                 "speaker_embeddings": speaker_embeddings_ok,
                 "render_tts": tts_ok,
@@ -472,6 +544,7 @@ def main() -> None:
                         "facenet_pytorch": facenet_ok,
                         "speaker_embeddings": speaker_embeddings_ok,
                         "voice_cloning": voice_clone_ok,
+                        "quality_generation": quality_generation_ok,
                     }
                 ),
                 "updated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
@@ -501,6 +574,7 @@ def main() -> None:
                 "facenet_pytorch": bool(facenet_ok),
                 "speaker_embeddings": bool(speaker_embeddings_ok),
                 "backend_setup_skip_downloads": bool(args.skip_downloads),
+                "quality_generation": bool(quality_generation_ok),
             },
         )
         missing_optional = missing_optional_runtime_components(
@@ -508,6 +582,7 @@ def main() -> None:
                 "facenet_pytorch": facenet_ok,
                 "speaker_embeddings": speaker_embeddings_ok,
                 "voice_cloning": voice_clone_ok,
+                "quality_generation": quality_generation_ok,
             }
         )
         if missing_optional:

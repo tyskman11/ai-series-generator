@@ -95,6 +95,34 @@ class QualityBackendAssetTests(unittest.TestCase):
             self.assertEqual(specs[0]["reference_audio_candidates"], [])
             self.assertTrue(specs[0]["force_voice_cloning"])
 
+    def test_project_local_voice_backend_forced_clone_ignores_stale_line_output(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            output_path = root / "generated" / "line_0001.wav"
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_bytes(b"old-tts")
+            scene_package = {
+                "voice_clone": {
+                    "lines": [
+                        {
+                            "line_index": 1,
+                            "speaker_name": "Babe",
+                            "text": "This must be regenerated as a clone.",
+                            "target_output_audio": str(output_path),
+                            "runtime": {
+                                "engine": "xtts",
+                                "force_voice_cloning": True,
+                                "allow_system_tts_fallback": False,
+                            },
+                        }
+                    ]
+                }
+            }
+
+            specs = VOICE_BACKEND.collect_line_specs(scene_package)
+
+            self.assertIsNone(specs[0]["audio_path"])
+
     def test_support_scripts_bootstrap_project_dir_for_direct_execution(self) -> None:
         configure_source = (PROJECT_DIR / "support_scripts/configure_quality_backends.py").read_text(encoding="utf-8")
         prepare_source = (PROJECT_DIR / "support_scripts/prepare_quality_backends.py").read_text(encoding="utf-8")
@@ -328,6 +356,5 @@ class QualityBackendAssetTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
 
 

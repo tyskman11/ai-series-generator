@@ -118,7 +118,25 @@ class ReviewPreviewTests(unittest.TestCase):
 
             self.assertEqual(targets, [crop_path, context_path])
 
-    def test_preview_open_targets_falls_back_to_raw_images_without_montage(self) -> None:
+    def test_preview_open_targets_prefers_montage_over_raw_crop(self) -> None:
+        try:
+            from PIL import Image
+        except Exception:
+            self.skipTest("Pillow is not available")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            preview_dir = Path(tmpdir)
+            context_path = preview_dir / "scene_001_context.jpg"
+            crop_path = preview_dir / "scene_001_crop.jpg"
+            Image.new("RGB", (120, 90), "navy").save(context_path)
+            Image.new("RGB", (60, 60), "white").save(crop_path)
+
+            targets = STEP06.preview_open_targets("face_001", {"preview_dir": str(preview_dir)})
+
+            self.assertEqual(len(targets), 1)
+            self.assertEqual(targets[0].name, "face_001_montage.jpg")
+
+    def test_preview_open_targets_falls_back_to_raw_images_when_montage_fails(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             preview_dir = Path(tmpdir)
             context_path = preview_dir / "scene_001_context.jpg"
@@ -126,7 +144,8 @@ class ReviewPreviewTests(unittest.TestCase):
             context_path.write_text("context", encoding="utf-8")
             crop_path.write_text("crop", encoding="utf-8")
 
-            targets = STEP06.preview_open_targets("face_001", {"preview_dir": str(preview_dir)})
+            with mock.patch.object(STEP06, "create_face_review_sheet", side_effect=RuntimeError("broken image")):
+                targets = STEP06.preview_open_targets("face_001", {"preview_dir": str(preview_dir)})
 
             self.assertEqual(targets, [crop_path])
 
@@ -157,6 +176,7 @@ class ReviewPreviewTests(unittest.TestCase):
             self.assertIsInstance(preview_window_image, Path)
             assert isinstance(preview_window_image, Path)
             self.assertTrue(str(preview_window_image).startswith(str(local_root)))
+            self.assertEqual(preview_window_image.name, "face_001_montage.jpg")
             open_targets = bundle.get("open_targets", [])
             self.assertTrue(open_targets)
             self.assertEqual(open_targets, [preview_window_image])
@@ -193,6 +213,5 @@ class ReviewPreviewTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
 
 

@@ -149,6 +149,14 @@ def default_quality_backend_asset_targets(cfg: dict[str, Any]) -> list[dict[str,
             "ref": "master",
             "target_dir": "tools/quality_backends/comfyui",
             "required_files": ["main.py", "nodes.py", "server.py", "requirements.txt"],
+        },
+        {
+            "name": "wav2lip",
+            "kind": "git",
+            "repo_url": "https://github.com/Rudrabha/Wav2Lip.git",
+            "ref": "master",
+            "target_dir": "tools/quality_backends/wav2lip",
+            "required_files": ["inference.py"],
         }
     ]
     model_specs = [
@@ -553,6 +561,33 @@ def prepare_quality_backend_assets(cfg: dict[str, Any], *, force: bool, skip_dow
         kind = coalesce_text(target.get("kind", ""))
         state = local_asset_state(target)
         remote_revision = ""
+
+        if skip_downloads:
+            target_dir = asset_target_dir(target)
+            if state.get("inferred_revision") and not read_asset_metadata(target):
+                write_asset_metadata(
+                    target,
+                    {
+                        "kind": kind,
+                        "source": coalesce_text(target.get("repo_url", target.get("repo_id", ""))),
+                        "revision": state["local_revision"],
+                        "updated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                        "target_dir": str(target_dir),
+                    },
+                )
+            results.append(
+                {
+                    **target,
+                    "target_dir": str(target_dir),
+                    "downloaded": False,
+                    "updated": False,
+                    "revision": coalesce_text(state.get("local_revision", "")),
+                    "ready": bool(state.get("ready", False)),
+                    "action": "validated",
+                }
+            )
+            continue
+
         if kind == "git":
             remote_revision = fetch_remote_git_revision(target)
         elif kind == "huggingface":
@@ -566,7 +601,7 @@ def prepare_quality_backend_assets(cfg: dict[str, Any], *, force: bool, skip_dow
         action = "update" if force and kind in {"git", "huggingface"} else resolve_target_action(target, remote_revision)
         target_dir = asset_target_dir(target)
 
-        if skip_downloads or action == "current":
+        if action == "current":
             if state.get("inferred_revision") and not read_asset_metadata(target):
                 write_asset_metadata(
                     target,
@@ -658,4 +693,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

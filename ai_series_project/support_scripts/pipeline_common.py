@@ -31,6 +31,12 @@ HOST_RUNTIME_ROOT = PROJECT_ROOT / "runtime" / "host_runtime"
 CONFIG_PATH = PROJECT_ROOT / "configs" / "project.json"
 CONFIG_TEMPLATE_PATH = PROJECT_ROOT / "configs" / "project.template.json"
 VIDEO_PATTERNS = ("*.mp4", "*.mkv", "*.mov", "*.avi")
+FALLBACK_QUALITY_BACKEND_MARKERS = {
+    "storyboard_scene_runner": ("16_run_storyboard_backend.py", "project_local_image_backend.py"),
+    "finished_episode_image_runner": ("project_local_image_backend.py",),
+    "finished_episode_video_runner": ("project_local_video_backend.py",),
+    "finished_episode_lipsync_runner": ("project_local_lipsync_backend.py",),
+}
 
 try:
     try:
@@ -135,6 +141,7 @@ DEFAULT_CONFIG = {
         "whisper_model_dir": "tools/whisper/models",
         "character_map": "characters/maps/character_map.json",
         "voice_map": "characters/maps/voice_map.json",
+        "character_relationships": "characters/relationships.json",
         "review_queue": "characters/review/review_queue.json",
         "voice_samples": "characters/voice_samples",
         "voice_models": "characters/voice_models",
@@ -165,6 +172,15 @@ DEFAULT_CONFIG = {
         "model_name": "large-v3",
         "cpu_model_name": "large-v3",
         "language": "auto",
+        "auto_language_candidates": ["de", "en", "es", "fr", "it", "pt", "nl", "tr", "pl"],
+        "auto_language_probe_scene_count": 4,
+        "auto_language_probe_min_scene_bytes": 120000,
+        "auto_language_probe_max_seconds": 30.0,
+        "auto_language_min_confidence": 0.35,
+        "auto_language_min_margin": 0.08,
+        "auto_language_forced_probe": True,
+        "auto_language_forced_probe_candidates": 9,
+        "lock_segments_to_episode_language": True,
         "task": "transcribe",
         "merge_gap_seconds": 0.35,
         "min_segment_seconds": 0.6,
@@ -198,6 +214,14 @@ DEFAULT_CONFIG = {
         "max_visible_faces_per_segment": 3,
         "segment_visibility_padding_seconds": 0.35,
         "min_face_size": 32,
+        "strict_face_validation": True,
+        "face_validation_min_internal_features": 1,
+        "face_validation_min_aspect_ratio": 0.58,
+        "face_validation_max_aspect_ratio": 1.38,
+        "face_validation_upper_region_ratio": 0.68,
+        "review_auto_ignore_false_positive_faces": True,
+        "review_false_positive_max_crops": 4,
+        "review_false_positive_min_checked_crops": 1,
         "face_cluster_min_scenes": 2,
         "face_cluster_min_detections": 3,
         "voice_face_match_threshold": 0.6,
@@ -231,7 +255,29 @@ DEFAULT_CONFIG = {
         "estimated_dialogue_line_seconds": 2.7,
         "prefer_original_dialogue_remix": False,
         "language": "auto",
+        "active_series_input": "",
+        "active_character_group": "",
         "style_descriptor": "source-series faithful TV episode frame",
+        "quality_mode": "original_episode_quality_first",
+        "allow_fallbacks": False,
+    },
+    "storyboard_backend": {
+        "allow_local_frame_fallback": False,
+        "allow_existing_local_frame_reuse": False,
+    },
+    "generation_toolkit": {
+        "enabled": True,
+        "strict": False,
+        "timeout_seconds": 120,
+        "max_characters": 5,
+        "phases": {
+            "pre_training": True,
+            "pre_generation": True,
+            "post_story": True,
+            "post_render": True,
+            "post_quality_gate": True,
+            "post_export": True,
+        },
     },
     "foundation_training": {
         "prepare_after_batch": True,
@@ -334,6 +380,10 @@ DEFAULT_CONFIG = {
         "closing_card_seconds": 2.0,
         "audio_pad_seconds": 0.35,
         "voice_rate": 175,
+        "allow_local_motion_fallback": False,
+        "require_generated_scene_video": True,
+        "require_voice_clone_audio": True,
+        "require_lipsync_video": True,
     },
     "release_mode": {
         "enabled": True,
@@ -342,7 +392,11 @@ DEFAULT_CONFIG = {
         "watch_threshold": 0.82,
         "max_regeneration_batch": 8,
         "max_regeneration_retries": 3,
+        "retry_until_pass": True,
+        "max_auto_retry_cycles": 12,
+        "auto_retry_force_full_rerender_when_queue_empty": True,
         "force_finished_episode_generation": True,
+        "allow_project_local_fallback_backends": False,
         "strict_warnings": True,
         "auto_retry_failed_gate": True,
         "auto_retry_update_bible": False,
@@ -363,6 +417,16 @@ DEFAULT_CONFIG = {
                     "nodes.py",
                     "server.py",
                     "requirements.txt",
+                ],
+            },
+            {
+                "name": "wav2lip",
+                "kind": "git",
+                "repo_url": "https://github.com/Rudrabha/Wav2Lip.git",
+                "ref": "master",
+                "target_dir": "tools/quality_backends/wav2lip",
+                "required_files": [
+                    "inference.py",
                 ],
             },
             {
@@ -682,26 +746,65 @@ KEYWORD_BLACKLIST = {
 LANGUAGE_TEXT_MARKERS = {
     "de": {
         "aber",
+        "ach",
+        "also",
+        "auf",
         "auch",
+        "bin",
+        "bist",
+        "bitte",
         "das",
         "dass",
+        "danke",
+        "dein",
+        "deine",
+        "dem",
+        "den",
         "der",
         "die",
+        "doch",
         "du",
         "ein",
         "eine",
+        "er",
+        "es",
         "für",
+        "ganz",
+        "genau",
         "habe",
         "haben",
+        "hat",
+        "hier",
         "ich",
+        "im",
         "ist",
+        "jetzt",
+        "kein",
+        "keine",
+        "komm",
+        "mal",
+        "mein",
+        "meine",
+        "mich",
+        "mit",
+        "muss",
+        "müssen",
+        "nein",
         "nicht",
+        "noch",
+        "nur",
+        "okay",
         "schon",
+        "sie",
+        "so",
         "und",
         "was",
+        "wer",
         "wenn",
+        "wie",
         "wir",
         "wird",
+        "wo",
         "zu",
     },
     "en": {
@@ -1859,7 +1962,12 @@ def scene_quality_assessment(
         visual_score = 0.9
     elif video_source_type == "storyboard_backend_scene_video":
         visual_score = 0.78
-    elif video_source_type in {"local_motion_fallback", "storyboard_motion_fallback", "generated_episode_frame"}:
+    elif video_source_type in {
+        "auto_generated_multishot_video",
+        "local_motion_fallback",
+        "storyboard_motion_fallback",
+        "generated_episode_frame",
+    }:
         visual_score = 0.62
     elif has_generated_scene_video:
         visual_score = 0.74
@@ -1872,6 +1980,7 @@ def scene_quality_assessment(
         visual_score = min(visual_score, 0.18)
     elif asset_source_type == "storyboard_asset" and video_source_type in {
         "",
+        "auto_generated_multishot_video",
         "local_motion_fallback",
         "storyboard_motion_fallback",
         "generated_episode_frame",
@@ -2462,11 +2571,14 @@ def ensure_project_structure(config: dict[str, Any] | None = None, write_config_
         write_json(CONFIG_PATH, merged)
     char_map_path = resolve_project_path(merged["paths"]["character_map"])
     voice_map_path = resolve_project_path(merged["paths"]["voice_map"])
+    relationships_path = resolve_project_path(merged["paths"].get("character_relationships", "characters/relationships.json"))
     review_queue_path = resolve_project_path(merged["paths"]["review_queue"])
     if not char_map_path.exists():
         write_json(char_map_path, {"clusters": {}, "aliases": {}})
     if not voice_map_path.exists():
         write_json(voice_map_path, {"clusters": {}, "aliases": {}})
+    if not relationships_path.exists():
+        write_json(relationships_path, empty_character_relationships())
     if not review_queue_path.exists():
         write_json(review_queue_path, {"items": []})
     return merged
@@ -3733,6 +3845,215 @@ def select_scene_transition(
 
 
 CHARACTER_RELATION_KEYS = ["ally", "enemy", "friend", "family", "romantic", "authority"]
+CHARACTER_RELATIONSHIP_SCHEMA_VERSION = 1
+
+
+def empty_character_relationships() -> dict[str, Any]:
+    return {
+        "version": CHARACTER_RELATIONSHIP_SCHEMA_VERSION,
+        "groups": {},
+        "relationships": [],
+        "series_inputs": {},
+    }
+
+
+def _clean_relation_text(value: Any) -> str:
+    return str(value or "").strip()
+
+
+def _clean_relation_list(values: Any) -> list[str]:
+    if isinstance(values, str):
+        values = [part.strip() for part in re.split(r"[,;]", values)]
+    if not isinstance(values, list):
+        return []
+    cleaned: list[str] = []
+    for value in values:
+        text = _clean_relation_text(value)
+        if text and text not in cleaned:
+            cleaned.append(text)
+    return cleaned
+
+
+def _normalize_group_payload(group_id: str, payload: Any) -> dict[str, Any]:
+    if isinstance(payload, list):
+        payload = {"characters": payload}
+    if not isinstance(payload, dict):
+        payload = {}
+    return {
+        "id": group_id,
+        "label": _clean_relation_text(payload.get("label", "")) or group_id,
+        "description": _clean_relation_text(payload.get("description", "")),
+        "characters": _clean_relation_list(payload.get("characters", [])),
+        "series_inputs": _clean_relation_list(payload.get("series_inputs", [])),
+        "notes": _clean_relation_text(payload.get("notes", "")),
+    }
+
+
+def _normalize_series_input_payload(input_id: str, payload: Any) -> dict[str, Any]:
+    if isinstance(payload, list):
+        payload = {"episode_globs": payload}
+    if not isinstance(payload, dict):
+        payload = {}
+    return {
+        "id": input_id,
+        "label": _clean_relation_text(payload.get("label", "")) or input_id,
+        "description": _clean_relation_text(payload.get("description", "")),
+        "default_group": _clean_relation_text(payload.get("default_group", "")),
+        "episode_globs": _clean_relation_list(payload.get("episode_globs", [])),
+        "notes": _clean_relation_text(payload.get("notes", "")),
+    }
+
+
+def _relationship_source_target(row: dict[str, Any]) -> tuple[str, str]:
+    characters = _clean_relation_list(row.get("characters", []))
+    source = _clean_relation_text(row.get("source", "") or row.get("character_a", ""))
+    target = _clean_relation_text(row.get("target", "") or row.get("character_b", ""))
+    if not source and characters:
+        source = characters[0]
+    if not target and len(characters) > 1:
+        target = characters[1]
+    return source, target
+
+
+def _normalize_relationship_row(row: Any) -> dict[str, Any] | None:
+    if not isinstance(row, dict):
+        return None
+    source, target = _relationship_source_target(row)
+    if not source or not target or source == target:
+        return None
+    relation_type = _clean_relation_text(row.get("type", "") or row.get("relationship", "")) or "related"
+    return {
+        "source": source,
+        "target": target,
+        "type": relation_type,
+        "group": _clean_relation_text(row.get("group", "")),
+        "description": _clean_relation_text(row.get("description", "")),
+        "tone": _clean_relation_text(row.get("tone", "")),
+        "status": _clean_relation_text(row.get("status", "")) or "active",
+        "story_rules": _clean_relation_list(row.get("story_rules", [])),
+        "first_seen": _clean_relation_text(row.get("first_seen", "")),
+        "last_seen": _clean_relation_text(row.get("last_seen", "") or row.get("episode", "")),
+    }
+
+
+def normalize_character_relationships(payload: Any) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        return empty_character_relationships()
+    groups_raw = payload.get("groups", {}) if isinstance(payload.get("groups", {}), dict) else {}
+    series_inputs_raw = payload.get("series_inputs", {}) if isinstance(payload.get("series_inputs", {}), dict) else {}
+    relationships_raw = payload.get("relationships", [])
+    groups = {
+        str(group_id): _normalize_group_payload(str(group_id), group_payload)
+        for group_id, group_payload in groups_raw.items()
+        if str(group_id).strip()
+    }
+    series_inputs = {
+        str(input_id): _normalize_series_input_payload(str(input_id), input_payload)
+        for input_id, input_payload in series_inputs_raw.items()
+        if str(input_id).strip()
+    }
+    if not isinstance(relationships_raw, list):
+        relationships_raw = []
+    relationships: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str, str]] = set()
+    for raw_row in relationships_raw:
+        row = _normalize_relationship_row(raw_row)
+        if not row:
+            continue
+        key = tuple(sorted([row["source"], row["target"]])) + (row["type"], row["group"])
+        if key in seen:
+            continue
+        seen.add(key)
+        relationships.append(row)
+
+    # Backward compatibility: older project files stored pair keys directly at the top level.
+    for key, legacy_row in payload.items():
+        if key in {"version", "groups", "relationships", "series_inputs", "last_updated"}:
+            continue
+        row = _normalize_relationship_row(legacy_row)
+        if not row:
+            continue
+        dedupe_key = tuple(sorted([row["source"], row["target"]])) + (row["type"], row["group"])
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+        relationships.append(row)
+
+    return {
+        "version": int(payload.get("version", CHARACTER_RELATIONSHIP_SCHEMA_VERSION) or CHARACTER_RELATIONSHIP_SCHEMA_VERSION),
+        "groups": groups,
+        "relationships": relationships,
+        "series_inputs": series_inputs,
+        "last_updated": _clean_relation_text(payload.get("last_updated", "")),
+    }
+
+
+def character_relationships_path(cfg: dict[str, Any] | None = None) -> Path:
+    cfg = cfg if isinstance(cfg, dict) else {}
+    paths = cfg.get("paths", {}) if isinstance(cfg.get("paths", {}), dict) else {}
+    return resolve_project_path(str(paths.get("character_relationships", "characters/relationships.json")))
+
+
+def load_character_relationships(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
+    return normalize_character_relationships(read_json(character_relationships_path(cfg), empty_character_relationships()))
+
+
+def write_character_relationships(cfg: dict[str, Any] | None, payload: dict[str, Any]) -> dict[str, Any]:
+    normalized = normalize_character_relationships(payload)
+    normalized["last_updated"] = datetime.now().isoformat()
+    write_json(character_relationships_path(cfg), normalized)
+    return normalized
+
+
+def character_groups_for_names(relationships: Any, names: Iterable[str]) -> list[dict[str, Any]]:
+    payload = normalize_character_relationships(relationships)
+    wanted = {_clean_relation_text(name) for name in names if _clean_relation_text(name)}
+    rows: list[dict[str, Any]] = []
+    for group_id, group in payload.get("groups", {}).items():
+        members = set(group.get("characters", []) or [])
+        if wanted and not (members & wanted):
+            continue
+        rows.append({"id": group_id, **group})
+    return rows
+
+
+def relationships_for_characters(
+    relationships: Any,
+    names: Iterable[str],
+    include_group_members: bool = True,
+) -> list[dict[str, Any]]:
+    payload = normalize_character_relationships(relationships)
+    wanted = {_clean_relation_text(name) for name in names if _clean_relation_text(name)}
+    if include_group_members:
+        for group in character_groups_for_names(payload, wanted):
+            wanted.update(group.get("characters", []) or [])
+    rows: list[dict[str, Any]] = []
+    for row in payload.get("relationships", []):
+        if not wanted or row.get("source") in wanted or row.get("target") in wanted:
+            rows.append(dict(row))
+    return rows
+
+
+def relationship_prompt_fragments(relationships: Any, names: Iterable[str] | None = None, limit: int = 6) -> list[str]:
+    rows = relationships_for_characters(relationships, names or [], include_group_members=True) if names else normalize_character_relationships(relationships).get("relationships", [])
+    fragments: list[str] = []
+    for row in rows[: max(0, limit)]:
+        source = _clean_relation_text(row.get("source", ""))
+        target = _clean_relation_text(row.get("target", ""))
+        relation_type = _clean_relation_text(row.get("type", "related"))
+        if not source or not target:
+            continue
+        details = [
+            _clean_relation_text(row.get("description", "")),
+            _clean_relation_text(row.get("tone", "")),
+            *(_clean_relation_list(row.get("story_rules", []))[:2]),
+        ]
+        detail_text = "; ".join(value for value in details if value)
+        fragment = f"{source} and {target}: {relation_type}"
+        if detail_text:
+            fragment += f" ({detail_text})"
+        fragments.append(fragment)
+    return fragments
 
 
 def track_character_relationship(
@@ -3743,23 +4064,37 @@ def track_character_relationship(
     episode_id: str,
 ) -> None:
     rel_path = project_root / "characters" / "relationships.json"
-    if rel_path.exists():
-        try:
-            rel_data = json.loads(rel_path.read_text(encoding="utf-8"))
-        except Exception:
-            rel_data = {}
-    else:
-        rel_data = {}
-    pair_key = "_".join(sorted([character_a, character_b]))
-    rel_data[pair_key] = {
-        "characters": [character_a, character_b],
-        "relationship": relationship_type,
-        "first_seen": rel_data.get(pair_key, {}).get("first_seen", episode_id),
-        "episode": episode_id,
-    }
-    rel_data["last_updated"] = datetime.now().isoformat()
-    rel_path.parent.mkdir(parents=True, exist_ok=True)
-    rel_path.write_text(json.dumps(rel_data, indent=2), encoding="utf-8")
+    payload = normalize_character_relationships(read_json(rel_path, empty_character_relationships()))
+    source = _clean_relation_text(character_a)
+    target = _clean_relation_text(character_b)
+    relation_type = _clean_relation_text(relationship_type) or "related"
+    if not source or not target or source == target:
+        return
+    pair_key = tuple(sorted([source, target]))
+    updated = False
+    for row in payload["relationships"]:
+        if tuple(sorted([row.get("source", ""), row.get("target", "")])) == pair_key and row.get("type") == relation_type:
+            row["first_seen"] = row.get("first_seen") or episode_id
+            row["last_seen"] = episode_id
+            updated = True
+            break
+    if not updated:
+        payload["relationships"].append(
+            {
+                "source": source,
+                "target": target,
+                "type": relation_type,
+                "group": "",
+                "description": "",
+                "tone": "",
+                "status": "active",
+                "story_rules": [],
+                "first_seen": episode_id,
+                "last_seen": episode_id,
+            }
+        )
+    payload["last_updated"] = datetime.now().isoformat()
+    write_json(rel_path, payload)
 
 
 def get_character_relationship(
@@ -3768,13 +4103,11 @@ def get_character_relationship(
     character_b: str,
 ) -> str | None:
     rel_path = project_root / "characters" / "relationships.json"
-    if rel_path.exists():
-        try:
-            rel_data = json.loads(rel_path.read_text(encoding="utf-8"))
-            pair_key = "_".join(sorted([character_a, character_b]))
-            return rel_data.get(pair_key, {}).get("relationship")
-        except Exception:
-            pass
+    payload = normalize_character_relationships(read_json(rel_path, empty_character_relationships()))
+    pair_key = tuple(sorted([_clean_relation_text(character_a), _clean_relation_text(character_b)]))
+    for row in payload.get("relationships", []):
+        if tuple(sorted([row.get("source", ""), row.get("target", "")])) == pair_key:
+            return row.get("type") or row.get("relationship")
     return None
 
 
@@ -3959,13 +4292,9 @@ def detect_language_from_text(text: object, fallback: str = "") -> str:
     tokens = [token.lower() for token in tokens_from_text(content)]
     if not tokens:
         return normalized_fallback
-    token_set = set(tokens)
     scores: dict[str, int] = {}
     for language, markers in LANGUAGE_TEXT_MARKERS.items():
-        scores[language] = len(token_set & markers)
-        accent_hints = LANGUAGE_ACCENT_HINTS.get(language, "")
-        if accent_hints:
-            scores[language] += sum(1 for char in content if char in accent_hints)
+        scores[language] = language_text_marker_score(content, language)
     ranked = sorted(scores.items(), key=lambda item: (-item[1], item[0]))
     if ranked:
         best_language, best_score = ranked[0]
@@ -3975,6 +4304,19 @@ def detect_language_from_text(text: object, fallback: str = "") -> str:
         if best_score >= 3 and best_score > second_score:
             return best_language
     return normalized_fallback
+
+
+def language_text_marker_score(text: object, language: object) -> int:
+    language_code = normalize_language_code(language)
+    if not language_code:
+        return 0
+    content = coalesce_text(str(text or "")).lower()
+    markers = LANGUAGE_TEXT_MARKERS.get(language_code, set())
+    score = sum(1 for token in tokens_from_text(content) if token in markers)
+    accent_hints = LANGUAGE_ACCENT_HINTS.get(language_code, "")
+    if accent_hints:
+        score += sum(3 for char in content if char in accent_hints)
+    return score
 
 
 def merge_language_counts(*mappings: object) -> dict[str, int]:
@@ -4163,21 +4505,21 @@ def ensure_foundation_training_ready(
         return status
     if not status["summary_exists"]:
         raise RuntimeError(
-            "Foundation training is missing. Run 08_prepare_foundation_training.py and 09_train_foundation_models.py before generation or render."
+            "Foundation training is missing. Run 09_prepare_foundation_training.py and 10_train_foundation_models.py before generation or render."
         )
     if not status["summary_new_enough"]:
         raise RuntimeError(
-        "Foundation training is older than the current series model. Run 08_prepare_foundation_training.py and 09_train_foundation_models.py again after 07_train_series_model.py."
+        "Foundation training is older than the current series model. Run 09_prepare_foundation_training.py and 10_train_foundation_models.py again after 08_train_series_model.py."
         )
     if status["missing_characters"]:
         missing = ", ".join(status["missing_characters"])
         raise RuntimeError(
-            f"Trained foundation packs are missing for these characters: {missing}. Run 08_prepare_foundation_training.py and 09_train_foundation_models.py again."
+            f"Trained foundation packs are missing for these characters: {missing}. Run 09_prepare_foundation_training.py and 10_train_foundation_models.py again."
         )
     if status["weak_characters"]:
         weak = ", ".join(status["weak_characters"])
         raise RuntimeError(
-            f"Usable voice samples are missing in training for these characters: {weak}. Check 05/08 and then run 08_prepare_foundation_training.py and 09_train_foundation_models.py again."
+            f"Usable voice samples are missing in training for these characters: {weak}. Check 05/08 and then run 09_prepare_foundation_training.py and 10_train_foundation_models.py again."
         )
     return status
 
@@ -4277,21 +4619,21 @@ def ensure_adapter_training_ready(
         return status
     if not status["summary_exists"]:
         raise RuntimeError(
-        "Adapter training is missing. Run 10_train_adapter_models.py before generation or render."
+        "Adapter training is missing. Run 11_train_adapter_models.py before generation or render."
         )
     if not status["summary_new_enough"]:
         raise RuntimeError(
-        "Adapter training is older than the current foundation training. Run 10_train_adapter_models.py again after 09_train_foundation_models.py."
+        "Adapter training is older than the current foundation training. Run 11_train_adapter_models.py again after 10_train_foundation_models.py."
         )
     if status["missing_characters"]:
         missing = ", ".join(status["missing_characters"])
         raise RuntimeError(
-        f"Trained adapter profiles are missing for these characters: {missing}. Run 10_train_adapter_models.py again."
+        f"Trained adapter profiles are missing for these characters: {missing}. Run 11_train_adapter_models.py again."
         )
     if status["weak_characters"]:
         weak = ", ".join(status["weak_characters"])
         raise RuntimeError(
-        f"Adapter profiles are still too weak for these characters: {weak}. Check 09/10 and then run 10_train_adapter_models.py again."
+        f"Adapter profiles are still too weak for these characters: {weak}. Check 09/10 and then run 11_train_adapter_models.py again."
         )
     return status
 
@@ -4379,21 +4721,21 @@ def ensure_fine_tune_training_ready(
         return status
     if not status["summary_exists"]:
         raise RuntimeError(
-        "Fine-tune training is missing. Run 11_train_fine_tune_models.py before generation or render."
+        "Fine-tune training is missing. Run 12_train_fine_tune_models.py before generation or render."
         )
     if not status["summary_new_enough"]:
         raise RuntimeError(
-        "Fine-tune training is older than the current adapter training. Run 11_train_fine_tune_models.py again after 10_train_adapter_models.py."
+        "Fine-tune training is older than the current adapter training. Run 12_train_fine_tune_models.py again after 11_train_adapter_models.py."
         )
     if status["missing_characters"]:
         missing = ", ".join(status["missing_characters"])
         raise RuntimeError(
-        f"Trained fine-tune profiles are missing for these characters: {missing}. Run 11_train_fine_tune_models.py again."
+        f"Trained fine-tune profiles are missing for these characters: {missing}. Run 12_train_fine_tune_models.py again."
         )
     if status["weak_characters"]:
         weak = ", ".join(status["weak_characters"])
         raise RuntimeError(
-        f"Fine-tune profiles are still too weak for these characters: {weak}. Run 11_train_fine_tune_models.py again."
+        f"Fine-tune profiles are still too weak for these characters: {weak}. Run 12_train_fine_tune_models.py again."
         )
     return status
 
@@ -4521,21 +4863,21 @@ def ensure_backend_fine_tune_ready(
         return status
     if not status["summary_exists"]:
         raise RuntimeError(
-                "Backend fine-tune runs are missing. Run 12_run_backend_finetunes.py before generation or render."
+                "Backend fine-tune runs are missing. Run 13_run_backend_finetunes.py before generation or render."
         )
     if not status["summary_new_enough"]:
         raise RuntimeError(
-                "Backend fine-tune runs are older than the current fine-tune training. Run 12_run_backend_finetunes.py again after 11_train_fine_tune_models.py."
+                "Backend fine-tune runs are older than the current fine-tune training. Run 13_run_backend_finetunes.py again after 12_train_fine_tune_models.py."
         )
     if status["missing_characters"]:
         missing = ", ".join(status["missing_characters"])
         raise RuntimeError(
-                f"Backend fine-tune runs are missing for these characters: {missing}. Run 12_run_backend_finetunes.py again."
+                f"Backend fine-tune runs are missing for these characters: {missing}. Run 13_run_backend_finetunes.py again."
         )
     if status["weak_characters"]:
         weak = ", ".join(status["weak_characters"])
         raise RuntimeError(
-                f"Backend fine-tune runs are still too weak for these characters: {weak}. Run 12_run_backend_finetunes.py again."
+                f"Backend fine-tune runs are still too weak for these characters: {weak}. Run 13_run_backend_finetunes.py again."
         )
     return status
 
@@ -4667,6 +5009,31 @@ def external_backend_runner_prerequisite_gaps(
     return missing
 
 
+def external_backend_runner_text_fragments(config: dict[str, Any], runner_name: str) -> list[str]:
+    external_cfg = config.get("external_backends", {}) if isinstance(config.get("external_backends"), dict) else {}
+    runner_cfg = external_cfg.get(runner_name, {}) if isinstance(external_cfg.get(runner_name), dict) else {}
+    fragments: list[str] = []
+    command_template = runner_cfg.get("command_template", runner_cfg.get("command", []))
+    if isinstance(command_template, str):
+        fragments.append(command_template)
+    elif isinstance(command_template, list):
+        fragments.extend(str(part or "") for part in command_template)
+    environment = runner_cfg.get("environment", {}) if isinstance(runner_cfg.get("environment"), dict) else {}
+    fragments.extend(str(value or "") for value in environment.values())
+    return [fragment for fragment in fragments if fragment.strip()]
+
+
+def external_backend_uses_fallback_marker(config: dict[str, Any], runner_name: str) -> str:
+    markers = FALLBACK_QUALITY_BACKEND_MARKERS.get(runner_name, ())
+    if not markers:
+        return ""
+    haystack = "\n".join(external_backend_runner_text_fragments(config, runner_name)).lower()
+    for marker in markers:
+        if marker.lower() in haystack:
+            return marker
+    return ""
+
+
 def prepare_quality_backend_assets_runtime(
     *,
     skip_downloads: bool = False,
@@ -4700,13 +5067,34 @@ def prepare_quality_backend_assets_runtime(
 
 def quality_first_requirements_report(config: dict[str, Any]) -> dict[str, Any]:
     cloning_cfg = config.get("cloning", {}) if isinstance(config.get("cloning"), dict) else {}
+    render_cfg = config.get("render", {}) if isinstance(config.get("render"), dict) else {}
+    generation_cfg = config.get("generation", {}) if isinstance(config.get("generation"), dict) else {}
+    storyboard_backend_cfg = config.get("storyboard_backend", {}) if isinstance(config.get("storyboard_backend"), dict) else {}
     missing: list[str] = []
     warnings: list[str] = []
 
     if not release_mode_enabled(config):
         missing.append("release_mode.enabled must be true")
+    if bool(generation_cfg.get("allow_fallbacks", False)):
+        missing.append("generation.allow_fallbacks must be false")
+    if not bool(cloning_cfg.get("enable_voice_cloning", False)):
+        missing.append("cloning.enable_voice_cloning must be true")
+    if not bool(cloning_cfg.get("force_voice_cloning", False)):
+        missing.append("cloning.force_voice_cloning must be true")
+    if not bool(cloning_cfg.get("require_trained_voice_models", False)):
+        missing.append("cloning.require_trained_voice_models must be true")
     if bool(cloning_cfg.get("allow_system_tts_fallback", True)):
         missing.append("cloning.allow_system_tts_fallback must be false")
+    if bool(storyboard_backend_cfg.get("allow_local_frame_fallback", False)):
+        missing.append("storyboard_backend.allow_local_frame_fallback must be false")
+    if bool(render_cfg.get("allow_local_motion_fallback", False)):
+        missing.append("render.allow_local_motion_fallback must be false")
+    if not bool(render_cfg.get("require_generated_scene_video", True)):
+        missing.append("render.require_generated_scene_video must be true")
+    if not bool(render_cfg.get("require_voice_clone_audio", True)):
+        missing.append("render.require_voice_clone_audio must be true")
+    if not bool(render_cfg.get("require_lipsync_video", True)):
+        missing.append("render.require_lipsync_video must be true")
     if not bool(cloning_cfg.get("enable_original_line_reuse", False)):
         missing.append("cloning.enable_original_line_reuse must be true")
     if not bool(cloning_cfg.get("enable_lipsync", False)):
@@ -4733,10 +5121,20 @@ def quality_first_requirements_report(config: dict[str, Any]) -> dict[str, Any]:
         warnings.append("cloning.voice_clone_engine is still set to a fallback-oriented value")
 
     release_cfg = config.get("release_mode", {}) if isinstance(config.get("release_mode"), dict) else {}
+    allow_project_local_fallback_backends = bool(release_cfg.get("allow_project_local_fallback_backends", False))
     if float(release_cfg.get("min_episode_quality", 0.0) or 0.0) < 0.85:
         warnings.append("release_mode.min_episode_quality is below the recommended quality-first threshold")
     if int(release_cfg.get("max_weak_scenes", 0) or 0) > 0:
         warnings.append("release_mode.max_weak_scenes still allows weak scenes to pass")
+    if allow_project_local_fallback_backends:
+        missing.append("release_mode.allow_project_local_fallback_backends must be false")
+    else:
+        for runner_name in required_runners:
+            fallback_marker = external_backend_uses_fallback_marker(config, runner_name)
+            if fallback_marker:
+                missing.append(
+                    f"external_backends.{runner_name} uses fallback backend '{fallback_marker}' instead of a real generation backend"
+                )
 
     return {
         "ready": not missing,

@@ -51,6 +51,9 @@ class QualityFirstModeTests(unittest.TestCase):
         cfg = {
             "release_mode": {"enabled": True, "min_episode_quality": 0.9, "max_weak_scenes": 0},
             "cloning": {
+                "enable_voice_cloning": True,
+                "force_voice_cloning": True,
+                "require_trained_voice_models": True,
                 "allow_system_tts_fallback": False,
                 "enable_original_line_reuse": True,
                 "enable_lipsync": True,
@@ -73,7 +76,7 @@ class QualityFirstModeTests(unittest.TestCase):
 
     def test_ensure_quality_first_ready_raises_clear_error(self) -> None:
         with self.assertRaisesRegex(RuntimeError, "original-episode quality"):
-            pipeline_common.ensure_quality_first_ready({}, context_label="56_generate_finished_episodes.py")
+            pipeline_common.ensure_quality_first_ready({}, context_label="23_generate_finished_episodes.py")
 
     def test_quality_first_report_flags_missing_runner_environment_variables(self) -> None:
         runner = {
@@ -84,6 +87,9 @@ class QualityFirstModeTests(unittest.TestCase):
         cfg = {
             "release_mode": {"enabled": True, "min_episode_quality": 0.9, "max_weak_scenes": 0},
             "cloning": {
+                "enable_voice_cloning": True,
+                "force_voice_cloning": True,
+                "require_trained_voice_models": True,
                 "allow_system_tts_fallback": False,
                 "enable_original_line_reuse": True,
                 "enable_lipsync": True,
@@ -150,17 +156,71 @@ class QualityFirstModeTests(unittest.TestCase):
                 resolved = backend_common.find_project_local_ffmpeg()
             self.assertEqual(resolved, str(runtime_target))
 
-    def test_configured_quality_backends_use_runtime_python_and_project_local_defaults(self) -> None:
+    def test_configured_quality_backends_require_real_visual_backend_commands(self) -> None:
         backends = STEP58.configured_backends()
+        storyboard_runner = backends["storyboard_scene_runner"]
         image_runner = backends["finished_episode_image_runner"]
+        video_runner = backends["finished_episode_video_runner"]
+        lipsync_runner = backends["finished_episode_lipsync_runner"]
+        voice_runner = backends["finished_episode_voice_runner"]
         master_runner = backends["finished_episode_master_runner"]
 
+        self.assertEqual(storyboard_runner["command_template"][0], "{python}")
+        self.assertIn("storyboard_runner.py", storyboard_runner["command_template"][1])
+        self.assertIn("local_diffusion_image_backend.py", storyboard_runner["environment"]["SERIES_STORYBOARD_BACKEND_COMMAND"])
+        self.assertEqual(storyboard_runner["required_python_modules"], ["diffusers"])
         self.assertEqual(image_runner["command_template"][0], "{python}")
         self.assertEqual(image_runner["required_commands"], [])
         self.assertIn("SERIES_IMAGE_BACKEND_COMMAND", image_runner["environment"])
-        self.assertIn("project_local_image_backend.py", image_runner["environment"]["SERIES_IMAGE_BACKEND_COMMAND"])
+        self.assertIn("local_diffusion_image_backend.py", image_runner["environment"]["SERIES_IMAGE_BACKEND_COMMAND"])
+        self.assertEqual(image_runner["required_python_modules"], ["diffusers"])
+        self.assertIn("local_ltx_video_backend.py", video_runner["environment"]["SERIES_VIDEO_BACKEND_COMMAND"])
+        self.assertEqual(video_runner["required_python_modules"], ["diffusers"])
+        self.assertIn("local_wav2lip_backend.py", lipsync_runner["environment"]["SERIES_LIPSYNC_BACKEND_COMMAND"])
+        self.assertIn("local_xtts_voice_backend.py", voice_runner["environment"]["SERIES_VOICE_BACKEND_COMMAND"])
+        self.assertEqual(voice_runner["required_python_modules"], ["TTS"])
         self.assertEqual(master_runner["command_template"][0], "{python}")
         self.assertEqual(master_runner["required_commands"], [])
+
+    def test_quality_first_report_rejects_fallback_visual_backends(self) -> None:
+        runner = {"enabled": True, "command_template": ["python", "runner.py"]}
+        cfg = {
+            "release_mode": {
+                "enabled": True,
+                "min_episode_quality": 0.9,
+                "max_weak_scenes": 0,
+                "allow_project_local_fallback_backends": False,
+            },
+            "cloning": {
+                "enable_voice_cloning": True,
+                "force_voice_cloning": True,
+                "require_trained_voice_models": True,
+                "allow_system_tts_fallback": False,
+                "enable_original_line_reuse": True,
+                "enable_lipsync": True,
+                "voice_clone_engine": "xtts",
+            },
+            "external_backends": {
+                "storyboard_scene_runner": dict(runner),
+                "finished_episode_image_runner": {
+                    "enabled": True,
+                    "command_template": ["python", "tools/quality_backends/image_runner.py"],
+                    "environment": {"SERIES_IMAGE_BACKEND_COMMAND": '"{python}" "tools/quality_backends/project_local_image_backend.py"'},
+                },
+                "finished_episode_video_runner": dict(runner),
+                "finished_episode_voice_runner": dict(runner),
+                "finished_episode_lipsync_runner": dict(runner),
+                "finished_episode_master_runner": dict(runner),
+            },
+        }
+
+        report = pipeline_common.quality_first_requirements_report(cfg)
+
+        self.assertFalse(report["ready"])
+        self.assertIn(
+            "external_backends.finished_episode_image_runner uses fallback backend 'project_local_image_backend.py' instead of a real generation backend",
+            report["missing"],
+        )
 
     def test_python_command_prerequisite_uses_active_runtime(self) -> None:
         cfg = {

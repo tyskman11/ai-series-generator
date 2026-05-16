@@ -103,7 +103,9 @@ def collect_line_specs(scene_package: dict) -> list[dict]:
         original_reference = line.get("original_voice_reference", {}) if isinstance(line.get("original_voice_reference"), dict) else {}
         runtime_cfg = line.get("runtime", {}) if isinstance(line.get("runtime", {}), dict) else {}
         force_voice_cloning = bool(runtime_cfg.get("force_voice_cloning", True))
-        candidate = existing_file_path(line.get("target_output_audio", ""))
+        candidate = None
+        if not force_voice_cloning:
+            candidate = existing_file_path(line.get("target_output_audio", ""))
         if candidate is None and not force_voice_cloning:
             candidate = existing_file_path(original_reference.get("audio_path", ""))
         prepared.append(
@@ -245,12 +247,16 @@ def synthesize_missing_lines(temp_root: Path, line_specs: list[dict]) -> tuple[d
     created, failures = synthesize_missing_lines_xtts(temp_root, line_specs)
     if created:
         return created, "xtts_voice_clone"
+    force_clone = any(bool(line.get("force_voice_cloning", True)) for line in line_specs)
     runtime_cfg = {}
     for line in line_specs:
         if isinstance(line.get("runtime", {}), dict):
             runtime_cfg = line.get("runtime", {})
             if runtime_cfg:
                 break
+    if force_clone:
+        detail = "; ".join(failures) if failures else "No character reference audio is available for XTTS synthesis."
+        raise RuntimeError(f"Project-local voice cloning could not synthesize the missing lines. {detail}")
     if not bool(runtime_cfg.get("allow_system_tts_fallback", False)):
         detail = "; ".join(failures) if failures else "No character reference audio is available for XTTS synthesis."
         raise RuntimeError(f"Project-local voice cloning could not synthesize the missing lines. {detail}")

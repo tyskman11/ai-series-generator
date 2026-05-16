@@ -30,16 +30,16 @@ def load_module(filename: str, module_name: str):
     return module
 
 
-STEP15 = load_module("16_render_episode.py", "step15_regeneration")
-STEP52 = load_module("17_quality_gate.py", "step52_regeneration")
-STEP53 = load_module("18_regenerate_weak_scenes.py", "step53_regeneration")
+STEP15 = load_module("17_render_episode.py", "step15_regeneration")
+STEP52 = load_module("18_quality_gate.py", "step52_regeneration")
+STEP53 = load_module("19_regenerate_weak_scenes.py", "step53_regeneration")
 
 
 class RegenerationQueueTests(unittest.TestCase):
     def test_quality_gate_parse_args_accepts_shared_worker_flags(self) -> None:
         with mock.patch(
             "sys.argv",
-            ["17_quality_gate.py", "--episode-id", "folge_11", "--worker-id", "pc2", "--no-shared-workers"],
+            ["18_quality_gate.py", "--episode-id", "folge_11", "--worker-id", "pc2", "--no-shared-workers"],
         ):
             args = STEP52.parse_args()
 
@@ -176,7 +176,7 @@ class RegenerationQueueTests(unittest.TestCase):
             scene_ids=["scene_001"],
         )
 
-        quality_gate_steps = [step for step in plan if step.get("script") == "17_quality_gate.py"]
+        quality_gate_steps = [step for step in plan if step.get("script") == "18_quality_gate.py"]
         self.assertEqual(len(quality_gate_steps), 1)
         quality_gate_args = quality_gate_steps[0]["args"]
         self.assertIn("--no-auto-retry", quality_gate_args)
@@ -202,7 +202,7 @@ class RegenerationQueueTests(unittest.TestCase):
 
         self.assertEqual(loaded_report_path, report_path)
         self.assertEqual(loaded_report["episode_id"], "episode_001")
-        self.assertEqual(run_script.call_args.args[0], "17_quality_gate.py")
+        self.assertEqual(run_script.call_args.args[0], "18_quality_gate.py")
         gate_args = run_script.call_args.args[1]
         self.assertIn("--no-auto-retry", gate_args)
         self.assertIn("--min-quality", gate_args)
@@ -235,7 +235,7 @@ class RegenerationQueueTests(unittest.TestCase):
         self.assertIn("4", command)
         self.assertIn("--strict", command)
         self.assertIn("--update-bible", command)
-        self.assertTrue(str(command[1]).endswith("18_regenerate_weak_scenes.py"))
+        self.assertTrue(str(command[1]).endswith("19_regenerate_weak_scenes.py"))
         self.assertEqual(Path(command[1]).parent, STEP52.WORKSPACE_ROOT)
 
     def test_regenerate_main_refreshes_gate_when_overrides_are_passed(self) -> None:
@@ -318,15 +318,15 @@ class RegenerationQueueTests(unittest.TestCase):
             manifest = {
                 "regeneration_queue": [{"scene_id": "scene_001", "quality_percent": 41}],
                 "rerun_plan": [
-                    {"script": "15_run_storyboard_backend.py", "args": ["--episode-id", "episode_001", "--force"]},
-                    {"script": "16_render_episode.py", "args": ["--episode-id", "episode_001", "--force"]},
-                    {"script": "17_quality_gate.py", "args": ["--episode-id", "episode_001", "--no-auto-retry"]},
+                    {"script": "16_run_storyboard_backend.py", "args": ["--episode-id", "episode_001", "--force"]},
+                    {"script": "17_render_episode.py", "args": ["--episode-id", "episode_001", "--force"]},
+                    {"script": "18_quality_gate.py", "args": ["--episode-id", "episode_001", "--no-auto-retry"]},
                 ],
                 "manifest_path": str(manifest_path),
             }
 
             def fake_run_script(script_name: str, _args: list[str], *, allow_failure: bool = False):
-                return mock.Mock(returncode=1 if script_name == "17_quality_gate.py" else 0)
+                return mock.Mock(returncode=1 if script_name == "18_quality_gate.py" else 0)
 
             with mock.patch.object(STEP53, "parse_args", return_value=args), mock.patch.object(
                 STEP53, "load_config", return_value={"release_mode": {"max_regeneration_retries": 3}}
@@ -359,7 +359,7 @@ class RegenerationQueueTests(unittest.TestCase):
             ):
                 STEP53.main()
 
-        quality_gate_calls = [call for call in run_script_mock.call_args_list if call.args[0] == "17_quality_gate.py"]
+        quality_gate_calls = [call for call in run_script_mock.call_args_list if call.args[0] == "18_quality_gate.py"]
         self.assertEqual(len(quality_gate_calls), 1)
         self.assertTrue(quality_gate_calls[0].kwargs["allow_failure"])
 
@@ -597,6 +597,76 @@ class RegenerationQueueTests(unittest.TestCase):
             ):
                 STEP52.main()
 
+    def test_quality_gate_main_retries_until_pass_after_failed_retry_cycle(self) -> None:
+        args = argparse.Namespace(
+            episode_id="episode_001",
+            min_quality=None,
+            max_weak_scenes=None,
+            max_regeneration_batch=None,
+            max_regeneration_retries=None,
+            strict=False,
+            print_json=False,
+            auto_retry=True,
+            no_auto_retry=False,
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            report_path = Path(tmpdir) / "episode_001_quality_gate.json"
+            with mock.patch.object(STEP52, "parse_args", return_value=args), mock.patch.object(
+                STEP52,
+                "load_config",
+                return_value={"release_mode": {"retry_until_pass": True, "max_auto_retry_cycles": 3}},
+            ), mock.patch.object(
+                STEP52,
+                "resolve_episode_artifacts",
+                return_value={"episode_id": "episode_001", "display_title": "Episode 001"},
+            ), mock.patch.object(
+                STEP52, "load_scene_quality_rows", return_value=[{"scene_id": "scene_001", "quality_score": 0.31}]
+            ), mock.patch.object(
+                STEP52,
+                "release_quality_gate",
+                return_value={"passed": False, "min_quality_required": 0.68, "weak_scene_count": 1, "max_weak_scenes_allowed": 0},
+            ), mock.patch.object(
+                STEP52, "queue_scenes_for_regeneration", return_value=[{"scene_id": "scene_001", "quality_percent": 31}]
+            ), mock.patch.object(
+                STEP52, "build_warnings", return_value=[]
+            ), mock.patch.object(
+                STEP52, "quality_gate_report_path", return_value=report_path
+            ), mock.patch.object(
+                STEP52, "persist_quality_gate_result"
+            ), mock.patch.object(
+                STEP52,
+                "reload_quality_gate_report",
+                side_effect=[
+                    (
+                        {"release_mode": {"retry_until_pass": True, "max_auto_retry_cycles": 3}},
+                        {"episode_id": "episode_001", "display_title": "Episode 001"},
+                        report_path,
+                        {
+                            "release_gate": {"passed": False},
+                            "strict_fail": False,
+                            "regeneration_queue": [{"scene_id": "scene_001", "quality_percent": 54}],
+                        },
+                    ),
+                    (
+                        {"release_mode": {"retry_until_pass": True, "max_auto_retry_cycles": 3}},
+                        {"episode_id": "episode_001", "display_title": "Episode 001"},
+                        report_path,
+                        {"release_gate": {"passed": True}, "strict_fail": False, "regeneration_queue": []},
+                    ),
+                ],
+            ), mock.patch.object(
+                STEP52, "headline"
+            ), mock.patch.object(
+                STEP52, "info"
+            ), mock.patch.object(
+                STEP52, "ok"
+            ), mock.patch.object(
+                STEP52.subprocess, "run", return_value=mock.Mock(returncode=0)
+            ) as run_mock:
+                STEP52.main()
+
+        self.assertEqual(run_mock.call_count, 2)
+
     def test_strict_warnings_enabled_accepts_flag_or_config(self) -> None:
         self.assertTrue(STEP52.strict_warnings_enabled({}, argparse.Namespace(strict=True)))
         self.assertTrue(
@@ -651,6 +721,5 @@ class RegenerationQueueTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
 
 

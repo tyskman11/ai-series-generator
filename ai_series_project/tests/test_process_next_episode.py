@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import sys
 from pathlib import Path
@@ -25,14 +25,14 @@ def load_module(filename: str, module_name: str):
     return module
 
 
-PIPELINE = load_module("support_scripts/pipeline_common.py", "pipeline_common_step99_test")
-STEP99 = load_module("57_process_next_episode.py", "step99_process_test")
+PIPELINE = load_module("support_scripts/pipeline_common.py", "pipeline_common_step23_test")
+STEP23 = load_module("24_process_next_episode.py", "step23_process_test")
 
 
 class ProcessNextEpisodeTests(unittest.TestCase):
-    def test_step99_imports_shared_project_root(self) -> None:
-        self.assertTrue(hasattr(STEP99, "PROJECT_ROOT"))
-        self.assertEqual(STEP99.PROJECT_ROOT, PIPELINE.PROJECT_ROOT)
+    def test_step23_imports_shared_project_root(self) -> None:
+        self.assertTrue(hasattr(STEP23, "PROJECT_ROOT"))
+        self.assertEqual(STEP23.PROJECT_ROOT, PIPELINE.PROJECT_ROOT)
 
 
 if __name__ == "__main__":

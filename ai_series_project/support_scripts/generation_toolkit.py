@@ -1,0 +1,282 @@
+from __future__ import annotations
+
+import subprocess
+from dataclasses import dataclass
+from datetime import datetime
+from pathlib import Path
+from typing import Any
+
+from support_scripts.pipeline_common import (
+    PROJECT_ROOT,
+    SCRIPT_DIR,
+    info,
+    read_json,
+    resolve_project_path,
+    runtime_python,
+    warn,
+    write_json,
+)
+
+
+OPTIONAL_TOOL_ROOT = PROJECT_ROOT / "support_scripts" / "optional_tools"
+REPORT_ROOT = PROJECT_ROOT / "runtime" / "generation_toolkit"
+
+
+@dataclass(frozen=True)
+class ToolSpec:
+    script: str
+    phases: tuple[str, ...]
+    purpose: str
+    episode_scoped: bool = False
+    character_scoped: bool = False
+    args: tuple[str, ...] = ()
+    manual_only: bool = False
+    manual_reason: str = ""
+    output_role: str = "quality_signal"
+
+
+TOOL_SPECS: tuple[ToolSpec, ...] = (
+    ToolSpec("22_analyze_patterns.py", ("pre_generation",), "Mine recurring story, dialogue, and location patterns.", output_role="series_memory"),
+    ToolSpec("23_character_timeline.py", ("pre_generation",), "Build continuity context for recurring characters.", character_scoped=True, output_role="character_continuity"),
+    ToolSpec("24_mood_analyzer.py", ("post_render",), "Check scene mood balance against episode intent.", episode_scoped=True),
+    ToolSpec("25_merge_episodes.py", ("manual",), "Merge selected episode packages when a season-level edit needs it.", manual_only=True, manual_reason="Requires an explicit episode list and output id."),
+    ToolSpec("26_subtitle_generator.py", ("post_render", "post_export"), "Generate watchable subtitles from the rendered dialogue plan.", episode_scoped=True, output_role="delivery_asset"),
+    ToolSpec("27_multi_language_subtitle.py", ("post_export",), "Prepare translated subtitle variants for delivery.", episode_scoped=True, output_role="delivery_asset"),
+    ToolSpec("28_chapter_marker.py", ("post_export",), "Create chapter markers from scene timing.", episode_scoped=True, output_role="delivery_asset"),
+    ToolSpec("29_trailer_generator.py", ("post_export",), "Select trailer-worthy moments from the finished episode.", episode_scoped=True, output_role="marketing_asset"),
+    ToolSpec("30_recap_generator.py", ("pre_generation",), "Summarize previous continuity before writing the next episode.", args=("--season", "1"), output_role="series_memory"),
+    ToolSpec("31_batch_exporter.py", ("post_export",), "Prepare multi-format export jobs.", episode_scoped=True, output_role="delivery_asset"),
+    ToolSpec("32_highlights_extractor.py", ("post_export",), "Extract highlight candidates from the finished episode.", episode_scoped=True, output_role="marketing_asset"),
+    ToolSpec("33_voice_clone_detector.py", ("pre_training",), "Check available speaker material for cloning consistency.", output_role="voice_quality"),
+    ToolSpec("34_multi_season_tracker.py", ("pre_generation",), "Track season-level character and story continuity.", output_role="series_memory"),
+    ToolSpec("35_metadata_generator.py", ("post_export",), "Generate platform metadata for the finished episode.", episode_scoped=True, output_role="delivery_asset"),
+    ToolSpec("36_auto_editor.py", ("post_render",), "Build an edit decision list for broadcast pacing.", episode_scoped=True, output_role="edit_quality"),
+    ToolSpec("37_script_writer.py", ("post_render",), "Generate alternate dialogue suggestions for weak or missing scenes.", episode_scoped=True, output_role="script_quality"),
+    ToolSpec("38_adaptive_scene_pacing.py", ("post_render",), "Check and adjust scene pacing plans.", episode_scoped=True, output_role="pacing_quality"),
+    ToolSpec("39_emotion_detector.py", ("post_render",), "Detect dialogue emotion coverage for voice direction.", episode_scoped=True, output_role="voice_quality"),
+    ToolSpec("40_style_scoring.py", ("post_render", "post_quality_gate"), "Score visual/style consistency.", episode_scoped=True, output_role="visual_quality"),
+    ToolSpec("41_music_cue_sheet.py", ("post_export",), "Generate music cue metadata for delivery.", episode_scoped=True, output_role="delivery_asset"),
+    ToolSpec("42_podcast_export.py", ("post_export",), "Prepare audio-only export metadata.", episode_scoped=True, output_role="delivery_asset"),
+    ToolSpec("43_character_outfit.py", ("pre_generation", "post_render"), "Track outfit continuity.", output_role="character_continuity"),
+    ToolSpec("44_relationship_tracker.py", ("pre_generation",), "Track character relationship continuity.", output_role="character_continuity"),
+    ToolSpec("45_similar_scene_finder.py", ("pre_generation",), "Find similar source scenes for prompt grounding.", output_role="series_memory"),
+    ToolSpec("46_trend_analyzer.py", ("pre_generation",), "Analyze character, location, and theme trends.", output_role="series_memory"),
+    ToolSpec("47_review_queue.py", ("post_quality_gate",), "Surface finished episodes for human review.", episode_scoped=True, args=("--action", "add", "--priority", "2", "--notes", "Generated by quality-first toolkit"), output_role="review_signal"),
+    ToolSpec("48_scene_transition_selector.py", ("post_story", "post_render"), "Generate transition guidance for scene assembly.", output_role="edit_quality"),
+    ToolSpec("49_weather_detector.py", ("post_render",), "Detect weather/atmosphere cues for visual prompts.", episode_scoped=True, output_role="visual_quality"),
+    ToolSpec("50_episode_archive.py", ("post_export",), "Dry-run archive policy so old assets do not crowd production outputs.", args=("--dry-run",), output_role="maintenance_signal"),
+    ToolSpec("51_training_optimizer.py", ("pre_training",), "Optimize image, video, and voice training settings.", output_role="training_quality"),
+    ToolSpec("52_voice_emotion_cloning.py", ("post_render",), "Extract per-character emotion profiles for voice cloning.", episode_scoped=True, character_scoped=True, output_role="voice_quality"),
+    ToolSpec("53_social_media_clips.py", ("post_export",), "Prepare short-form clip metadata from finished scenes.", episode_scoped=True, output_role="marketing_asset"),
+    ToolSpec("54_backup_project.py", ("manual",), "Backup production state after a milestone.", manual_only=True, manual_reason="Requires an explicit backup target."),
+    ToolSpec("55_restore_project.py", ("manual",), "Restore production state from a backup.", manual_only=True, manual_reason="Requires an explicit backup source and should never run automatically."),
+)
+
+
+def generation_toolkit_config(cfg: dict[str, Any]) -> dict[str, Any]:
+    raw = cfg.get("generation_toolkit", {}) if isinstance(cfg.get("generation_toolkit"), dict) else {}
+    phases = raw.get("phases", {}) if isinstance(raw.get("phases"), dict) else {}
+    return {
+        "enabled": bool(raw.get("enabled", True)),
+        "strict": bool(raw.get("strict", False)),
+        "timeout_seconds": max(5, int(raw.get("timeout_seconds", 120) or 120)),
+        "max_characters": max(1, int(raw.get("max_characters", 5) or 5)),
+        "phases": {str(key): bool(value) for key, value in phases.items()},
+    }
+
+
+def tool_manifest() -> list[dict[str, Any]]:
+    return [
+        {
+            "script": spec.script,
+            "phases": list(spec.phases),
+            "purpose": spec.purpose,
+            "episode_scoped": spec.episode_scoped,
+            "character_scoped": spec.character_scoped,
+            "manual_only": spec.manual_only,
+            "manual_reason": spec.manual_reason,
+            "output_role": spec.output_role,
+        }
+        for spec in TOOL_SPECS
+    ]
+
+
+def top_character_names(cfg: dict[str, Any], limit: int) -> list[str]:
+    model_path = resolve_project_path(str(cfg.get("paths", {}).get("series_model", "generation/model/series_model.json")))
+    model = read_json(model_path, {}) if model_path.exists() else {}
+    rows = model.get("characters", []) if isinstance(model.get("characters"), list) else []
+    scored: list[tuple[int, str]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        name = str(row.get("name", "") or "").strip()
+        if not name or name.lower().startswith("unknown"):
+            continue
+        score = int(row.get("scene_count", 0) or 0) + int(row.get("line_count", 0) or 0)
+        if bool(row.get("priority", False)):
+            score += 1000
+        scored.append((score, name))
+    names: list[str] = []
+    for _score, name in sorted(scored, reverse=True):
+        if name not in names:
+            names.append(name)
+        if len(names) >= limit:
+            break
+    return names
+
+
+def _phase_enabled(toolkit_cfg: dict[str, Any], phase: str) -> bool:
+    phases = toolkit_cfg.get("phases", {})
+    if not isinstance(phases, dict) or phase not in phases:
+        return True
+    return bool(phases.get(phase, True))
+
+
+def _compact_output(value: str, limit: int = 4000) -> str:
+    text = str(value or "").strip()
+    if len(text) <= limit:
+        return text
+    return text[:limit] + "\n...[truncated]"
+
+
+def build_tool_invocations(
+    cfg: dict[str, Any],
+    phase: str,
+    episode_id: str | None = None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    toolkit_cfg = generation_toolkit_config(cfg)
+    characters = top_character_names(cfg, int(toolkit_cfg["max_characters"]))
+    invocations: list[dict[str, Any]] = []
+    skipped: list[dict[str, Any]] = []
+    clean_episode_id = str(episode_id or "").strip()
+
+    for spec in TOOL_SPECS:
+        if phase not in spec.phases:
+            continue
+        if spec.manual_only:
+            skipped.append({"script": spec.script, "reason": spec.manual_reason or "Manual-only tool."})
+            continue
+        if spec.episode_scoped and not clean_episode_id:
+            skipped.append({"script": spec.script, "reason": "Needs an episode id for this phase."})
+            continue
+        if spec.character_scoped:
+            if not characters:
+                skipped.append({"script": spec.script, "reason": "No named characters available yet."})
+                continue
+            for character in characters:
+                args = list(spec.args)
+                if spec.episode_scoped:
+                    args.extend(["--source-episode", clean_episode_id])
+                args.extend(["--character", character])
+                invocations.append({"script": spec.script, "args": args, "purpose": spec.purpose, "character": character})
+            continue
+        args = list(spec.args)
+        if spec.episode_scoped:
+            args.extend(["--episode-id", clean_episode_id])
+        invocations.append({"script": spec.script, "args": args, "purpose": spec.purpose})
+    return invocations, skipped
+
+
+def _report_path(phase: str, episode_id: str | None) -> Path:
+    stamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    clean_episode_id = str(episode_id or "series").strip().replace("/", "_").replace("\\", "_")
+    return REPORT_ROOT / f"{stamp}_{phase}_{clean_episode_id}.json"
+
+
+def run_generation_toolkit_phase(
+    cfg: dict[str, Any],
+    phase: str,
+    episode_id: str | None = None,
+    *,
+    force: bool = False,
+) -> dict[str, Any]:
+    toolkit_cfg = generation_toolkit_config(cfg)
+    if not toolkit_cfg["enabled"] and not force:
+        return {"phase": phase, "episode_id": episode_id, "status": "disabled", "results": []}
+    if not _phase_enabled(toolkit_cfg, phase) and not force:
+        return {"phase": phase, "episode_id": episode_id, "status": "phase_disabled", "results": []}
+
+    invocations, skipped = build_tool_invocations(cfg, phase, episode_id)
+    report: dict[str, Any] = {
+        "phase": phase,
+        "episode_id": episode_id,
+        "started_at": datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
+        "tool_manifest": tool_manifest(),
+        "results": [],
+        "skipped": skipped,
+    }
+    timeout = int(toolkit_cfg["timeout_seconds"])
+    failures: list[str] = []
+
+    for invocation in invocations:
+        script = str(invocation["script"])
+        script_path = OPTIONAL_TOOL_ROOT / script
+        args = [str(arg) for arg in invocation.get("args", [])]
+        row = {
+            "script": script,
+            "args": args,
+            "purpose": invocation.get("purpose", ""),
+            "character": invocation.get("character", ""),
+            "status": "pending",
+        }
+        if not script_path.exists():
+            row.update({"status": "missing", "returncode": None, "stderr": f"Tool not found: {script_path}"})
+            failures.append(script)
+            report["results"].append(row)
+            continue
+        command = [str(runtime_python()), str(script_path), *args]
+        try:
+            completed = subprocess.run(
+                command,
+                cwd=str(SCRIPT_DIR),
+                text=True,
+                capture_output=True,
+                timeout=timeout,
+            )
+            row.update(
+                {
+                    "status": "ok" if completed.returncode == 0 else "failed",
+                    "returncode": completed.returncode,
+                    "stdout": _compact_output(completed.stdout),
+                    "stderr": _compact_output(completed.stderr),
+                }
+            )
+            if completed.returncode != 0:
+                failures.append(script)
+        except subprocess.TimeoutExpired as exc:
+            row.update(
+                {
+                    "status": "timeout",
+                    "returncode": None,
+                    "stdout": _compact_output(exc.stdout or ""),
+                    "stderr": _compact_output(exc.stderr or f"Timed out after {timeout}s."),
+                }
+            )
+            failures.append(script)
+        report["results"].append(row)
+
+    report["finished_at"] = datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+    report["summary"] = {
+        "registered": len(TOOL_SPECS),
+        "attempted": len(invocations),
+        "ok": len([row for row in report["results"] if row.get("status") == "ok"]),
+        "failed": len(failures),
+        "skipped": len(skipped),
+    }
+    write_json(REPORT_ROOT / "tool_manifest.json", {"tools": tool_manifest()})
+    path = _report_path(phase, episode_id)
+    write_json(path, report)
+    write_json(REPORT_ROOT / f"latest_{phase}.json", report)
+
+    summary = report["summary"]
+    message = (
+        f"Generation toolkit {phase}: {summary['ok']}/{summary['attempted']} tool run(s) ok, "
+        f"{summary['skipped']} skipped."
+    )
+    if failures:
+        warn(message)
+        if bool(toolkit_cfg["strict"]):
+            raise RuntimeError(f"Generation toolkit phase {phase} failed: {', '.join(failures)}")
+    elif invocations or skipped:
+        info(message)
+    return report

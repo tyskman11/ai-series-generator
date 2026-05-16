@@ -32,25 +32,35 @@ def parse_args() -> argparse.Namespace:
 
 
 def configured_backends() -> dict:
-    image_backend_command = '"{python}" "tools/quality_backends/project_local_image_backend.py"'
-    video_backend_command = '"{python}" "tools/quality_backends/project_local_video_backend.py"'
-    voice_backend_command = '"{python}" "tools/quality_backends/project_local_voice_backend.py"'
-    lipsync_backend_command = '"{python}" "tools/quality_backends/project_local_lipsync_backend.py"'
+    storyboard_backend_command = '"{python}" "tools/quality_backends/local_diffusion_image_backend.py"'
+    image_backend_command = '"{python}" "tools/quality_backends/local_diffusion_image_backend.py"'
+    video_backend_command = '"{python}" "tools/quality_backends/local_ltx_video_backend.py"'
+    voice_backend_command = '"{python}" "tools/quality_backends/local_xtts_voice_backend.py"'
+    lipsync_backend_command = '"{python}" "tools/quality_backends/local_wav2lip_backend.py"'
     return {
         "storyboard_scene_runner": {
             "enabled": True,
             "command_template": [
                 "{python}",
-                "15_run_storyboard_backend.py",
-                "--episode-id",
-                "{episode_id}",
-                "--scene-ids",
-                "{scene_id}",
+                "tools/quality_backends/storyboard_runner.py",
+                "--backend-input",
+                "{backend_input_path}",
+                "--frame",
+                "{frame_path}",
+                "--preview-frame",
+                "{preview_path}",
+                "--poster-frame",
+                "{poster_path}",
+                "--clip",
+                "{clip_path}",
+                "--alternate-root",
+                "{alternate_root}",
             ],
             "working_directory": ".",
-            "environment": {},
+            "environment": {"SERIES_STORYBOARD_BACKEND_COMMAND": storyboard_backend_command},
             "required_commands": [],
-            "required_environment_variables": [],
+            "required_python_modules": ["diffusers"],
+            "required_environment_variables": ["SERIES_STORYBOARD_BACKEND_COMMAND"],
             "shell": False,
             "timeout_seconds": 1800,
             "skip_if_outputs_exist": True,
@@ -74,6 +84,7 @@ def configured_backends() -> dict:
             "working_directory": ".",
             "environment": {"SERIES_IMAGE_BACKEND_COMMAND": image_backend_command},
             "required_commands": [],
+            "required_python_modules": ["diffusers"],
             "required_environment_variables": ["SERIES_IMAGE_BACKEND_COMMAND"],
             "shell": False,
             "timeout_seconds": 3600,
@@ -100,6 +111,7 @@ def configured_backends() -> dict:
             "working_directory": ".",
             "environment": {"SERIES_VIDEO_BACKEND_COMMAND": video_backend_command},
             "required_commands": [],
+            "required_python_modules": ["diffusers"],
             "required_environment_variables": ["SERIES_VIDEO_BACKEND_COMMAND"],
             "shell": False,
             "timeout_seconds": 7200,
@@ -120,6 +132,7 @@ def configured_backends() -> dict:
             "working_directory": ".",
             "environment": {"SERIES_VOICE_BACKEND_COMMAND": voice_backend_command},
             "required_commands": [],
+            "required_python_modules": ["TTS"],
             "required_environment_variables": ["SERIES_VOICE_BACKEND_COMMAND"],
             "shell": False,
             "timeout_seconds": 3600,
@@ -176,12 +189,37 @@ def configured_backends() -> dict:
     }
 
 
+def ensure_quality_asset_targets(config: dict) -> None:
+    assets_cfg = config.setdefault("quality_backend_assets", {})
+    if not isinstance(assets_cfg, dict):
+        assets_cfg = {}
+        config["quality_backend_assets"] = assets_cfg
+    targets = assets_cfg.setdefault("targets", [])
+    if not isinstance(targets, list):
+        targets = []
+        assets_cfg["targets"] = targets
+    existing_names = {str(item.get("name", "")).strip() for item in targets if isinstance(item, dict)}
+    if "wav2lip" not in existing_names:
+        targets.insert(
+            1 if targets else 0,
+            {
+                "name": "wav2lip",
+                "kind": "git",
+                "repo_url": "https://github.com/Rudrabha/Wav2Lip.git",
+                "ref": "master",
+                "target_dir": "tools/quality_backends/wav2lip",
+                "required_files": ["inference.py"],
+            },
+        )
+
+
 def main() -> None:
     args = parse_args()
     headline("Configure Quality Backends")
     cfg = load_config()
     updated = deepcopy(cfg)
     updated["external_backends"] = configured_backends()
+    ensure_quality_asset_targets(updated)
     report = quality_first_requirements_report(updated)
 
     if args.print_only:
@@ -203,4 +241,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

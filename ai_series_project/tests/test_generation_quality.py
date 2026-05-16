@@ -28,8 +28,8 @@ def load_module(filename: str, module_name: str):
     return module
 
 
-STEP08 = load_module("07_train_series_model.py", "step08_generation_quality")
-STEP15 = load_module("16_render_episode.py", "step15_generation_quality")
+STEP08 = load_module("08_train_series_model.py", "step08_generation_quality")
+STEP15 = load_module("17_render_episode.py", "step15_generation_quality")
 
 
 class GenerationQualityTests(unittest.TestCase):

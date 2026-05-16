@@ -69,23 +69,24 @@ STEP00 = load_module("00_prepare_runtime.py", "step00")
 STEP03 = load_module("02_split_scenes.py", "step03")
 STEP02 = load_module("01_import_episode.py", "step02")
 STEP04 = load_module("03_diarize_and_transcribe.py", "step04")
-STEP06 = load_module("06_build_dataset.py", "step06")
-STEP07 = load_module("07_train_series_model.py", "step07")
+STEP06 = load_module("07_build_dataset.py", "step06")
+STEP07 = load_module("08_train_series_model.py", "step07")
 STEP08 = load_module("05_review_unknowns.py", "step08")
-STEP10 = load_module("16_render_episode.py", "step10")
-STEP10TRAIN = load_module("09_train_foundation_models.py", "step10train")
-STEP13 = load_module("08_prepare_foundation_training.py", "step13")
-STEP15 = load_module("13_generate_episode.py", "step15")
-STEP15ASSETS = load_module("14_generate_storyboard_assets.py", "step15assets")
-STEP16BACKEND = load_module("15_run_storyboard_backend.py", "step16backend")
-STEP16 = load_module("21_refresh_after_manual_review.py", "step16")
-STEP17 = load_module("10_train_adapter_models.py", "step17")
-STEP18 = load_module("11_train_fine_tune_models.py", "step18")
-STEP19 = load_module("12_run_backend_finetunes.py", "step19")
-STEP19PREVIEW = load_module("56_generate_finished_episodes.py", "step19preview")
-STEPBIBLE = load_module("19_build_series_bible.py", "stepbible")
-STEP99 = load_module("57_process_next_episode.py", "step99")
-STEPRENDER = load_module("16_render_episode.py", "steprender")
+STEP10 = load_module("17_render_episode.py", "step10")
+STEP10TRAIN = load_module("10_train_foundation_models.py", "step10train")
+STEP13 = load_module("09_prepare_foundation_training.py", "step13")
+STEP15 = load_module("14_generate_episode.py", "step15")
+STEP15ASSETS = load_module("15_generate_storyboard_assets.py", "step15assets")
+STEP16BACKEND = load_module("16_run_storyboard_backend.py", "step16backend")
+STEP16 = load_module("22_refresh_after_manual_review.py", "step16")
+STEP17 = load_module("11_train_adapter_models.py", "step17")
+STEP18 = load_module("12_train_fine_tune_models.py", "step18")
+STEP19 = load_module("13_run_backend_finetunes.py", "step19")
+STEP19PREVIEW = load_module("23_generate_finished_episodes.py", "step19preview")
+STEPBIBLE = load_module("20_build_series_bible.py", "stepbible")
+STEP23 = load_module("24_process_next_episode.py", "step23")
+STEPRENDER = load_module("17_render_episode.py", "steprender")
+STEPREL = load_module("support_scripts/manage_character_relationships.py", "steprelationships")
 
 
 class ManualNamingTests(unittest.TestCase):
@@ -398,6 +399,7 @@ class ManualNamingTests(unittest.TestCase):
                 "facenet_pytorch": False,
                 "speaker_embeddings": True,
                 "voice_cloning": False,
+                "quality_generation": True,
             }
         )
 
@@ -626,6 +628,71 @@ class ManualNamingTests(unittest.TestCase):
         self.assertEqual(payload["name"], "Babe Carano")
         self.assertTrue(payload["auto_named"])
 
+    def test_voice_map_registers_transcript_speakers_without_face_votes(self) -> None:
+        voice_map = {"clusters": {}}
+        transcript_rows = [
+            {"speaker_cluster": "speaker_001"},
+            {"speaker_cluster": "speaker_002"},
+            {"speaker_cluster": "speaker_unknown"},
+            {"speaker_cluster": ""},
+            {},
+        ]
+
+        added = STEP05.ensure_voice_clusters_for_transcripts(voice_map, transcript_rows)
+        STEP05.resolve_voice_names(voice_map, {}, {"clusters": {}})
+
+        self.assertEqual(added, 2)
+        self.assertEqual(sorted(voice_map["clusters"]), ["speaker_001", "speaker_002"])
+        self.assertEqual(voice_map["clusters"]["speaker_001"]["name"], "speaker_001")
+        self.assertTrue(voice_map["clusters"]["speaker_001"]["auto_named"])
+        self.assertNotIn("speaker_unknown", voice_map["clusters"])
+
+    def test_face_candidate_validation_rejects_boxes_without_internal_features(self) -> None:
+        class DummyCascade:
+            def empty(self) -> bool:
+                return False
+
+            def detectMultiScale(self, *_args, **_kwargs):
+                return []
+
+        frame = STEP05.np.zeros((120, 120, 3), dtype=STEP05.np.uint8)
+        cfg = {"character_detection": {"strict_face_validation": True, "face_validation_min_internal_features": 1}}
+
+        self.assertFalse(
+            STEP05.face_candidate_is_plausible(
+                frame,
+                (25, 20, 85, 100),
+                cfg,
+                DummyCascade(),
+            )
+        )
+
+    def test_face_candidate_validation_accepts_boxes_with_eye_feature(self) -> None:
+        class DummyCascade:
+            def empty(self) -> bool:
+                return False
+
+            def detectMultiScale(self, *_args, **_kwargs):
+                return [(12, 18, 14, 10)]
+
+        frame = STEP05.np.zeros((120, 120, 3), dtype=STEP05.np.uint8)
+        cfg = {"character_detection": {"strict_face_validation": True, "face_validation_min_internal_features": 1}}
+
+        self.assertTrue(
+            STEP05.face_candidate_is_plausible(
+                frame,
+                (25, 20, 85, 100),
+                cfg,
+                DummyCascade(),
+            )
+        )
+
+    def test_face_candidate_validation_can_be_disabled_for_diagnostics(self) -> None:
+        frame = STEP05.np.zeros((120, 120, 3), dtype=STEP05.np.uint8)
+        cfg = {"character_detection": {"strict_face_validation": False}}
+
+        self.assertTrue(STEP05.face_candidate_is_plausible(frame, (25, 20, 85, 100), cfg, None))
+
     def test_unknown_speaker_rescues_from_single_visible_named_face(self) -> None:
         char_map = {
             "clusters": {
@@ -756,6 +823,175 @@ class ManualNamingTests(unittest.TestCase):
         self.assertTrue(result)
         self.assertEqual(live_reporter.update.call_args_list[0].kwargs["extra_label"], "Face clusters so far: 2")
 
+    def test_step05_process_registers_speakers_even_without_face_votes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            episode_dir = root / "episode_001"
+            episode_dir.mkdir(parents=True, exist_ok=True)
+            (episode_dir / "scene_001.mp4").write_bytes(b"placeholder")
+
+            transcripts_dir = root / "speaker_transcripts"
+            transcripts_dir.mkdir(parents=True, exist_ok=True)
+            linked_dir = root / "linked_segments"
+            linked_dir.mkdir(parents=True, exist_ok=True)
+            faces_root = root / "faces"
+            previews_root = root / "previews"
+            maps_dir = root / "maps"
+            review_dir = root / "review"
+            maps_dir.mkdir(parents=True, exist_ok=True)
+            review_dir.mkdir(parents=True, exist_ok=True)
+
+            (review_dir / "review_queue.json").write_text('{"items": []}', encoding="utf-8")
+            (transcripts_dir / "episode_001_segments.json").write_text(
+                json.dumps(
+                    [
+                        {
+                            "scene_id": "scene_001",
+                            "segment_id": "segment_001",
+                            "start": 0.0,
+                            "end": 1.0,
+                            "speaker_cluster": "speaker_001",
+                            "text": "hello",
+                        }
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            cfg = {
+                "paths": {
+                    "speaker_transcripts": str(transcripts_dir),
+                    "linked_segments": str(linked_dir),
+                    "faces": str(faces_root),
+                    "character_map": str(maps_dir / "character_map.json"),
+                    "voice_map": str(maps_dir / "voice_map.json"),
+                    "review_queue": str(review_dir / "review_queue.json"),
+                }
+            }
+            char_map = {"clusters": {}}
+            voice_map = {"clusters": {}}
+
+            with mock.patch.object(STEP05, "episode_face_linking_completed", return_value=False), mock.patch.object(
+                STEP05, "reset_step_outputs"
+            ), mock.patch.object(
+                STEP05,
+                "process_scene_faces",
+                return_value={"scene_id": "scene_001", "face_clusters": [], "detections": []},
+            ), mock.patch.object(
+                STEP05, "save_step_autosave"
+            ), mock.patch.object(
+                STEP05, "mark_step_started"
+            ), mock.patch.object(
+                STEP05, "mark_step_completed"
+            ), mock.patch.object(
+                STEP05, "mark_step_failed"
+            ), mock.patch.object(
+                STEP05, "prune_face_clusters", return_value=[]
+            ), mock.patch.object(
+                STEP05, "visible_faces_for_segment", return_value=[]
+            ), mock.patch.object(
+                STEP05, "save_speaker_reference_frames", return_value=[]
+            ), mock.patch.object(
+                STEP05, "LiveProgressReporter"
+            ), mock.patch.object(
+                STEP05, "info"
+            ), mock.patch.object(
+                STEP05, "ok"
+            ):
+                result = STEP05.process_episode_dir(
+                    episode_dir,
+                    cfg,
+                    fresh_run=False,
+                    faces_root=faces_root,
+                    linked_root=linked_dir,
+                    previews_root=previews_root,
+                    char_map=char_map,
+                    voice_map=voice_map,
+                    engine=None,
+                    interactive=False,
+                    auto_open=False,
+                    sample_every=1,
+                    max_faces_per_frame=4,
+                    max_visible_faces_per_segment=3,
+                    segment_padding_seconds=0.5,
+                    threshold=0.8,
+                )
+            voice_payload = dict(voice_map["clusters"]["speaker_001"])
+            linked_rows = json.loads((linked_dir / "episode_001_linked_segments.json").read_text(encoding="utf-8"))
+
+        self.assertTrue(result)
+        self.assertEqual(voice_payload["name"], "speaker_001")
+        self.assertEqual(linked_rows[0]["speaker_cluster"], "speaker_001")
+        self.assertEqual(linked_rows[0]["speaker_name"], "speaker_001")
+
+    def test_step05_skip_path_updates_voice_map_from_existing_transcripts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            episode_dir = root / "episode_001"
+            episode_dir.mkdir(parents=True, exist_ok=True)
+            transcripts_dir = root / "speaker_transcripts"
+            maps_dir = root / "maps"
+            linked_dir = root / "linked"
+            faces_root = root / "faces"
+            previews_root = root / "previews"
+            review_dir = root / "review"
+            transcripts_dir.mkdir(parents=True)
+            maps_dir.mkdir(parents=True)
+            linked_dir.mkdir(parents=True)
+            review_dir.mkdir(parents=True)
+            (transcripts_dir / "episode_001_segments.json").write_text(
+                json.dumps(
+                    [
+                        {"scene_id": "scene_001", "segment_id": "seg_001", "speaker_cluster": "speaker_001"},
+                        {"scene_id": "scene_001", "segment_id": "seg_002", "speaker_cluster": "speaker_unknown"},
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            cfg = {
+                "paths": {
+                    "speaker_transcripts": str(transcripts_dir),
+                    "linked_segments": str(linked_dir),
+                    "faces": str(faces_root),
+                    "character_map": str(maps_dir / "character_map.json"),
+                    "voice_map": str(maps_dir / "voice_map.json"),
+                    "review_queue": str(review_dir / "review_queue.json"),
+                }
+            }
+            voice_map = {"clusters": {}}
+
+            with mock.patch.object(STEP05, "episode_face_linking_completed", return_value=True), mock.patch.object(
+                STEP05, "mark_step_completed"
+            ), mock.patch.object(
+                STEP05, "info"
+            ), mock.patch.object(
+                STEP05, "ok"
+            ):
+                result = STEP05.process_episode_dir(
+                    episode_dir,
+                    cfg,
+                    fresh_run=False,
+                    faces_root=faces_root,
+                    linked_root=linked_dir,
+                    previews_root=previews_root,
+                    char_map={"clusters": {}},
+                    voice_map=voice_map,
+                    engine=None,
+                    interactive=False,
+                    auto_open=False,
+                    sample_every=1,
+                    max_faces_per_frame=4,
+                    max_visible_faces_per_segment=3,
+                    segment_padding_seconds=0.5,
+                    threshold=0.8,
+                )
+            stored_voice_map = json.loads((maps_dir / "voice_map.json").read_text(encoding="utf-8"))
+
+        self.assertFalse(result)
+        self.assertIn("speaker_001", voice_map["clusters"])
+        self.assertEqual(stored_voice_map["clusters"]["speaker_001"]["name"], "speaker_001")
+        self.assertNotIn("speaker_unknown", stored_voice_map["clusters"])
+
     def test_episode_generation_uses_generic_focus_without_manual_names(self) -> None:
         model = {
             "characters": [],
@@ -846,6 +1082,134 @@ class ManualNamingTests(unittest.TestCase):
             second_plan = package["scenes"][1]["generation_plan"]
             self.assertEqual(second_plan["continuity"]["previous_scene_id"], package["scenes"][0]["scene_id"])
         self.assertIn("Shot Plan:", markdown)
+
+    def test_episode_generation_uses_manual_character_groups_and_relationships(self) -> None:
+        model = {
+            "characters": [
+                {"name": "Babe", "scene_count": 20, "line_count": 30, "priority": True},
+                {"name": "Kenzie", "scene_count": 18, "line_count": 25, "priority": True},
+                {"name": "Hudson", "scene_count": 12, "line_count": 12, "priority": False},
+            ],
+            "speakers": {"Babe": 20, "Kenzie": 19, "Hudson": 8},
+            "keywords": ["app", "plan"],
+            "dataset_files": ["demo_dataset.json"],
+            "scene_count": 8,
+            "speaker_samples": {},
+            "speaker_line_library": {},
+            "character_reference_library": {},
+            "scene_library": [],
+            "average_segment_duration_seconds": 2.7,
+            "source_episode_durations": {"Demo.S01E01": 300},
+            "character_groups": {
+                "game_shakers": {
+                    "label": "Game Shakers",
+                    "characters": ["Babe", "Kenzie"],
+                    "description": "Core app team",
+                }
+            },
+            "character_relationships": {
+                "version": 1,
+                "groups": {
+                    "game_shakers": {
+                        "label": "Game Shakers",
+                        "characters": ["Babe", "Kenzie"],
+                        "description": "Core app team",
+                    }
+                },
+                "relationships": [
+                    {
+                        "source": "Babe",
+                        "target": "Kenzie",
+                        "type": "best friends",
+                        "group": "game_shakers",
+                        "description": "They solve problems together and tease each other.",
+                        "tone": "fast, loyal banter",
+                        "story_rules": ["Keep their teamwork central."],
+                    }
+                ],
+                "series_inputs": {},
+            },
+        }
+        cfg = {
+            "generation": {
+                "seed": 42,
+                "active_character_group": "game_shakers",
+                "min_dialogue_lines_per_scene": 4,
+                "max_dialogue_lines_per_scene": 6,
+                "match_source_episode_runtime": True,
+                "target_scene_duration_seconds": 120.0,
+                "estimated_dialogue_line_seconds": 2.7,
+            }
+        }
+
+        package, markdown = STEP07.generate_episode_package(model, cfg, episode_index=1)
+
+        self.assertEqual(package["focus_characters"][:2], ["Babe", "Kenzie"])
+        self.assertEqual(package["active_character_groups"][0]["id"], "game_shakers")
+        self.assertTrue(package["character_relationship_context"])
+        first_plan = package["scenes"][0]["generation_plan"]
+        self.assertTrue(first_plan["relationship_context"])
+        self.assertIn("relationship dynamics", first_plan["positive_prompt"])
+        self.assertIn("Game Shakers", markdown)
+        self.assertIn("Babe and Kenzie", markdown)
+
+    def test_relationship_gui_known_character_rows_merge_face_and_voice_names(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            char_map_path = root / "characters" / "maps" / "character_map.json"
+            voice_map_path = root / "characters" / "maps" / "voice_map.json"
+            char_map_path.parent.mkdir(parents=True, exist_ok=True)
+            voice_map_path.parent.mkdir(parents=True, exist_ok=True)
+            char_map_path.write_text(
+                json.dumps(
+                    {
+                        "clusters": {
+                            "face_001": {"name": "Babe Carano", "priority": True},
+                            "face_002": {"name": "Babe Carano"},
+                            "face_003": {"name": "statist"},
+                        },
+                        "identities": {
+                            "Babe Carano": {"priority": True, "face_cluster_count": 2},
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            voice_map_path.write_text(
+                json.dumps(
+                    {
+                        "clusters": {
+                            "speaker_001": {"name": "Babe Carano"},
+                            "speaker_002": {"name": "Kenzie Bell"},
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            cfg = {
+                "paths": {
+                    "character_map": str(char_map_path),
+                    "voice_map": str(voice_map_path),
+                }
+            }
+
+            rows = STEPREL.known_character_rows(cfg)
+
+        by_name = {row["name"]: row for row in rows}
+        self.assertEqual(by_name["Babe Carano"]["face_count"], 2)
+        self.assertEqual(by_name["Babe Carano"]["voice_count"], 1)
+        self.assertTrue(by_name["Babe Carano"]["priority"])
+        self.assertEqual(by_name["Kenzie Bell"]["voice_count"], 1)
+        self.assertNotIn("statist", by_name)
+
+    def test_relationship_display_helpers_are_stable_for_gui(self) -> None:
+        self.assertEqual(STEPREL.slug_from_label("Game Shakers!", "group"), "game_shakers")
+        text = STEPREL.relationship_display_text(
+            {"source": "Babe", "target": "Kenzie", "type": "best friends", "group": "game_shakers", "tone": "loyal banter"}
+        )
+
+        self.assertIn("Babe <best friends> Kenzie", text)
+        self.assertIn("game_shakers", text)
 
     def test_storyboard_backend_requests_are_written_from_shotlist(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1003,6 +1367,46 @@ class ManualNamingTests(unittest.TestCase):
         self.assertEqual(char_map["aliases"], {"babe carano": "face_002"})
         self.assertEqual(voice_map["clusters"]["speaker_001"]["name"], "speaker_001")
         self.assertEqual(voice_map["clusters"]["speaker_002"]["name"], "Babe Carano")
+
+    def test_review_step_registers_speakers_from_transcripts_and_linked_segments(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            transcript_root = root / "speaker_transcripts"
+            linked_root = root / "linked_segments"
+            transcript_root.mkdir(parents=True)
+            linked_root.mkdir(parents=True)
+            (transcript_root / "episode_001_segments.json").write_text(
+                json.dumps(
+                    [
+                        {"speaker_cluster": "speaker_001"},
+                        {"speaker_cluster": "speaker_unknown"},
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            (linked_root / "episode_001_linked_segments.json").write_text(
+                json.dumps(
+                    [
+                        {"speaker_cluster": "speaker_002"},
+                        {"speaker_cluster": ""},
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            cfg = {
+                "paths": {
+                    "speaker_transcripts": str(transcript_root),
+                    "linked_segments": str(linked_root),
+                }
+            }
+            voice_map = {"clusters": {}}
+
+            added = STEP08.ensure_voice_clusters_from_project_speakers(cfg, voice_map)
+
+        self.assertEqual(added, 2)
+        self.assertEqual(sorted(voice_map["clusters"]), ["speaker_001", "speaker_002"])
+        self.assertEqual(voice_map["clusters"]["speaker_001"]["name"], "speaker_001")
+        self.assertNotIn("speaker_unknown", voice_map["clusters"])
 
     def test_auto_match_known_faces_merges_unknown_cluster_before_review(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1581,6 +1985,34 @@ class ManualNamingTests(unittest.TestCase):
 
         self.assertEqual(options[:3], [("Babe", True, 3), ("Kenzie", True, 2), ("Hudson", False, 1)])
 
+    def test_known_identity_button_options_count_auto_merged_face_clusters(self) -> None:
+        char_map = {
+            "clusters": {
+                "face_001": {
+                    "name": "Babe",
+                    "ignored": False,
+                    "auto_named": False,
+                    "priority": True,
+                    "merged_cluster_ids": ["face_001", "face_010", "face_011"],
+                },
+                "face_002": {
+                    "name": "Babe",
+                    "ignored": False,
+                    "auto_named": False,
+                    "priority": True,
+                    "merged_cluster_ids": ["face_002", "face_012"],
+                },
+            },
+            "aliases": {},
+        }
+
+        STEP08.rebuild_character_map_identities(char_map)
+        options = STEP08.known_identity_button_options(char_map, limit=10)
+
+        self.assertEqual(options[0], ("Babe", True, 5))
+        self.assertEqual(char_map["identities"]["Babe"]["active_cluster_count"], 2)
+        self.assertEqual(char_map["identities"]["Babe"]["face_cluster_count"], 5)
+
     def test_face_review_candidates_default_limit_zero_returns_all_open_faces(self) -> None:
         char_map = {
             "clusters": {
@@ -1709,6 +2141,54 @@ class ManualNamingTests(unittest.TestCase):
         self.assertEqual(char_map["clusters"]["face_003"]["name"], "Babe")
         self.assertTrue(char_map["clusters"]["face_004"]["priority"])
 
+    def test_auto_ignore_false_positive_faces_marks_only_featureless_auto_clusters(self) -> None:
+        char_map = {
+            "clusters": {
+                "face_bad": {"name": "face_bad", "ignored": False, "auto_named": True, "preview_dir": "bad"},
+                "face_good": {"name": "face_good", "ignored": False, "auto_named": True, "preview_dir": "good"},
+                "face_named": {"name": "Babe", "ignored": False, "auto_named": False, "preview_dir": "bad_named"},
+                "face_priority": {"name": "face_priority", "ignored": False, "auto_named": True, "priority": True, "preview_dir": "bad_priority"},
+            },
+            "aliases": {},
+        }
+        cfg = {"character_detection": {"review_auto_ignore_false_positive_faces": True, "strict_face_validation": True}}
+
+        def fake_paths(payload: dict, _limit: int) -> list[Path]:
+            return [Path(str(payload.get("preview_dir", "")) + "_crop.jpg")]
+
+        def fake_features(path: Path, _cfg: dict) -> int:
+            return 1 if "good" in str(path) else 0
+
+        with mock.patch.object(STEP08, "preview_crop_paths", side_effect=fake_paths), mock.patch.object(
+            STEP08, "preview_crop_internal_feature_count", side_effect=fake_features
+        ):
+            marked = STEP08.auto_ignore_false_positive_face_clusters(cfg, char_map)
+
+        self.assertEqual([item["cluster_id"] for item in marked], ["face_bad"])
+        self.assertEqual(char_map["clusters"]["face_bad"]["name"], "noface")
+        self.assertTrue(char_map["clusters"]["face_bad"]["ignored"])
+        self.assertEqual(char_map["clusters"]["face_bad"]["auto_ignored_reason"], "no_internal_face_features")
+        self.assertEqual(char_map["clusters"]["face_good"]["name"], "face_good")
+        self.assertEqual(char_map["clusters"]["face_named"]["name"], "Babe")
+        self.assertTrue(char_map["clusters"]["face_priority"]["priority"])
+
+    def test_auto_ignore_false_positive_faces_respects_disable_switch(self) -> None:
+        char_map = {
+            "clusters": {
+                "face_bad": {"name": "face_bad", "ignored": False, "auto_named": True, "preview_dir": "bad"},
+            },
+            "aliases": {},
+        }
+        cfg = {"character_detection": {"review_auto_ignore_false_positive_faces": False, "strict_face_validation": True}}
+
+        with mock.patch.object(STEP08, "preview_crop_paths", return_value=[Path("bad_crop.jpg")]), mock.patch.object(
+            STEP08, "preview_crop_internal_feature_count", return_value=0
+        ):
+            marked = STEP08.auto_ignore_false_positive_face_clusters(cfg, char_map)
+
+        self.assertEqual(marked, [])
+        self.assertEqual(char_map["clusters"]["face_bad"]["name"], "face_bad")
+
     def test_auto_statist_thresholds_can_be_overridden_from_cli(self) -> None:
         args = argparse.Namespace(statist_max_scenes=1, statist_max_detections=5, statist_max_samples=2)
         cfg = {"character_detection": {"auto_statist_max_scenes": 2, "auto_statist_max_detections": 12, "auto_statist_max_samples": 3}}
@@ -1717,11 +2197,11 @@ class ManualNamingTests(unittest.TestCase):
 
         self.assertEqual(thresholds, {"max_scenes": 1, "max_detections": 5, "max_samples": 2})
 
-    def test_parse_args_defaults_to_twenty_and_supports_all(self) -> None:
+    def test_parse_args_defaults_to_all_and_supports_legacy_all_flag(self) -> None:
         with mock.patch("sys.argv", ["05_review_unknowns.py"]):
             args = STEP08.parse_args()
         self.assertEqual(args.limit, 20)
-        self.assertFalse(args.all)
+        self.assertTrue(args.all)
         self.assertFalse(args.auto_mark_statists)
         self.assertFalse(args.no_auto_mark_statists)
 
@@ -2585,6 +3065,7 @@ class ManualNamingTests(unittest.TestCase):
                 23,
                 None,
                 False,
+                {"storyboard_backend": {"allow_local_frame_fallback": True}},
             )
 
             self.assertEqual(manifest["backend_mode"], "materialized_local_backend_scene_pack")
@@ -2616,6 +3097,7 @@ class ManualNamingTests(unittest.TestCase):
                 23,
                 None,
                 False,
+                {"storyboard_backend": {"allow_local_frame_fallback": True}},
             )
 
             self.assertEqual(manifest["status"], "missing_source")
@@ -3250,8 +3732,8 @@ class ManualNamingTests(unittest.TestCase):
             inbox_file = Path(tmpdir) / "demo.mp4"
             inbox_file.write_text("demo", encoding="utf-8")
 
-            removed_existing = STEP99.cleanup_processed_inbox_episode(inbox_file)
-            removed_missing = STEP99.cleanup_processed_inbox_episode(inbox_file)
+            removed_existing = STEP23.cleanup_processed_inbox_episode(inbox_file)
+            removed_missing = STEP23.cleanup_processed_inbox_episode(inbox_file)
 
             self.assertTrue(removed_existing)
             self.assertFalse(inbox_file.exists())
@@ -3300,21 +3782,37 @@ class ManualNamingTests(unittest.TestCase):
 
             self.assertTrue(inbox_file.exists())
 
-    def test_import_episode_parse_args_supports_all(self) -> None:
+    def test_import_episode_parse_args_supports_all_and_episode_file(self) -> None:
         with mock.patch("sys.argv", ["01_import_episode.py"]):
             args = STEP02.parse_args()
         self.assertFalse(args.all)
+        self.assertIsNone(args.episode_file)
         with mock.patch("sys.argv", ["01_import_episode.py", "--all"]):
             args = STEP02.parse_args()
         self.assertTrue(args.all)
+        with mock.patch("sys.argv", ["01_import_episode.py", "--episode-file", "Demo.S01E01.mp4"]):
+            args = STEP02.parse_args()
+        self.assertEqual(args.episode_file, "Demo.S01E01.mp4")
+
+    def test_import_episode_resolves_requested_inbox_file_by_name_or_stem(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            inbox_dir = Path(tmpdir)
+            episode_file = inbox_dir / "Demo.S01E01.mp4"
+            episode_file.write_text("demo", encoding="utf-8")
+
+            by_name = STEP02.resolve_requested_episode_file(inbox_dir, "Demo.S01E01.mp4")
+            by_stem = STEP02.resolve_requested_episode_file(inbox_dir, "Demo.S01E01")
+
+        self.assertEqual(by_name, episode_file)
+        self.assertEqual(by_stem, episode_file)
 
     def test_dataset_parse_args_supports_force(self) -> None:
-        with mock.patch("sys.argv", ["06_build_dataset.py", "--force"]):
+        with mock.patch("sys.argv", ["07_build_dataset.py", "--force"]):
             args = STEP06.parse_args()
         self.assertTrue(args.force)
 
     def test_foundation_train_parse_args_supports_force(self) -> None:
-        with mock.patch("sys.argv", ["09_train_foundation_models.py", "--force"]):
+        with mock.patch("sys.argv", ["10_train_foundation_models.py", "--force"]):
             args = STEP10TRAIN.parse_args()
         self.assertTrue(args.force)
 
@@ -3389,7 +3887,7 @@ class ManualNamingTests(unittest.TestCase):
             self.assertEqual(payload["voice_pack"]["original_voice_sample_count"], 2)
 
     def test_refresh_after_manual_review_parse_args(self) -> None:
-        with mock.patch("sys.argv", ["21_refresh_after_manual_review.py", "--skip-downloads", "--stop-after-training", "--allow-open-review"]):
+        with mock.patch("sys.argv", ["22_refresh_after_manual_review.py", "--skip-downloads", "--stop-after-training", "--allow-open-review"]):
             args = STEP16.parse_args()
         self.assertTrue(args.skip_downloads)
         self.assertTrue(args.stop_after_training)
@@ -3411,10 +3909,12 @@ class ManualNamingTests(unittest.TestCase):
         planned = STEP16.planned_refresh_steps(cfg, skip_downloads=True, stop_after_training=False)
         step_names = [row[0] for row in planned]
 
-        self.assertLess(step_names.index("12_run_backend_finetunes.py"), step_names.index("13_generate_episode.py"))
-        self.assertLess(step_names.index("15_run_storyboard_backend.py"), step_names.index("16_render_episode.py"))
-        self.assertLess(step_names.index("16_render_episode.py"), step_names.index("19_build_series_bible.py"))
-        self.assertIn("--skip-downloads", planned[2][2])
+        self.assertLess(step_names.index("13_run_backend_finetunes.py"), step_names.index("14_generate_episode.py"))
+        self.assertLess(step_names.index("16_run_storyboard_backend.py"), step_names.index("17_render_episode.py"))
+        self.assertLess(step_names.index("17_render_episode.py"), step_names.index("20_build_series_bible.py"))
+        self.assertLess(step_names.index("20_build_series_bible.py"), step_names.index("21_export_package.py"))
+        prepare_row = next(row for row in planned if row[0] == "09_prepare_foundation_training.py")
+        self.assertIn("--skip-downloads", prepare_row[2])
 
     def test_planned_refresh_steps_stop_after_training_excludes_generate_render_block(self) -> None:
         cfg = {
@@ -3432,10 +3932,11 @@ class ManualNamingTests(unittest.TestCase):
         planned = STEP16.planned_refresh_steps(cfg, skip_downloads=False, stop_after_training=True)
         step_names = [row[0] for row in planned]
 
-        self.assertIn("12_run_backend_finetunes.py", step_names)
-        self.assertNotIn("13_generate_episode.py", step_names)
-        self.assertNotIn("16_render_episode.py", step_names)
-        self.assertNotIn("19_build_series_bible.py", step_names)
+        self.assertIn("13_run_backend_finetunes.py", step_names)
+        self.assertNotIn("14_generate_episode.py", step_names)
+        self.assertNotIn("17_render_episode.py", step_names)
+        self.assertNotIn("20_build_series_bible.py", step_names)
+        self.assertNotIn("21_export_package.py", step_names)
 
     def test_planned_refresh_steps_respect_disabled_optional_training_stages(self) -> None:
         cfg = {
@@ -3456,13 +3957,15 @@ class ManualNamingTests(unittest.TestCase):
         self.assertEqual(
             step_names,
             [
-                "06_build_dataset.py",
-                "07_train_series_model.py",
-                "13_generate_episode.py",
-                "14_generate_storyboard_assets.py",
-                "15_run_storyboard_backend.py",
-                "16_render_episode.py",
-                "19_build_series_bible.py",
+                "06_manage_character_relationships.py",
+                "07_build_dataset.py",
+                "08_train_series_model.py",
+                "14_generate_episode.py",
+                "15_generate_storyboard_assets.py",
+                "16_run_storyboard_backend.py",
+                "17_render_episode.py",
+                "20_build_series_bible.py",
+                "21_export_package.py",
             ],
         )
 
@@ -3567,46 +4070,46 @@ class ManualNamingTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             autosave_root = Path(tmpdir)
             cfg = {}
-            with mock.patch.object(STEP99, "resolve_project_path", return_value=autosave_root):
-                state = STEP99.default_state()
-                STEP99.save_autosave(cfg, state, "first")
-                STEP99.save_autosave(cfg, state, "second")
-                latest = STEP99.save_autosave(cfg, state, "third")
+            with mock.patch.object(STEP23, "resolve_project_path", return_value=autosave_root):
+                state = STEP23.default_state()
+                STEP23.save_autosave(cfg, state, "first")
+                STEP23.save_autosave(cfg, state, "second")
+                latest = STEP23.save_autosave(cfg, state, "third")
 
                 snapshots = sorted(autosave_root.glob("autosave_*.json"))
                 self.assertEqual(len(snapshots), 2)
                 self.assertEqual(snapshots[-1], latest)
-                loaded = STEP99.load_latest_autosave(cfg)
+                loaded = STEP23.load_latest_autosave(cfg)
                 self.assertEqual(loaded["autosave_reason"], "third")
 
     def test_next_autosave_path_avoids_filename_collisions(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             autosave_root = Path(tmpdir)
-            with mock.patch.object(STEP99, "autosave_filename", return_value="autosave_fixed.json"):
-                first = STEP99.next_autosave_path(autosave_root)
+            with mock.patch.object(STEP23, "autosave_filename", return_value="autosave_fixed.json"):
+                first = STEP23.next_autosave_path(autosave_root)
                 first.write_text("first", encoding="utf-8")
-                second = STEP99.next_autosave_path(autosave_root)
+                second = STEP23.next_autosave_path(autosave_root)
 
         self.assertEqual(first.name, "autosave_fixed.json")
         self.assertEqual(second.name, "autosave_fixed_001.json")
 
     def test_build_status_snapshot_tracks_episode_and_global_progress(self) -> None:
-        state = STEP99.default_state()
+        state = STEP23.default_state()
         state["setup_completed"] = True
         state["processed_count"] = 1
         state["processed_episodes"] = ["Episode01"]
         state["episode_steps_completed"] = {
-            "Episode01": list(STEP99.EPISODE_STEPS),
+            "Episode01": list(STEP23.EPISODE_STEPS),
             "Episode02": ["01_import_episode.py", "02_split_scenes.py"],
         }
         state["current_phase"] = "episode"
         state["current_episode_name"] = "Episode02"
         state["current_episode_file"] = "Episode02.mp4"
         state["current_step"] = "03_diarize_and_transcribe.py"
-        state["global_steps_completed"] = ["07_train_series_model.py"]
+        state["global_steps_completed"] = ["08_train_series_model.py"]
         cfg = {"foundation_training": {"required_before_generate": True, "required_before_render": True}}
 
-        snapshot = STEP99.build_status_snapshot(cfg, state, inbox_dir=None)
+        snapshot = STEP23.build_status_snapshot(cfg, state, inbox_dir=None)
 
         self.assertEqual(snapshot["processed_count"], 1)
         episode_rows = {row["episode"]: row for row in snapshot["episode_progress"]}
@@ -3614,14 +4117,14 @@ class ManualNamingTests(unittest.TestCase):
         self.assertEqual(episode_rows["Episode02"]["status"], "running")
         self.assertEqual(episode_rows["Episode02"]["current_step"], "03_diarize_and_transcribe.py")
         global_rows = {row["step"]: row["status"] for row in snapshot["global_progress"]}
-        self.assertEqual(global_rows["07_train_series_model.py"], "completed")
-        self.assertEqual(global_rows["08_prepare_foundation_training.py"], "pending")
+        self.assertEqual(global_rows["08_train_series_model.py"], "completed")
+        self.assertEqual(global_rows["09_prepare_foundation_training.py"], "pending")
 
     def test_build_status_snapshot_uses_stored_global_plan_labels(self) -> None:
-        state = STEP99.default_state()
+        state = STEP23.default_state()
         state["skip_downloads"] = True
-        state["global_planned_steps"] = STEP99.serialize_global_step_rows(
-            STEP99.global_step_rows(
+        state["global_planned_steps"] = STEP23.serialize_global_step_rows(
+            STEP23.global_step_rows(
                 {
                     "foundation_training": {
                         "prepare_after_batch": True,
@@ -3633,34 +4136,34 @@ class ManualNamingTests(unittest.TestCase):
                 skip_downloads=True,
             )
         )
-        state["global_steps_completed"] = ["06_build_dataset.py"]
+        state["global_steps_completed"] = ["07_build_dataset.py"]
         cfg = {"foundation_training": {"required_before_generate": False, "required_before_render": False}}
 
-        snapshot = STEP99.build_status_snapshot(cfg, state, inbox_dir=None)
+        snapshot = STEP23.build_status_snapshot(cfg, state, inbox_dir=None)
 
         self.assertTrue(snapshot["skip_downloads"])
         global_rows = {row["step"]: row["status"] for row in snapshot["global_progress"]}
-        self.assertEqual(global_rows["06_build_dataset.py"], "completed")
-        self.assertEqual(global_rows["08_prepare_foundation_training.py --skip-downloads"], "pending")
+        self.assertEqual(global_rows["07_build_dataset.py"], "completed")
+        self.assertEqual(global_rows["09_prepare_foundation_training.py --skip-downloads"], "pending")
 
     def test_completed_global_step_labels_follow_planned_order(self) -> None:
-        planned_steps = STEP99.serialize_global_step_rows(
+        planned_steps = STEP23.serialize_global_step_rows(
             [
-                ("06_build_dataset.py", "Build training dataset from reviewed data", []),
-                ("08_prepare_foundation_training.py", "Prepare Foundation Training", ["--skip-downloads"]),
-                ("09_train_foundation_models.py", "Train Foundation Models", []),
+                ("07_build_dataset.py", "Build training dataset from reviewed data", []),
+                ("09_prepare_foundation_training.py", "Prepare Foundation Training", ["--skip-downloads"]),
+                ("10_train_foundation_models.py", "Train Foundation Models", []),
             ]
         )
 
-        labels = STEP99.completed_global_step_labels(
+        labels = STEP23.completed_global_step_labels(
             planned_steps,
-            {"09_train_foundation_models.py", "06_build_dataset.py"},
+            {"10_train_foundation_models.py", "07_build_dataset.py"},
         )
 
-        self.assertEqual(labels, ["06_build_dataset.py", "09_train_foundation_models.py"])
+        self.assertEqual(labels, ["07_build_dataset.py", "10_train_foundation_models.py"])
 
     def test_record_global_generated_episode_outputs_tracks_latest_finished_episode(self) -> None:
-        state = STEP99.default_state()
+        state = STEP23.default_state()
         outputs = {
             "episode_id": "episode_200",
             "final_render": "C:\\demo\\episode_200.mp4",
@@ -3668,11 +4171,11 @@ class ManualNamingTests(unittest.TestCase):
             "production_package": "C:\\demo\\episode_200_production_package.json",
         }
 
-        with mock.patch.object(STEP99, "latest_generated_episode_artifacts", return_value=outputs):
-            STEP99.record_global_generated_episode_outputs(state, {}, "16_render_episode.py")
+        with mock.patch.object(STEP23, "latest_generated_episode_artifacts", return_value=outputs):
+            STEP23.record_global_generated_episode_outputs(state, {}, "17_render_episode.py")
 
         self.assertEqual(state["latest_generated_episode"]["episode_id"], "episode_200")
-        self.assertEqual(state["global_step_outputs"]["16_render_episode.py"]["production_package"], outputs["production_package"])
+        self.assertEqual(state["global_step_outputs"]["17_render_episode.py"]["production_package"], outputs["production_package"])
 
     def test_generated_episode_completion_summary_marks_missing_backend_tasks(self) -> None:
         summary = generated_episode_completion_summary(
@@ -3733,12 +4236,12 @@ class ManualNamingTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             autosave_root = Path(tmpdir)
             cfg = {}
-            with mock.patch.object(STEP99, "resolve_project_path", return_value=autosave_root):
-                state = STEP99.default_state()
+            with mock.patch.object(STEP23, "resolve_project_path", return_value=autosave_root):
+                state = STEP23.default_state()
                 state["status"] = "completed"
-                STEP99.save_autosave(cfg, state, "done")
+                STEP23.save_autosave(cfg, state, "done")
 
-                loaded = STEP99.load_latest_autosave(cfg)
+                loaded = STEP23.load_latest_autosave(cfg)
 
                 self.assertIsNone(loaded)
 
@@ -4132,6 +4635,47 @@ class ManualNamingTests(unittest.TestCase):
         self.assertEqual(payload["detected_language"], "de")
         self.assertEqual(payload["segments"][0]["language"], "de")
 
+    def test_transcribe_scene_prefers_clear_text_language_over_filename_hint(self) -> None:
+        class DummyModel:
+            def __init__(self) -> None:
+                self.kwargs = {}
+
+            def transcribe(self, _path, **kwargs):
+                self.kwargs = kwargs
+                return {
+                    "language": "de",
+                    "segments": [
+                        {"start": 0.0, "end": 1.2, "text": "Ahora tenemos un plan y no es tan simple."},
+                        {"start": 1.3, "end": 2.4, "text": "Pero vamos a revisar cada paso con cuidado."},
+                    ],
+                }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            episode_dir = Path(tmp) / "Show.S01E01.GERMAN.720p"
+            episode_dir.mkdir(parents=True, exist_ok=True)
+            wav_path = episode_dir / "scene_0001.wav"
+            with wave.open(str(wav_path), "wb") as handle:
+                handle.setnchannels(1)
+                handle.setsampwidth(2)
+                handle.setframerate(24000)
+                handle.writeframes(b"\x00\x00" * 24000)
+
+            model = DummyModel()
+            cfg = {
+                "transcription": {
+                    "language": "auto",
+                    "task": "transcribe",
+                    "merge_gap_seconds": 0.35,
+                    "min_segment_seconds": 0.6,
+                }
+            }
+
+            payload = STEP04.transcribe_scene(model, wav_path, cfg, use_fp16=False)
+
+        self.assertEqual(model.kwargs.get("language"), "de")
+        self.assertEqual(payload["detected_language"], "es")
+        self.assertEqual(payload["segments"][0]["language"], "es")
+
     def test_transcribe_scene_uses_text_language_when_whisper_detection_is_wrong(self) -> None:
         class DummyModel:
             def __init__(self) -> None:
@@ -4178,6 +4722,267 @@ class ManualNamingTests(unittest.TestCase):
         self.assertNotIn("language", model.kwargs)
         self.assertEqual(payload["detected_language"], "de")
         self.assertEqual(payload["segments"][0]["language"], "de")
+
+    def test_transcribe_scene_detects_short_german_dialogue_despite_english_whisper_hint(self) -> None:
+        class DummyModel:
+            def __init__(self) -> None:
+                self.kwargs = {}
+
+            def transcribe(self, _path, **kwargs):
+                self.kwargs = kwargs
+                return {
+                    "language": "en",
+                    "segments": [
+                        {
+                            "start": 0.0,
+                            "end": 2.0,
+                            "text": "Ja, das ist doch nicht okay. Wir müssen jetzt los.",
+                        },
+                    ],
+                }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            wav_path = Path(tmp) / "scene_0001.wav"
+            with wave.open(str(wav_path), "wb") as handle:
+                handle.setnchannels(1)
+                handle.setsampwidth(2)
+                handle.setframerate(24000)
+                handle.writeframes(b"\x00\x00" * 24000)
+
+            model = DummyModel()
+            cfg = {
+                "transcription": {
+                    "language": "auto",
+                    "task": "transcribe",
+                    "merge_gap_seconds": 0.35,
+                    "min_segment_seconds": 0.6,
+                }
+            }
+
+            payload = STEP04.transcribe_scene(model, wav_path, cfg, use_fp16=False)
+
+        self.assertEqual(payload["detected_language"], "de")
+        self.assertEqual(payload["segments"][0]["language"], "de")
+
+    def test_episode_language_consensus_fixes_cached_rows_with_wrong_whisper_language(self) -> None:
+        rows = [
+            {"scene_id": "scene_0001", "text": "Ja, das ist doch nicht richtig.", "language": "en"},
+            {"scene_id": "scene_0002", "text": "Wir haben jetzt keine Zeit.", "language": "en"},
+        ]
+        cfg = {"transcription": {"language": "auto"}}
+
+        normalized_rows, episode_language, language_counts = STEP04.apply_episode_language_consensus(rows, cfg)
+
+        self.assertEqual(episode_language, "de")
+        self.assertEqual(language_counts["de"], 2)
+        self.assertTrue(all(row["language"] == "de" for row in normalized_rows))
+
+    def test_episode_language_consensus_locks_minority_segment_outliers(self) -> None:
+        rows = [
+            {"scene_id": "scene_0001", "text": "Ja, das ist doch nicht richtig.", "language": "de"},
+            {"scene_id": "scene_0002", "text": "Wir haben jetzt keine Zeit.", "language": "de"},
+            {"scene_id": "scene_0003", "text": "Jetzt machen wir das anders.", "language": "de"},
+            {"scene_id": "scene_0004", "text": "Ahora tenemos un plan.", "language": "es"},
+        ]
+        cfg = {"transcription": {"language": "auto", "lock_segments_to_episode_language": True}}
+
+        normalized_rows, episode_language, language_counts = STEP04.apply_episode_language_consensus(rows, cfg)
+
+        self.assertEqual(episode_language, "de")
+        self.assertEqual(language_counts["de"], 3)
+        self.assertEqual(language_counts["es"], 1)
+        self.assertTrue(all(row["language"] == "de" for row in normalized_rows))
+
+    def test_configured_transcription_language_overrides_spanish_text_outliers(self) -> None:
+        rows = [
+            {"scene_id": "scene_0001", "text": "Ahora tenemos un plan y no es tan simple.", "language": "es"},
+        ]
+        cfg = {"transcription": {"language": "de", "lock_segments_to_episode_language": True}}
+
+        normalized_rows, episode_language, language_counts = STEP04.apply_episode_language_consensus(rows, cfg)
+
+        self.assertEqual(episode_language, "de")
+        self.assertEqual(language_counts["es"], 1)
+        self.assertEqual(normalized_rows[0]["language"], "de")
+
+    def test_transcribe_step_keeps_speechbrain_cache_inside_project_runtime(self) -> None:
+        source = (SCRIPT_ROOT / "03_diarize_and_transcribe.py").read_text(encoding="utf-8")
+
+        self.assertIn('resolve_project_path("runtime/models/speechbrain/ecapa")', source)
+        self.assertNotIn('PROJECT_ROOT.parent / "runtime"', source)
+
+    def test_representative_language_probe_scenes_skips_tiny_intro_scene(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            tiny = root / "scene_0001.mp4"
+            medium = root / "scene_0002.mp4"
+            large = root / "scene_0003.mp4"
+            tiny.write_bytes(b"0" * 100)
+            medium.write_bytes(b"1" * 150_000)
+            large.write_bytes(b"2" * 300_000)
+
+            selected = STEP04.representative_language_probe_scenes(
+                [tiny, medium, large],
+                {
+                    "transcription": {
+                        "auto_language_probe_scene_count": 2,
+                        "auto_language_probe_min_scene_bytes": 120_000,
+                    }
+                },
+            )
+
+        self.assertEqual([path.name for path in selected], ["scene_0003.mp4", "scene_0002.mp4"])
+
+    def test_language_probability_rows_choose_dominant_episode_language(self) -> None:
+        language, scores = STEP04.rank_episode_language_probability_rows(
+            [
+                {"de": 0.72, "en": 0.18},
+                {"de": 0.61, "en": 0.24},
+            ],
+            {
+                "transcription": {
+                    "auto_language_candidates": ["de", "en"],
+                    "auto_language_min_confidence": 0.35,
+                    "auto_language_min_margin": 0.08,
+                }
+            },
+        )
+
+        self.assertEqual(language, "de")
+        self.assertGreater(scores["de"], scores["en"])
+
+    def test_forced_language_scores_are_aggregated_across_probe_scenes(self) -> None:
+        language, scores = STEP04.rank_forced_language_scores(
+            [
+                {"en": 5.0, "es": 7.0},
+                {"en": 5.0, "es": 8.5},
+            ]
+        )
+
+        self.assertEqual(language, "es")
+        self.assertGreater(scores["es"], scores["en"])
+
+    def test_transcribe_scene_forces_configured_episode_language(self) -> None:
+        class DummyModel:
+            def __init__(self) -> None:
+                self.kwargs = {}
+
+            def transcribe(self, _path, **kwargs):
+                self.kwargs = kwargs
+                return {
+                    "language": "en",
+                    "segments": [
+                        {
+                            "start": 0.0,
+                            "end": 2.0,
+                            "text": "Ja, das machen wir jetzt.",
+                        },
+                    ],
+                }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            wav_path = Path(tmp) / "scene_0001.wav"
+            with wave.open(str(wav_path), "wb") as handle:
+                handle.setnchannels(1)
+                handle.setsampwidth(2)
+                handle.setframerate(24000)
+                handle.writeframes(b"\x00\x00" * 24000)
+
+            model = DummyModel()
+            payload = STEP04.transcribe_scene(
+                model,
+                wav_path,
+                {
+                    "transcription": {
+                        "language": "de",
+                        "task": "transcribe",
+                        "merge_gap_seconds": 0.35,
+                        "min_segment_seconds": 0.6,
+                    }
+                },
+                use_fp16=False,
+            )
+
+        self.assertEqual(model.kwargs["language"], "de")
+        self.assertEqual(payload["detected_language"], "de")
+        self.assertEqual(payload["segments"][0]["language"], "de")
+
+    def test_process_scene_retranscribes_stale_wrong_language_cache(self) -> None:
+        class DummyModel:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def transcribe(self, _path, **_kwargs):
+                self.calls += 1
+                return {
+                    "language": "de",
+                    "segments": [
+                        {
+                            "start": 0.0,
+                            "end": 1.2,
+                            "text": "Ja, danke. Das ist deutsch.",
+                        },
+                    ],
+                }
+
+        def write_wav(*args):
+            output = args[2]
+            output = Path(output)
+            output.parent.mkdir(parents=True, exist_ok=True)
+            with wave.open(str(output), "wb") as handle:
+                handle.setnchannels(1)
+                handle.setsampwidth(2)
+                handle.setframerate(24000)
+                handle.writeframes(b"\x00\x00" * 24000)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            scene_file = root / "scene_0001.mp4"
+            scene_file.write_bytes(b"video")
+            audio_root = root / "audio"
+            cache_dir = root / "cache"
+            cache_dir.mkdir()
+            STEP04.write_json(
+                cache_dir / "scene_0001.json",
+                [
+                    {
+                        "process_version": STEP04.PROCESS_VERSION - 1,
+                        "scene_id": "scene_0001",
+                        "segment_id": "scene_0001_seg_001",
+                        "start": 0.0,
+                        "end": 1.0,
+                        "text": "Thank you.",
+                        "language": "en",
+                    }
+                ],
+            )
+
+            model = DummyModel()
+            with mock.patch.object(STEP04, "export_audio", side_effect=write_wav), mock.patch.object(
+                STEP04, "cut_audio_segment", side_effect=write_wav
+            ), mock.patch.object(STEP04, "compute_voice_embedding", return_value=[]):
+                rows = STEP04.process_scene(
+                    model,
+                    Path("ffmpeg"),
+                    "episode_001",
+                    scene_file,
+                    audio_root,
+                    cache_dir,
+                    {
+                        "transcription": {
+                            "language": "de",
+                            "task": "transcribe",
+                            "merge_gap_seconds": 0.35,
+                            "min_segment_seconds": 0.6,
+                        }
+                    },
+                    use_fp16=False,
+                    speaker_embedding_backend="mfcc",
+                )
+
+        self.assertEqual(model.calls, 1)
+        self.assertEqual(rows[0]["language"], "de")
+        self.assertIn("deutsch", rows[0]["text"].lower())
 
     def test_transcribe_scene_uses_non_german_text_language_when_whisper_detection_is_wrong(self) -> None:
         class DummyModel:
@@ -4789,7 +5594,7 @@ class ManualNamingTests(unittest.TestCase):
             self.assertGreater(payload["feature_dim"], 0)
 
     def test_adapter_train_parse_args_supports_force(self) -> None:
-        with mock.patch("sys.argv", ["10_train_adapter_models.py", "--character", "Babe", "--force"]):
+        with mock.patch("sys.argv", ["11_train_adapter_models.py", "--character", "Babe", "--force"]):
             args = STEP17.parse_args()
 
         self.assertEqual(args.character, "Babe")
@@ -4806,14 +5611,15 @@ class ManualNamingTests(unittest.TestCase):
             "adapter_training": {"auto_train_after_foundation": True},
         }
 
-        steps = STEP99.global_steps_to_run(cfg)
+        steps = STEP23.global_steps_to_run(cfg)
 
-        self.assertIn("10_train_adapter_models.py", steps)
-        self.assertLess(steps.index("09_train_foundation_models.py"), steps.index("10_train_adapter_models.py"))
-        self.assertLess(steps.index("10_train_adapter_models.py"), steps.index("13_generate_episode.py"))
-        self.assertLess(steps.index("13_generate_episode.py"), steps.index("14_generate_storyboard_assets.py"))
-        self.assertLess(steps.index("14_generate_storyboard_assets.py"), steps.index("16_render_episode.py"))
-        self.assertLess(steps.index("16_render_episode.py"), steps.index("19_build_series_bible.py"))
+        self.assertIn("11_train_adapter_models.py", steps)
+        self.assertLess(steps.index("10_train_foundation_models.py"), steps.index("11_train_adapter_models.py"))
+        self.assertLess(steps.index("11_train_adapter_models.py"), steps.index("14_generate_episode.py"))
+        self.assertLess(steps.index("14_generate_episode.py"), steps.index("15_generate_storyboard_assets.py"))
+        self.assertLess(steps.index("15_generate_storyboard_assets.py"), steps.index("17_render_episode.py"))
+        self.assertLess(steps.index("17_render_episode.py"), steps.index("20_build_series_bible.py"))
+        self.assertLess(steps.index("20_build_series_bible.py"), steps.index("21_export_package.py"))
 
     def test_planned_preview_steps_builds_bible_once_after_batch(self) -> None:
         cfg = {
@@ -4825,10 +5631,12 @@ class ManualNamingTests(unittest.TestCase):
 
         steps = STEP19PREVIEW.planned_preview_steps(cfg, 3)
 
-        self.assertEqual(steps.count("13_generate_episode.py"), 3)
-        self.assertEqual(steps.count("16_render_episode.py"), 3)
-        self.assertEqual(steps.count("19_build_series_bible.py"), 1)
-        self.assertEqual(steps[-1], "19_build_series_bible.py")
+        self.assertEqual(steps.count("14_generate_episode.py"), 3)
+        self.assertEqual(steps.count("17_render_episode.py"), 3)
+        self.assertEqual(steps.count("20_build_series_bible.py"), 1)
+        self.assertEqual(steps.count("21_export_package.py"), 1)
+        self.assertLess(steps.index("20_build_series_bible.py"), steps.index("21_export_package.py"))
+        self.assertEqual(steps[-1], "21_export_package.py")
 
     def test_planned_preview_steps_respects_prepare_without_forced_training(self) -> None:
         cfg = {
@@ -4845,12 +5653,12 @@ class ManualNamingTests(unittest.TestCase):
 
         steps = STEP19PREVIEW.planned_preview_steps(cfg, 1)
 
-        self.assertIn("08_prepare_foundation_training.py", steps)
-        self.assertNotIn("09_train_foundation_models.py", steps)
-        self.assertNotIn("10_train_adapter_models.py", steps)
-        self.assertNotIn("11_train_fine_tune_models.py", steps)
-        self.assertNotIn("12_run_backend_finetunes.py", steps)
-        self.assertLess(steps.index("08_prepare_foundation_training.py"), steps.index("13_generate_episode.py"))
+        self.assertIn("09_prepare_foundation_training.py", steps)
+        self.assertNotIn("10_train_foundation_models.py", steps)
+        self.assertNotIn("11_train_adapter_models.py", steps)
+        self.assertNotIn("12_train_fine_tune_models.py", steps)
+        self.assertNotIn("13_run_backend_finetunes.py", steps)
+        self.assertLess(steps.index("09_prepare_foundation_training.py"), steps.index("14_generate_episode.py"))
 
     def test_planned_preview_steps_skips_nested_training_when_foundation_train_disabled(self) -> None:
         cfg = {
@@ -4869,15 +5677,15 @@ class ManualNamingTests(unittest.TestCase):
         self.assertEqual(flags, (True, False, True, True, True))
 
         steps = STEP19PREVIEW.planned_preview_steps(cfg, 2)
-        self.assertEqual(steps.count("08_prepare_foundation_training.py"), 1)
-        self.assertEqual(steps.count("09_train_foundation_models.py"), 0)
-        self.assertEqual(steps.count("10_train_adapter_models.py"), 0)
-        self.assertEqual(steps.count("11_train_fine_tune_models.py"), 0)
-        self.assertEqual(steps.count("12_run_backend_finetunes.py"), 0)
-        self.assertEqual(steps.count("13_generate_episode.py"), 2)
+        self.assertEqual(steps.count("09_prepare_foundation_training.py"), 1)
+        self.assertEqual(steps.count("10_train_foundation_models.py"), 0)
+        self.assertEqual(steps.count("11_train_adapter_models.py"), 0)
+        self.assertEqual(steps.count("12_train_fine_tune_models.py"), 0)
+        self.assertEqual(steps.count("13_run_backend_finetunes.py"), 0)
+        self.assertEqual(steps.count("14_generate_episode.py"), 2)
 
     def test_preview_parse_args_supports_skip_downloads(self) -> None:
-        with mock.patch("sys.argv", ["56_generate_finished_episodes.py", "--count", "4", "--skip-downloads"]):
+        with mock.patch("sys.argv", ["23_generate_finished_episodes.py", "--count", "4", "--skip-downloads"]):
             args = STEP19PREVIEW.parse_args()
 
         self.assertEqual(args.count, 4)
@@ -4885,7 +5693,7 @@ class ManualNamingTests(unittest.TestCase):
         self.assertFalse(args.endless)
 
     def test_preview_parse_args_defaults_to_one_finished_episode(self) -> None:
-        with mock.patch("sys.argv", ["56_generate_finished_episodes.py"]):
+        with mock.patch("sys.argv", ["23_generate_finished_episodes.py"]):
             args = STEP19PREVIEW.parse_args()
 
         self.assertEqual(args.count, 1)
@@ -4893,7 +5701,7 @@ class ManualNamingTests(unittest.TestCase):
         self.assertFalse(STEP19PREVIEW.preview_endless_mode(args))
 
     def test_preview_parse_args_count_zero_enables_endless_mode(self) -> None:
-        with mock.patch("sys.argv", ["56_generate_finished_episodes.py", "--count", "0"]):
+        with mock.patch("sys.argv", ["23_generate_finished_episodes.py", "--count", "0"]):
             args = STEP19PREVIEW.parse_args()
 
         self.assertEqual(args.count, 0)
@@ -4901,7 +5709,7 @@ class ManualNamingTests(unittest.TestCase):
         self.assertTrue(STEP19PREVIEW.preview_endless_mode(args))
 
     def test_preview_parse_args_supports_explicit_endless_flag(self) -> None:
-        with mock.patch("sys.argv", ["56_generate_finished_episodes.py", "--count", "3", "--endless"]):
+        with mock.patch("sys.argv", ["23_generate_finished_episodes.py", "--count", "3", "--endless"]):
             args = STEP19PREVIEW.parse_args()
 
         self.assertEqual(args.count, 3)
@@ -4921,11 +5729,12 @@ class ManualNamingTests(unittest.TestCase):
         ), mock.patch.object(
             STEP19PREVIEW, "planned_preview_steps",
             return_value=[
-                "13_generate_episode.py",
-                "14_generate_storyboard_assets.py",
-                "15_run_storyboard_backend.py",
-                "16_render_episode.py",
-                "19_build_series_bible.py",
+                "14_generate_episode.py",
+                "15_generate_storyboard_assets.py",
+                "16_run_storyboard_backend.py",
+                "17_render_episode.py",
+                "20_build_series_bible.py",
+                "21_export_package.py",
             ],
         ), mock.patch.object(
             STEP19PREVIEW, "open_face_review_item_count", return_value=0
@@ -4965,6 +5774,8 @@ class ManualNamingTests(unittest.TestCase):
         ), mock.patch.object(
             STEP19PREVIEW, "LiveProgressReporter", return_value=reporter
         ), mock.patch.object(
+            STEP19PREVIEW, "run_generation_toolkit_phase"
+        ) as toolkit_phase, mock.patch.object(
             STEP19PREVIEW, "headline"
         ), mock.patch.object(
             STEP19PREVIEW, "ok"
@@ -4979,17 +5790,23 @@ class ManualNamingTests(unittest.TestCase):
                 "episode_001_full_generated_episode.mp4"
             )
         )
+        self.assertEqual(
+            [call.args[1] for call in toolkit_phase.call_args_list],
+            ["pre_training", "pre_generation", "post_story", "post_render", "post_quality_gate", "post_export"],
+        )
 
     def test_planned_preview_steps_for_endless_mode_include_one_generation_cycle_and_bible(self) -> None:
         cfg = {}
 
         steps = STEP19PREVIEW.planned_preview_steps_for_mode(cfg, 0, endless=True)
 
-        self.assertEqual(steps.count("13_generate_episode.py"), 1)
-        self.assertEqual(steps.count("14_generate_storyboard_assets.py"), 1)
-        self.assertEqual(steps.count("15_run_storyboard_backend.py"), 1)
-        self.assertEqual(steps.count("16_render_episode.py"), 1)
-        self.assertEqual(steps.count("19_build_series_bible.py"), 1)
+        self.assertEqual(steps.count("14_generate_episode.py"), 1)
+        self.assertEqual(steps.count("15_generate_storyboard_assets.py"), 1)
+        self.assertEqual(steps.count("16_run_storyboard_backend.py"), 1)
+        self.assertEqual(steps.count("17_render_episode.py"), 1)
+        self.assertEqual(steps.count("20_build_series_bible.py"), 1)
+        self.assertEqual(steps.count("21_export_package.py"), 1)
+        self.assertLess(steps.index("20_build_series_bible.py"), steps.index("21_export_package.py"))
 
     def test_preview_parent_label_marks_endless_runs(self) -> None:
         self.assertEqual(STEP19PREVIEW.preview_parent_label(0, True), "Endless")
@@ -5011,13 +5828,13 @@ class ManualNamingTests(unittest.TestCase):
         rows = STEP19PREVIEW.training_plan_rows(cfg, skip_downloads=True)
         row_map = {script_name: args for script_name, _label, args in rows}
 
-        self.assertEqual(row_map.get("08_prepare_foundation_training.py"), ["--skip-downloads"])
-        self.assertEqual(row_map.get("09_train_foundation_models.py"), [])
-        self.assertEqual(row_map.get("10_train_adapter_models.py"), [])
+        self.assertEqual(row_map.get("09_prepare_foundation_training.py"), ["--skip-downloads"])
+        self.assertEqual(row_map.get("10_train_foundation_models.py"), [])
+        self.assertEqual(row_map.get("11_train_adapter_models.py"), [])
 
     def test_full_pipeline_parse_args_supports_skip_downloads(self) -> None:
-        with mock.patch("sys.argv", ["57_process_next_episode.py", "--skip-downloads"]):
-            args = STEP99.parse_args()
+        with mock.patch("sys.argv", ["24_process_next_episode.py", "--skip-downloads"]):
+            args = STEP23.parse_args()
 
         self.assertTrue(args.skip_downloads)
 
@@ -5034,28 +5851,62 @@ class ManualNamingTests(unittest.TestCase):
             "backend_fine_tune": {"auto_run_after_fine_tune": True},
         }
 
-        rows = STEP99.global_step_rows(cfg, skip_downloads=True)
+        rows = STEP23.global_step_rows(cfg, skip_downloads=True)
         row_map = {script_name: args for script_name, _label, args in rows}
 
-        self.assertEqual(row_map.get("08_prepare_foundation_training.py"), ["--skip-downloads"])
-        self.assertEqual(row_map.get("09_train_foundation_models.py"), [])
-        self.assertEqual(row_map.get("10_train_adapter_models.py"), [])
+        self.assertEqual(row_map.get("09_prepare_foundation_training.py"), ["--skip-downloads"])
+        self.assertEqual(row_map.get("10_train_foundation_models.py"), [])
+        self.assertEqual(row_map.get("11_train_adapter_models.py"), [])
+        self.assertEqual(row_map.get("21_export_package.py"), [])
 
-    def test_step99_setup_step_uses_prepare_runtime(self) -> None:
-        self.assertEqual(STEP99.SETUP_STEP, "00_prepare_runtime.py")
+    def test_step23_setup_step_uses_prepare_runtime(self) -> None:
+        self.assertEqual(STEP23.SETUP_STEP, "00_prepare_runtime.py")
+
+    def test_step23_setup_refresh_reason_detects_fallback_backend_config(self) -> None:
+        runner = {"enabled": True, "command_template": ["python", "runner.py"]}
+        cfg = {
+            "release_mode": {"enabled": True, "min_episode_quality": 0.9, "max_weak_scenes": 0},
+            "cloning": {
+                "enable_voice_cloning": True,
+                "force_voice_cloning": True,
+                "require_trained_voice_models": True,
+                "allow_system_tts_fallback": False,
+                "enable_original_line_reuse": True,
+                "enable_lipsync": True,
+                "voice_clone_engine": "xtts",
+            },
+            "external_backends": {
+                "storyboard_scene_runner": dict(runner),
+                "finished_episode_image_runner": {
+                    "enabled": True,
+                    "command_template": ["python", "tools/quality_backends/image_runner.py"],
+                    "environment": {"SERIES_IMAGE_BACKEND_COMMAND": '"{python}" "tools/quality_backends/project_local_image_backend.py"'},
+                },
+                "finished_episode_video_runner": dict(runner),
+                "finished_episode_voice_runner": dict(runner),
+                "finished_episode_lipsync_runner": dict(runner),
+                "finished_episode_master_runner": dict(runner),
+            },
+        }
+        state = STEP23.default_state()
+        state["setup_completed"] = True
+
+        reason = STEP23.setup_refresh_reason(cfg, state)
+
+        self.assertIn("uses fallback backend", reason)
 
     def test_render_status_markdown_includes_generated_episode_readiness_summary(self) -> None:
         snapshot = {
             "status": "running",
             "updated_at": "2026-04-18T12:00:00Z",
-            "autosave_reason": "global:16_render_episode.py",
+            "autosave_reason": "global:17_render_episode.py",
             "setup_completed": True,
             "skip_downloads": True,
             "processed_count": 3,
             "pending_inbox_count": 0,
             "current_phase": "global",
             "current_episode_name": None,
-            "current_step": "16_render_episode.py",
+            "current_step": "17_render_episode.py",
             "episode_progress": [],
             "global_progress": [],
             "latest_generated_episode": {
@@ -5078,7 +5929,7 @@ class ManualNamingTests(unittest.TestCase):
             },
         }
 
-        markdown = STEP99.render_status_markdown(snapshot)
+        markdown = STEP23.render_status_markdown(snapshot)
 
         self.assertIn("- Production readiness: hybrid_generated_episode", markdown)
         self.assertIn("- Scene video coverage: 50.0%", markdown)
@@ -5091,15 +5942,15 @@ class ManualNamingTests(unittest.TestCase):
 
     def test_completed_preview_step_labels_limits_to_completed_count(self) -> None:
         planned_steps = [
-            "06_build_dataset.py",
-            "07_train_series_model.py",
-            "13_generate_episode.py",
-            "19_build_series_bible.py",
+            "07_build_dataset.py",
+            "08_train_series_model.py",
+            "14_generate_episode.py",
+            "20_build_series_bible.py",
         ]
 
         completed = STEP19PREVIEW.completed_step_labels(planned_steps, 2)
 
-        self.assertEqual(completed, ["06_build_dataset.py", "07_train_series_model.py"])
+        self.assertEqual(completed, ["07_build_dataset.py", "08_train_series_model.py"])
 
     def test_fine_tune_training_status_detects_outdated_training(self) -> None:
         with tempfile.TemporaryDirectory(dir=str(ROOT / "tmp")) as tmp:
@@ -5131,7 +5982,7 @@ class ManualNamingTests(unittest.TestCase):
             self.assertFalse(status["summary_new_enough"])
 
     def test_fine_tune_parse_args_supports_force(self) -> None:
-        with mock.patch("sys.argv", ["11_train_fine_tune_models.py", "--character", "Babe", "--force"]):
+        with mock.patch("sys.argv", ["12_train_fine_tune_models.py", "--character", "Babe", "--force"]):
             args = STEP18.parse_args()
 
         self.assertEqual(args.character, "Babe")
@@ -5234,11 +6085,11 @@ class ManualNamingTests(unittest.TestCase):
             "fine_tune_training": {"auto_train_after_adapter": True},
         }
 
-        steps = STEP99.global_steps_to_run(cfg)
+        steps = STEP23.global_steps_to_run(cfg)
 
-        self.assertIn("11_train_fine_tune_models.py", steps)
-        self.assertLess(steps.index("10_train_adapter_models.py"), steps.index("11_train_fine_tune_models.py"))
-        self.assertLess(steps.index("11_train_fine_tune_models.py"), steps.index("13_generate_episode.py"))
+        self.assertIn("12_train_fine_tune_models.py", steps)
+        self.assertLess(steps.index("11_train_adapter_models.py"), steps.index("12_train_fine_tune_models.py"))
+        self.assertLess(steps.index("12_train_fine_tune_models.py"), steps.index("14_generate_episode.py"))
 
     def test_backend_fine_tune_status_detects_outdated_runs(self) -> None:
         with tempfile.TemporaryDirectory(dir=str(ROOT / "tmp")) as tmp:
@@ -5270,7 +6121,7 @@ class ManualNamingTests(unittest.TestCase):
             self.assertFalse(status["summary_new_enough"])
 
     def test_backend_parse_args_supports_force(self) -> None:
-        with mock.patch("sys.argv", ["12_run_backend_finetunes.py", "--character", "Babe", "--force"]):
+        with mock.patch("sys.argv", ["13_run_backend_finetunes.py", "--character", "Babe", "--force"]):
             args = STEP19.parse_args()
 
         self.assertEqual(args.character, "Babe")
@@ -5485,11 +6336,11 @@ class ManualNamingTests(unittest.TestCase):
             "backend_fine_tune": {"auto_run_after_fine_tune": True},
         }
 
-        steps = STEP99.global_steps_to_run(cfg)
+        steps = STEP23.global_steps_to_run(cfg)
 
-        self.assertIn("12_run_backend_finetunes.py", steps)
-        self.assertLess(steps.index("11_train_fine_tune_models.py"), steps.index("12_run_backend_finetunes.py"))
-        self.assertLess(steps.index("12_run_backend_finetunes.py"), steps.index("13_generate_episode.py"))
+        self.assertIn("13_run_backend_finetunes.py", steps)
+        self.assertLess(steps.index("12_train_fine_tune_models.py"), steps.index("13_run_backend_finetunes.py"))
+        self.assertLess(steps.index("13_run_backend_finetunes.py"), steps.index("14_generate_episode.py"))
 
     def test_foundation_pack_completed_requires_ready_payload(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -5515,35 +6366,52 @@ class ManualNamingTests(unittest.TestCase):
             self.assertTrue(STEP10.render_output_ready(full_path))
 
     def test_generation_render_and_bible_scripts_use_matching_step_metadata_names(self) -> None:
-        generate_source = (SCRIPT_ROOT / "13_generate_episode.py").read_text(encoding="utf-8")
-        storyboard_source = (SCRIPT_ROOT / "14_generate_storyboard_assets.py").read_text(encoding="utf-8")
-        backend_source = (SCRIPT_ROOT / "15_run_storyboard_backend.py").read_text(encoding="utf-8")
-        render_source = (SCRIPT_ROOT / "16_render_episode.py").read_text(encoding="utf-8")
-        bible_source = (SCRIPT_ROOT / "19_build_series_bible.py").read_text(encoding="utf-8")
+        generate_source = (SCRIPT_ROOT / "14_generate_episode.py").read_text(encoding="utf-8")
+        storyboard_source = (SCRIPT_ROOT / "15_generate_storyboard_assets.py").read_text(encoding="utf-8")
+        backend_source = (SCRIPT_ROOT / "16_run_storyboard_backend.py").read_text(encoding="utf-8")
+        render_source = (SCRIPT_ROOT / "17_render_episode.py").read_text(encoding="utf-8")
+        backend_finetune_source = (SCRIPT_ROOT / "13_run_backend_finetunes.py").read_text(encoding="utf-8")
+        regenerate_source = (SCRIPT_ROOT / "19_regenerate_weak_scenes.py").read_text(encoding="utf-8")
+        bible_source = (SCRIPT_ROOT / "20_build_series_bible.py").read_text(encoding="utf-8")
+        refresh_source = (SCRIPT_ROOT / "22_refresh_after_manual_review.py").read_text(encoding="utf-8")
+        process_source = (SCRIPT_ROOT / "24_process_next_episode.py").read_text(encoding="utf-8")
 
-        self.assertIn('mark_step_started("13_generate_episode"', generate_source)
-        self.assertIn('script_name="13_generate_episode.py"', generate_source)
+        self.assertIn('mark_step_started("14_generate_episode"', generate_source)
+        self.assertIn('script_name="14_generate_episode.py"', generate_source)
         self.assertNotIn('"12_generate_episode"', generate_source)
 
-        self.assertIn('mark_step_started("14_generate_storyboard_assets"', storyboard_source)
-        self.assertIn('script_name="14_generate_storyboard_assets.py"', storyboard_source)
+        self.assertIn('mark_step_started("15_generate_storyboard_assets"', storyboard_source)
+        self.assertIn('script_name="15_generate_storyboard_assets.py"', storyboard_source)
         self.assertNotIn('"13_generate_storyboard_assets"', storyboard_source)
 
-        self.assertIn('mark_step_started("15_run_storyboard_backend"', backend_source)
-        self.assertIn('script_name="15_run_storyboard_backend.py"', backend_source)
+        self.assertIn('mark_step_started("16_run_storyboard_backend"', backend_source)
+        self.assertIn('script_name="16_run_storyboard_backend.py"', backend_source)
         self.assertNotIn('"53_run_storyboard_backend"', backend_source)
 
-        self.assertIn('mark_step_started("16_render_episode"', render_source)
-        self.assertIn('mark_step_completed(\n            "16_render_episode"', render_source)
-        self.assertIn('mark_step_failed("16_render_episode"', render_source)
+        self.assertIn('mark_step_started("17_render_episode"', render_source)
+        self.assertIn('mark_step_completed(\n            "17_render_episode"', render_source)
+        self.assertIn('mark_step_failed("17_render_episode"', render_source)
         self.assertNotIn('mark_step_started("14_render_episode"', render_source)
         self.assertNotIn('mark_step_failed("14_render_episode"', render_source)
 
-        self.assertIn('mark_step_started("19_build_series_bible"', bible_source)
-        self.assertIn('mark_step_completed(\n                "19_build_series_bible"', bible_source)
-        self.assertIn('mark_step_failed("19_build_series_bible"', bible_source)
+        self.assertIn('mark_step_started("20_build_series_bible"', bible_source)
+        self.assertIn('mark_step_completed(\n                "20_build_series_bible"', bible_source)
+        self.assertIn('mark_step_failed("20_build_series_bible"', bible_source)
         self.assertNotIn('mark_step_started("18_build_series_bible"', bible_source)
         self.assertNotIn('mark_step_failed("15_build_series_bible"', bible_source)
+
+        self.assertIn('script_name="13_run_backend_finetunes.py"', backend_finetune_source)
+        self.assertNotIn("49_run_backend_finetunes", backend_finetune_source)
+
+        self.assertIn("18_quality_gate.py", regenerate_source)
+        self.assertIn("19_regenerate_weak_scenes.py", regenerate_source)
+        self.assertNotIn("51_quality_gate.py", regenerate_source)
+        self.assertNotIn("52_regenerate_weak_scenes.py", regenerate_source)
+
+        self.assertIn("22_refresh_after_manual_review", refresh_source)
+        self.assertNotIn("48_refresh_after_manual_review", refresh_source)
+        self.assertIn("# 23 Process Status", process_source)
+        self.assertNotIn("# 99 Process Status", process_source)
 
     def test_check_character_continuity_violations_detects_attribute_change(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -5603,6 +6471,77 @@ class ManualNamingTests(unittest.TestCase):
             )
 
             self.assertEqual(len(violations), 0)
+
+    def test_storyboard_backend_blocks_local_seed_frame_fallback_by_default(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            assets_root = Path(tmpdir)
+            payload = {"scene_id": "scene_0001"}
+
+            with mock.patch.object(
+                STEP16BACKEND,
+                "run_external_backend_runner",
+                return_value={"runner_name": "storyboard_scene_runner", "status": "disabled"},
+            ):
+                with self.assertRaisesRegex(RuntimeError, "Local seed-frame/color-grade fallback is disabled"):
+                    STEP16BACKEND.materialize_scene_backend_frame(
+                        assets_root,
+                        payload,
+                        64,
+                        36,
+                        12,
+                        23,
+                        None,
+                        False,
+                        {"storyboard_backend": {"allow_local_frame_fallback": False}},
+                        assets_root / "scene_0001_backend_input.json",
+                    )
+
+    def test_render_quality_first_rejects_local_motion_and_missing_voice_clone(self) -> None:
+        cfg = {
+            "release_mode": {"force_finished_episode_generation": True},
+            "generation": {"quality_mode": "original_episode_quality_first"},
+            "render": {
+                "require_generated_scene_video": True,
+                "require_voice_clone_audio": True,
+                "require_lipsync_video": True,
+            },
+        }
+        package_payload = {
+            "backend_runner_summary": {
+                "scene_runners": {
+                    "scene_results": [
+                        {
+                            "scene_id": "scene_0001",
+                            "runner_results": [
+                                {"runner_name": "finished_episode_video_runner", "status": "failed"},
+                                {"runner_name": "finished_episode_voice_runner", "status": "failed"},
+                                {"runner_name": "finished_episode_lipsync_runner", "status": "failed"},
+                            ],
+                        }
+                    ]
+                },
+                "master_runner": {"status": "failed"},
+            },
+            "scenes": [
+                {
+                    "scene_id": "scene_0001",
+                    "current_generated_outputs": {
+                        "video_source_type": "auto_generated_multishot_video",
+                        "scene_dialogue_audio": "",
+                        "audio_backend": "pyttsx3",
+                    },
+                    "voice_clone": {"required": True},
+                    "lip_sync": {"required": True},
+                }
+            ],
+        }
+
+        gaps = STEPRENDER.strict_generation_output_gaps(cfg, package_payload)
+
+        self.assertTrue(any("generated scene video missing" in gap for gap in gaps))
+        self.assertTrue(any("cloned scene dialogue audio missing" in gap for gap in gaps))
+        self.assertTrue(any("generated lip-sync video missing" in gap for gap in gaps))
+        self.assertTrue(any("finished_episode_master_runner did not complete" in gap for gap in gaps))
 
 
 if __name__ == "__main__":

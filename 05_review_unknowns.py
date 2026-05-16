@@ -100,8 +100,8 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Include already named clusters in --review-faces as well.",
     )
-    parser.add_argument("--limit", type=int, default=20, help="Maximum number of clusters to process per start. Default: 20")
-    parser.add_argument("--all", action="store_true", help="Process every currently open face cluster.")
+    parser.add_argument("--limit", type=int, default=20, help="Maximum number of clusters to process if --all is disabled internally. Default: 20")
+    parser.add_argument("--all", action="store_true", default=True, help="Process every currently open face cluster. This is the default.")
     parser.add_argument(
         "--open-previews",
         action="store_true",
@@ -207,13 +207,10 @@ def known_identity_button_options(char_map: dict, limit: int = 16) -> list[tuple
                 continue
             if not has_manual_person_name(final_name):
                 continue
-            options.append(
-                (
-                    final_name,
-                    bool(payload.get("priority", False)),
-                    int(payload.get("cluster_count", 0) or 0),
-                )
+            actual_count = identity_face_count(char_map, final_name) or int(
+                payload.get("face_cluster_count", 0) or payload.get("cluster_count", 0) or 0
             )
+            options.append((final_name, bool(payload.get("priority", False)), actual_count))
     else:
         seen: set[str] = set()
         for cluster_id, payload in char_map.get("clusters", {}).items():
@@ -600,13 +597,15 @@ def selected_preview_images(payload: dict) -> list[Path]:
 
 
 def preview_open_targets(cluster_id: str, payload: dict) -> list[Path]:
+    try:
+        montage = create_face_review_sheet(cluster_id, payload)
+    except Exception:
+        montage = None
+    if montage and montage.exists():
+        return [montage]
     exact_images = selected_preview_images(payload)
     if exact_images:
         return [exact_images[0]]
-
-    montage = create_face_review_sheet(cluster_id, payload)
-    if montage and montage.exists():
-        return [montage]
     return []
 
 
@@ -637,13 +636,13 @@ def materialize_local_preview_bundle(cluster_id: str, payload: dict) -> dict[str
     if local_images:
         local_payload = {"preview_dir": str(cache_dir)}
         montage = create_face_review_sheet(cluster_id, local_payload, output_dir=cache_dir)
-        launch_target = local_images[0]
+        launch_target = montage if montage and montage.exists() else local_images[0]
         open_targets: list[Path] = [launch_target]
         return {
             "source_images": source_images,
             "local_images": local_images,
             "open_targets": open_targets,
-            "preview_window_image": local_images[0] if local_images else None,
+            "preview_window_image": launch_target,
             "montage": montage,
             "cache_dir": cache_dir,
         }
@@ -1078,6 +1077,108 @@ def mark_auto_statist_candidates(char_map: dict, thresholds: dict[str, int], lim
     return marked
 
 
+def preview_crop_paths(payload: dict, limit: int = 4) -> list[Path]:
+    paths: list[Path] = []
+    for _context_path, crop_path in preview_pairs(payload):
+        if crop_path is not None and crop_path.exists() and crop_path.is_file():
+            paths.append(crop_path)
+    preview_dir = preview_dir_path(payload)
+    if preview_dir and preview_dir.is_dir():
+        for crop_path in sorted(preview_dir.glob("*_crop.jpg")):
+            if crop_path not in paths:
+                paths.append(crop_path)
+    return paths[: max(1, int(limit or 1))]
+
+
+def preview_crop_internal_feature_count(crop_path: Path, cfg: dict) -> int | None:
+    try:
+        import cv2
+    except Exception:
+        return None
+
+    image = cv2.imread(str(crop_path))
+    if image is None or image.size == 0:
+        return None
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    height, width = gray.shape[:2]
+    if height <= 0 or width <= 0:
+        return None
+
+    face_cfg = cfg.get("character_detection", {}) if isinstance(cfg.get("character_detection"), dict) else {}
+    upper_ratio = float(face_cfg.get("face_validation_upper_region_ratio", 0.68))
+    upper = gray[: max(1, min(height, int(height * upper_ratio))), :]
+    min_width = max(5, int(width * float(face_cfg.get("face_validation_min_eye_width_ratio", 0.07))))
+    min_height = max(5, int(height * float(face_cfg.get("face_validation_min_eye_height_ratio", 0.05))))
+    eye_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_eye_tree_eyeglasses.xml")
+    if eye_cascade.empty():
+        return None
+    boxes = eye_cascade.detectMultiScale(
+        upper,
+        scaleFactor=float(face_cfg.get("face_validation_eye_scale_factor", 1.08)),
+        minNeighbors=int(face_cfg.get("face_validation_eye_min_neighbors", 3)),
+        minSize=(min_width, min_height),
+    )
+    return len(boxes)
+
+
+def false_positive_face_report(cluster_id: str, payload: dict, cfg: dict) -> dict[str, object]:
+    face_cfg = cfg.get("character_detection", {}) if isinstance(cfg.get("character_detection"), dict) else {}
+    max_crops = int(face_cfg.get("review_false_positive_max_crops", 4))
+    min_checked = int(face_cfg.get("review_false_positive_min_checked_crops", 1))
+    min_features = int(face_cfg.get("face_validation_min_internal_features", 1))
+    checked = 0
+    valid = 0
+    unreadable = 0
+    feature_counts: list[int] = []
+    for crop_path in preview_crop_paths(payload, max_crops):
+        feature_count = preview_crop_internal_feature_count(crop_path, cfg)
+        if feature_count is None:
+            unreadable += 1
+            continue
+        checked += 1
+        feature_counts.append(int(feature_count))
+        if feature_count >= min_features:
+            valid += 1
+    return {
+        "cluster_id": cluster_id,
+        "checked_crops": checked,
+        "valid_crops": valid,
+        "unreadable_crops": unreadable,
+        "feature_counts": feature_counts,
+        "auto_ignore": checked >= min_checked and valid == 0,
+    }
+
+
+def auto_ignore_false_positive_face_clusters(cfg: dict, char_map: dict, limit: int = 0) -> list[dict[str, object]]:
+    face_cfg = cfg.get("character_detection", {}) if isinstance(cfg.get("character_detection"), dict) else {}
+    if not bool(face_cfg.get("review_auto_ignore_false_positive_faces", True)):
+        return []
+    if not bool(face_cfg.get("strict_face_validation", True)):
+        return []
+
+    marked: list[dict[str, object]] = []
+    for cluster_id, payload in sorted(char_map.get("clusters", {}).items(), key=cluster_sort_key):
+        if is_ignored_face_payload(payload) or bool(payload.get("priority", False)):
+            continue
+        if not looks_auto_named(str(payload.get("name", cluster_id))):
+            continue
+        report = false_positive_face_report(cluster_id, payload, cfg)
+        if not bool(report.get("auto_ignore", False)):
+            continue
+        assign_character_name(char_map, cluster_id, "noface", priority=False)
+        updated_payload = char_map.get("clusters", {}).get(cluster_id, {})
+        updated_payload["auto_ignored_reason"] = "no_internal_face_features"
+        updated_payload["false_positive_validation"] = {
+            "checked_crops": int(report.get("checked_crops", 0) or 0),
+            "valid_crops": int(report.get("valid_crops", 0) or 0),
+            "feature_counts": list(report.get("feature_counts", []) or []),
+        }
+        marked.append(report)
+        if limit > 0 and len(marked) >= limit:
+            break
+    return marked
+
+
 def hydrate_face_clusters_from_previews(cfg: dict, char_map: dict) -> int:
     previews_root_value = cfg.get("paths", {}).get("character_previews", "characters/previews")
     previews_root = resolve_project_path(previews_root_value)
@@ -1162,8 +1263,30 @@ def identity_clusters(char_map: dict, identity_name: str) -> list[tuple[str, dic
     return clusters
 
 
+def face_ids_for_cluster(cluster_id: str, payload: dict) -> list[str]:
+    face_ids: list[str] = []
+    for value in [cluster_id, *(payload.get("merged_cluster_ids", []) or [])]:
+        text = str(value or "").strip()
+        if text and text not in face_ids:
+            face_ids.append(text)
+    return face_ids
+
+
+def identity_face_ids(char_map: dict, identity_name: str) -> list[str]:
+    face_ids: list[str] = []
+    for cluster_id, payload in identity_clusters(char_map, identity_name):
+        for face_id in face_ids_for_cluster(cluster_id, payload):
+            if face_id not in face_ids:
+                face_ids.append(face_id)
+    return face_ids
+
+
+def identity_face_count(char_map: dict, identity_name: str) -> int:
+    return len(identity_face_ids(char_map, identity_name))
+
+
 def identity_cluster_count(char_map: dict, identity_name: str) -> int:
-    return len(identity_clusters(char_map, identity_name))
+    return identity_face_count(char_map, identity_name)
 
 
 def rebuild_character_map_identities(char_map: dict) -> None:
@@ -1175,6 +1298,8 @@ def rebuild_character_map_identities(char_map: dict) -> None:
         payload.pop("identity_name", None)
         payload.pop("identity_primary_cluster", None)
         payload.pop("identity_cluster_ids", None)
+        payload.pop("identity_face_cluster_ids", None)
+        payload.pop("identity_face_cluster_count", None)
         payload.pop("identity_cluster_count", None)
         if is_ignored_face_payload(payload):
             continue
@@ -1186,14 +1311,26 @@ def rebuild_character_map_identities(char_map: dict) -> None:
     for identity_name, clusters in grouped.items():
         primary_cluster = primary_cluster_for_identity(clusters)
         cluster_ids = [cluster_id for cluster_id, _payload in clusters]
-        cluster_count = len(cluster_ids)
+        face_ids: list[str] = []
+        for cluster_id, payload in clusters:
+            for face_id in face_ids_for_cluster(cluster_id, payload):
+                if face_id not in face_ids:
+                    face_ids.append(face_id)
+        cluster_count = len(face_ids)
+        detection_count = sum(int(payload.get("detection_count", 0) or 0) for _cluster_id, payload in clusters)
+        sample_count = sum(int(payload.get("samples", 0) or 0) for _cluster_id, payload in clusters)
         priority = any(bool(payload.get("priority", False)) for _cluster_id, payload in clusters)
         background_role = is_background_person_name(identity_name)
         identities[identity_name] = {
             "name": identity_name,
             "primary_cluster": primary_cluster,
             "cluster_ids": cluster_ids,
+            "active_cluster_count": len(cluster_ids),
+            "face_cluster_ids": face_ids,
+            "face_cluster_count": cluster_count,
             "cluster_count": cluster_count,
+            "detection_count": detection_count,
+            "sample_count": sample_count,
             "priority": False if background_role else priority,
             "background_role": background_role,
         }
@@ -1204,6 +1341,8 @@ def rebuild_character_map_identities(char_map: dict) -> None:
             payload["identity_name"] = identity_name
             payload["identity_primary_cluster"] = primary_cluster
             payload["identity_cluster_ids"] = cluster_ids
+            payload["identity_face_cluster_ids"] = face_ids
+            payload["identity_face_cluster_count"] = cluster_count
             payload["identity_cluster_count"] = cluster_count
 
     char_map["aliases"] = aliases
@@ -1301,7 +1440,7 @@ def known_face_reference_identities(char_map: dict, cfg: dict | None = None) -> 
                 for cluster_id, payload in reference_clusters
                 if payload.get("embedding")
             ],
-            "cluster_count": len(clusters),
+            "cluster_count": max(1, identity_face_count(char_map, identity_name)),
             "embedding": embedding,
             "priority": identity_has_priority(char_map, identity_name),
         }
@@ -1634,6 +1773,37 @@ def linked_segment_rows(cfg: dict) -> list[dict]:
         if isinstance(payload, list):
             rows.extend(payload)
     return rows
+
+
+def speaker_transcript_rows(cfg: dict) -> list[dict]:
+    transcript_root = resolve_project_path(cfg["paths"].get("speaker_transcripts", "data/processed/speaker_transcripts"))
+    rows: list[dict] = []
+    if not transcript_root.exists():
+        return rows
+    for transcript_file in sorted(transcript_root.glob("*_segments.json")):
+        payload = read_json(transcript_file, [])
+        if isinstance(payload, list):
+            rows.extend(payload)
+    return rows
+
+
+def ensure_voice_clusters_from_project_speakers(cfg: dict, voice_map: dict) -> int:
+    clusters = voice_map.setdefault("clusters", {})
+    voice_map.setdefault("aliases", {})
+    added = 0
+    for row in [*speaker_transcript_rows(cfg), *linked_segment_rows(cfg)]:
+        speaker_cluster = str(row.get("speaker_cluster", "")).strip()
+        if not speaker_cluster or speaker_cluster == "speaker_unknown":
+            continue
+        payload = clusters.setdefault(speaker_cluster, {})
+        if not payload:
+            added += 1
+        if not payload.get("name"):
+            payload["name"] = speaker_cluster
+            payload["auto_named"] = True
+        elif looks_auto_named(str(payload.get("name", ""))):
+            payload["auto_named"] = True
+    return added
 
 
 def auto_link_speakers_from_single_visible_faces(cfg: dict, char_map: dict, voice_map: dict) -> dict[str, int]:
@@ -2047,12 +2217,6 @@ def interactive_face_review(cfg: dict, char_map: dict, voice_map: dict, include_
             print(f"Total actually still open: {total_open_count}")
             print(f"Automatic role hint: {role_hint}")
             print(f"Automatic review hint: {action_hint}")
-            source_images = list(local_preview_bundle.get("source_images", []) or [])
-            if source_images:
-                print("Exact face preview files:")
-                for preview_target in source_images:
-                    print(f"Preview target: {preview_target}")
-                    print(f"Open link: {terminal_clickable_path(preview_target)}")
             if preview_targets:
                 print("Local launch targets:")
                 for preview_target in preview_targets:
@@ -2064,11 +2228,6 @@ def interactive_face_review(cfg: dict, char_map: dict, voice_map: dict, include_
             if montage and montage.exists():
                 print(f"Contact sheet: {montage}")
                 print(f"Open contact sheet link: {terminal_clickable_path(montage)}")
-            for context_path, crop_path in preview_pairs(payload):
-                if context_path:
-                    print(f"Szene: {context_path}")
-                if crop_path:
-                    print(f"Ausschnitt: {crop_path}")
             preview_name = ""
             preview_priority: bool | None = None
             if open_previews and preview_targets:
@@ -2265,15 +2424,28 @@ def main() -> None:
         char_map.setdefault("aliases", {})
         voice_map.setdefault("clusters", {})
         voice_map.setdefault("aliases", {})
+        loaded_faces = len(char_map.get("clusters", {}))
+        loaded_voices = len(voice_map.get("clusters", {}))
+        if loaded_faces or loaded_voices:
+            info(f"Loaded maps: {loaded_faces} face entries, {loaded_voices} speaker entries.")
+        seeded_voices = ensure_voice_clusters_from_project_speakers(cfg, voice_map)
+        if seeded_voices:
+            info(f"Registered speaker entries from transcripts/linked segments: {seeded_voices}")
         normalized_faces, normalized_voices = normalize_placeholder_maps(char_map, voice_map)
         if normalized_faces or normalized_voices:
             info(
-                f"Normalized existing maps: {normalized_faces} face entries, "
-                f"{normalized_voices} speaker entries."
+                f"Normalized existing maps: adjusted {normalized_faces} face entries, "
+                f"adjusted {normalized_voices} speaker entries."
             )
         hydrated = hydrate_face_clusters_from_previews(cfg, char_map)
         if hydrated:
             info(f"{hydrated} face clusters hydrated from existing preview folders.")
+        auto_ignored_false_faces = auto_ignore_false_positive_face_clusters(cfg, char_map)
+        if auto_ignored_false_faces:
+            info(
+                f"Marked {len(auto_ignored_false_faces)} implausible face clusters as 'noface' "
+                "before review."
+            )
         auto_matched = auto_learn_remaining_reviews(cfg, char_map, voice_map)
         if auto_matched.get("matched_faces", 0) or auto_matched.get("matched_speakers", 0):
             info(
@@ -2298,9 +2470,11 @@ def main() -> None:
             if auto_statist_marked:
                 info(f"Marked {len(auto_statist_marked)} low-activity face clusters as 'statist'.")
         if (
-            normalized_faces
+            seeded_voices
+            or normalized_faces
             or normalized_voices
             or hydrated
+            or auto_ignored_false_faces
             or auto_matched.get("matched_faces", 0)
             or auto_matched.get("matched_speakers", 0)
             or auto_statist_marked

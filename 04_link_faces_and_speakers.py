@@ -65,7 +65,7 @@ from support_scripts.pipeline_common import (
     write_json,
 )
 
-PROCESS_VERSION = 7
+PROCESS_VERSION = 8
 EMPTY_CLUSTER_MAP = {"clusters": {}, "aliases": {}}
 IGNORED_FACE_NAMES = {
     "noface",
@@ -496,6 +496,25 @@ def normalize_loaded_maps(char_map: dict, voice_map: dict) -> tuple[int, int]:
     return changed_faces, changed_voices
 
 
+def ensure_voice_clusters_for_transcripts(voice_map: dict, transcript_rows: list[dict]) -> int:
+    clusters = voice_map.setdefault("clusters", {})
+    voice_map.setdefault("aliases", {})
+    added = 0
+    for row in transcript_rows:
+        speaker_cluster = str(row.get("speaker_cluster", "")).strip()
+        if not speaker_cluster or speaker_cluster == "speaker_unknown":
+            continue
+        payload = clusters.setdefault(speaker_cluster, {})
+        if not payload:
+            added += 1
+        if not payload.get("name"):
+            payload["name"] = speaker_cluster
+            payload["auto_named"] = True
+        elif looks_auto_named(str(payload.get("name", ""))):
+            payload["auto_named"] = True
+    return added
+
+
 def normalize_embedding(vector: list[float]) -> list[float]:
     if not vector:
         return []
@@ -544,10 +563,79 @@ def dedupe_frame_detections(
     return kept
 
 
+def cascade_available(cascade) -> bool:
+    if cascade is None:
+        return False
+    empty = getattr(cascade, "empty", None)
+    if not callable(empty):
+        return True
+    try:
+        return not bool(empty())
+    except Exception:
+        return True
+
+
+def face_internal_feature_count(crop: np.ndarray, eye_cascade, cfg: dict) -> int | None:
+    if crop.size == 0 or not cascade_available(eye_cascade):
+        return None
+    gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+    height, width = gray.shape[:2]
+    if height <= 0 or width <= 0:
+        return None
+    detection_cfg = cfg.get("character_detection", {}) if isinstance(cfg.get("character_detection"), dict) else {}
+    upper_ratio = float(detection_cfg.get("face_validation_upper_region_ratio", 0.68))
+    upper = gray[: max(1, min(height, int(height * upper_ratio))), :]
+    min_width = max(5, int(width * float(detection_cfg.get("face_validation_min_eye_width_ratio", 0.07))))
+    min_height = max(5, int(height * float(detection_cfg.get("face_validation_min_eye_height_ratio", 0.05))))
+    boxes = eye_cascade.detectMultiScale(
+        upper,
+        scaleFactor=float(detection_cfg.get("face_validation_eye_scale_factor", 1.08)),
+        minNeighbors=int(detection_cfg.get("face_validation_eye_min_neighbors", 3)),
+        minSize=(min_width, min_height),
+    )
+    return len(boxes)
+
+
+def face_candidate_is_plausible(
+    frame: np.ndarray,
+    box: tuple[int, int, int, int],
+    cfg: dict,
+    eye_cascade=None,
+) -> bool:
+    detection_cfg = cfg.get("character_detection", {}) if isinstance(cfg.get("character_detection"), dict) else {}
+    if not bool(detection_cfg.get("strict_face_validation", True)):
+        return True
+
+    frame_height, frame_width = frame.shape[:2]
+    x1, y1, x2, y2 = box
+    x1 = max(0, min(frame_width, int(x1)))
+    x2 = max(0, min(frame_width, int(x2)))
+    y1 = max(0, min(frame_height, int(y1)))
+    y2 = max(0, min(frame_height, int(y2)))
+    width = max(0, x2 - x1)
+    height = max(0, y2 - y1)
+    if width <= 0 or height <= 0:
+        return False
+
+    aspect = width / height if height else 0.0
+    min_aspect = float(detection_cfg.get("face_validation_min_aspect_ratio", 0.58))
+    max_aspect = float(detection_cfg.get("face_validation_max_aspect_ratio", 1.38))
+    if aspect < min_aspect or aspect > max_aspect:
+        return False
+
+    crop = frame[y1:y2, x1:x2]
+    feature_count = face_internal_feature_count(crop, eye_cascade, cfg)
+    if feature_count is None:
+        return True
+    return feature_count >= int(detection_cfg.get("face_validation_min_internal_features", 1))
+
+
 def extract_opencv_faces(
     frame: np.ndarray,
     cascade,
     min_face_size: int,
+    cfg: dict,
+    eye_cascade=None,
 ) -> list[tuple[tuple[int, int, int, int], list[float]]]:
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     boxes = cascade.detectMultiScale(
@@ -559,6 +647,8 @@ def extract_opencv_faces(
     results = []
     for x, y, w, h in boxes:
         x1, y1, x2, y2 = int(x), int(y), int(x + w), int(y + h)
+        if not face_candidate_is_plausible(frame, (x1, y1, x2, y2), cfg, eye_cascade):
+            continue
         crop = frame[y1:y2, x1:x2]
         if crop.size == 0:
             continue
@@ -573,13 +663,14 @@ def create_face_engine(cfg: dict):
     min_face_size = int(cfg["character_detection"].get("min_face_size", 32))
     confidence_threshold = float(cfg["character_detection"].get("detection_confidence_threshold", 0.80))
     cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
+    eye_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_eye_tree_eyeglasses.xml")
     try:
         import torch
         from PIL import Image
         from facenet_pytorch import InceptionResnetV1, MTCNN
     except Exception:
         def extract(frame: np.ndarray) -> list[tuple[tuple[int, int, int, int], list[float]]]:
-            return extract_opencv_faces(frame, cascade, min_face_size)
+            return extract_opencv_faces(frame, cascade, min_face_size, cfg, eye_cascade)
 
         return {"mode": "opencv", "extract": extract}
 
@@ -601,7 +692,7 @@ def create_face_engine(cfg: dict):
         boxes, probabilities = mtcnn.detect(image)
         faces = mtcnn(image)
         if boxes is None or faces is None:
-            return extract_opencv_faces(frame, cascade, min_face_size)
+            return extract_opencv_faces(frame, cascade, min_face_size, cfg, eye_cascade)
         if faces.ndim == 3:
             faces = faces.unsqueeze(0)
         result = []
@@ -611,6 +702,8 @@ def create_face_engine(cfg: dict):
                 continue
             x1, y1, x2, y2 = [max(0, int(value)) for value in box]
             if x2 <= x1 or y2 <= y1 or (x2 - x1) < min_face_size or (y2 - y1) < min_face_size:
+                continue
+            if not face_candidate_is_plausible(frame, (x1, y1, x2, y2), cfg, eye_cascade):
                 continue
             face_tensor = face_tensor.unsqueeze(0).to(device)
             with torch.no_grad():
@@ -622,7 +715,7 @@ def create_face_engine(cfg: dict):
         if result:
             result.sort(key=lambda item: (item[2], item[3]), reverse=True)
             return dedupe_frame_detections([(box, embedding) for box, embedding, _, _ in result])
-        return extract_opencv_faces(frame, cascade, min_face_size)
+        return extract_opencv_faces(frame, cascade, min_face_size, cfg, eye_cascade)
 
     mode_label = f"facenet+opencv ({'hybrid cpu+gpu' if device_name == 'cuda' else 'cpu'})"
     return {"mode": mode_label, "extract": extract}
@@ -1055,6 +1148,14 @@ def process_episode_dir(
 ) -> bool:
     autosave_target = episode_dir.name
     if not fresh_run and episode_face_linking_completed(episode_dir, cfg):
+        transcript_rows = read_json(
+            resolve_project_path(cfg["paths"]["speaker_transcripts"]) / f"{episode_dir.name}_segments.json",
+            [],
+        )
+        added_voice_entries = ensure_voice_clusters_for_transcripts(voice_map, transcript_rows)
+        if added_voice_entries:
+            write_json(resolve_project_path(cfg["paths"]["voice_map"]), normalize_portable_project_paths(voice_map))
+            info(f"Updated speaker map from existing transcripts: {added_voice_entries} speaker entries.")
         mark_step_completed(
             "04_link_faces_and_speakers",
             autosave_target,
@@ -1147,6 +1248,10 @@ def process_episode_dir(
         kept_face_clusters = prune_face_clusters(char_map, face_by_scene, cfg)
         info(f"Face clusters after filtering: {len(kept_face_clusters)}")
 
+        seeded_voice_entries = ensure_voice_clusters_for_transcripts(voice_map, transcript_rows)
+        if seeded_voice_entries:
+            info(f"Registered speaker entries from transcripts: {seeded_voice_entries}")
+
         speaker_votes: dict[str, dict[str, float]] = defaultdict(lambda: defaultdict(float))
         for row in transcript_rows:
             scene_payload = face_by_scene.get(row["scene_id"], {})
@@ -1166,6 +1271,15 @@ def process_episode_dir(
                 speaker_votes[row["speaker_cluster"]][face_cluster] += base_weight / rank
 
         resolve_voice_names(voice_map, speaker_votes, char_map)
+        linked_voice_entries = sum(
+            1
+            for payload in voice_map.get("clusters", {}).values()
+            if payload.get("linked_face_cluster")
+        )
+        info(
+            f"Speaker entries available: {len(voice_map.get('clusters', {}))} "
+            f"({linked_voice_entries} linked to face clusters)."
+        )
 
         review_items = []
         linked_rows = []
@@ -1334,11 +1448,15 @@ def main() -> None:
     char_map.setdefault("aliases", {})
     voice_map.setdefault("clusters", {})
     voice_map.setdefault("aliases", {})
+    loaded_face_count = len(char_map.get("clusters", {}))
+    loaded_voice_count = len(voice_map.get("clusters", {}))
+    if loaded_face_count or loaded_voice_count:
+        info(f"Loaded maps: {loaded_face_count} face entries, {loaded_voice_count} speaker entries.")
     normalized_faces, normalized_voices = normalize_loaded_maps(char_map, voice_map)
     if normalized_faces or normalized_voices:
         info(
-            f"Normalized existing maps: {normalized_faces} face entries, "
-            f"{normalized_voices} speaker entries."
+            f"Normalized existing maps: adjusted {normalized_faces} face entries, "
+            f"adjusted {normalized_voices} speaker entries."
         )
 
     auto_open = bool(cfg.get("preview_open_automatically", False))

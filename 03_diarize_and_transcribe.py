@@ -12,6 +12,7 @@ import argparse
 import time
 import wave
 from collections import defaultdict
+from copy import deepcopy
 from pathlib import Path
 
 import numpy as np
@@ -38,6 +39,7 @@ from support_scripts.pipeline_common import (
     info,
     language_hint_from_name,
     detect_language_from_text,
+    language_text_marker_score,
     limited_items,
     load_distributed_lease,
     load_step_autosave,
@@ -61,7 +63,7 @@ from support_scripts.pipeline_common import (
     write_json,
 )
 
-PROCESS_VERSION = 8
+PROCESS_VERSION = 12
 
 
 def parse_args() -> argparse.Namespace:
@@ -438,6 +440,346 @@ def configured_transcription_language(cfg: dict) -> str:
     return "" if configured in {"", "auto", "detect"} else configured
 
 
+def auto_language_candidates(cfg: dict) -> list[str]:
+    transcription_cfg = cfg.get("transcription", {}) if isinstance(cfg.get("transcription", {}), dict) else {}
+    configured = transcription_cfg.get("auto_language_candidates", ["de", "en", "es", "fr", "it", "pt", "nl", "tr", "pl"])
+    if isinstance(configured, str):
+        raw_items = [item.strip() for item in configured.split(",")]
+    elif isinstance(configured, list):
+        raw_items = configured
+    else:
+        raw_items = []
+    languages: list[str] = []
+    for item in raw_items:
+        language = normalize_language_code(item)
+        if language and language not in languages:
+            languages.append(language)
+    return languages or ["de", "en", "es", "fr", "it", "pt", "nl", "tr", "pl"]
+
+
+def config_with_transcription_language(cfg: dict, language: str) -> dict:
+    normalized = normalize_language_code(language)
+    if not normalized:
+        return cfg
+    updated = deepcopy(cfg)
+    transcription_cfg = updated.setdefault("transcription", {})
+    if isinstance(transcription_cfg, dict):
+        transcription_cfg["language"] = normalized
+    return updated
+
+
+def representative_language_probe_scenes(scenes: list[Path], cfg: dict) -> list[Path]:
+    transcription_cfg = cfg.get("transcription", {}) if isinstance(cfg.get("transcription", {}), dict) else {}
+    scene_count = max(1, int(transcription_cfg.get("auto_language_probe_scene_count", 4) or 4))
+    min_bytes = max(0, int(transcription_cfg.get("auto_language_probe_min_scene_bytes", 120000) or 0))
+    ranked = sorted(
+        [scene for scene in scenes if scene.is_file()],
+        key=lambda scene: scene.stat().st_size if scene.exists() else 0,
+        reverse=True,
+    )
+    selected = [scene for scene in ranked if scene.stat().st_size >= min_bytes][:scene_count]
+    return selected or ranked[:scene_count]
+
+
+def episode_language_cache_path(scene_cache_dir: Path) -> Path:
+    return scene_cache_dir / "_episode_language.json"
+
+
+def normalize_whisper_language_key(value: object) -> str:
+    text = coalesce_text(str(value or "")).replace("<|", "").replace("|>", "").strip("|")
+    return normalize_language_code(text)
+
+
+def rank_episode_language_probability_rows(probability_rows: list[dict[str, float]], cfg: dict) -> tuple[str, dict[str, float]]:
+    if not probability_rows:
+        return "", {}
+    candidates = set(auto_language_candidates(cfg))
+    scores: dict[str, float] = {}
+    for row in probability_rows:
+        for language, probability in row.items():
+            normalized = normalize_language_code(language)
+            if not normalized:
+                continue
+            if candidates and normalized not in candidates:
+                continue
+            scores[normalized] = scores.get(normalized, 0.0) + max(0.0, float(probability or 0.0))
+    if not scores:
+        return "", {}
+    ranked = sorted(scores.items(), key=lambda item: (-item[1], item[0]))
+    best_language, best_score = ranked[0]
+    second_score = ranked[1][1] if len(ranked) > 1 else 0.0
+    row_count = max(1, len(probability_rows))
+    transcription_cfg = cfg.get("transcription", {}) if isinstance(cfg.get("transcription", {}), dict) else {}
+    min_confidence = float(transcription_cfg.get("auto_language_min_confidence", 0.35) or 0.35)
+    min_margin = float(transcription_cfg.get("auto_language_min_margin", 0.08) or 0.08)
+    best_average = best_score / row_count
+    second_average = second_score / row_count
+    if best_average >= min_confidence and best_average - second_average >= min_margin:
+        return best_language, scores
+    if best_average >= 0.6 and best_average > second_average:
+        return best_language, scores
+    return "", scores
+
+
+def whisper_audio_language_probabilities(model, scene_wav: Path, cfg: dict, device: str) -> dict[str, float]:
+    if not hasattr(model, "detect_language"):
+        return {}
+    try:
+        import whisper
+    except Exception:
+        return {}
+    transcription_cfg = cfg.get("transcription", {}) if isinstance(cfg.get("transcription", {}), dict) else {}
+    max_seconds = max(1.0, float(transcription_cfg.get("auto_language_probe_max_seconds", 30.0) or 30.0))
+    try:
+        audio = whisper.load_audio(str(scene_wav))
+        audio = audio[: int(max_seconds * 16000)]
+        audio = whisper.pad_or_trim(audio)
+        n_mels = int(getattr(getattr(model, "dims", None), "n_mels", 80) or 80)
+        mel = whisper.log_mel_spectrogram(audio, n_mels=n_mels)
+        target_device = getattr(model, "device", None) or device
+        if target_device:
+            mel = mel.to(target_device)
+        _detected, probabilities = model.detect_language(mel)
+    except Exception as exc:
+        warn(f"Episode language audio probe failed for {scene_wav.name}: {exc}")
+        return {}
+    rows: dict[str, float] = {}
+    for language, probability in dict(probabilities).items():
+        normalized = normalize_whisper_language_key(language)
+        if normalized:
+            rows[normalized] = max(rows.get(normalized, 0.0), float(probability or 0.0))
+    return rows
+
+
+def text_from_transcription_payload(payload: dict) -> str:
+    raw_segments = payload.get("segments") or []
+    pieces = [coalesce_text(payload.get("text", ""))]
+    pieces.extend(
+        coalesce_text(segment.get("text", ""))
+        for segment in raw_segments
+        if isinstance(segment, dict)
+    )
+    return coalesce_text(" ".join(piece for piece in pieces if piece))
+
+
+def language_probe_text_score(text: object, language: str) -> float:
+    normalized = normalize_language_code(language)
+    if not normalized:
+        return 0.0
+    content = coalesce_text(str(text or ""))
+    marker_score = language_text_marker_score(content, normalized)
+    detected_language = detect_language_from_text(content)
+    token_count = len(tokens_from_text(content))
+    score = float(marker_score * 4)
+    if detected_language == normalized:
+        score += 8.0
+    score += min(token_count, 40) * 0.05
+    return score
+
+
+def forced_language_probe(
+    model,
+    scene_wav: Path,
+    cfg: dict,
+    use_fp16: bool,
+    candidates: list[str],
+    probability_scores: dict[str, float] | None = None,
+) -> tuple[str, dict[str, float]]:
+    transcription_cfg = cfg.get("transcription", {}) if isinstance(cfg.get("transcription", {}), dict) else {}
+    if not bool(transcription_cfg.get("auto_language_forced_probe", False)):
+        return "", {}
+    max_candidates = max(1, int(transcription_cfg.get("auto_language_forced_probe_candidates", 4) or 4))
+    unique_candidates: list[str] = []
+    for language in candidates:
+        normalized = normalize_language_code(language)
+        if normalized and normalized not in unique_candidates:
+            unique_candidates.append(normalized)
+    scores: dict[str, float] = {}
+    for language in unique_candidates[:max_candidates]:
+        transcribe_kwargs = {
+            "task": transcription_cfg.get("task", "transcribe"),
+            "condition_on_previous_text": False,
+            "temperature": 0.0,
+            "verbose": False,
+            "fp16": use_fp16,
+            "language": language,
+        }
+        try:
+            payload = model.transcribe(str(scene_wav), **transcribe_kwargs)
+        except Exception as exc:
+            warn(f"Forced language probe failed for {language} on {scene_wav.name}: {exc}")
+            continue
+        text = text_from_transcription_payload(payload if isinstance(payload, dict) else {})
+        score = language_probe_text_score(text, language)
+        score += float((probability_scores or {}).get(language, 0.0)) * 2.0
+        scores[language] = score
+    if not scores:
+        return "", {}
+    ranked = sorted(scores.items(), key=lambda item: (-item[1], item[0]))
+    best_language, best_score = ranked[0]
+    second_score = ranked[1][1] if len(ranked) > 1 else 0.0
+    if best_score >= 8.0 and best_score >= second_score + 2.0:
+        return best_language, scores
+    if best_score >= 12.0 and best_score > second_score:
+        return best_language, scores
+    return "", scores
+
+
+def merge_language_score_rows(score_rows: list[dict[str, float]]) -> dict[str, float]:
+    merged: dict[str, float] = {}
+    for row in score_rows:
+        if not isinstance(row, dict):
+            continue
+        for language, score in row.items():
+            normalized = normalize_language_code(language)
+            if not normalized:
+                continue
+            merged[normalized] = merged.get(normalized, 0.0) + max(0.0, float(score or 0.0))
+    return merged
+
+
+def rank_forced_language_scores(score_rows: list[dict[str, float]]) -> tuple[str, dict[str, float]]:
+    scores = merge_language_score_rows(score_rows)
+    if not scores:
+        return "", {}
+    ranked = sorted(scores.items(), key=lambda item: (-item[1], item[0]))
+    best_language, best_score = ranked[0]
+    second_score = ranked[1][1] if len(ranked) > 1 else 0.0
+    if best_score >= 8.0 and best_score >= second_score + 2.0:
+        return best_language, scores
+    if best_score >= 12.0 and best_score > second_score:
+        return best_language, scores
+    return "", scores
+
+
+def detect_episode_language(
+    model,
+    ffmpeg_path: Path,
+    episode_dir: Path,
+    scenes: list[Path],
+    audio_root: Path,
+    scene_cache_dir: Path,
+    cfg: dict,
+    use_fp16: bool,
+    device: str,
+) -> str:
+    explicit_language = configured_transcription_language(cfg)
+    if explicit_language:
+        return explicit_language
+
+    cache_file = episode_language_cache_path(scene_cache_dir)
+    try:
+        cached = resolve_rows(cache_file) if cache_file.exists() else {}
+    except Exception:
+        cached = {}
+    if isinstance(cached, dict) and int(cached.get("process_version", 0) or 0) == PROCESS_VERSION:
+        cached_language = normalize_language_code(cached.get("detected_language", ""))
+        if cached_language:
+            return cached_language
+
+    probe_scenes = representative_language_probe_scenes(scenes, cfg)
+    episode_audio_dir = audio_root / episode_dir.name
+    episode_audio_dir.mkdir(parents=True, exist_ok=True)
+    probability_rows: list[dict[str, float]] = []
+    for scene_file in probe_scenes:
+        scene_wav = episode_audio_dir / f"{scene_file.stem}.wav"
+        if not scene_wav.exists():
+            export_audio(ffmpeg_path, scene_file, scene_wav)
+        probabilities = whisper_audio_language_probabilities(model, scene_wav, cfg, device)
+        if probabilities:
+            probability_rows.append(probabilities)
+
+    probability_language, probability_scores = rank_episode_language_probability_rows(probability_rows, cfg)
+    ranked_probability_languages = [
+        language
+        for language, _score in sorted(probability_scores.items(), key=lambda item: (-item[1], item[0]))
+    ]
+    forced_candidates = ranked_probability_languages + auto_language_candidates(cfg)
+    forced_score_rows: list[dict[str, float]] = []
+    for probe_scene in probe_scenes:
+        probe_wav = episode_audio_dir / f"{probe_scene.stem}.wav"
+        _forced_language, scene_forced_scores = forced_language_probe(
+            model,
+            probe_wav,
+            cfg,
+            use_fp16,
+            forced_candidates,
+            probability_scores,
+        )
+        if scene_forced_scores:
+            forced_score_rows.append(scene_forced_scores)
+    forced_language, forced_scores = rank_forced_language_scores(forced_score_rows)
+
+    fallback_hint = language_hint_from_name(episode_dir.name)
+    detected_language = forced_language or probability_language or fallback_hint
+    write_json(
+        cache_file,
+        {
+            "process_version": PROCESS_VERSION,
+            "detected_language": detected_language,
+            "probability_language": probability_language,
+            "forced_language": forced_language,
+            "fallback_hint": fallback_hint,
+            "probability_scores": probability_scores,
+            "forced_scores": forced_scores,
+            "probe_scenes": [scene.name for scene in probe_scenes],
+        },
+    )
+    if detected_language:
+        info(f"Episode language detected for {episode_dir.name}: {detected_language}")
+    else:
+        warn(f"Episode language could not be detected confidently for {episode_dir.name}; Whisper auto mode remains active.")
+    return detected_language
+
+
+def language_counts_from_rows(rows: list[dict]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        text_language = detect_language_from_text(row.get("text", ""))
+        language = text_language or normalize_language_code(row.get("language", ""))
+        if not language:
+            continue
+        counts[language] = counts.get(language, 0) + 1
+    return counts
+
+
+def dominant_count_language(language_counts: dict[str, int], fallback: str = "") -> str:
+    normalized_fallback = normalize_language_code(fallback)
+    if not language_counts:
+        return normalized_fallback
+    ranked = sorted(language_counts.items(), key=lambda item: (-int(item[1]), item[0]))
+    if not ranked:
+        return normalized_fallback
+    return normalize_language_code(ranked[0][0], normalized_fallback)
+
+
+def episode_language_consensus(rows: list[dict], cfg: dict) -> tuple[str, dict[str, int]]:
+    explicit_language = configured_transcription_language(cfg)
+    counts = language_counts_from_rows(rows)
+    if explicit_language:
+        return explicit_language, counts
+    combined_text = " ".join(coalesce_text(str(row.get("text", ""))) for row in rows if isinstance(row, dict))
+    text_language = detect_language_from_text(combined_text)
+    return text_language or dominant_count_language(counts), counts
+
+
+def apply_episode_language_consensus(rows: list[dict], cfg: dict) -> tuple[list[dict], str, dict[str, int]]:
+    episode_language, counts = episode_language_consensus(rows, cfg)
+    if not episode_language:
+        return rows, episode_language, counts
+    transcription_cfg = cfg.get("transcription", {}) if isinstance(cfg.get("transcription", {}), dict) else {}
+    lock_segments = bool(transcription_cfg.get("lock_segments_to_episode_language", True))
+    normalized_rows: list[dict] = []
+    for row in rows:
+        updated = dict(row)
+        text_language = detect_language_from_text(updated.get("text", ""))
+        updated["language"] = episode_language if lock_segments else text_language or episode_language
+        normalized_rows.append(updated)
+    return normalized_rows, episode_language, counts
+
+
 def active_scene_lease_ids(scene_lease_root: Path) -> list[str]:
     if not scene_lease_root.exists():
         return []
@@ -492,7 +834,7 @@ def transcribe_scene(model, scene_wav: Path, cfg: dict, use_fp16: bool) -> dict[
     )
     whisper_language = normalize_language_code(result.get("language", ""), language_hint)
     text_language = detect_language_from_text(text_for_language)
-    detected_language = explicit_language or language_hint or text_language or whisper_language
+    detected_language = explicit_language or text_language or language_hint or whisper_language
     raw_segments = result.get("segments") or []
     segments = []
     for item in raw_segments:
@@ -564,41 +906,6 @@ def process_scene(
 
     scene_wav = audio_root / episode_name / f"{scene_file.stem}.wav"
     export_audio(ffmpeg_path, scene_file, scene_wav)
-    cached_rows = resolve_rows(cache_file) if cache_file.exists() else []
-    if cached_rows:
-        rows = []
-        for index, cached in enumerate(cached_rows, start=1):
-            start_sec = float(cached.get("start", 0.0))
-            end_sec = float(cached.get("end", start_sec + 0.15))
-            segment_wav = Path(cached.get("audio_file") or (audio_root / episode_name / f"{scene_file.stem}_seg_{index:03d}.wav"))
-            if not segment_wav.exists():
-                cut_audio_segment(ffmpeg_path, scene_wav, segment_wav, start_sec, end_sec)
-            text = coalesce_text(str(cached.get("text", "")))
-            cached_language = normalize_language_code(cached.get("language", "")) or detect_language_from_text(text)
-            rows.append(
-                {
-                    "process_version": PROCESS_VERSION,
-                    "scene_id": scene_file.stem,
-                    "segment_id": str(cached.get("segment_id") or f"{scene_file.stem}_seg_{index:03d}"),
-                    "speaker_cluster": "",
-                    "start": round(start_sec, 3),
-                    "end": round(end_sec, 3),
-                    "audio_file": str(segment_wav),
-                    "text": text,
-                    "language": cached_language,
-                    "voice_embedding": compute_voice_embedding(
-                        scene_wav,
-                        start_sec,
-                        end_sec,
-                        cfg,
-                        speaker_embedding_backend,
-                        speechbrain_model=speechbrain_model,
-                        device=device,
-                    ),
-                }
-            )
-        write_json(cache_file, rows)
-        return rows
 
     transcription_payload = transcribe_scene(model, scene_wav, cfg, use_fp16)
     segments = transcription_payload.get("segments", []) if isinstance(transcription_payload.get("segments", []), list) else []
@@ -978,6 +1285,7 @@ def finalize_episode_transcription_outputs(
     speaker_backend: str,
 ) -> tuple[Path, Path, int]:
     all_rows = collect_episode_scene_rows(scene_cache_dir, scenes)
+    all_rows, episode_language, language_counts = apply_episode_language_consensus(all_rows, cfg)
     threshold_key = "voice_embedding_threshold_speechbrain" if speaker_backend == "speechbrain" else "voice_embedding_threshold"
     threshold_default = 0.58 if speaker_backend == "speechbrain" else 0.84
     threshold = float(cfg["transcription"].get(threshold_key, threshold_default))
@@ -1000,6 +1308,8 @@ def finalize_episode_transcription_outputs(
             "process_version": PROCESS_VERSION,
             "scene_count": len(scenes),
             "segment_count": len(all_rows),
+            "detected_language": episode_language,
+            "language_counts": language_counts,
         },
     )
     return combined_file, cluster_file, len(all_rows)
@@ -1083,6 +1393,18 @@ def process_episode_dir(
     contributed = False
     try:
         episode_started_at = time.time()
+        episode_language = detect_episode_language(
+            model,
+            ffmpeg,
+            episode_dir,
+            scenes,
+            audio_root,
+            scene_cache_dir,
+            cfg,
+            use_fp16,
+            device,
+        )
+        effective_cfg = config_with_transcription_language(cfg, episode_language)
         scene_index_by_id = {scene_file.stem: index for index, scene_file in enumerate(scenes, start=1)}
         while len(completed_scene_ids) < len(scenes):
             claimed_scene = False
@@ -1127,7 +1449,7 @@ def process_episode_dir(
                         scene_file,
                         audio_root,
                         scene_cache_dir,
-                        cfg,
+                        effective_cfg,
                         use_fp16,
                         speaker_backend,
                         speechbrain_model=speechbrain_model,
@@ -1228,7 +1550,7 @@ def process_episode_dir(
                     combined_file, cluster_file, segment_count = finalize_episode_transcription_outputs(
                         episode_dir,
                         scenes,
-                        cfg,
+                        effective_cfg,
                         scene_cache_dir,
                         combined_dir,
                         speaker_backend,
@@ -1246,6 +1568,7 @@ def process_episode_dir(
                             "combined_file": str(combined_file),
                             "cluster_file": str(cluster_file),
                             "backend": speaker_backend,
+                            "detected_language": episode_language,
                             "worker_id": worker_id,
                             "shared_workers": shared_workers,
                         },
@@ -1348,7 +1671,7 @@ def main() -> None:
             if requested_backend in {"auto", "speechbrain"}:
                 try:
                     speechbrain_model = speechbrain_encoder(
-                        PROJECT_ROOT.parent / "runtime" / "models" / "speechbrain" / "ecapa",
+                        resolve_project_path("runtime/models/speechbrain/ecapa"),
                         device=device,
                     )
                     speaker_backend = "speechbrain"

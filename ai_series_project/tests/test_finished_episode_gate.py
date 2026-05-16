@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import sys
 from pathlib import Path
@@ -26,7 +26,7 @@ def load_module(filename: str, module_name: str):
     return module
 
 
-STEP57 = load_module("56_generate_finished_episodes.py", "step57_finished_gate_test")
+STEP22 = load_module("23_generate_finished_episodes.py", "step22_finished_gate_test")
 
 
 class FinishedEpisodeGateTests(unittest.TestCase):
@@ -74,7 +74,7 @@ class FinishedEpisodeGateTests(unittest.TestCase):
             }
 
             with self.assertRaisesRegex(RuntimeError, "fallback dialogue audio backend"):
-                STEP57.ensure_finished_episode_outputs({}, "folge_99", episode_outputs)
+                STEP22.ensure_finished_episode_outputs({}, "folge_99", episode_outputs)
 
 
 if __name__ == "__main__":

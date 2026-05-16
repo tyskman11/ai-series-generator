@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import sys
 from pathlib import Path
@@ -27,7 +27,7 @@ def load_module(filename: str, module_name: str):
     return module
 
 
-STEP09 = load_module("08_prepare_foundation_training.py", "step09_foundation_prepare")
+STEP09 = load_module("09_prepare_foundation_training.py", "step09_foundation_prepare")
 
 
 class FoundationPrepareTests(unittest.TestCase):
