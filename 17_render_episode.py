@@ -488,10 +488,37 @@ def lipsync_backend_profile(cfg: dict) -> dict:
     lipsync_cfg = cfg.get("lipsync_backends", {}) if isinstance(cfg.get("lipsync_backends", {}), dict) else {}
     preferred_order = clean_text_list(lipsync_cfg.get("preferred_order", [])) or ["musetalk", "latentsync", "wav2lip"]
     min_sync_score = max(0.0, min(1.0, safe_float(lipsync_cfg.get("min_sync_score", 0.75), 0.75)))
+    candidates: list[dict] = []
+    for backend in preferred_order:
+        backend_key = backend.lower()
+        env_name = f"SERIES_{backend_key.upper().replace('-', '_')}_COMMAND"
+        tool_dir = resolve_project_path(f"tools/quality_backends/{backend_key}")
+        model_dir = resolve_project_path(f"tools/quality_models/lipsync/{backend_key}")
+        checkpoint = resolve_project_path("tools/quality_models/lipsync/wav2lip_gan.pth")
+        env_command = clean_text(os.environ.get(env_name, ""))
+        if backend_key == "wav2lip":
+            available = bool(env_command or checkpoint.exists() or tool_dir.exists())
+            reason = "wav2lip checkpoint/tooling ready" if available else "wav2lip checkpoint or command missing"
+        else:
+            available = bool(env_command or tool_dir.exists() or model_dir.exists())
+            reason = f"{backend_key} command/tooling ready" if available else f"{backend_key} command/tooling not installed"
+        candidates.append(
+            {
+                "name": backend_key,
+                "available": available,
+                "reason": reason,
+                "command_env": env_name,
+                "tool_dir": str(tool_dir),
+                "model_dir": str(model_dir),
+            }
+        )
+    selected = next((row for row in candidates if row.get("available")), candidates[0] if candidates else {"name": "wav2lip", "reason": "default"})
     return {
         "backend_interface_version": 2,
         "preferred_order": preferred_order,
-        "selected_backend": preferred_order[0] if preferred_order else "wav2lip",
+        "selected_backend": clean_text(selected.get("name", "")) or "wav2lip",
+        "backend_candidates": candidates,
+        "backend_reason": clean_text(selected.get("reason", "")) or "default backend selection",
         "allow_fallback": bool(lipsync_cfg.get("allow_fallback", False)),
         "min_sync_score": round(min_sync_score, 3),
         "backend_requirements": {
@@ -840,6 +867,9 @@ def build_scene_voice_plan(
             if isinstance(voice_meta.get("voice_reference_priority", []), list)
             else []
         )
+        pause_after_seconds = safe_float(voice_meta.get("pause_after_seconds", 0.18), 0.18)
+        overlap_with_next_seconds = safe_float(voice_meta.get("overlap_with_next_seconds", 0.0), 0.0)
+        delivery_notes = clean_text(voice_meta.get("delivery_notes", ""))
         retrieval_segment: dict | None = None
         if clean_text(source.get("type", "")) == "original_line" and clean_text(source.get("segment_id", "")):
             retrieval_segment = {
@@ -876,6 +906,9 @@ def build_scene_voice_plan(
                 "pace": pace,
                 "energy": energy,
                 "target_duration_seconds": target_duration_seconds,
+                "pause_after_seconds": pause_after_seconds,
+                "overlap_with_next_seconds": overlap_with_next_seconds,
+                "delivery_notes": delivery_notes,
                 "voice_reference_priority": voice_reference_priority or [
                     "matched_original_segment",
                     "trained_character_voice_model",
@@ -916,6 +949,9 @@ def build_scene_voice_plan(
                 "end_seconds": end_seconds,
                 "estimated_duration_seconds": round(max(0.0, end_seconds - start_seconds), 3),
                 "target_duration_seconds": round(safe_float(row.get("target_duration_seconds", 0.0), 0.0), 3),
+                "pause_after_seconds": round(safe_float(row.get("pause_after_seconds", 0.18), 0.18), 3),
+                "overlap_with_next_seconds": round(safe_float(row.get("overlap_with_next_seconds", 0.0), 0.0), 3),
+                "delivery_notes": clean_text(row.get("delivery_notes", "")),
                 "emotion": clean_text(row.get("emotion", "")) or "focused",
                 "pace": clean_text(row.get("pace", "")) or "natural",
                 "energy": round(max(0.0, min(1.0, safe_float(row.get("energy", 0.52), 0.52))), 3),
@@ -1348,6 +1384,10 @@ def build_voice_clone_line_package(cfg: dict, episode_package_root: Path, line: 
         "pace": clean_text(line.get("pace", "")) or "natural",
         "energy": round(energy, 3),
         "target_duration_seconds": round(target_duration_seconds, 3),
+        "pause_after_seconds": round(safe_float(line.get("pause_after_seconds", 0.18), 0.18), 3),
+        "overlap_with_next_seconds": round(safe_float(line.get("overlap_with_next_seconds", 0.0), 0.0), 3),
+        "delivery_notes": clean_text(line.get("delivery_notes", "")),
+        "dialogue_function": clean_text(line.get("dialogue_function", "")),
         "voice_reference_priority": voice_reference_priority,
         "start_seconds": safe_float(line.get("start_seconds", 0.0), 0.0),
         "end_seconds": safe_float(line.get("end_seconds", 0.0), 0.0),
@@ -1511,6 +1551,7 @@ def build_scene_production_package(
     dialogue_style_constraints = clean_text_list(scene.get("dialogue_style_constraints", []))
     callback_targets = clean_text_list(scene.get("callback_targets", []))
     character_intents = scene.get("character_intents", {}) if isinstance(scene.get("character_intents", {}), dict) else {}
+    writer_room_plan = scene.get("writer_room_plan", {}) if isinstance(scene.get("writer_room_plan", {}), dict) else {}
     relationship_context = scene.get("relationship_context", []) if isinstance(scene.get("relationship_context", []), list) else []
     dialogue_voice_metadata = [
         dict(item)
@@ -1528,6 +1569,7 @@ def build_scene_production_package(
         clean_text(line.get("emotion", ""))
         and clean_text(line.get("pace", ""))
         and safe_float(line.get("target_duration_seconds", 0.0), 0.0) > 0.0
+        and clean_text(line.get("delivery_notes", ""))
         and isinstance(line.get("voice_reference_priority", []), list)
         for line in voice_lines
     )
@@ -1546,6 +1588,7 @@ def build_scene_production_package(
         "comedy_pattern": clean_text(scene.get("comedy_pattern", "")),
         "emotional_arc": clean_text(scene.get("emotional_arc", "")),
         "callback_targets": callback_targets,
+        "writer_room_plan": writer_room_plan,
         "relationship_context": relationship_context,
         "dialogue_voice_metadata": dialogue_voice_metadata,
         "dialogue_sources": dialogue_sources,
@@ -1583,6 +1626,7 @@ def build_scene_production_package(
                 "comedy_pattern": clean_text(scene.get("comedy_pattern", "")),
                 "emotional_arc": clean_text(scene.get("emotional_arc", "")),
                 "callback_targets": callback_targets,
+                "writer_room_plan": writer_room_plan,
             },
             "reference_slots": reference_slots,
             "camera_plan": camera_plan,
@@ -2126,6 +2170,7 @@ def refresh_scene_package_outputs(scene_package: dict, package_root: Path) -> di
         and clean_text(line.get("emotion", ""))
         and clean_text(line.get("pace", ""))
         and safe_float(line.get("target_duration_seconds", 0.0), 0.0) > 0.0
+        and clean_text(line.get("delivery_notes", ""))
         and isinstance(line.get("voice_reference_priority", []), list)
         for line in voice_lines
     )

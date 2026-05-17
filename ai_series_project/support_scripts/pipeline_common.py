@@ -4993,6 +4993,8 @@ def scene_weakness_detection(
     quality_score = clamp_quality_score(scene_quality.get("quality_score", 0.0))
     component_scores = scene_quality.get("component_scores", {}) if isinstance(scene_quality.get("component_scores"), dict) else {}
     weaknesses = list(scene_quality.get("weaknesses", [])) if isinstance(scene_quality.get("weaknesses"), list) else []
+    regeneration_hints = scene_quality.get("regeneration_hints", {}) if isinstance(scene_quality.get("regeneration_hints"), dict) else {}
+    regeneration_scope = coalesce_text(scene_quality.get("regeneration_scope", ""))
     scene_id = coalesce_text(scene_quality.get("scene_id", ""))
     needs_regeneration = quality_score < watch_threshold
     regeneration_priority = "high" if quality_score < 0.35 else ("medium" if quality_score < watch_threshold else "low")
@@ -5004,6 +5006,11 @@ def scene_weakness_detection(
         "quality_percent": int(round(quality_score * 100.0)),
         "component_scores": component_scores,
         "weaknesses": weaknesses,
+        "failed_reasons": list(scene_quality.get("failed_reasons", []) or []) if isinstance(scene_quality.get("failed_reasons", []), list) else weaknesses,
+        "realism_score": clamp_quality_score(scene_quality.get("realism_score", quality_score)),
+        "realism_percent": int(round(clamp_quality_score(scene_quality.get("realism_score", quality_score)) * 100.0)),
+        "regeneration_hints": regeneration_hints,
+        "regeneration_scope": regeneration_scope or "scene_rerender",
         "needs_regeneration": needs_regeneration,
         "regeneration_priority": regeneration_priority,
         "current_retries": current_retries,

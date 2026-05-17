@@ -939,6 +939,92 @@ def choose_original_line_entry(
     return dict(rng.choice(top))
 
 
+def original_line_semantically_fits(
+    text: str,
+    keyword: str,
+    style: dict,
+    desired_function: str,
+    entry_keywords: list | None = None,
+) -> bool:
+    tokens = {token.lower() for token in tokens_from_text(text)}
+    keyword_tokens = {token.lower() for token in tokens_from_text(keyword)}
+    entry_keyword_tokens = {token.lower() for token in (entry_keywords or []) if token}
+    typical_words = {
+        coalesce_text(token).lower()
+        for token in (style.get("typical_words", []) if isinstance(style.get("typical_words", []), list) else [])
+        if coalesce_text(token)
+    }
+    if keyword_tokens and tokens & keyword_tokens:
+        return True
+    if keyword_tokens and entry_keyword_tokens & keyword_tokens:
+        return True
+    if typical_words and tokens & typical_words:
+        return True
+    if desired_function == "contradicts" and tokens & {"aber", "doch", "nein", "wrong", "falsch", "nicht"}:
+        return True
+    if desired_function == "makes_joke" and ("!" in text or tokens & {"witz", "joke", "seriously", "wirklich"}):
+        return True
+    if desired_function == "solves_problem" and tokens & {"okay", "gut", "done", "solved", "geschafft", "klar"}:
+        return True
+    return False
+
+
+def behavior_guided_line(
+    speaker: str,
+    desired_function: str,
+    keyword: str,
+    style: dict,
+    writer_room_plan: dict,
+    language: str,
+) -> str:
+    phrases = [coalesce_text(value) for value in style.get("typical_phrases", []) if coalesce_text(value)] if isinstance(style.get("typical_phrases", []), list) else []
+    reactions = [coalesce_text(value) for value in style.get("recurring_reactions", []) if coalesce_text(value)] if isinstance(style.get("recurring_reactions", []), list) else []
+    starts = [coalesce_text(value) for value in style.get("typical_sentence_starts", []) if coalesce_text(value)] if isinstance(style.get("typical_sentence_starts", []), list) else []
+    endings = [coalesce_text(value) for value in style.get("typical_sentence_endings", []) if coalesce_text(value)] if isinstance(style.get("typical_sentence_endings", []), list) else []
+    callback = phrases[0] if phrases else (reactions[0] if reactions else "")
+    opening = starts[0].capitalize() if starts else ""
+    ending = endings[0] if endings else ""
+    relationship = coalesce_text(writer_room_plan.get("active_relationship_dynamic", ""))
+    family = language_family(language)
+    if family == "de":
+        templates = {
+            "drives_plan": f"{opening + ', ' if opening else ''}wir müssen {keyword} jetzt Schritt für Schritt festnageln.",
+            "contradicts": f"{reactions[0] + ', ' if reactions else 'Moment, '}so funktioniert {keyword} aber nicht.",
+            "makes_joke": f"{callback or 'Klar'}, weil {keyword} natürlich genau jetzt dramatisch werden muss.",
+            "solves_problem": f"{ending.capitalize() + ': ' if ending else ''}Dann lösen wir {keyword}, indem wir den Fehler direkt testen.",
+            "reacts": f"{reactions[0] if reactions else 'Okay'}, das verändert {keyword} komplett.",
+        }
+    elif family == "es":
+        templates = {
+            "drives_plan": f"{opening + ', ' if opening else ''}Necesitamos ordenar {keyword} paso a paso.",
+            "contradicts": f"{reactions[0] + ', ' if reactions else 'Espera, '}así no funciona {keyword}.",
+            "makes_joke": f"{callback or 'Claro'}, porque {keyword} tenía que complicarse justo ahora.",
+            "solves_problem": f"{ending.capitalize() + ': ' if ending else ''}Entonces resolvemos {keyword} probando el error directamente.",
+            "reacts": f"{reactions[0] if reactions else 'Vale'}, eso cambia {keyword} por completo.",
+        }
+    else:
+        templates = {
+            "drives_plan": f"{opening + ', ' if opening else ''}we need to pin down {keyword} step by step.",
+            "contradicts": f"{reactions[0] + ', ' if reactions else 'Wait, '}that is not how {keyword} works.",
+            "makes_joke": f"{callback or 'Sure'}, because {keyword} obviously needed perfect timing.",
+            "solves_problem": f"{ending.capitalize() + ': ' if ending else ''}Then we fix {keyword} by testing the mistake directly.",
+            "reacts": f"{reactions[0] if reactions else 'Okay'}, that changes {keyword} completely.",
+        }
+    line = templates.get(desired_function, templates["reacts"])
+    if relationship and desired_function in {"contradicts", "solves_problem"}:
+        line = line.replace("Schritt für Schritt", "mit genau dieser Dynamik").replace("step by step", "with that exact tension")
+    return f"{speaker}: {line}"
+
+
+def dialogue_function_sequence(writer_room_plan: dict, desired_length: int) -> list[str]:
+    sequence = ["drives_plan", "contradicts", "reacts", "makes_joke", "contradicts", "solves_problem"]
+    if "resolution" in coalesce_text(writer_room_plan.get("scene_function", "")).lower():
+        sequence = ["reacts", "contradicts", "solves_problem", "makes_joke", "solves_problem"]
+    while len(sequence) < desired_length:
+        sequence.extend(["reacts", "contradicts", "makes_joke", "solves_problem"])
+    return sequence[:desired_length]
+
+
 def beat_dialogue_templates(
     beat: str,
     speaker_a: str,
@@ -1089,11 +1175,15 @@ def build_dialogue(
     keyword: str,
     target_length: int | None = None,
     language: str = "",
+    behavior_model: dict | None = None,
+    writer_room_plan: dict | None = None,
 ) -> tuple[list[str], list[dict]]:
     speaker_samples = model.get("speaker_samples", {})
     speaker_line_library = model.get("speaker_line_library", {})
     speaker_a = focus_characters[0]
     speaker_b = focus_characters[1] if len(focus_characters) > 1 else fallback_focus_characters(2)[1]
+    behavior_model = behavior_model if isinstance(behavior_model, dict) else {}
+    writer_room_plan = writer_room_plan if isinstance(writer_room_plan, dict) else {}
     used_segment_ids: set[str] = set()
     callback_candidates = [
         clean_callback(line)
@@ -1103,13 +1193,24 @@ def build_dialogue(
     callback_candidates = [line for line in callback_candidates if len(line.split()) >= 3]
     callback = f"{speaker_a}: {rng.choice(callback_candidates)}" if callback_candidates else ""
     base_lines = beat_dialogue_templates(beat, speaker_a, speaker_b, keyword, callback, language=language)
-    used_samples = {callback.split(":", 1)[1].strip().lower()} if callback else set()
+    callback_text = callback.split(":", 1)[1].strip().lower() if callback and ":" in callback else ""
+    used_samples = (
+        {callback_text}
+        if callback_text and any(callback_text in coalesce_text(line).lower() for line in base_lines)
+        else set()
+    )
     enriched_lines: list[str] = []
     line_sources: list[dict] = []
     preferred_terms = [beat, keyword, *focus_characters]
     prefer_original_dialogue = bool(cfg.get("generation", {}).get("prefer_original_dialogue_remix", True))
     line_rounds = 0
     desired_length = target_length or int(cfg["generation"].get("max_dialogue_lines_per_scene", 7))
+    turn_order = [
+        coalesce_text(value)
+        for value in writer_room_plan.get("turn_order_hint", [])
+        if coalesce_text(value)
+    ] if isinstance(writer_room_plan.get("turn_order_hint", []), list) else []
+    function_order = dialogue_function_sequence(writer_room_plan, desired_length)
     while len(enriched_lines) < desired_length:
         line_rounds += 1
         round_lines = list(base_lines)
@@ -1125,16 +1226,37 @@ def build_dialogue(
             speaker, line_text = line.split(":", 1)
             speaker = speaker.strip()
             line_text = line_text.strip()
+            desired_function = function_order[len(enriched_lines) % len(function_order)]
+            planned_speaker = turn_order[len(enriched_lines) % len(turn_order)] if turn_order else ""
+            if planned_speaker in focus_characters:
+                speaker = planned_speaker
+            style = speaking_style_for_character(behavior_model, speaker)
+            if callback_text and line_text.lower() == callback_text:
+                used_samples.add(callback_text)
+                enriched_lines.append(f"{speaker}: {line_text}")
+                line_sources.append({"type": "speaker_sample", "language": normalize_language_code(language), "dialogue_function": desired_function})
+                continue
             original_entry = None
             if prefer_original_dialogue:
+                preferred_line_terms = preferred_terms
+                if isinstance(style.get("typical_words", []), list):
+                    preferred_line_terms = [*preferred_terms, desired_function, *style.get("typical_words", [])[:4]]
                 original_entry = choose_original_line_entry(
                     speaker,
                     keyword,
                     speaker_line_library,
                     used_segment_ids,
                     rng,
-                    preferred_terms=preferred_terms,
+                    preferred_terms=preferred_line_terms,
                 )
+                if original_entry and not original_line_semantically_fits(
+                    coalesce_text(original_entry.get("text", "")),
+                    keyword,
+                    style,
+                    desired_function,
+                    original_entry.get("keywords", []) if isinstance(original_entry.get("keywords", []), list) else [],
+                ):
+                    original_entry = None
             if original_entry:
                 used_segment_ids.add(str(original_entry.get("segment_id", "")))
                 selected_text = coalesce_text(original_entry.get("text", "")) or line_text
@@ -1152,18 +1274,33 @@ def build_dialogue(
                         "audio_file": original_entry.get("audio_file", ""),
                         "video_file": original_entry.get("video_file", ""),
                         "language": normalize_language_code(original_entry.get("language", "") or language),
+                        "dialogue_function": desired_function,
                     }
                 )
                 continue
             sample_line = choose_speaker_sample(speaker, line_text, keyword, speaker_samples, used_samples, rng)
+            if not sample_line:
+                available_samples = [
+                    clean_callback(raw_line)
+                    for raw_line in speaker_samples.get(speaker, [])
+                    if clean_callback(raw_line) and clean_callback(raw_line).lower() not in used_samples
+                ]
+                if available_samples:
+                    sample_line = available_samples[0]
             if sample_line:
                 used_samples.add(sample_line.lower())
                 enriched_lines.append(f"{speaker}: {sample_line}")
-                line_sources.append({"type": "speaker_sample", "language": normalize_language_code(language)})
+                line_sources.append({"type": "speaker_sample", "language": normalize_language_code(language), "dialogue_function": desired_function})
             else:
-                suffix = f" ({line_rounds})" if line_rounds > 1 and line_text and line_text[-1] not in ".!?" else ""
-                enriched_lines.append(f"{speaker}: {line_text}{suffix}" if suffix else line)
-                line_sources.append({"type": "generated_template", "language": normalize_language_code(language)})
+                enriched_lines.append(behavior_guided_line(speaker, desired_function, keyword, style, writer_room_plan, language))
+                line_sources.append(
+                    {
+                        "type": "behavior_guided",
+                        "language": normalize_language_code(language),
+                        "dialogue_function": desired_function,
+                        "writer_room_plan": True,
+                    }
+                )
         if line_rounds >= 12:
             break
     min_lines = int(cfg["generation"].get("min_dialogue_lines_per_scene", 4))
@@ -1215,6 +1352,99 @@ def relationship_behavior_for_scene(behavior_model: dict, characters: list[str])
     return rows
 
 
+def style_count(style: dict, key: str) -> int:
+    value = style.get("typical_dialogue_function", {}) if isinstance(style, dict) else {}
+    if isinstance(value, dict):
+        return int(value.get(key, 0) or 0)
+    return 0
+
+
+def choose_character_for_function(characters: list[str], behavior_model: dict, function: str, fallback_index: int = 0) -> str:
+    if not characters:
+        return ""
+    ranked: list[tuple[int, str]] = []
+    for character in characters:
+        ranked.append((style_count(speaking_style_for_character(behavior_model, character), function), character))
+    ranked.sort(key=lambda row: (-row[0], characters.index(row[1]) if row[1] in characters else 99))
+    if ranked and ranked[0][0] > 0:
+        return ranked[0][1]
+    return characters[min(fallback_index, len(characters) - 1)]
+
+
+def first_relationship_value(relationships: list[dict], key: str) -> str:
+    for row in relationships:
+        if not isinstance(row, dict):
+            continue
+        value = coalesce_text(row.get(key, ""))
+        if value:
+            return value
+    return ""
+
+
+def build_writer_room_plan(
+    *,
+    beat: str,
+    keyword: str,
+    scene_characters: list[str],
+    scene_index: int,
+    scene_count: int,
+    behavior_model: dict,
+    relationships: list[dict],
+    target_length: int,
+) -> dict:
+    setup_character = first_relationship_value(relationships, "conversation_starter") or first_relationship_value(relationships, "conversation_leader")
+    if setup_character not in scene_characters:
+        setup_character = scene_characters[0] if scene_characters else ""
+    opposing_character = ""
+    contradiction_counts = Counter()
+    for relationship in relationships:
+        counts = relationship.get("contradiction_counts", {}) if isinstance(relationship.get("contradiction_counts"), dict) else {}
+        contradiction_counts.update(counts)
+    if contradiction_counts:
+        opposing_character = contradiction_counts.most_common(1)[0][0].split("_against_", 1)[0]
+    if opposing_character not in scene_characters:
+        opposing_character = choose_character_for_function(scene_characters, behavior_model, "contradicts", 1)
+    joke_character = choose_character_for_function(scene_characters, behavior_model, "makes_joke", min(2, len(scene_characters) - 1))
+    resolution_character = first_relationship_value(relationships, "conflict_resolver")
+    if resolution_character not in scene_characters:
+        resolution_character = choose_character_for_function(scene_characters, behavior_model, "solves_problem", 1)
+    progress = scene_index / max(1, scene_count - 1)
+    if progress < 0.18:
+        scene_function = "setup establishes character desire and plants a callback"
+    elif beat in {"Komplikation", "Verwechslung"} or progress < 0.62:
+        scene_function = "misunderstanding escalates through relationship conflict"
+    elif beat == "Wendepunkt" or progress < 0.82:
+        scene_function = "turning point forces a new plan"
+    else:
+        scene_function = "payoff resolves conflict and lands callback"
+    base_order = [
+        setup_character,
+        opposing_character or setup_character,
+        setup_character,
+        joke_character or opposing_character or setup_character,
+        opposing_character or resolution_character or setup_character,
+        resolution_character or setup_character,
+    ]
+    turn_order = [name for name in base_order if name]
+    while len(turn_order) < max(1, target_length):
+        turn_order.extend(name for name in scene_characters if name)
+        if not scene_characters:
+            break
+    return {
+        "scene_function": scene_function,
+        "setup_character": setup_character,
+        "opposing_character": opposing_character,
+        "joke_character": joke_character,
+        "resolution_character": resolution_character,
+        "turn_order_hint": turn_order[: max(1, target_length)],
+        "must_include_callback": True,
+        "avoid_generic_dialogue": True,
+        "active_relationship_dynamic": coalesce_text(first_relationship_value(relationships, "typical_dynamic") or first_relationship_value(relationships, "configured_dynamic")),
+        "relationship_tempo": coalesce_text(first_relationship_value(relationships, "dialogue_tempo")) or "balanced",
+        "target_keyword": keyword,
+    }
+
+
 def line_text_from_dialogue_line(line: str) -> tuple[str, str]:
     text = coalesce_text(line)
     if ":" not in text:
@@ -1229,25 +1459,58 @@ def voice_metadata_for_line(
     source: dict,
     behavior_model: dict,
     average_segment_duration: float,
+    scene_context: dict | None = None,
 ) -> dict:
     style = speaking_style_for_character(behavior_model, speaker)
+    scene_context = scene_context if isinstance(scene_context, dict) else {}
     word_count = max(1, len(tokens_from_text(text)))
     average_words = float(style.get("average_words_per_line", 0.0) or 0.0)
     energy = float(style.get("energy_level", 0.52) or 0.52)
+    beat = coalesce_text(scene_context.get("beat", ""))
+    conflict = coalesce_text(scene_context.get("conflict", ""))
+    emotional_arc = coalesce_text(scene_context.get("emotional_arc", ""))
+    source_type = coalesce_text(source.get("type", "")) if isinstance(source, dict) else ""
+    dialogue_function = coalesce_text(source.get("dialogue_function", "")) if isinstance(source, dict) else ""
+    if not dialogue_function:
+        functions = style.get("typical_dialogue_function", {}) if isinstance(style.get("typical_dialogue_function"), dict) else {}
+        dialogue_function = max(functions, key=functions.get) if functions else "reacts"
     if "!" in text:
         energy = max(energy, 0.72)
     if "?" in text:
         energy = max(energy, 0.58)
+    if beat in {"Komplikation", "Verwechslung", "Wendepunkt"} or conflict:
+        energy = max(energy, 0.64)
+    if dialogue_function == "contradicts":
+        energy = max(energy, 0.7)
+    elif dialogue_function == "solves_problem":
+        energy = min(0.82, max(energy, 0.58))
+    elif dialogue_function == "makes_joke":
+        energy = max(energy, 0.66)
     if word_count <= max(4.0, average_words * 0.55):
-        pace = "quick"
+        pace = "fast"
     elif average_words and word_count >= average_words * 1.45:
         pace = "measured"
     else:
-        pace = "natural"
-    emotion = "curious" if "?" in text else "excited" if "!" in text else "focused"
-    source_type = coalesce_text(source.get("type", "")) if isinstance(source, dict) else ""
-    duration_floor = max(1.1, word_count * (0.22 if pace == "quick" else 0.31 if pace == "measured" else 0.27))
+        pace = "fast" if dialogue_function in {"contradicts", "makes_joke"} else "natural"
+    typical_emotions = style.get("typical_emotion_by_situation", {}) if isinstance(style.get("typical_emotion_by_situation"), dict) else {}
+    emotion = coalesce_text(typical_emotions.get(dialogue_function, ""))
+    if not emotion:
+        emotion = "curious pressure" if "?" in text else "high-energy reaction" if "!" in text else "focused"
+    if dialogue_function == "contradicts" and "sarcasm" not in emotion:
+        emotion = "defensive sarcasm" if style.get("humor_sarcasm_hints", {}).get("likely_sarcasm") else "defensive"
+    duration_floor = max(1.1, word_count * (0.22 if pace == "fast" else 0.31 if pace == "measured" else 0.27))
     target_duration = max(duration_floor, min(8.0, float(average_segment_duration or 2.7) * max(0.8, word_count / max(5.0, average_words or 7.0))))
+    pause_after = 0.24 if dialogue_function in {"solves_problem", "makes_joke"} else 0.14 if pace == "fast" else 0.2
+    overlap_hint = 0.08 if dialogue_function == "contradicts" and pace == "fast" else 0.0
+    delivery_notes = {
+        "contradicts": "quick pushback, slightly annoyed",
+        "makes_joke": "land as a character-specific joke, not a generic gag",
+        "solves_problem": "clearer and calmer, resolving the beat",
+        "drives_plan": "forward-moving setup with intent",
+        "reacts": "natural reaction tied to the relationship dynamic",
+    }.get(dialogue_function, "natural character delivery")
+    if emotional_arc:
+        delivery_notes = f"{delivery_notes}; arc: {emotional_arc}"
     return {
         "speaker": speaker or "Narrator",
         "text": text,
@@ -1255,9 +1518,14 @@ def voice_metadata_for_line(
         "pace": pace,
         "energy": round(max(0.0, min(1.0, energy)), 3),
         "target_duration_seconds": round(target_duration, 3),
+        "pause_after_seconds": round(pause_after, 3),
+        "overlap_with_next_seconds": round(overlap_hint, 3),
+        "delivery_notes": delivery_notes,
+        "dialogue_function": dialogue_function,
         "voice_reference_priority": [
             value
             for value in (
+                "same_emotion_reference",
                 "matched_original_segment" if source_type == "original_line" else "",
                 "trained_character_voice_model",
                 "speaker_reference_samples",
@@ -1273,13 +1541,14 @@ def build_dialogue_voice_metadata(
     dialogue_sources: list[dict],
     behavior_model: dict,
     model: dict,
+    scene_context: dict | None = None,
 ) -> list[dict]:
     average_segment_duration = float(model.get("average_segment_duration_seconds", 2.7) or 2.7)
     metadata: list[dict] = []
     for index, line in enumerate(dialogue):
         speaker, text = line_text_from_dialogue_line(line)
         source = dialogue_sources[index] if index < len(dialogue_sources) and isinstance(dialogue_sources[index], dict) else {}
-        metadata.append(voice_metadata_for_line(speaker, text, source, behavior_model, average_segment_duration))
+        metadata.append(voice_metadata_for_line(speaker, text, source, behavior_model, average_segment_duration, scene_context))
     return metadata
 
 
@@ -1294,9 +1563,11 @@ def build_behavior_scene_fields(
     relationship_context: list[dict],
     dialogue: list[str],
     language: str,
+    writer_room_plan: dict | None = None,
 ) -> dict:
     defaults = behavior_model.get("defaults", {}) if isinstance(behavior_model.get("defaults"), dict) else {}
     relationships = relationship_behavior_for_scene(behavior_model, scene_characters)
+    writer_room_plan = writer_room_plan if isinstance(writer_room_plan, dict) else {}
     styles = [speaking_style_for_character(behavior_model, character) for character in scene_characters]
     behavior_constraints: list[str] = []
     dialogue_constraints: list[str] = []
@@ -1330,6 +1601,15 @@ def build_behavior_scene_fields(
                 behavior_constraints.append(f"{' / '.join(characters)} dynamic: {dynamic}")
             if leader:
                 behavior_constraints.append(f"{leader} tends to drive the exchange")
+            starter = coalesce_text(row.get("conversation_starter", ""))
+            resolver = coalesce_text(row.get("conflict_resolver", ""))
+            tempo = coalesce_text(row.get("dialogue_tempo", ""))
+            if starter:
+                behavior_constraints.append(f"{starter} often starts this pair's exchanges")
+            if resolver:
+                behavior_constraints.append(f"{resolver} often repairs the conflict")
+            if tempo:
+                dialogue_constraints.append(f"Pair tempo should feel {tempo}")
     elif relationship_context:
         behavior_constraints.append("Use the configured relationship context to motivate the scene conflict")
     dialogue_patterns = behavior_model.get("dialogue_patterns", {}) if isinstance(behavior_model.get("dialogue_patterns"), dict) else {}
@@ -1340,6 +1620,8 @@ def build_behavior_scene_fields(
         extract_keywords(["\n".join(dialogue), keyword, *scene_characters], limit=8),
         limit=5,
     )
+    if writer_room_plan.get("must_include_callback") and callback_targets:
+        dialogue_constraints.append(f"Pay off or echo callback target '{callback_targets[0]}'")
     progress = scene_index / max(1, scene_count - 1)
     if progress < 0.18:
         arc = "curiosity rises into a clear problem"
@@ -1365,6 +1647,7 @@ def build_behavior_scene_fields(
         "comedy_pattern": comedy_pattern,
         "emotional_arc": arc,
         "callback_targets": callback_targets,
+        "writer_room_plan": writer_room_plan,
     }
 
 
@@ -1706,6 +1989,7 @@ def build_scene_generation_plan(
         for value in behavior_fields.get("dialogue_style_constraints", [])
         if coalesce_text(value)
     ] if isinstance(behavior_fields.get("dialogue_style_constraints", []), list) else []
+    writer_room_plan = behavior_fields.get("writer_room_plan", {}) if isinstance(behavior_fields.get("writer_room_plan", {}), dict) else {}
     relationship_fragments = relationship_prompt_fragments(
         {"relationships": relationship_context},
         scene_characters,
@@ -1736,6 +2020,13 @@ def build_scene_generation_plan(
         positive_prompt += f", behavior constraints: {'; '.join(behavior_constraints[:3])}"
     if dialogue_style_constraints:
         positive_prompt += f", dialogue style: {'; '.join(dialogue_style_constraints[:2])}"
+    if writer_room_plan:
+        positive_prompt += (
+            f", writer room plan: {coalesce_text(writer_room_plan.get('scene_function', ''))}; "
+            f"setup {coalesce_text(writer_room_plan.get('setup_character', ''))}; "
+            f"opposition {coalesce_text(writer_room_plan.get('opposing_character', ''))}; "
+            f"payoff by {coalesce_text(writer_room_plan.get('resolution_character', ''))}"
+        )
     if style_guidance.get("camera"):
         positive_prompt += f", series camera preference: {style_guidance['camera']}"
     if style_guidance.get("angle"):
@@ -1784,6 +2075,7 @@ def build_scene_generation_plan(
         "comedy_pattern": coalesce_text(behavior_fields.get("comedy_pattern", "")),
         "emotional_arc": coalesce_text(behavior_fields.get("emotional_arc", "")),
         "callback_targets": behavior_fields.get("callback_targets", []) if isinstance(behavior_fields.get("callback_targets"), list) else [],
+        "writer_room_plan": writer_room_plan,
         "quality_targets": {
             "quality_mode": quality_mode,
             "series_language": series_language or "auto",
@@ -1797,6 +2089,7 @@ def build_scene_generation_plan(
             "behavior_model_available": bool(behavior_fields),
             "behavior_constraints_count": len(behavior_constraints),
             "dialogue_style_constraints_count": len(dialogue_style_constraints),
+            "writer_room_plan_available": bool(writer_room_plan),
         },
         "positive_prompt": positive_prompt,
         "negative_prompt": negative_prompt,
@@ -1892,6 +2185,17 @@ def generate_episode_package(model: dict, cfg: dict, episode_index: int = 1) -> 
             scene_characters,
             include_group_members=False,
         )
+        behavior_relationships = relationship_behavior_for_scene(behavior_model, scene_characters)
+        writer_room_plan = build_writer_room_plan(
+            beat=beat,
+            keyword=keyword,
+            scene_characters=scene_characters,
+            scene_index=scene_index,
+            scene_count=scene_count,
+            behavior_model=behavior_model,
+            relationships=behavior_relationships,
+            target_length=target_lines_per_scene,
+        )
         summary = summary_line(scene_characters, keyword, beat, series_language)
         dialogue, dialogue_sources = build_dialogue(
             beat,
@@ -1902,6 +2206,8 @@ def generate_episode_package(model: dict, cfg: dict, episode_index: int = 1) -> 
             keyword,
             target_length=target_lines_per_scene,
             language=series_language,
+            behavior_model=behavior_model,
+            writer_room_plan=writer_room_plan,
         )
         behavior_fields = build_behavior_scene_fields(
             beat=beat,
@@ -1913,8 +2219,20 @@ def generate_episode_package(model: dict, cfg: dict, episode_index: int = 1) -> 
             relationship_context=scene_relationship_context,
             dialogue=dialogue,
             language=series_language,
+            writer_room_plan=writer_room_plan,
         )
-        dialogue_voice_metadata = build_dialogue_voice_metadata(dialogue, dialogue_sources, behavior_model, model)
+        dialogue_voice_metadata = build_dialogue_voice_metadata(
+            dialogue,
+            dialogue_sources,
+            behavior_model,
+            model,
+            {
+                "beat": beat,
+                "conflict": behavior_fields.get("conflict", ""),
+                "emotional_arc": behavior_fields.get("emotional_arc", ""),
+                "writer_room_plan": writer_room_plan,
+            },
+        )
         scene_id = f"scene_{scene_index + 1:04d}"
         generation_plan = build_scene_generation_plan(
             scene_id,

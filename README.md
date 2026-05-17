@@ -57,10 +57,11 @@ The repository root contains the numbered pipeline scripts directly beside `ai_s
 - `05_review_unknowns.py` now uses direct `speaker_face_cluster` evidence from linked segments to assign speaker entries more reliably, instead of relying only on single-visible-face scenes
 - `06_manage_character_relationships.py` is now a main pipeline step after review; it opens a Tk GUI for character groups, relationships, and per-series input groups
 - manual relationship data is stored in `ai_series_project/characters/relationships.json` and is fed into the trained series model, episode prompts, and series bible
-- `08b_analyze_behavior_model.py` now builds `generation/model/behavior_model.json` from reviewed transcript, speaker, character, scene, and relationship data, with a readable summary at `generation/model/behavior_model_summary.md`
-- generated scenes now carry `scene_purpose`, `conflict`, `character_intents`, behavior constraints, dialogue-style constraints, comedy/callback hints, and per-line voice metadata for downstream voice/lip-sync backends
-- `17_render_episode.py` now writes a versioned lip-sync backend interface into scene packages so Wav2Lip, MuseTalk, LatentSync, or future runners can be selected by config priority
-- `18_quality_gate.py` now warns about missing behavior context, template-heavy dialogue, missing voice metadata, missing voice-clone output, missing lip-sync output, and missing character reference data
+- `08b_analyze_behavior_model.py` now writes behavior-model schema version `2`, including sentence starts/ends, dialogue functions, relationship tempo, conflict repair, beat sequence, and callback candidates
+- generated scenes now carry a `writer_room_plan`, `scene_purpose`, `conflict`, `character_intents`, behavior constraints, dialogue-style constraints, comedy/callback hints, and richer per-line voice metadata for downstream voice/lip-sync backends
+- `17_render_episode.py` now resolves the configured lip-sync backend priority and records `selected_backend`, `backend_candidates`, and `backend_reason` in scene packages so Wav2Lip, MuseTalk, LatentSync, or future runners can be selected predictably
+- `18_quality_gate.py` now produces per-scene Realism scores and regeneration hints for missing behavior context, template-heavy dialogue, missing voice metadata, missing voice-clone output, missing lip-sync output, and missing character reference data
+- `19_regenerate_weak_scenes.py` now reads those hints and chooses a narrower retry plan for story/dialogue, voice/lip-sync, or scene-render problems instead of always treating every weak scene the same way
 - `18_quality_gate.py` keeps running regeneration/rerender cycles until the gate passes or the configured retry-cycle limit is reached
 - final output quality now depends on the real local backend stack being ready: SDXL/diffusers for frames, LTX/diffusers for video, XTTS for cloned dialogue, and Wav2Lip for lip-sync
 
@@ -266,11 +267,11 @@ The project is configured for quality-first finished-episode generation:
 - delegated quality-backend runners now resolve project-local backend scripts from the project root even when scene packages run from nested working directories
 - project-local quality backends now prefer the platform-correct FFmpeg binary from `ai_series_project/runtime/host_runtime/ffmpeg/bin` before falling back to older tool copies
 - render-time scene duration now respects the planned per-scene runtime from episode generation instead of compressing most scenes into a short 8 to 22 second window
-- scene packages now include behavior-model guidance and per-line voice metadata (`emotion`, `pace`, `energy`, `target_duration_seconds`, and `voice_reference_priority`) so voice runners can clone speech with clearer intent and timing
-- lip-sync packages now expose `lipsync_backends.preferred_order`, `allow_fallback`, and `min_sync_score`; Quality-First keeps fallback lip-sync blocked unless explicitly allowed locally
+- scene packages now include behavior-model guidance and per-line voice metadata (`emotion`, `pace`, `energy`, `target_duration_seconds`, `pause_after_seconds`, `overlap_with_next_seconds`, `delivery_notes`, and `voice_reference_priority`) so voice runners can clone speech with clearer intent and timing
+- lip-sync packages now resolve `lipsync_backends.preferred_order`, `allow_fallback`, and `min_sync_score`; Quality-First keeps fallback lip-sync blocked unless explicitly allowed locally and records clear backend diagnostics when a preferred runner is missing
 - batch and quality-gate output messages now include the generated display title, for example `Folge 19: ... (folge_19)`, instead of relying only on the technical episode ID
 - the quality score can reach `100%` only when generated scene video/lip-sync, cloned dialogue audio, scene mastering, and style/continuity support are all complete
-- the quality gate also checks behavior constraints, scene purpose/conflict, relationship context, generic template-dialogue share, voice metadata, voice references, voice-clone output, and lip-sync output
+- the quality gate also checks behavior constraints, scene purpose/conflict, relationship context, generic template-dialogue share, voice metadata, voice references, voice-clone output, lip-sync output, and a weighted Realism score with regeneration hints
 - `16_run_storyboard_backend.py` now fails if `external_backends.storyboard_scene_runner` does not create a real frame; it no longer creates blue/filter-style seed-frame stand-ins by default
 - `17_render_episode.py` no longer writes local motion fallback clips into the same production paths used by the real video backend, so backend runners are not skipped by pre-existing fake outputs
 - `17_render_episode.py` now defers quality-first audio to `finished_episode_voice_runner`; local preview TTS/silence is not used as the final voice path
@@ -331,12 +332,31 @@ Important areas:
 
 ### Behavior Model
 
-`08b_analyze_behavior_model.py` reads available dataset rows, transcripts, speaker libraries, character names, and `characters/relationships.json`. It writes:
+`08b_analyze_behavior_model.py` reads available dataset rows, transcripts, speaker libraries, character names, and `characters/relationships.json`. It writes schema version `2`:
 
 - `ai_series_project/generation/model/behavior_model.json`
 - `ai_series_project/generation/model/behavior_model_summary.md`
 
-The model contains per-character speaking style, relationship behavior, scene pacing, episode-structure estimates, and dialogue patterns. Missing data does not stop the pipeline; diagnostics are written into the summary and safe defaults are used. `14_generate_episode.py` uses this model to add scene purpose, conflict, character intents, behavior constraints, dialogue-style constraints, callback targets, and voice metadata to generated scenes.
+The model contains per-character speaking style, relationship behavior, scene pacing, episode-structure estimates, and dialogue patterns. Version `2` adds typical sentence openings/endings, short-vs-long answer ratios, dialogue-function tendencies, preferred partners, conflict reaction patterns, pair tempo, conversation starter/resolver signals, beat sequences, scene-type distribution, new-information/reaction balance, and callback candidates.
+
+`14_generate_episode.py` uses this model to create a small `writer_room_plan` per scene. That plan decides which character sets up the scene, who opposes, who gets the joke, who resolves the beat, the likely turn order, whether a callback should appear, and which relationship dynamic is active. Missing data does not stop the pipeline; diagnostics are written into the summary and safe defaults are used.
+
+Per-line voice metadata is also behavior-aware. Scene packages include emotion, pace, energy, target duration, pause/overlap placeholders, delivery notes, dialogue function, and voice-reference priority so XTTS-compatible runners can choose better reference material without breaking older packages.
+
+### Realism Quality Gate
+
+`18_quality_gate.py` combines the existing completeness checks with a per-scene Realism score. The score includes:
+
+- `behavior_score`
+- `dialogue_style_score`
+- `relationship_score`
+- `voice_metadata_score`
+- `reference_coverage_score`
+- `template_penalty`
+- `lipsync_backend_score`
+- `scene_structure_score`
+
+Every weak scene now carries `failed_reasons`, `regeneration_hints`, and a `regeneration_scope`. `19_regenerate_weak_scenes.py` uses that scope to prefer story/dialogue refreshes for generic writing issues, voice/lip-sync reruns for audio or sync issues, and scene-selective visual reruns for render issues.
 
 ### Character Groups And Relationships
 
@@ -372,7 +392,7 @@ python -m unittest discover -s ai_series_project\tests -v
 Useful smoke checks:
 
 ```powershell
-python -m py_compile 00_prepare_runtime.py 06_manage_character_relationships.py 08_train_series_model.py 08b_analyze_behavior_model.py 14_generate_episode.py 17_render_episode.py 18_quality_gate.py 22_refresh_after_manual_review.py 23_generate_finished_episodes.py 24_process_next_episode.py ai_series_project\support_scripts\pipeline_common.py ai_series_project\support_scripts\generation_toolkit.py ai_series_project\support_scripts\configure_quality_backends.py ai_series_project\support_scripts\prepare_quality_backends.py ai_series_project\support_scripts\manage_character_relationships.py
+python -m py_compile 00_prepare_runtime.py 06_manage_character_relationships.py 08_train_series_model.py 08b_analyze_behavior_model.py 14_generate_episode.py 17_render_episode.py 18_quality_gate.py 19_regenerate_weak_scenes.py 22_refresh_after_manual_review.py 23_generate_finished_episodes.py 24_process_next_episode.py ai_series_project\support_scripts\pipeline_common.py ai_series_project\support_scripts\generation_toolkit.py ai_series_project\support_scripts\configure_quality_backends.py ai_series_project\support_scripts\prepare_quality_backends.py ai_series_project\support_scripts\manage_character_relationships.py
 ```
 
 ## Known Limitations
@@ -406,6 +426,7 @@ python -m py_compile 00_prepare_runtime.py 06_manage_character_relationships.py 
 - forced voice cloning ignores stale per-line audio files and regenerates dialogue through XTTS/voice-clone output instead of reusing old TTS artifacts
 - `05_review_unknowns.py` now supports `--offline`, `--edit-names`, built-in public-image face lookup without login/API credentials, optional uploaded face-crop lookup, `95%` minimum public name completion, cleanup/rollback of older low-confidence public metadata renames, and stronger speaker auto-linking from direct face/speaker evidence
 - `08b_analyze_behavior_model.py`, behavior-aware scene metadata, voice metadata propagation, and stricter content checks in `18_quality_gate.py` are now part of the main generation path
+- behavior-model schema version `2`, writer-room scene plans, richer delivery metadata, lip-sync backend priority resolution, and scope-aware weak-scene regeneration are now part of the main generation path
 
 ## In Progress
 
@@ -421,6 +442,5 @@ python -m py_compile 00_prepare_runtime.py 06_manage_character_relationships.py 
 ## Planned
 
 - stronger automatic worker-capability routing for NAS multi-PC runs
-- better scene-selection logic for regeneration retries after quality-gate failures
 - stronger real local XTTS/lip-sync runtime integration when the backend assets are fully available
 - higher-quality project-local image/video backends to move closer to original-episode visual consistency

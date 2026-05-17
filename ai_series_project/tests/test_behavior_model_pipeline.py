@@ -30,11 +30,12 @@ STEP08 = load_module("08_train_series_model.py", "step08_behavior_pipeline_test"
 STEP14 = load_module("14_generate_episode.py", "step14_behavior_pipeline_test")
 STEP17 = load_module("17_render_episode.py", "step17_behavior_pipeline_test")
 STEP18 = load_module("18_quality_gate.py", "step18_behavior_pipeline_test")
+STEP19 = load_module("19_regenerate_weak_scenes.py", "step19_behavior_pipeline_test")
 
 
 def minimal_behavior_model() -> dict:
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "dominant_language": "de",
         "speaking_style": {
             "Babe": {
@@ -43,6 +44,13 @@ def minimal_behavior_model() -> dict:
                 "energy_label": "medium",
                 "typical_phrases": ["das ist wichtig"],
                 "recurring_reactions": ["moment mal"],
+                "typical_sentence_starts": ["moment mal"],
+                "typical_sentence_endings": ["wichtig"],
+                "short_answer_ratio": 0.25,
+                "long_answer_ratio": 0.1,
+                "typical_dialogue_function": {"drives_plan": 3, "contradicts": 1},
+                "typical_emotion_by_situation": {"drives_plan": "focused", "contradicts": "defensive"},
+                "preferred_conversation_partners": [{"name": "Kenzie", "co_scene_count": 4}],
             },
             "Kenzie": {
                 "average_words_per_line": 5.0,
@@ -50,6 +58,13 @@ def minimal_behavior_model() -> dict:
                 "energy_label": "medium",
                 "typical_phrases": ["ich habe eine idee"],
                 "recurring_reactions": ["warte kurz"],
+                "typical_sentence_starts": ["ich habe"],
+                "typical_sentence_endings": ["idee"],
+                "short_answer_ratio": 0.3,
+                "long_answer_ratio": 0.05,
+                "typical_dialogue_function": {"solves_problem": 3, "reacts": 1},
+                "typical_emotion_by_situation": {"solves_problem": "confident"},
+                "preferred_conversation_partners": [{"name": "Babe", "co_scene_count": 4}],
             },
         },
         "relationship_behavior": {
@@ -57,7 +72,17 @@ def minimal_behavior_model() -> dict:
                 "characters": ["Babe", "Kenzie"],
                 "typical_dynamic": "Babe escalates; Kenzie reframes the problem.",
                 "conversation_leader": "Babe",
+                "conversation_starter": "Babe",
+                "conflict_resolver": "Kenzie",
+                "typical_conflict_cause": "misunderstanding",
+                "typical_repair": "Kenzie reframes the scene",
+                "dialogue_tempo": "fast",
             }
+        },
+        "scene_behavior": {
+            "typical_beat_sequence": ["cold_open", "setup", "conflict", "escalation", "resolution"],
+            "callback_candidates": ["das ist wichtig"],
+            "average_turn_count": 5.0,
         },
         "dialogue_patterns": {
             "setup_reaction_punchline": {
@@ -93,8 +118,15 @@ class BehaviorModelPipelineTests(unittest.TestCase):
         )
 
         self.assertEqual(model["source_counts"]["line_records"], 2)
+        self.assertEqual(model["schema_version"], 2)
         self.assertIn("Babe", model["speaking_style"])
+        self.assertIn("typical_sentence_starts", model["speaking_style"]["Babe"])
+        self.assertIn("preferred_conversation_partners", model["speaking_style"]["Babe"])
+        relationship = next(iter(model["relationship_behavior"].values()))
+        self.assertIn("conversation_starter", relationship)
+        self.assertIn("dialogue_tempo", relationship)
         self.assertIn("scene_behavior", model)
+        self.assertIn("typical_beat_sequence", model["scene_behavior"])
         self.assertIn("Behavior Model Summary", summary)
 
     def test_behavior_model_missing_data_uses_defaults(self) -> None:
@@ -144,7 +176,12 @@ class BehaviorModelPipelineTests(unittest.TestCase):
         self.assertTrue(scene["behavior_constraints"])
         self.assertTrue(scene["dialogue_style_constraints"])
         self.assertTrue(scene["dialogue_voice_metadata"])
+        self.assertIn("writer_room_plan", scene)
+        self.assertIn("turn_order_hint", scene["writer_room_plan"])
+        self.assertIn("delivery_notes", scene["dialogue_voice_metadata"][0])
+        self.assertIn("pause_after_seconds", scene["dialogue_voice_metadata"][0])
         self.assertIn("scene_purpose", scene["generation_plan"])
+        self.assertTrue(scene["generation_plan"]["quality_targets"]["writer_room_plan_available"])
         self.assertIn("behavior constraints", scene["generation_plan"]["positive_prompt"])
 
     def test_step14_storyboard_request_preserves_behavior_metadata(self) -> None:
@@ -161,6 +198,7 @@ class BehaviorModelPipelineTests(unittest.TestCase):
                         "conflict": "missing controller",
                         "behavior_constraints": ["Babe leads"],
                         "dialogue_style_constraints": ["short reactions"],
+                        "writer_room_plan": {"scene_function": "misunderstanding escalates"},
                         "dialogue_voice_metadata": [{"speaker": "Babe", "emotion": "focused"}],
                     }
                 ],
@@ -169,6 +207,7 @@ class BehaviorModelPipelineTests(unittest.TestCase):
 
         scene = request["scene_requests"][0]
         self.assertEqual(scene["conflict"], "missing controller")
+        self.assertEqual(scene["writer_room_plan"]["scene_function"], "misunderstanding escalates")
         self.assertEqual(scene["dialogue_voice_metadata"][0]["emotion"], "focused")
 
     def test_render_voice_plan_and_quality_gate_read_metadata(self) -> None:
@@ -184,6 +223,8 @@ class BehaviorModelPipelineTests(unittest.TestCase):
                         "pace": "quick",
                         "energy": 0.75,
                         "target_duration_seconds": 2.2,
+                        "pause_after_seconds": 0.14,
+                        "delivery_notes": "quick comeback",
                         "voice_reference_priority": ["trained_character_voice_model"],
                     }
                 ],
@@ -200,6 +241,8 @@ class BehaviorModelPipelineTests(unittest.TestCase):
         self.assertEqual(voice_plan[0]["emotion"], "excited")
         self.assertEqual(voice_plan[0]["pace"], "quick")
         self.assertGreaterEqual(voice_plan[0]["target_duration_seconds"], 2.2)
+        self.assertEqual(voice_plan[0]["delivery_notes"], "quick comeback")
+        self.assertGreaterEqual(voice_plan[0]["pause_after_seconds"], 0.14)
 
         checks = STEP18.scene_content_quality_checks(
             {
@@ -215,6 +258,93 @@ class BehaviorModelPipelineTests(unittest.TestCase):
         self.assertGreater(checks["missing_behavior_scene_count"], 0)
         self.assertGreater(checks["missing_voice_metadata_line_count"], 0)
         self.assertGreater(checks["missing_lipsync_output_scene_count"], 0)
+        self.assertIn("realism_rows", checks)
+        self.assertIn("realism_score", checks["realism_rows"][0])
+
+    def test_quality_gate_detects_template_heavy_realism_issues(self) -> None:
+        checks = STEP18.scene_content_quality_checks(
+            {
+                "scenes": [
+                    {
+                        "scene_id": "scene_0002",
+                        "scene_purpose": "start conflict",
+                        "conflict": "missing controller",
+                        "behavior_constraints": ["Babe leads"],
+                        "dialogue_style_constraints": ["Babe uses short reactions"],
+                        "relationship_context": [{"source": "Babe", "target": "Kenzie"}],
+                        "dialogue_sources": [
+                            {"type": "generated_template"},
+                            {"type": "generated_template"},
+                            {"type": "generated_template"},
+                        ],
+                        "callback_targets": [],
+                        "voice_clone": {
+                            "required": False,
+                            "lines": [
+                                {
+                                    "speaker_name": "Babe",
+                                    "text": "Wir brauchen einen Plan.",
+                                    "emotion": "focused",
+                                    "pace": "natural",
+                                    "target_duration_seconds": 1.8,
+                                    "delivery_notes": "plain template read",
+                                    "voice_reference_priority": ["speaker_reference_samples"],
+                                    "reference_audio_candidates": ["sample.wav"],
+                                }
+                            ],
+                        },
+                        "lip_sync": {
+                            "required": False,
+                            "selected_backend": "wav2lip",
+                            "backend_candidates": [{"name": "wav2lip", "available": True}],
+                            "target_outputs": {},
+                        },
+                    }
+                ]
+            }
+        )
+
+        self.assertEqual(checks["template_heavy_scene_count"], 1)
+        realism = checks["realism_rows"][0]
+        self.assertLess(realism["realism_score"], 0.72)
+        self.assertTrue(realism["regeneration_hints"]["reduce_template_lines"])
+        self.assertIn("dialogue too template-heavy", realism["failed_reasons"])
+
+    def test_lipsync_backend_config_is_resolved_by_priority(self) -> None:
+        profile = STEP17.lipsync_backend_profile(
+            {
+                "lipsync_backends": {
+                    "preferred_order": ["musetalk", "latentsync", "wav2lip"],
+                    "allow_fallback": False,
+                    "min_sync_score": 0.75,
+                }
+            }
+        )
+
+        self.assertEqual(profile["backend_interface_version"], 2)
+        self.assertEqual([candidate["name"] for candidate in profile["backend_candidates"]], ["musetalk", "latentsync", "wav2lip"])
+        self.assertFalse(profile["allow_fallback"])
+        self.assertEqual(profile["min_sync_score"], 0.75)
+
+    def test_regeneration_plan_uses_voice_lipsync_scope_without_story_refresh(self) -> None:
+        plan = STEP19.build_rerun_plan(
+            "folge_001",
+            strict=True,
+            update_bible=False,
+            scene_ids=["scene_0001"],
+            regeneration_queue=[
+                {
+                    "scene_id": "scene_0001",
+                    "regeneration_scope": "voice_lipsync",
+                    "regeneration_hints": {"rerun_voice_clone": True, "rerun_lipsync": True},
+                }
+            ],
+        )
+
+        scripts = [step["script"] for step in plan]
+        self.assertNotIn("16_run_storyboard_backend.py", scripts)
+        self.assertIn("17_render_episode.py", scripts)
+        self.assertIn("18_quality_gate.py", scripts)
 
 
 if __name__ == "__main__":

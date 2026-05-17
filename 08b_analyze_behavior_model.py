@@ -361,7 +361,65 @@ def humor_hints(lines: list[str]) -> dict[str, Any]:
     }
 
 
-def speaking_style_for_records(records: list[dict[str, Any]]) -> dict[str, Any]:
+def edge_phrases(lines: list[str], *, start: bool, limit: int = 8) -> list[str]:
+    counter: Counter[str] = Counter()
+    for line in lines:
+        tokens = meaningful_tokens(line)
+        if not tokens:
+            continue
+        edge = tokens[:3] if start else tokens[-3:]
+        if edge:
+            counter[" ".join(edge)] += 1
+    return [phrase for phrase, _count in counter.most_common(limit)]
+
+
+def dialogue_function_for_text(text: str) -> str:
+    lowered = coalesce_text(text).lower()
+    tokens = set(token_list(lowered))
+    if tokens & {"aber", "doch", "nein", "falsch", "stop", "wrong", "nicht"}:
+        return "contradicts"
+    if tokens & {"plan", "machen", "brauchen", "muss", "need", "should", "try", "solve"}:
+        return "drives_plan"
+    if tokens & {"okay", "gut", "geschafft", "solved", "done", "klar", "zusammen"}:
+        return "solves_problem"
+    if "!" in text or tokens & {"witz", "joke", "haha", "seriously", "wirklich"}:
+        return "makes_joke"
+    if "?" in text or tokens & REACTION_MARKERS:
+        return "reacts"
+    return "reacts"
+
+
+def emotion_for_text(text: str, function: str) -> str:
+    tokens = set(token_list(text))
+    if function == "contradicts":
+        return "defensive" if "?" not in text else "defensive curiosity"
+    if function == "makes_joke":
+        return "playful sarcasm" if {"wirklich", "seriously", "klar"} & tokens else "playful"
+    if function == "solves_problem":
+        return "relieved focus"
+    if "!" in text:
+        return "high-energy reaction"
+    if "?" in text:
+        return "curious pressure"
+    return "focused"
+
+
+def speaker_partner_map(line_records: list[dict[str, Any]]) -> dict[str, Counter[str]]:
+    grouped: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
+    for line in line_records:
+        grouped[(coalesce_text(line.get("episode_id", "")), coalesce_text(line.get("scene_id", "")))].append(line)
+    partners: dict[str, Counter[str]] = defaultdict(Counter)
+    for lines in grouped.values():
+        speakers = [coalesce_text(line.get("speaker", "")) for line in lines if coalesce_text(line.get("speaker", ""))]
+        unique = sorted(set(speakers))
+        for speaker in unique:
+            for partner in unique:
+                if partner != speaker:
+                    partners[speaker][partner] += 1
+    return partners
+
+
+def speaking_style_for_records(records: list[dict[str, Any]], partners: Counter[str] | None = None) -> dict[str, Any]:
     lines = [coalesce_text(record.get("text", "")) for record in records if coalesce_text(record.get("text", ""))]
     word_counts = [len(token_list(line)) for line in lines]
     sentence_lengths: list[float] = []
@@ -374,12 +432,43 @@ def speaking_style_for_records(records: list[dict[str, Any]]) -> dict[str, Any]:
     words_per_second = sum(word_counts) / max(0.1, sum(durations)) if durations else 0.0
     energy = clamp(0.32 + (question_rate * 0.16) + (exclamation_rate * 0.26) + min(0.26, words_per_second * 0.08))
     token_counter = Counter(token for line in lines for token in meaningful_tokens(line))
+    function_counter = Counter(dialogue_function_for_text(line) for line in lines)
+    emotion_by_function: dict[str, Counter[str]] = defaultdict(Counter)
+    conflict_reactions: Counter[str] = Counter()
+    for line in lines:
+        function = dialogue_function_for_text(line)
+        emotion_by_function[function][emotion_for_text(line, function)] += 1
+        if set(token_list(line)) & CONFLICT_MARKERS:
+            conflict_reactions[reaction_patterns([line], limit=1)[0] if reaction_patterns([line], limit=1) else function] += 1
+    short_answers = sum(1 for count in word_counts if count <= 5)
+    long_answers = sum(1 for count in word_counts if count >= 14)
+    question_lines = sum(1 for line in lines if "?" in line)
     return {
         "line_count": len(lines),
         "average_words_per_line": round(mean([float(count) for count in word_counts], 6.0), 2),
         "typical_sentence_length": round(mean(sentence_lengths, 7.0), 2),
         "question_rate": round(question_rate, 3),
         "exclamation_rate": round(exclamation_rate, 3),
+        "typical_sentence_starts": edge_phrases(lines, start=True),
+        "typical_sentence_endings": edge_phrases(lines, start=False),
+        "short_answer_ratio": round(short_answers / max(1, len(lines)), 3),
+        "long_answer_ratio": round(long_answers / max(1, len(lines)), 3),
+        "question_answer_behavior": {
+            "question_line_ratio": round(question_lines / max(1, len(lines)), 3),
+            "answer_style": "short_reactive" if short_answers >= long_answers else "long_explanatory",
+        },
+        "conflict_reaction_patterns": [item for item, _count in conflict_reactions.most_common(6)],
+        "preferred_conversation_partners": [
+            {"name": name, "co_scene_count": int(count)}
+            for name, count in (partners or Counter()).most_common(6)
+        ],
+        "typical_emotion_by_situation": {
+            function: counter.most_common(1)[0][0]
+            for function, counter in sorted(emotion_by_function.items())
+            if counter
+        },
+        "typical_dialogue_function": dict(function_counter),
+        "dominant_dialogue_function": function_counter.most_common(1)[0][0] if function_counter else "reacts",
         "typical_words": [token for token, _count in token_counter.most_common(12)],
         "typical_phrases": top_phrases(lines),
         "recurring_reactions": reaction_patterns(lines),
@@ -400,7 +489,11 @@ def build_speaking_style(line_records: list[dict[str, Any]], series_model: dict[
         for character in series_model.get("characters", []) if isinstance(series_model.get("characters"), list) else []:
             if isinstance(character, dict) and coalesce_text(character.get("name", "")):
                 by_speaker[coalesce_text(character.get("name", ""))] = []
-    return {speaker: speaking_style_for_records(records) for speaker, records in sorted(by_speaker.items())}
+    partner_map = speaker_partner_map(line_records)
+    return {
+        speaker: speaking_style_for_records(records, partner_map.get(speaker, Counter()))
+        for speaker, records in sorted(by_speaker.items())
+    }
 
 
 def relationship_key(a: str, b: str) -> str:
@@ -442,9 +535,16 @@ def build_relationship_behavior(
                 "typical_dynamic": relationship_label(row),
                 "conversation_leader": "",
                 "conversation_leader_counts": {},
+                "conversation_starter": "",
+                "conversation_starter_counts": {},
                 "contradiction_counts": {},
+                "conflict_resolver": "",
+                "conflict_resolver_counts": {},
                 "typical_conflict_patterns": [],
+                "typical_conflict_cause": "",
                 "resolution_patterns": [],
+                "typical_repair": "",
+                "dialogue_tempo": "balanced",
                 "co_scene_count": 0,
             }
     groups = scene_line_groups(line_records)
@@ -461,19 +561,49 @@ def build_relationship_behavior(
                     "typical_dynamic": "co-present dialogue pair",
                     "conversation_leader": "",
                     "conversation_leader_counts": {},
+                    "conversation_starter": "",
+                    "conversation_starter_counts": {},
                     "contradiction_counts": {},
+                    "conflict_resolver": "",
+                    "conflict_resolver_counts": {},
                     "typical_conflict_patterns": [],
+                    "typical_conflict_cause": "",
                     "resolution_patterns": [],
+                    "typical_repair": "",
+                    "dialogue_tempo": "balanced",
                     "co_scene_count": 0,
                 },
             )
             entry["co_scene_count"] = int(entry.get("co_scene_count", 0) or 0) + 1
-            first = speakers[0] if speakers else ""
+            pair_lines = [line for line in lines if coalesce_text(line.get("speaker", "")) in {a, b}]
+            first = coalesce_text(pair_lines[0].get("speaker", "")) if pair_lines else ""
             if first:
                 leader_counts = Counter(entry.get("conversation_leader_counts", {}) or {})
                 leader_counts[first] += 1
                 entry["conversation_leader_counts"] = dict(leader_counts)
                 entry["conversation_leader"] = leader_counts.most_common(1)[0][0]
+                starter_counts = Counter(entry.get("conversation_starter_counts", {}) or {})
+                starter_counts[first] += 1
+                entry["conversation_starter_counts"] = dict(starter_counts)
+                entry["conversation_starter"] = starter_counts.most_common(1)[0][0]
+            pair_word_counts = [
+                len(token_list(coalesce_text(line.get("text", ""))))
+                for line in pair_lines
+                if coalesce_text(line.get("text", ""))
+            ]
+            pair_functions = Counter(dialogue_function_for_text(coalesce_text(line.get("text", ""))) for line in pair_lines)
+            if pair_word_counts:
+                avg_words = sum(pair_word_counts) / max(1, len(pair_word_counts))
+                if pair_functions.get("contradicts", 0) >= 2:
+                    entry["dialogue_tempo"] = "chaotic"
+                elif avg_words <= 5:
+                    entry["dialogue_tempo"] = "fast"
+                elif pair_functions.get("makes_joke", 0) >= 2:
+                    entry["dialogue_tempo"] = "sarcastic"
+                elif avg_words >= 12:
+                    entry["dialogue_tempo"] = "analytical"
+                else:
+                    entry["dialogue_tempo"] = "balanced"
         previous_speaker = ""
         conflict_counter: Counter[str] = Counter()
         resolution_counter: Counter[str] = Counter()
@@ -488,16 +618,75 @@ def build_relationship_behavior(
                     contradiction_counts[f"{speaker}_against_{previous_speaker}"] += 1
                     pairs[key]["contradiction_counts"] = dict(contradiction_counts)
                     conflict_counter[f"{speaker} challenges {previous_speaker}"] += 1
+                    pairs[key]["typical_conflict_cause"] = next(iter(tokens & CONFLICT_MARKERS), "misunderstanding")
             lowered = text.lower()
             for marker in RESOLUTION_MARKERS:
                 if marker in lowered and previous_speaker and speaker and speaker != previous_speaker:
+                    key = relationship_key(previous_speaker, speaker)
+                    if key in pairs:
+                        resolver_counts = Counter(pairs[key].get("conflict_resolver_counts", {}) or {})
+                        resolver_counts[speaker] += 1
+                        pairs[key]["conflict_resolver_counts"] = dict(resolver_counts)
+                        pairs[key]["conflict_resolver"] = resolver_counts.most_common(1)[0][0]
+                        pairs[key]["typical_repair"] = f"{speaker} repairs with '{marker}'"
                     resolution_counter[f"{previous_speaker} -> {speaker}: {marker}"] += 1
             previous_speaker = speaker or previous_speaker
         for key in pairs:
             if set(pairs[key].get("characters", [])) <= set(unique_speakers):
                 pairs[key]["typical_conflict_patterns"] = [item for item, _ in conflict_counter.most_common(5)]
                 pairs[key]["resolution_patterns"] = [item for item, _ in resolution_counter.most_common(5)]
+    for entry in pairs.values():
+        contradictions = Counter(entry.get("contradiction_counts", {}) or {})
+        if contradictions and not entry.get("typical_conflict_cause"):
+            entry["typical_conflict_cause"] = contradictions.most_common(1)[0][0]
+        if not entry.get("typical_conflict_cause"):
+            entry["typical_conflict_cause"] = "misread goal or competing plan"
+        if not entry.get("typical_repair"):
+            repairs = entry.get("resolution_patterns", []) if isinstance(entry.get("resolution_patterns"), list) else []
+            entry["typical_repair"] = repairs[0] if repairs else "shared realization or quick apology"
     return dict(sorted(pairs.items()))
+
+
+def infer_scene_phase(scene: dict[str, Any], index: int, total: int) -> str:
+    text = coalesce_text(scene.get("transcript", "")).lower()
+    progress = index / max(1, total - 1)
+    tokens = set(token_list(text))
+    if index == 0 or progress <= 0.08:
+        return "cold_open"
+    if tokens & CONFLICT_MARKERS or 0.15 <= progress <= 0.32:
+        return "conflict"
+    if progress >= 0.78 or tokens & RESOLUTION_MARKERS:
+        return "resolution"
+    if progress >= 0.58:
+        return "turning_point"
+    if tokens & {"aber", "doch", "wrong", "falsch", "problem"}:
+        return "escalation"
+    return "setup"
+
+
+def infer_scene_type(scene: dict[str, Any]) -> str:
+    transcript = coalesce_text(scene.get("transcript", ""))
+    tokens = set(token_list(transcript))
+    line_count = int(scene.get("line_count", 0) or 0)
+    duration = safe_float(scene.get("duration_seconds", 0.0), 0.0)
+    if line_count >= 5:
+        return "dialogue"
+    if tokens & {"run", "rennen", "go", "los", "move", "action"}:
+        return "action"
+    if tokens & REACTION_MARKERS:
+        return "reaction"
+    if duration <= 12.0:
+        return "transition"
+    return "dialogue"
+
+
+def scene_callback_candidates(scene: dict[str, Any]) -> list[str]:
+    transcript = coalesce_text(scene.get("transcript", ""))
+    phrases = top_phrases([transcript], limit=6)
+    if phrases:
+        return phrases
+    keywords = scene.get("keywords", []) if isinstance(scene.get("keywords"), list) else []
+    return [coalesce_text(keyword) for keyword in keywords if coalesce_text(keyword)][:6]
 
 
 def build_scene_behavior(scenes: list[dict[str, Any]]) -> dict[str, Any]:
@@ -511,12 +700,34 @@ def build_scene_behavior(scenes: list[dict[str, Any]]) -> dict[str, Any]:
     ]
     transcripts = [coalesce_text(scene.get("transcript", "")) for scene in scenes]
     conflict_scenes = sum(1 for text in transcripts if set(token_list(text)) & CONFLICT_MARKERS)
+    phase_counter: Counter[str] = Counter()
+    scene_type_counter: Counter[str] = Counter()
+    turns: list[float] = []
+    info_reaction_ratios: list[float] = []
+    callback_counter: Counter[str] = Counter()
+    for index, scene in enumerate(scenes):
+        phase = infer_scene_phase(scene, index, len(scenes))
+        phase_counter[phase] += 1
+        scene_type_counter[infer_scene_type(scene)] += 1
+        turns.append(float(scene.get("line_count", 0) or 0))
+        transcript = coalesce_text(scene.get("transcript", ""))
+        line_texts = [line for line in transcript.splitlines() if coalesce_text(line)]
+        info_lines = sum(1 for line in line_texts if dialogue_function_for_text(line) in {"drives_plan", "solves_problem"})
+        reaction_lines = sum(1 for line in line_texts if dialogue_function_for_text(line) in {"reacts", "contradicts", "makes_joke"})
+        info_reaction_ratios.append(info_lines / max(1, info_lines + reaction_lines))
+        for candidate in scene_callback_candidates(scene):
+            callback_counter[candidate] += 1
     return {
         "typical_scene_length_seconds": round(mean(durations, 42.0), 2),
         "dialogue_density_lines_per_minute": round(mean(densities, 7.0), 2),
         "average_speakers_per_scene": round(mean(speaker_counts, 2.0), 2),
         "average_dialogue_lines_per_scene": round(mean(line_counts, 6.0), 2),
-        "typical_beat_sequence": ["Cold Open", "Plan", "Complication", "Mix-up", "Turning Point", "Resolution"],
+        "typical_beat_sequence": [phase for phase, _count in phase_counter.most_common()] or ["cold_open", "setup", "conflict", "escalation", "turning_point", "resolution"],
+        "scene_type_distribution": dict(scene_type_counter),
+        "average_turn_count": round(mean(turns, 6.0), 2),
+        "new_information_ratio": round(mean(info_reaction_ratios, 0.42), 3),
+        "reaction_ratio": round(1.0 - mean(info_reaction_ratios, 0.42), 3),
+        "callback_candidates": [item for item, _count in callback_counter.most_common(10)],
         "conflict_escalation": {
             "conflict_scene_ratio": round(conflict_scenes / max(1, len(scenes)), 3),
             "default_curve": ["setup", "pressure", "misread", "reversal", "repair"],
@@ -533,6 +744,22 @@ def build_episode_structure(scenes: list[dict[str, Any]], series_model: dict[str
     for episode_scenes in by_episode.values():
         episode_scenes.sort(key=lambda row: coalesce_text(row.get("scene_id", "")))
     scene_counts = [float(len(episode_scenes)) for episode_scenes in by_episode.values()]
+    phase_positions: dict[str, list[float]] = defaultdict(list)
+    beat_durations: dict[str, list[float]] = defaultdict(list)
+    beat_densities: dict[str, list[float]] = defaultdict(list)
+    beat_sequences: list[list[str]] = []
+    for episode_scenes in by_episode.values():
+        sequence: list[str] = []
+        for index, scene in enumerate(episode_scenes):
+            phase = infer_scene_phase(scene, index, len(episode_scenes))
+            sequence.append(phase)
+            phase_positions[phase].append(index / max(1, len(episode_scenes) - 1))
+            duration = safe_float(scene.get("duration_seconds", 0.0), 0.0)
+            if duration > 0.0:
+                beat_durations[phase].append(duration)
+                beat_densities[phase].append((float(scene.get("line_count", 0) or 0) / max(0.1, duration)) * 60.0)
+        if sequence:
+            beat_sequences.append(sequence)
     first_scene_lengths = [
         safe_float(episode_scenes[0].get("duration_seconds", 0.0))
         for episode_scenes in by_episode.values()
@@ -548,11 +775,21 @@ def build_episode_structure(scenes: list[dict[str, Any]], series_model: dict[str
     cold_open = mean(first_scene_lengths, max(45.0, avg_runtime * 0.06))
     return {
         "cold_open_length_seconds": round(cold_open, 2),
-        "conflict_intro_position": 0.16,
-        "turning_point_position": 0.68,
+        "conflict_intro_position": round(mean(phase_positions.get("conflict", []), 0.16), 3),
+        "turning_point_position": round(mean(phase_positions.get("turning_point", []), 0.68), 3),
         "resolution_duration_seconds": round(max(45.0, avg_runtime * 0.12), 2),
+        "resolution_position": round(mean(phase_positions.get("resolution", []), 0.86), 3),
         "average_scene_count": round(avg_scene_count, 2),
         "average_episode_runtime_seconds": round(avg_runtime, 2),
+        "typical_beat_sequence": beat_sequences[0] if beat_sequences else ["cold_open", "setup", "conflict", "escalation", "turning_point", "resolution"],
+        "typical_scene_length_by_beat": {
+            beat: round(mean(values, 42.0), 2)
+            for beat, values in sorted(beat_durations.items())
+        },
+        "dialogue_density_by_beat": {
+            beat: round(mean(values, 7.0), 2)
+            for beat, values in sorted(beat_densities.items())
+        },
         "defaulted": not bool(scenes),
     }
 
@@ -639,7 +876,7 @@ def build_behavior_model(
         diagnostics.append("No configured character relationships found; relationship_behavior is inferred from co-scenes only.")
     languages = language_counts(line_records, scenes)
     model = {
-        "schema_version": 1,
+        "schema_version": 2,
         "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
         "source_counts": {
             "dataset_rows": len(rows),
@@ -661,6 +898,11 @@ def build_behavior_model(
             "line_emotion": "focused",
             "scene_conflict": "small misunderstanding escalates and resolves within the scene",
             "comedy_pattern": "setup -> reaction -> complication -> punchline/callback",
+            "writer_room_plan": {
+                "scene_function": "setup pressure, escalate with character-specific reaction, then land a payoff",
+                "must_include_callback": True,
+                "avoid_generic_dialogue": True,
+            },
         },
     }
     return model, render_summary(model)
@@ -671,6 +913,7 @@ def render_summary(model: dict[str, Any]) -> str:
     lines = [
         "# Behavior Model Summary",
         "",
+        f"- Schema version: {int(model.get('schema_version', 0) or 0)}",
         f"- Generated at: {coalesce_text(model.get('generated_at', ''))}",
         f"- Dominant language: {coalesce_text(model.get('dominant_language', 'auto')) or 'auto'}",
         f"- Dataset rows: {int(source_counts.get('dataset_rows', 0) or 0)}",
@@ -695,8 +938,22 @@ def render_summary(model: dict[str, Any]) -> str:
             lines.append(
                 f"- {name}: {style.get('line_count', 0)} lines, "
                 f"{style.get('average_words_per_line', 0)} words/line, "
-                f"energy {style.get('energy_label', 'medium')}"
+                f"energy {style.get('energy_label', 'medium')}, "
+                f"function {style.get('dominant_dialogue_function', 'reacts')}"
             )
+    scene_behavior = model.get("scene_behavior", {}) if isinstance(model.get("scene_behavior"), dict) else {}
+    if scene_behavior:
+        lines.extend(
+            [
+                "",
+                "## Writer-Room Signals",
+                "",
+                f"- Typical beat sequence: {', '.join(scene_behavior.get('typical_beat_sequence', []) or []) or '-'}",
+                f"- Average turns per scene: {scene_behavior.get('average_turn_count', '-')}",
+                f"- New-information ratio: {scene_behavior.get('new_information_ratio', '-')}",
+                f"- Callback candidates: {', '.join(scene_behavior.get('callback_candidates', [])[:8]) if isinstance(scene_behavior.get('callback_candidates'), list) else '-'}",
+            ]
+        )
     return "\n".join(lines).strip() + "\n"
 
 

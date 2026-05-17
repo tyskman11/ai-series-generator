@@ -192,6 +192,61 @@ def load_scene_quality_rows(artifacts: dict[str, Any]) -> list[dict[str, Any]]:
     return rows
 
 
+def merge_realism_into_scene_quality_rows(
+    scene_quality_rows: list[dict[str, Any]],
+    content_checks: dict[str, Any],
+) -> list[dict[str, Any]]:
+    realism_index = {
+        str(row.get("scene_id", "") or "").strip(): row
+        for row in (content_checks.get("realism_rows", []) if isinstance(content_checks.get("realism_rows", []), list) else [])
+        if isinstance(row, dict) and str(row.get("scene_id", "") or "").strip()
+    }
+    merged: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for row in scene_quality_rows:
+        if not isinstance(row, dict):
+            continue
+        scene_id = str(row.get("scene_id", "") or "").strip()
+        realism = realism_index.get(scene_id, {})
+        combined = dict(row)
+        if realism:
+            original_score = safe_float(combined.get("quality_score", 0.0), 0.0)
+            realism_score = safe_float(realism.get("realism_score", original_score), original_score)
+            combined["realism_score"] = realism_score
+            combined["realism_percent"] = int(round(realism_score * 100.0))
+            combined["quality_score"] = min(original_score, realism_score)
+            combined["quality_percent"] = int(round(combined["quality_score"] * 100.0))
+            weaknesses = list(combined.get("weaknesses", []) or []) if isinstance(combined.get("weaknesses", []), list) else []
+            weaknesses.extend(str(reason) for reason in realism.get("failed_reasons", []) if str(reason).strip())
+            combined["weaknesses"] = list(dict.fromkeys(weaknesses))
+            combined["regeneration_hints"] = realism.get("regeneration_hints", {}) if isinstance(realism.get("regeneration_hints", {}), dict) else {}
+            combined["regeneration_scope"] = str(realism.get("regeneration_scope", "") or "").strip()
+            component_scores = dict(combined.get("component_scores", {}) or {}) if isinstance(combined.get("component_scores", {}), dict) else {}
+            component_scores["realism"] = realism_score
+            combined["component_scores"] = component_scores
+        merged.append(combined)
+        if scene_id:
+            seen.add(scene_id)
+    for scene_id, realism in realism_index.items():
+        if scene_id in seen:
+            continue
+        realism_score = safe_float(realism.get("realism_score", 0.0), 0.0)
+        merged.append(
+            {
+                "scene_id": scene_id,
+                "quality_score": realism_score,
+                "quality_percent": int(round(realism_score * 100.0)),
+                "realism_score": realism_score,
+                "realism_percent": int(round(realism_score * 100.0)),
+                "component_scores": {"realism": realism_score},
+                "weaknesses": list(realism.get("failed_reasons", []) or []),
+                "regeneration_hints": realism.get("regeneration_hints", {}) if isinstance(realism.get("regeneration_hints", {}), dict) else {},
+                "regeneration_scope": str(realism.get("regeneration_scope", "") or "").strip(),
+            }
+        )
+    return merged
+
+
 def artifact_path_exists(path_value: object) -> bool:
     candidate = stored_path_if_present(path_value)
     if not candidate:
@@ -218,6 +273,172 @@ def safe_float(value: object, default: float = 0.0) -> float:
         return default
 
 
+GENERIC_DIALOGUE_MARKERS = {
+    "clear plan",
+    "chaos",
+    "step by step",
+    "we need a plan",
+    "wir brauchen einen plan",
+    "schritt für schritt",
+    "durcheinander",
+    "funktioniert am ende doch",
+}
+
+
+def scene_voice_lines(scene: dict[str, Any]) -> list[dict[str, Any]]:
+    voice_clone = scene.get("voice_clone", {}) if isinstance(scene.get("voice_clone", {}), dict) else {}
+    return [line for line in (voice_clone.get("lines", []) if isinstance(voice_clone.get("lines", []), list) else []) if isinstance(line, dict)]
+
+
+def scene_dialogue_texts(scene: dict[str, Any]) -> list[str]:
+    return [str(line.get("text", "") or "").strip() for line in scene_voice_lines(scene) if str(line.get("text", "") or "").strip()]
+
+
+def generic_dialogue_ratio(texts: list[str], dialogue_sources: list[dict[str, Any]]) -> float:
+    generic_count = 0
+    for text in texts:
+        lowered = text.lower()
+        repeated_tokens = len(lowered.split()) != len(set(lowered.split())) and len(lowered.split()) <= 10
+        if repeated_tokens or any(marker in lowered for marker in GENERIC_DIALOGUE_MARKERS):
+            generic_count += 1
+    template_count = 0.0
+    for item in dialogue_sources:
+        if not isinstance(item, dict):
+            continue
+        source_type = str(item.get("type", "") or "").strip()
+        if source_type == "generated_template":
+            template_count += 1.0
+        elif source_type == "behavior_guided":
+            template_count += 0.35
+    return safe_ratio(generic_count + template_count, max(len(texts), len(dialogue_sources)))
+
+
+def speaker_change_ratio(lines: list[dict[str, Any]]) -> float:
+    speakers = [str(line.get("speaker_name", "") or line.get("speaker", "") or "").strip() for line in lines]
+    speakers = [speaker for speaker in speakers if speaker]
+    if len(speakers) <= 1:
+        return 0.0
+    changes = sum(1 for left, right in zip(speakers, speakers[1:]) if left != right)
+    return round(changes / max(1, len(speakers) - 1), 4)
+
+
+def scene_realism_row(
+    scene: dict[str, Any],
+    *,
+    has_behavior: bool,
+    has_conflict_or_purpose: bool,
+    has_relationship_context: bool,
+    template_ratio: float,
+    missing_voice_metadata: int,
+    missing_reference_data: int,
+    missing_voice_output: bool,
+    missing_lipsync_output: bool,
+) -> dict[str, Any]:
+    scene_id = str(scene.get("scene_id", "") or "scene").strip()
+    voice_lines = scene_voice_lines(scene)
+    texts = scene_dialogue_texts(scene)
+    writer_room_plan = scene.get("writer_room_plan", {}) if isinstance(scene.get("writer_room_plan", {}), dict) else {}
+    callback_targets = scene.get("callback_targets", []) if isinstance(scene.get("callback_targets", []), list) else []
+    lip_sync = scene.get("lip_sync", {}) if isinstance(scene.get("lip_sync", {}), dict) else {}
+    backend_candidates = lip_sync.get("backend_candidates", []) if isinstance(lip_sync.get("backend_candidates", []), list) else []
+    selected_backend = str(lip_sync.get("selected_backend", "") or "").strip()
+    backend_available = any(
+        isinstance(candidate, dict)
+        and str(candidate.get("name", "") or "").strip() == selected_backend
+        and bool(candidate.get("available", False))
+        for candidate in backend_candidates
+    ) if selected_backend else False
+    if selected_backend == "wav2lip" and not backend_candidates:
+        backend_available = True
+    line_count = max(1, len(texts))
+    behavior_score = 1.0 if has_behavior and bool(writer_room_plan) else 0.45 if has_behavior else 0.12
+    dialogue_style_score = max(0.0, min(1.0, 0.92 - template_ratio * 0.7))
+    if speaker_change_ratio(voice_lines) < 0.35 and len(voice_lines) > 2:
+        dialogue_style_score -= 0.2
+    relationship_score = 1.0 if has_relationship_context else 0.28
+    voice_metadata_score = max(0.0, 1.0 - (missing_voice_metadata / line_count))
+    reference_coverage_score = max(0.0, 1.0 - (missing_reference_data / line_count))
+    template_penalty = min(0.55, template_ratio * 0.55)
+    lipsync_backend_score = 1.0 if backend_available and not missing_lipsync_output else 0.55 if selected_backend else 0.18
+    scene_structure_score = 1.0 if has_conflict_or_purpose and callback_targets else 0.62 if has_conflict_or_purpose else 0.22
+    realism_score = max(
+        0.0,
+        min(
+            1.0,
+            (
+                behavior_score * 0.18
+                + dialogue_style_score * 0.18
+                + relationship_score * 0.14
+                + voice_metadata_score * 0.14
+                + reference_coverage_score * 0.1
+                + lipsync_backend_score * 0.12
+                + scene_structure_score * 0.14
+            )
+            - template_penalty,
+        ),
+    )
+    failed_reasons: list[str] = []
+    hints = {
+        "reduce_template_lines": False,
+        "increase_speaker_specific_phrases": False,
+        "use_relationship_conflict": False,
+        "add_scene_payoff": False,
+        "repair_voice_metadata": False,
+        "rerun_voice_clone": False,
+        "rerun_lipsync": False,
+        "collect_missing_references": False,
+    }
+    if template_ratio > 0.45:
+        failed_reasons.append("dialogue too template-heavy")
+        hints["reduce_template_lines"] = True
+        hints["increase_speaker_specific_phrases"] = True
+    if not has_behavior or not writer_room_plan:
+        failed_reasons.append("writer-room behavior plan missing")
+        hints["increase_speaker_specific_phrases"] = True
+    if not has_relationship_context:
+        failed_reasons.append("relationship dynamic missing")
+        hints["use_relationship_conflict"] = True
+    if not callback_targets:
+        failed_reasons.append("no callback or payoff detected")
+        hints["add_scene_payoff"] = True
+    if missing_voice_metadata:
+        failed_reasons.append("voice metadata incomplete")
+        hints["repair_voice_metadata"] = True
+    if missing_reference_data:
+        failed_reasons.append("voice reference coverage incomplete")
+        hints["collect_missing_references"] = True
+    if missing_voice_output:
+        failed_reasons.append("voice-clone output missing")
+        hints["rerun_voice_clone"] = True
+    if missing_lipsync_output or not selected_backend:
+        failed_reasons.append("lip-sync backend/output missing")
+        hints["rerun_lipsync"] = True
+    if hints["rerun_voice_clone"] or hints["rerun_lipsync"] or hints["collect_missing_references"]:
+        scope = "voice_lipsync"
+    elif hints["reduce_template_lines"] or hints["increase_speaker_specific_phrases"] or hints["use_relationship_conflict"]:
+        scope = "story_dialogue"
+    else:
+        scope = "scene_rerender"
+    return {
+        "scene_id": scene_id,
+        "realism_score": round(realism_score, 4),
+        "realism_percent": int(round(realism_score * 100.0)),
+        "component_scores": {
+            "behavior_score": round(behavior_score, 4),
+            "dialogue_style_score": round(max(0.0, dialogue_style_score), 4),
+            "relationship_score": round(relationship_score, 4),
+            "voice_metadata_score": round(voice_metadata_score, 4),
+            "reference_coverage_score": round(reference_coverage_score, 4),
+            "template_penalty": round(template_penalty, 4),
+            "lipsync_backend_score": round(lipsync_backend_score, 4),
+            "scene_structure_score": round(scene_structure_score, 4),
+        },
+        "failed_reasons": failed_reasons,
+        "regeneration_hints": hints,
+        "regeneration_scope": scope,
+    }
+
+
 def scene_content_quality_checks(package_payload: dict[str, Any]) -> dict[str, Any]:
     scenes = package_payload.get("scenes", []) if isinstance(package_payload.get("scenes", []), list) else []
     warnings: list[str] = []
@@ -234,10 +455,13 @@ def scene_content_quality_checks(package_payload: dict[str, Any]) -> dict[str, A
     }
     total_lines = 0
     total_template_lines = 0
+    realism_rows: list[dict[str, Any]] = []
     if not package_payload:
         return {
             "scene_count": 0,
             "scene_rows": [],
+            "realism_rows": [],
+            "average_realism_score": 0.0,
             "warnings": ["Production package content could not be inspected."],
             **counters,
             "generic_template_line_ratio": 0.0,
@@ -268,6 +492,7 @@ def scene_content_quality_checks(package_payload: dict[str, Any]) -> dict[str, A
             counters["missing_relationship_context_scene_count"] += 1
 
         dialogue_sources = scene.get("dialogue_sources", []) if isinstance(scene.get("dialogue_sources", []), list) else []
+        dialogue_texts = scene_dialogue_texts(scene)
         scene_template_lines = sum(
             1
             for item in dialogue_sources
@@ -275,34 +500,54 @@ def scene_content_quality_checks(package_payload: dict[str, Any]) -> dict[str, A
         )
         total_template_lines += scene_template_lines
         total_lines += len(dialogue_sources)
-        template_ratio = safe_ratio(scene_template_lines, len(dialogue_sources))
+        template_ratio = max(safe_ratio(scene_template_lines, len(dialogue_sources)), generic_dialogue_ratio(dialogue_texts, dialogue_sources))
         if dialogue_sources and template_ratio > 0.5:
             counters["template_heavy_scene_count"] += 1
 
         voice_clone = scene.get("voice_clone", {}) if isinstance(scene.get("voice_clone", {}), dict) else {}
         voice_lines = voice_clone.get("lines", []) if isinstance(voice_clone.get("lines", []), list) else []
+        scene_missing_voice_metadata = 0
+        scene_missing_reference_data = 0
         for line in voice_lines:
             if not isinstance(line, dict):
                 counters["missing_voice_metadata_line_count"] += 1
+                scene_missing_voice_metadata += 1
                 continue
             missing_metadata = (
                 not str(line.get("emotion", "") or "").strip()
                 or not str(line.get("pace", "") or "").strip()
                 or safe_float(line.get("target_duration_seconds", 0.0), 0.0) <= 0.0
+                or not str(line.get("delivery_notes", "") or "").strip()
                 or not isinstance(line.get("voice_reference_priority", []), list)
             )
             if missing_metadata:
                 counters["missing_voice_metadata_line_count"] += 1
+                scene_missing_voice_metadata += 1
             if not line.get("reference_audio_candidates"):
                 counters["missing_reference_data_line_count"] += 1
+                scene_missing_reference_data += 1
         voice_outputs = voice_clone.get("target_outputs", {}) if isinstance(voice_clone.get("target_outputs", {}), dict) else {}
-        if bool(voice_clone.get("required", False)) and not artifact_path_exists(voice_outputs.get("scene_dialogue_audio", "")):
+        missing_voice_output = bool(voice_clone.get("required", False)) and not artifact_path_exists(voice_outputs.get("scene_dialogue_audio", ""))
+        if missing_voice_output:
             counters["missing_voice_clone_output_scene_count"] += 1
 
         lip_sync = scene.get("lip_sync", {}) if isinstance(scene.get("lip_sync", {}), dict) else {}
         lipsync_outputs = lip_sync.get("target_outputs", {}) if isinstance(lip_sync.get("target_outputs", {}), dict) else {}
-        if bool(lip_sync.get("required", False)) and not artifact_path_exists(lipsync_outputs.get("lipsync_video", "")):
+        missing_lipsync_output = bool(lip_sync.get("required", False)) and not artifact_path_exists(lipsync_outputs.get("lipsync_video", ""))
+        if missing_lipsync_output:
             counters["missing_lipsync_output_scene_count"] += 1
+        realism_row = scene_realism_row(
+            scene,
+            has_behavior=has_behavior,
+            has_conflict_or_purpose=has_conflict_or_purpose,
+            has_relationship_context=bool(relationship_context),
+            template_ratio=template_ratio,
+            missing_voice_metadata=scene_missing_voice_metadata,
+            missing_reference_data=scene_missing_reference_data,
+            missing_voice_output=missing_voice_output,
+            missing_lipsync_output=missing_lipsync_output,
+        )
+        realism_rows.append(realism_row)
         rows.append(
             {
                 "scene_id": scene_id,
@@ -312,6 +557,9 @@ def scene_content_quality_checks(package_payload: dict[str, Any]) -> dict[str, A
                 "generic_template_line_ratio": template_ratio,
                 "voice_line_count": len(voice_lines),
                 "lipsync_backend": str(lip_sync.get("selected_backend", "") or "").strip(),
+                "realism_score": realism_row["realism_score"],
+                "failed_reasons": realism_row["failed_reasons"],
+                "regeneration_hints": realism_row["regeneration_hints"],
             }
         )
 
@@ -331,9 +579,17 @@ def scene_content_quality_checks(package_payload: dict[str, Any]) -> dict[str, A
         warnings.append(f"{counters['missing_lipsync_output_scene_count']} scene(s) are missing lip-sync output video.")
     if counters["template_heavy_scene_count"]:
         warnings.append(f"{counters['template_heavy_scene_count']} scene(s) are still too template-heavy.")
+    weak_realism = [row for row in realism_rows if safe_float(row.get("realism_score", 1.0), 1.0) < 0.72]
+    if weak_realism:
+        warnings.append(f"{len(weak_realism)} scene(s) have weak realism scores below 72%.")
     return {
         "scene_count": len(rows),
         "scene_rows": rows,
+        "realism_rows": realism_rows,
+        "average_realism_score": round(
+            sum(safe_float(row.get("realism_score", 0.0), 0.0) for row in realism_rows) / max(1, len(realism_rows)),
+            4,
+        ),
         "warnings": warnings,
         **counters,
         "generic_template_line_ratio": safe_ratio(total_template_lines, total_lines),
@@ -413,6 +669,9 @@ def main() -> None:
         raise SystemExit(1)
 
     scene_quality_rows = load_scene_quality_rows(artifacts)
+    production_package_payload = load_production_package(artifacts)
+    content_checks = scene_content_quality_checks(production_package_payload)
+    scene_quality_rows = merge_realism_into_scene_quality_rows(scene_quality_rows, content_checks)
     release_result = release_quality_gate(artifacts, effective_cfg)
     release_cfg = release_mode_config(effective_cfg)
     regeneration_queue = queue_scenes_for_regeneration(
@@ -422,8 +681,6 @@ def main() -> None:
         max_regeneration_batch=int(release_cfg.get("max_regeneration_batch", 8) or 8),
         max_regeneration_retries=int(release_cfg.get("max_regeneration_retries", 3) or 3),
     )
-    production_package_payload = load_production_package(artifacts)
-    content_checks = scene_content_quality_checks(production_package_payload)
     warnings = build_warnings(artifacts, content_checks)
     strict_fail = bool(strict_warnings_enabled(effective_cfg, args) and warnings)
 

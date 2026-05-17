@@ -86,6 +86,7 @@ def storyboard_episode_request(episode_id: str, shotlist_payload: dict) -> dict:
                 "comedy_pattern": scene.get("comedy_pattern", ""),
                 "emotional_arc": scene.get("emotional_arc", ""),
                 "callback_targets": scene.get("callback_targets", []) if isinstance(scene.get("callback_targets", []), list) else [],
+                "writer_room_plan": scene.get("writer_room_plan", {}) if isinstance(scene.get("writer_room_plan", {}), dict) else {},
                 "dialogue_voice_metadata": scene.get("dialogue_voice_metadata", []) if isinstance(scene.get("dialogue_voice_metadata", []), list) else [],
                 "location": scene.get("location", ""),
                 "mood": scene.get("mood", ""),

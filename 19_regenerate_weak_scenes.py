@@ -194,6 +194,49 @@ def quality_gate_override_args(
     return gate_args
 
 
+def regeneration_scope_from_entry(entry: dict[str, Any]) -> str:
+    explicit = clean_text(entry.get("regeneration_scope", ""))
+    if explicit:
+        return explicit
+    hints = entry.get("regeneration_hints", {}) if isinstance(entry.get("regeneration_hints"), dict) else {}
+    if hints.get("rerun_voice_clone") or hints.get("rerun_lipsync") or hints.get("collect_missing_references"):
+        return "voice_lipsync"
+    if hints.get("reduce_template_lines") or hints.get("increase_speaker_specific_phrases") or hints.get("use_relationship_conflict"):
+        return "story_dialogue"
+    return "scene_rerender"
+
+
+def regeneration_sections_for_scope(scope: str) -> list[str]:
+    if scope == "voice_lipsync":
+        return ["voice_clone", "lip_sync"]
+    if scope == "story_dialogue":
+        return ["story", "dialogue", "voice_metadata", "storyboard", "render"]
+    if scope == "references":
+        return ["voice_references", "character_references"]
+    return ["storyboard", "render", "quality_gate"]
+
+
+def regeneration_scope_counts(queue: list[dict[str, Any]]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for entry in queue:
+        if not isinstance(entry, dict):
+            continue
+        scope = regeneration_scope_from_entry(entry)
+        counts[scope] = counts.get(scope, 0) + 1
+    return counts
+
+
+def rerun_strategy_for_queue(queue: list[dict[str, Any]], scene_ids: list[str]) -> str:
+    if not scene_ids:
+        return "full_episode_pipeline"
+    scopes = [regeneration_scope_from_entry(entry) for entry in queue if isinstance(entry, dict)]
+    if scopes and all(scope == "voice_lipsync" for scope in scopes):
+        return "voice_lipsync_only"
+    if any(scope == "story_dialogue" for scope in scopes):
+        return "story_dialogue_refresh"
+    return "scene_selective"
+
+
 def build_rerun_plan(
     episode_id: str,
     *,
@@ -204,6 +247,7 @@ def build_rerun_plan(
     max_regeneration_batch: int | None = None,
     max_regeneration_retries: int | None = None,
     scene_ids: list[str] | None = None,
+    regeneration_queue: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     gate_args = ["--episode-id", episode_id, "--no-auto-retry"]
     gate_args.extend(
@@ -215,29 +259,56 @@ def build_rerun_plan(
             strict=strict,
         )
     )
+    queue = regeneration_queue if isinstance(regeneration_queue, list) else []
+    strategy = rerun_strategy_for_queue(queue, scene_ids or [])
+    plan: list[dict[str, Any]] = []
+    if strategy == "story_dialogue_refresh":
+        plan.extend(
+            [
+                {
+                    "script": "14_generate_episode.py",
+                    "args": ["--episode-id", episode_id],
+                    "note": "Story/dialogue realism failed; refresh the behavior-guided shotlist before visual/audio rebuild.",
+                },
+                {
+                    "script": "15_generate_storyboard_assets.py",
+                    "args": ["--episode-id", episode_id, "--force"],
+                    "note": "Rebuild storyboard asset requests from the refreshed shotlist.",
+                },
+            ]
+        )
     storyboard_args = ["--episode-id", episode_id, "--force"]
     if scene_ids:
         storyboard_args.extend(["--scene-ids", *scene_ids])
         storyboard_note = f"Scene-selective storyboard backend rerun for {len(scene_ids)} scene(s)."
     else:
         storyboard_note = "Full episode storyboard backend rerun."
-    plan: list[dict[str, Any]] = [
-        {
-            "script": "16_run_storyboard_backend.py",
-            "args": storyboard_args,
-            "note": storyboard_note,
-        },
-        {
-            "script": "17_render_episode.py",
-            "args": ["--episode-id", episode_id, "--force"],
-            "note": "Render retries rebuild the full episode package and master.",
-        },
-        {
-            "script": "18_quality_gate.py",
-            "args": gate_args,
-            "note": "Recompute release status and the weak-scene queue after rerender.",
-        },
-    ]
+    if strategy != "voice_lipsync_only":
+        plan.append(
+            {
+                "script": "16_run_storyboard_backend.py",
+                "args": storyboard_args,
+                "note": storyboard_note,
+            }
+        )
+    plan.extend(
+        [
+            {
+                "script": "17_render_episode.py",
+                "args": ["--episode-id", episode_id, "--force"],
+                "note": (
+                    "Voice/lip-sync retry only; preserve story where possible."
+                    if strategy == "voice_lipsync_only"
+                    else "Render retries rebuild the full episode package and master."
+                ),
+            },
+            {
+                "script": "18_quality_gate.py",
+                "args": gate_args,
+                "note": "Recompute release status and the weak-scene queue after rerender.",
+            },
+        ]
+    )
     if update_bible:
         plan.append(
             {
@@ -251,8 +322,15 @@ def build_rerun_plan(
 
 def build_regeneration_reason(queue_entry: dict[str, Any]) -> str:
     weaknesses = queue_entry.get("weaknesses", []) if isinstance(queue_entry.get("weaknesses"), list) else []
+    failed_reasons = queue_entry.get("failed_reasons", []) if isinstance(queue_entry.get("failed_reasons"), list) else []
+    hints = queue_entry.get("regeneration_hints", {}) if isinstance(queue_entry.get("regeneration_hints"), dict) else {}
     weakness_text = ", ".join(clean_text(item) for item in weaknesses if clean_text(item))
+    failed_text = ", ".join(clean_text(item) for item in failed_reasons if clean_text(item))
+    hint_text = ", ".join(key for key, enabled in hints.items() if enabled)
     quality_percent = int(queue_entry.get("quality_percent", 0) or 0)
+    parts = [part for part in (weakness_text, failed_text, f"hints: {hint_text}" if hint_text else "") if part]
+    if parts:
+        return f"Weak scene ({quality_percent}%): {'; '.join(parts)}"
     if weakness_text:
         return f"Weak scene ({quality_percent}%): {weakness_text}"
     return f"Weak scene ({quality_percent}%) fell below the regeneration watch threshold."
@@ -279,10 +357,18 @@ def apply_regeneration_request_to_scene_package(
     quality["last_regeneration_reason"] = build_regeneration_reason(queue_entry)
     quality["last_regeneration_request_source"] = "19_regenerate_weak_scenes.py"
     quality["last_regeneration_queue_manifest"] = str(manifest_path)
-    quality["last_regeneration_apply_mode"] = "full_episode_rerender"
+    regeneration_scope = regeneration_scope_from_entry(queue_entry)
+    regeneration_hints = queue_entry.get("regeneration_hints", {}) if isinstance(queue_entry.get("regeneration_hints"), dict) else {}
+    failed_reasons = queue_entry.get("failed_reasons", []) if isinstance(queue_entry.get("failed_reasons"), list) else []
+    quality["last_regeneration_apply_mode"] = regeneration_scope
+    quality["last_regeneration_hints"] = regeneration_hints
+    quality["last_regeneration_failed_reasons"] = failed_reasons
     quality["last_regeneration_queue_entry"] = dict(queue_entry)
     quality["queued_for_regeneration"] = True
     updated["quality_assessment"] = quality
+    updated["regeneration_scope"] = regeneration_scope
+    updated["regeneration_hints"] = regeneration_hints
+    updated["regeneration_requested_sections"] = regeneration_sections_for_scope(regeneration_scope)
     return updated
 
 
@@ -437,12 +523,14 @@ def build_queue_manifest(
         for entry in queue
         if isinstance(entry, dict) and clean_text(entry.get("scene_id", ""))
     ]
-    rerun_scope = "scene_selective" if scene_ids else "full_episode_pipeline"
-    rerun_reason = (
-        f"Scene-selective backend rerun for {len(scene_ids)} flagged scene(s)."
-        if scene_ids
-        else "No flagged scenes; full episode pipeline rerun."
-    )
+    scope_counts = regeneration_scope_counts(queue)
+    rerun_scope = rerun_strategy_for_queue(queue, scene_ids)
+    rerun_reason = {
+        "voice_lipsync_only": f"Voice/lip-sync retry for {len(scene_ids)} flagged scene(s).",
+        "story_dialogue_refresh": f"Story/dialogue refresh for {len(scene_ids)} flagged scene(s).",
+        "scene_selective": f"Scene-selective backend rerun for {len(scene_ids)} flagged scene(s).",
+        "full_episode_pipeline": "No flagged scenes; full episode pipeline rerun.",
+    }.get(rerun_scope, "Full episode pipeline rerun.")
     return {
         "episode_id": episode_id,
         "display_title": clean_text(artifacts.get("display_title", "")),
@@ -455,6 +543,7 @@ def build_queue_manifest(
         "warnings": list(report.get("warnings", []) or []),
         "regeneration_queue_count": len(queue),
         "regeneration_queue_scene_ids": scene_ids,
+        "regeneration_scope_counts": scope_counts,
         "quality_gate_overrides": {
             "min_quality": min_quality,
             "max_weak_scenes": max_weak_scenes,
@@ -474,6 +563,7 @@ def build_queue_manifest(
             max_regeneration_batch=max_regeneration_batch,
             max_regeneration_retries=max_regeneration_retries,
             scene_ids=scene_ids if scene_ids else None,
+            regeneration_queue=queue,
         ),
         "regeneration_queue": queue,
         "manifest_path": str(manifest_path),
