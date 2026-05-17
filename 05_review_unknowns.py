@@ -14,14 +14,22 @@ import ctypes
 import html
 import math
 import os
+import re
+import shlex
 import shutil
 import subprocess
 import tempfile
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+from collections import Counter
 from pathlib import Path
 
 from support_scripts.pipeline_common import (
     add_shared_worker_arguments,
     canonical_person_name,
+    character_appearance_embedding,
     cosine_similarity,
     current_os,
     display_person_name,
@@ -70,11 +78,12 @@ EXAMPLE_FACE_HINTS = [
     "Hudson",
     "Triple G",
     "noface = ignore",
-    "statist = minor character",
+    "statist = Statist/background role",
 ]
 REVIEW_SKIP_TOKEN = "__skip__"
 REVIEW_QUIT_TOKEN = "__quit__"
 _TK_PREVIEW_ROOT = None
+FACE_CLUSTER_ID_PATTERN = re.compile(r"^face_[0-9a-z]+$", re.IGNORECASE)
 
 
 def parse_args() -> argparse.Namespace:
@@ -82,6 +91,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--list-faces", action="store_true", help="Show already named characters together with preview paths.")
     parser.add_argument("--created", action="store_true", help="Show only the names of already created recognized characters.")
     parser.add_argument("--show-queue", action="store_true", help="Show the open review_queue.json instead of the face review.")
+    parser.add_argument("--queue-limit", type=int, default=50, help="Maximum review queue rows printed by --show-queue. Use 0 for all.")
+    parser.add_argument("--edit-names", action="store_true", help="Open a Tk name editor for existing face and speaker names.")
     parser.add_argument("--assign-face", help="Face cluster ID such as face_001.")
     parser.add_argument("--name", help="Name for --assign-face, for example 'Babe Carano'.")
     parser.add_argument("--priority", action="store_true", help="Mark --assign-face or --rename-face as a prioritized main character.")
@@ -127,6 +138,26 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--statist-max-scenes", type=int, default=None, help="Maximum scenes for automatic 'statist' candidates.")
     parser.add_argument("--statist-max-detections", type=int, default=None, help="Maximum detections for automatic 'statist' candidates.")
     parser.add_argument("--statist-max-samples", type=int, default=None, help="Maximum preview samples for automatic 'statist' candidates.")
+    parser.add_argument(
+        "--no-internet-lookup",
+        action="store_true",
+        help="Disable public metadata/name lookup before manual review. Use --offline to skip every online lookup.",
+    )
+    parser.add_argument(
+        "--offline",
+        action="store_true",
+        help="Run the review fully offline. Public metadata and online face lookup are skipped and can be refreshed later.",
+    )
+    parser.add_argument(
+        "--refresh-internet-lookup",
+        action="store_true",
+        help="Ignore cached public metadata lookup results for this run.",
+    )
+    parser.add_argument(
+        "--deep-online-face-lookup",
+        action="store_true",
+        help="Compatibility flag. Deep built-in public-image face lookup is now enabled by default unless --offline is used.",
+    )
     add_shared_worker_arguments(parser)
     return parser.parse_args()
 
@@ -856,7 +887,7 @@ def show_preview_assignment_window(
 
     hint = tk.Label(
         window,
-        text="Type a name here, click a quick-assign button, or enter it in the terminal. Enter confirms immediately. 'noface' ignores the cluster, 'statist' marks a minor character, and '!Name' in the terminal marks a main character right away.",
+        text="Type a name here, click a quick-assign button, or enter it in the terminal. Enter confirms immediately. 'noface' ignores the cluster, 'statist' marks it as a background/statist role, and '!Name' in the terminal marks a main character right away.",
         fg="white",
         bg="#1f2937",
         wraplength=900,
@@ -904,7 +935,7 @@ def show_preview_assignment_window(
     button_row = tk.Frame(window, bg="#1f2937")
     button_row.pack(padx=12, pady=(0, 12), fill="x")
     tk.Button(button_row, text="Apply", command=lambda: finish(entry_var.get(), priority_var.get())).pack(side="left", padx=(0, 8))
-    tk.Button(button_row, text="Minor", command=lambda: finish("statist", False)).pack(side="left", padx=(0, 8))
+    tk.Button(button_row, text="Statist", command=lambda: finish("statist", False)).pack(side="left", padx=(0, 8))
     tk.Button(button_row, text="NoFace", command=lambda: finish("noface", False)).pack(side="left", padx=(0, 8))
     tk.Button(button_row, text="Terminal", command=lambda: finish(None)).pack(side="left", padx=(0, 8))
     tk.Button(button_row, text="Quit", command=lambda: finish(REVIEW_QUIT_TOKEN, False)).pack(side="right")
@@ -948,7 +979,7 @@ def prompt_terminal_assignment(char_map: dict) -> tuple[str, bool | None]:
     quick_names = [name for name, _priority, _count in known_identity_button_options(char_map, limit=8)]
     if quick_names:
         print(f"Known characters: {' | '.join(quick_names)}")
-    print("Enter a name. 'noface' ignores the match, 'statist' saves a minor character, '!Name' prioritizes as a main character, and 'q' quits the review.")
+    print("Enter a name. 'noface' ignores the match, 'statist' saves a background/statist role, '!Name' prioritizes as a main character, and 'q' quits the review.")
     raw = input("> ").strip()
     name, explicit_priority = parse_assignment_input(raw)
     if not name:
@@ -1005,7 +1036,7 @@ def suggested_face_action_hint(payload: dict) -> str:
     if role == "statist-kandidat":
         return "Hint: consider 'statist' or 'noface'"
     if role == "statist":
-        return "Hint: already saved as a minor character"
+        return "Hint: already saved as Statist/background role"
     if role == "ignorieren":
         return "Hint: already ignored"
     return "Hint: use a real name or consider 'statist'"
@@ -1186,27 +1217,94 @@ def hydrate_face_clusters_from_previews(cfg: dict, char_map: dict) -> int:
         return 0
 
     added = 0
-    allow_new_clusters = not bool(char_map.get("clusters"))
+    clusters = char_map.setdefault("clusters", {})
+    if clusters:
+        for cluster_id, payload in sorted(clusters.items(), key=cluster_sort_key):
+            if not str(cluster_id).startswith("face_"):
+                continue
+            preview_dir = previews_root / str(cluster_id)
+            if not preview_dir.is_dir():
+                continue
+            payload.setdefault("preview_dir", portable_project_path(preview_dir))
+            if not payload.get("samples"):
+                try:
+                    payload["samples"] = max(1, sum(1 for _path in preview_dir.glob("*_crop.jpg")))
+                except Exception:
+                    payload["samples"] = 1
+        for cluster_id in sorted(referenced_face_cluster_ids(cfg) - set(clusters)):
+            preview_dir = previews_root / str(cluster_id)
+            if not preview_dir.is_dir():
+                continue
+            payload = clusters.setdefault(cluster_id, {})
+            payload["name"] = cluster_id
+            payload["preview_dir"] = portable_project_path(preview_dir)
+            # Avoid a per-cluster glob over NAS here; the real preview files are loaded lazily during review.
+            payload["samples"] = int(payload.get("samples", 0) or 1)
+            payload["auto_named"] = True
+            payload["ignored"] = False
+            payload["aliases"] = []
+            added += 1
+        return added
+
     for preview_dir in sorted(previews_root.glob("face_*")):
         if not preview_dir.is_dir():
             continue
         cluster_id = preview_dir.name
-        payload = char_map.setdefault("clusters", {}).setdefault(cluster_id, {})
-        if payload:
-            payload.setdefault("preview_dir", portable_project_path(preview_dir))
-            payload.setdefault("samples", max(1, len(list(preview_dir.glob("*_crop.jpg")))))
-            continue
-        if not allow_new_clusters:
-            char_map["clusters"].pop(cluster_id, None)
-            continue
+        payload = clusters.setdefault(cluster_id, {})
         payload["name"] = cluster_id
         payload["preview_dir"] = portable_project_path(preview_dir)
-        payload["samples"] = max(1, len(list(preview_dir.glob("*_crop.jpg"))))
+        payload["samples"] = preview_sample_count(preview_dir)
         payload["auto_named"] = True
         payload["ignored"] = False
         payload["aliases"] = []
         added += 1
     return added
+
+
+def preview_sample_count(preview_dir: Path) -> int:
+    try:
+        return max(1, sum(1 for _path in preview_dir.glob("*_crop.jpg")))
+    except Exception:
+        return 1
+
+
+def collect_face_cluster_ids_from_value(value: object) -> set[str]:
+    if isinstance(value, str):
+        cleaned = value.strip()
+        return {cleaned} if FACE_CLUSTER_ID_PATTERN.match(cleaned) else set()
+    if isinstance(value, list):
+        ids: set[str] = set()
+        for item in value:
+            ids.update(collect_face_cluster_ids_from_value(item))
+        return ids
+    return set()
+
+
+def referenced_face_cluster_ids(cfg: dict) -> set[str]:
+    ids: set[str] = set()
+    review_queue_path = resolve_project_path(cfg.get("paths", {}).get("review_queue", "characters/review/review_queue.json"))
+    queue = read_json(review_queue_path, {"items": []})
+    queue_items = queue.get("items", []) if isinstance(queue, dict) else []
+    for item in queue_items:
+        if not isinstance(item, dict):
+            continue
+        ids.update(collect_face_cluster_ids_from_value(item.get("visible_face_clusters", [])))
+        ids.update(collect_face_cluster_ids_from_value(item.get("visible_character_names", [])))
+        ids.update(collect_face_cluster_ids_from_value(item.get("speaker_face_cluster", "")))
+    if ids:
+        return ids
+
+    linked_root = resolve_project_path(cfg.get("paths", {}).get("linked_segments", "characters/linked_segments"))
+    if not linked_root.exists():
+        return ids
+    for linked_file in sorted(linked_root.glob("*_linked_segments.json")):
+        for row in read_json(linked_file, []):
+            if not isinstance(row, dict):
+                continue
+            ids.update(collect_face_cluster_ids_from_value(row.get("visible_face_clusters", [])))
+            ids.update(collect_face_cluster_ids_from_value(row.get("visible_character_names", [])))
+            ids.update(collect_face_cluster_ids_from_value(row.get("speaker_face_cluster", "")))
+    return ids
 
 
 def known_face_reference_clusters(char_map: dict) -> dict[str, dict]:
@@ -1337,6 +1435,12 @@ def rebuild_character_map_identities(char_map: dict) -> None:
         normalized_alias = normalize_alias_name(identity_name)
         if normalized_alias and not background_role:
             aliases[normalized_alias] = primary_cluster
+        if not background_role:
+            for _cluster_id, payload in clusters:
+                for alias in payload.get("aliases", []) or []:
+                    normalized_payload_alias = normalize_alias_name(str(alias))
+                    if normalized_payload_alias and not is_ignored_face_name(normalized_payload_alias):
+                        aliases[normalized_payload_alias] = primary_cluster
         for cluster_id, payload in clusters:
             payload["identity_name"] = identity_name
             payload["identity_primary_cluster"] = primary_cluster
@@ -1448,12 +1552,13 @@ def known_face_reference_identities(char_map: dict, cfg: dict | None = None) -> 
     return identities
 
 
-def unknown_face_candidates(char_map: dict) -> list[tuple[str, dict]]:
+def unknown_face_candidates(char_map: dict, include_background: bool = False) -> list[tuple[str, dict]]:
     candidates: list[tuple[str, dict]] = []
     for cluster_id, payload in sorted(char_map.get("clusters", {}).items(), key=cluster_sort_key):
         if is_ignored_face_payload(payload):
             continue
-        if not looks_auto_named(str(payload.get("name", cluster_id))):
+        name = str(payload.get("name", cluster_id))
+        if not looks_auto_named(name) and not (include_background and is_background_person_name(name)):
             continue
         if not payload.get("embedding"):
             continue
@@ -1556,7 +1661,7 @@ def known_face_match_config(cfg: dict) -> dict[str, float | int]:
     }
 
 
-def plan_known_face_matches(cfg: dict, char_map: dict) -> dict[str, dict]:
+def plan_known_face_matches(cfg: dict, char_map: dict, include_background: bool = False) -> dict[str, dict]:
     identities = known_face_reference_identities(char_map, cfg)
     if not identities:
         return {}
@@ -1567,7 +1672,7 @@ def plan_known_face_matches(cfg: dict, char_map: dict) -> dict[str, dict]:
     min_consensus = int(match_cfg.get("min_consensus", 2))
     strong_match_threshold = float(match_cfg.get("strong_match_threshold", 0.84))
     matches: dict[str, dict] = {}
-    for cluster_id, payload in unknown_face_candidates(char_map):
+    for cluster_id, payload in unknown_face_candidates(char_map, include_background=include_background):
         embedding = payload.get("embedding") or []
         ranked = rank_known_face_matches(embedding, identities, cfg)
         if not ranked:
@@ -1740,8 +1845,10 @@ def remap_linked_segments_face_clusters(cfg: dict, replacements: dict[str, str])
     return changed_files
 
 
-def auto_match_known_faces(cfg: dict, char_map: dict, voice_map: dict) -> dict[str, object]:
-    planned_matches = plan_known_face_matches(cfg, char_map)
+def auto_match_known_faces(cfg: dict, char_map: dict, voice_map: dict, include_background: bool | None = None) -> dict[str, object]:
+    if include_background is None:
+        include_background = bool(internet_lookup_config(cfg).get("match_background_faces", True))
+    planned_matches = plan_known_face_matches(cfg, char_map, include_background=include_background)
     if not planned_matches:
         return {"matched": 0, "replacements": {}, "linked_files": 0, "voice_links": 0}
 
@@ -1807,11 +1914,31 @@ def ensure_voice_clusters_from_project_speakers(cfg: dict, voice_map: dict) -> i
 
 
 def auto_link_speakers_from_single_visible_faces(cfg: dict, char_map: dict, voice_map: dict) -> dict[str, int]:
-    speaker_votes: dict[str, dict[str, int]] = {}
+    face_cfg = cfg.get("character_detection", {}) if isinstance(cfg.get("character_detection"), dict) else {}
+    direct_weight = float(face_cfg.get("speaker_face_cluster_vote_weight", 4.0) or 4.0)
+    single_visible_weight = float(face_cfg.get("speaker_single_visible_vote_weight", 1.0) or 1.0)
+    min_votes = float(face_cfg.get("speaker_face_link_min_votes", 3.0) or 3.0)
+    min_share = float(face_cfg.get("speaker_face_link_min_share", 0.70) or 0.70)
+    min_margin = float(face_cfg.get("speaker_face_link_min_margin", 2.0) or 2.0)
+    speaker_votes: dict[str, dict[str, float]] = {}
+    direct_counts: dict[str, dict[str, int]] = {}
     for row in linked_segment_rows(cfg):
         speaker_cluster = str(row.get("speaker_cluster", "")).strip()
         if not speaker_cluster:
             continue
+        if speaker_cluster == "speaker_unknown":
+            continue
+
+        speaker_face_cluster = str(row.get("speaker_face_cluster", "") or "").strip()
+        if speaker_face_cluster:
+            payload = char_map.get("clusters", {}).get(speaker_face_cluster, {})
+            name = str(payload.get("name", speaker_face_cluster))
+            if not is_ignored_face_payload(payload) and has_manual_person_name(name) and not is_background_person_name(name):
+                speaker_votes.setdefault(speaker_cluster, {})
+                direct_counts.setdefault(speaker_cluster, {})
+                speaker_votes[speaker_cluster][speaker_face_cluster] = speaker_votes[speaker_cluster].get(speaker_face_cluster, 0.0) + direct_weight
+                direct_counts[speaker_cluster][speaker_face_cluster] = direct_counts[speaker_cluster].get(speaker_face_cluster, 0) + 1
+
         visible_clusters = []
         for cluster_id in row.get("visible_face_clusters", []) or []:
             payload = char_map.get("clusters", {}).get(cluster_id, {})
@@ -1824,7 +1951,7 @@ def auto_link_speakers_from_single_visible_faces(cfg: dict, char_map: dict, voic
             continue
         speaker_votes.setdefault(speaker_cluster, {})
         only_cluster = visible_clusters[0]
-        speaker_votes[speaker_cluster][only_cluster] = speaker_votes[speaker_cluster].get(only_cluster, 0) + 1
+        speaker_votes[speaker_cluster][only_cluster] = speaker_votes[speaker_cluster].get(only_cluster, 0.0) + single_visible_weight
 
     linked = 0
     for speaker_cluster, votes in speaker_votes.items():
@@ -1832,10 +1959,10 @@ def auto_link_speakers_from_single_visible_faces(cfg: dict, char_map: dict, voic
         if not ranked:
             continue
         best_cluster, best_votes = ranked[0]
-        second_votes = ranked[1][1] if len(ranked) > 1 else 0
+        second_votes = float(ranked[1][1]) if len(ranked) > 1 else 0.0
         total_votes = sum(votes.values())
-        vote_share = (best_votes / total_votes) if total_votes else 0.0
-        if best_votes < 3 or vote_share < 0.70 or (best_votes - second_votes) < 2:
+        vote_share = (float(best_votes) / total_votes) if total_votes else 0.0
+        if float(best_votes) < min_votes or vote_share < min_share or (float(best_votes) - second_votes) < min_margin:
             continue
         face_payload = char_map.get("clusters", {}).get(best_cluster, {})
         face_name = str(face_payload.get("name", "")).strip()
@@ -1853,6 +1980,13 @@ def auto_link_speakers_from_single_visible_faces(cfg: dict, char_map: dict, voic
         if speaker_payload.get("auto_named", True) or looks_auto_named(previous_name):
             speaker_payload["name"] = inferred_name
             speaker_payload["auto_named"] = True
+        speaker_payload["speaker_face_link_evidence"] = {
+            "best_votes": round(float(best_votes), 3),
+            "total_votes": round(float(total_votes), 3),
+            "share": round(vote_share, 4),
+            "margin": round(float(best_votes) - second_votes, 3),
+            "direct_face_cluster_rows": int(direct_counts.get(speaker_cluster, {}).get(best_cluster, 0)),
+        }
         linked += 1
     return {"matched": linked}
 
@@ -1879,6 +2013,1068 @@ def auto_learn_remaining_reviews(cfg: dict, char_map: dict, voice_map: dict, max
         "matched_faces": total_face_matches,
         "matched_speakers": total_voice_links,
         "linked_files": total_linked_files,
+    }
+
+
+def internet_lookup_config(cfg: dict) -> dict[str, object]:
+    face_cfg = cfg.get("character_detection", {}) if isinstance(cfg.get("character_detection"), dict) else {}
+    face_lookup_url_env = str(face_cfg.get("internet_face_lookup_url_env", "SERIES_FACE_LOOKUP_URL"))
+    face_lookup_token_env = str(face_cfg.get("internet_face_lookup_token_env", "SERIES_FACE_LOOKUP_TOKEN"))
+    return {
+        "enabled": bool(face_cfg.get("internet_name_lookup", True)),
+        "timeout_seconds": max(1.0, float(face_cfg.get("internet_name_lookup_timeout_seconds", 2.0) or 2.0)),
+        "cache_days": max(0.0, float(face_cfg.get("internet_name_lookup_cache_days", 30.0) or 30.0)),
+        "min_confidence": max(
+            0.0,
+            min(1.0, float(face_cfg.get("internet_name_lookup_min_confidence", 0.95) or 0.95)),
+        ),
+        "max_updates": max(0, int(face_cfg.get("internet_name_lookup_max_updates", 50) or 50)),
+        "languages": face_cfg.get("internet_name_lookup_languages", ["en", "de"]),
+        "context_terms": face_cfg.get("internet_name_lookup_context_terms", []),
+        "match_background_faces": bool(face_cfg.get("review_match_background_faces", True)),
+        "face_lookup_enabled": bool(face_cfg.get("internet_face_lookup", True)),
+        "face_lookup_command": face_cfg.get("internet_face_lookup_command", ""),
+        "face_lookup_env": str(face_cfg.get("internet_face_lookup_env", "SERIES_FACE_LOOKUP_COMMAND")),
+        "face_lookup_url": str(face_cfg.get("internet_face_lookup_url", "") or os.environ.get(face_lookup_url_env, "")),
+        "face_lookup_url_env": face_lookup_url_env,
+        "face_lookup_token_env": face_lookup_token_env,
+        "face_lookup_builtin_public_images": bool(face_cfg.get("internet_face_lookup_builtin_public_images", True)),
+        "face_lookup_public_image_min_similarity": max(
+            0.0,
+            min(1.0, float(face_cfg.get("internet_face_lookup_public_image_min_similarity", 0.72) or 0.72)),
+        ),
+        "face_lookup_public_image_min_margin": max(
+            0.0,
+            min(1.0, float(face_cfg.get("internet_face_lookup_public_image_min_margin", 0.05) or 0.05)),
+        ),
+        "face_lookup_public_image_max_names": max(0, int(face_cfg.get("internet_face_lookup_public_image_max_names", 24) or 24)),
+        "face_lookup_public_image_max_images_per_name": max(
+            1,
+            int(face_cfg.get("internet_face_lookup_public_image_max_images_per_name", 2) or 2),
+        ),
+        "face_lookup_public_image_max_seconds": max(
+            1.0,
+            float(face_cfg.get("internet_face_lookup_public_image_max_seconds", 30.0) or 30.0),
+        ),
+        "face_lookup_public_image_allow_slow_torch": bool(
+            face_cfg.get("internet_face_lookup_public_image_allow_slow_torch_import", True)
+        ),
+        "face_lookup_public_image_cache": str(
+            face_cfg.get("internet_face_lookup_public_image_cache", "runtime/internet_face_lookup_public_images") or
+            "runtime/internet_face_lookup_public_images"
+        ),
+        "face_lookup_min_confidence": max(
+            0.0,
+            min(1.0, float(face_cfg.get("internet_face_lookup_min_confidence", 0.95) or 0.95)),
+        ),
+        "face_lookup_max_clusters": max(0, int(face_cfg.get("internet_face_lookup_max_clusters", 80) or 80)),
+        "face_lookup_max_images": max(1, int(face_cfg.get("internet_face_lookup_max_images", 2) or 2)),
+    }
+
+
+def lookup_cache_path(cfg: dict) -> Path:
+    configured = cfg.get("paths", {}).get("internet_name_lookup_cache", "runtime/internet_name_lookup_cache.json")
+    return resolve_project_path(configured)
+
+
+def text_tokens(text: object) -> list[str]:
+    return [
+        token.lower()
+        for token in re.findall(r"[^\W\d_](?:[^\W\d_]|[-'](?=[^\W\d_]))*", str(text or ""), flags=re.UNICODE)
+    ]
+
+
+def useful_context_tokens(text: object) -> list[str]:
+    blocked = {
+        "720p",
+        "1080p",
+        "2160p",
+        "web",
+        "h264",
+        "h265",
+        "x264",
+        "x265",
+        "german",
+        "english",
+        "deutsch",
+        "episode",
+        "folge",
+        "season",
+        "staffel",
+        "serie",
+        "series",
+        "training",
+        "ai",
+        "ki",
+    }
+    tokens = [token for token in text_tokens(text) if len(token) >= 3 and token not in blocked and not token.startswith(("s0", "e0"))]
+    return list(dict.fromkeys(tokens))
+
+
+def project_series_context_terms(cfg: dict, limit: int = 10) -> list[str]:
+    lookup_cfg = internet_lookup_config(cfg)
+    configured_terms = lookup_cfg.get("context_terms", [])
+    context_terms: list[str] = []
+    if isinstance(configured_terms, str):
+        context_terms.extend(useful_context_tokens(configured_terms))
+    elif isinstance(configured_terms, list):
+        for item in configured_terms:
+            context_terms.extend(useful_context_tokens(item))
+
+    for key in ("series_title", "title", "name", "project_name"):
+        if key in cfg:
+            context_terms.extend(useful_context_tokens(cfg.get(key)))
+
+    generation_cfg = cfg.get("generation", {}) if isinstance(cfg.get("generation"), dict) else {}
+    context_terms.extend(useful_context_tokens(generation_cfg.get("active_series_input", "")))
+
+    for path_key in ("episodes", "inbox_episodes", "metadata"):
+        configured_path = cfg.get("paths", {}).get(path_key)
+        if not configured_path:
+            continue
+        root = resolve_project_path(configured_path)
+        if not root.exists():
+            continue
+        for path in sorted(root.iterdir())[:20]:
+            context_terms.extend(useful_context_tokens(path.stem if path.is_file() else path.name))
+
+    collapsed: list[str] = []
+    for token in context_terms:
+        if token not in collapsed:
+            collapsed.append(token)
+        if len(collapsed) >= limit:
+            break
+    return collapsed
+
+
+def normalize_lookup_languages(value: object) -> list[str]:
+    if isinstance(value, str):
+        items = [item.strip() for item in value.split(",")]
+    elif isinstance(value, list):
+        items = [str(item).strip() for item in value]
+    else:
+        items = []
+    languages = []
+    for item in items:
+        language = item.lower()
+        if re.match(r"^[a-z]{2,3}$", language) and language not in languages:
+            languages.append(language)
+    return languages or ["en", "de"]
+
+
+def lookup_cache_key(name: str, context_terms: list[str], languages: list[str]) -> str:
+    context = ",".join(sorted(context_terms[:8]))
+    language_key = ",".join(languages)
+    return f"{normalize_alias_name(name)}|{context}|{language_key}"
+
+
+def request_json(url: str, timeout_seconds: float) -> dict:
+    request = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": "AI-Series-Training/1.0 public-name-metadata-lookup",
+            "Accept": "application/json",
+        },
+    )
+    with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+        import json
+
+        return json.loads(response.read().decode("utf-8", errors="replace"))
+
+
+def strip_html_tags(text: object) -> str:
+    return re.sub(r"<[^>]+>", " ", str(text or ""))
+
+
+def candidate_record(source: str, label: object, description: object = "", url: object = "", aliases: object = None) -> dict[str, object]:
+    return {
+        "source": source,
+        "label": canonical_person_name(str(label or "")),
+        "description": " ".join(str(description or "").split()),
+        "url": str(url or ""),
+        "aliases": [str(alias) for alias in aliases or [] if str(alias).strip()],
+    }
+
+
+def fetch_wikidata_name_candidates(query: str, language: str, timeout_seconds: float) -> list[dict[str, object]]:
+    params = urllib.parse.urlencode(
+        {
+            "action": "wbsearchentities",
+            "search": query,
+            "language": language,
+            "uselang": language,
+            "format": "json",
+            "limit": 8,
+        }
+    )
+    payload = request_json(f"https://www.wikidata.org/w/api.php?{params}", timeout_seconds)
+    candidates: list[dict[str, object]] = []
+    for item in payload.get("search", []) if isinstance(payload, dict) else []:
+        if not isinstance(item, dict):
+            continue
+        label = item.get("label", "")
+        if not label:
+            continue
+        entity_id = str(item.get("id", ""))
+        url = f"https://www.wikidata.org/wiki/{entity_id}" if entity_id else str(item.get("concepturi", ""))
+        candidates.append(candidate_record("wikidata", label, item.get("description", ""), url, item.get("aliases", [])))
+    return candidates
+
+
+def fetch_wikipedia_name_candidates(query: str, language: str, timeout_seconds: float) -> list[dict[str, object]]:
+    params = urllib.parse.urlencode(
+        {
+            "action": "query",
+            "list": "search",
+            "srsearch": query,
+            "format": "json",
+            "srlimit": 8,
+        }
+    )
+    payload = request_json(f"https://{language}.wikipedia.org/w/api.php?{params}", timeout_seconds)
+    candidates: list[dict[str, object]] = []
+    for item in payload.get("query", {}).get("search", []) if isinstance(payload, dict) else []:
+        if not isinstance(item, dict):
+            continue
+        title = item.get("title", "")
+        if not title:
+            continue
+        page_id = item.get("pageid", "")
+        url = f"https://{language}.wikipedia.org/?curid={page_id}" if page_id else ""
+        candidates.append(candidate_record("wikipedia", title, strip_html_tags(item.get("snippet", "")), url))
+    return candidates
+
+
+def fandom_wiki_slugs(context_terms: list[str]) -> list[str]:
+    if not context_terms:
+        return []
+    joined = "".join(token for token in context_terms[:4] if token.isalnum())
+    hyphenated = "-".join(token for token in context_terms[:4] if token.isalnum())
+    compact_pair = "".join(token for token in context_terms[:2] if token.isalnum())
+    hyphen_pair = "-".join(token for token in context_terms[:2] if token.isalnum())
+    slugs: list[str] = []
+    for slug in (compact_pair, hyphen_pair, joined, hyphenated):
+        cleaned = re.sub(r"[^a-z0-9-]+", "", slug.lower()).strip("-")
+        if cleaned and cleaned not in slugs:
+            slugs.append(cleaned)
+    return slugs[:6]
+
+
+def fetch_fandom_name_candidates(name: str, context_terms: list[str], timeout_seconds: float) -> list[dict[str, object]]:
+    candidates: list[dict[str, object]] = []
+    for slug in fandom_wiki_slugs(context_terms):
+        params = urllib.parse.urlencode(
+            {
+                "action": "query",
+                "list": "search",
+                "srsearch": name,
+                "format": "json",
+                "srlimit": 8,
+            }
+        )
+        try:
+            payload = request_json(f"https://{slug}.fandom.com/api.php?{params}", timeout_seconds)
+        except (urllib.error.URLError, TimeoutError, OSError, ValueError):
+            continue
+        for item in payload.get("query", {}).get("search", []) if isinstance(payload, dict) else []:
+            if not isinstance(item, dict):
+                continue
+            title = str(item.get("title", "")).strip()
+            if not title:
+                continue
+            page_url = f"https://{slug}.fandom.com/wiki/{urllib.parse.quote(title.replace(' ', '_'))}"
+            description = f"{slug} fandom wiki {strip_html_tags(item.get('snippet', ''))}"
+            candidates.append(candidate_record("fandom", title, description, page_url))
+    return candidates
+
+
+def score_internet_name_candidate(partial_name: str, candidate: dict, context_terms: list[str]) -> float:
+    label = canonical_person_name(str(candidate.get("label", "")))
+    if not label:
+        return 0.0
+    partial_tokens = text_tokens(partial_name)
+    label_tokens = text_tokens(label)
+    if not partial_tokens or not label_tokens:
+        return 0.0
+    label_text = normalize_alias_name(label)
+    partial_text = normalize_alias_name(partial_name)
+    aliases = " ".join(str(alias) for alias in candidate.get("aliases", []) or [])
+    search_blob = f"{label} {candidate.get('description', '')} {aliases}".lower()
+    score = 0.0
+
+    matched_tokens = sum(1 for token in partial_tokens if token in label_tokens or token in search_blob)
+    score += 0.42 * (matched_tokens / max(1, len(partial_tokens)))
+    if partial_text == label_text:
+        score += 0.12
+    elif partial_text and partial_text in label_text:
+        score += 0.22
+    elif any(token and any(label_token.startswith(token) for label_token in label_tokens) for token in partial_tokens):
+        score += 0.12
+    if len(label_tokens) > len(partial_tokens):
+        score += 0.16
+    if len(partial_tokens) == 1 and len(label_tokens) == 2 and label_tokens[0] == partial_tokens[0]:
+        score += 0.12
+
+    descriptor_terms = {
+        "character",
+        "fictional",
+        "television",
+        "tv",
+        "sitcom",
+        "series",
+        "actor",
+        "actress",
+        "cast",
+        "rolle",
+        "figur",
+        "fernsehserie",
+        "schauspieler",
+        "schauspielerin",
+    }
+    descriptor_hits = sum(1 for token in descriptor_terms if token in search_blob)
+    score += min(0.18, descriptor_hits * 0.045)
+    context_hits = sum(1 for token in context_terms if token.lower() in search_blob)
+    score += min(0.22, context_hits * 0.08)
+    if "(" in label or ")" in label:
+        score -= 0.05
+    if "/" in label:
+        score -= 0.25
+    if "&" in label:
+        score -= 0.22
+    if re.search(r"\b(gets|loves|fake|boys|relationships|gallery|quotes|appearances)\b", label.lower()):
+        score -= 0.16
+    return round(max(0.0, min(1.0, score)), 4)
+
+
+def internet_name_candidates(name: str, cfg: dict, *, force_refresh: bool = False) -> list[dict[str, object]]:
+    lookup_cfg = internet_lookup_config(cfg)
+    if not bool(lookup_cfg.get("enabled", True)):
+        return []
+    normalized_name = canonical_person_name(name)
+    if not normalized_name or not has_manual_person_name(normalized_name) or is_background_person_name(normalized_name):
+        return []
+    context_terms = project_series_context_terms(cfg)
+    languages = normalize_lookup_languages(lookup_cfg.get("languages", ["en", "de"]))
+    cache_path = lookup_cache_path(cfg)
+    cache = read_json(cache_path, {"queries": {}})
+    if not isinstance(cache, dict):
+        cache = {"queries": {}}
+    queries = cache.setdefault("queries", {})
+    cache_key = lookup_cache_key(normalized_name, context_terms, languages)
+    now = time.time()
+    cached = queries.get(cache_key) if isinstance(queries, dict) else None
+    max_age_seconds = float(lookup_cfg.get("cache_days", 30.0) or 0.0) * 86400.0
+    if (
+        isinstance(cached, dict)
+        and not force_refresh
+        and max_age_seconds > 0
+        and now - float(cached.get("fetched_at", 0.0) or 0.0) <= max_age_seconds
+    ):
+        return list(cached.get("candidates", []) or [])
+
+    timeout_seconds = float(lookup_cfg.get("timeout_seconds", 5.0) or 5.0)
+    query_terms = " ".join([normalized_name, *context_terms[:4]]).strip()
+    raw_candidates: list[dict[str, object]] = []
+    errors: list[str] = []
+    for language in languages:
+        for fetcher in (fetch_wikidata_name_candidates, fetch_wikipedia_name_candidates):
+            try:
+                raw_candidates.extend(fetcher(query_terms, language, timeout_seconds))
+            except (urllib.error.URLError, TimeoutError, OSError, ValueError) as exc:
+                errors.append(f"{language}:{fetcher.__name__}:{exc}")
+    try:
+        raw_candidates.extend(fetch_fandom_name_candidates(normalized_name, context_terms, timeout_seconds))
+    except Exception as exc:
+        errors.append(f"fandom:{exc}")
+
+    deduped: dict[str, dict[str, object]] = {}
+    for candidate in raw_candidates:
+        label = canonical_person_name(str(candidate.get("label", "")))
+        if not label:
+            continue
+        key = normalize_alias_name(label)
+        score = score_internet_name_candidate(normalized_name, candidate, context_terms)
+        if score <= 0.0:
+            continue
+        enriched = {**candidate, "label": label, "confidence": score, "query": normalized_name, "context_terms": context_terms}
+        previous = deduped.get(key)
+        if previous is None or float(enriched.get("confidence", 0.0)) > float(previous.get("confidence", 0.0)):
+            deduped[key] = enriched
+
+    candidates = sorted(deduped.values(), key=lambda item: (-float(item.get("confidence", 0.0)), str(item.get("label", ""))))[:8]
+    queries[cache_key] = {
+        "fetched_at": now,
+        "query": normalized_name,
+        "context_terms": context_terms,
+        "languages": languages,
+        "candidates": candidates,
+        "errors": errors[:5],
+    }
+    write_json(cache_path, cache)
+    return candidates
+
+
+def best_internet_name_completion(name: str, cfg: dict, *, force_refresh: bool = False) -> dict[str, object] | None:
+    candidates = internet_name_candidates(name, cfg, force_refresh=force_refresh)
+    if not candidates:
+        return None
+    lookup_cfg = internet_lookup_config(cfg)
+    min_confidence = float(lookup_cfg.get("min_confidence", 0.72) or 0.72)
+    old_tokens = set(text_tokens(name))
+    for candidate in candidates:
+        label = canonical_person_name(str(candidate.get("label", "")))
+        candidate_tokens = set(text_tokens(label))
+        if not label or normalize_alias_name(label) == normalize_alias_name(name):
+            continue
+        if not old_tokens or not old_tokens.issubset(candidate_tokens):
+            continue
+        if len(candidate_tokens) <= len(old_tokens):
+            continue
+        if float(candidate.get("confidence", 0.0) or 0.0) >= min_confidence:
+            return candidate
+    return None
+
+
+def rollback_low_confidence_internet_names(cfg: dict, char_map: dict) -> dict[str, object]:
+    lookup_cfg = internet_lookup_config(cfg)
+    min_confidence = float(lookup_cfg.get("min_confidence", 0.95) or 0.95)
+    restored: list[dict[str, object]] = []
+    cleared_history: list[dict[str, object]] = []
+    for cluster_id, payload in list(char_map.get("clusters", {}).items()):
+        meta = payload.get("internet_name_lookup", {}) if isinstance(payload.get("internet_name_lookup", {}), dict) else {}
+        confidence = float(meta.get("confidence", 0.0) or 0.0)
+        previous_name = canonical_person_name(str(meta.get("previous_name", "")))
+        resolved_name = canonical_person_name(str(meta.get("resolved_name", "")))
+        current_name = canonical_person_name(str(payload.get("name", cluster_id)))
+        if not previous_name or not resolved_name:
+            continue
+        if confidence >= min_confidence:
+            continue
+        if normalize_alias_name(current_name) == normalize_alias_name(previous_name):
+            payload.setdefault("internet_name_lookup_rejected", []).append(
+                {
+                    "previous_name": previous_name,
+                    "rejected_name": resolved_name,
+                    "confidence": confidence,
+                    "required_confidence": min_confidence,
+                    "source": meta.get("source", ""),
+                    "url": meta.get("url", ""),
+                }
+            )
+            payload.pop("internet_name_lookup", None)
+            cleared_history.append(
+                {
+                    "cluster_id": cluster_id,
+                    "current_name": current_name,
+                    "rejected_name": resolved_name,
+                    "confidence": confidence,
+                }
+            )
+            continue
+        if normalize_alias_name(current_name) != normalize_alias_name(resolved_name):
+            continue
+        priority = bool(payload.get("priority", False))
+        assign_character_name(char_map, cluster_id, previous_name, priority=priority)
+        updated_payload = char_map.get("clusters", {}).get(cluster_id, {})
+        updated_payload["internet_name_lookup_rollback"] = {
+            "restored_name": previous_name,
+            "rejected_name": resolved_name,
+            "confidence": confidence,
+            "required_confidence": min_confidence,
+        }
+        restored.append(
+            {
+                "cluster_id": cluster_id,
+                "restored_name": previous_name,
+                "rejected_name": resolved_name,
+                "confidence": confidence,
+            }
+        )
+    if restored or cleared_history:
+        rebuild_character_map_identities(char_map)
+    return {"restored": len(restored), "items": restored, "cleared_history": len(cleared_history), "cleared_items": cleared_history}
+
+
+def add_name_alias(char_map: dict, cluster_id: str, alias_name: str) -> None:
+    alias = normalize_alias_name(alias_name)
+    if not alias or is_background_person_name(alias) or is_ignored_face_name(alias):
+        return
+    payload = char_map.get("clusters", {}).get(cluster_id)
+    if payload is None:
+        return
+    aliases = list(payload.get("aliases", []) or [])
+    if alias not in aliases:
+        aliases.append(alias)
+    payload["aliases"] = aliases
+    char_map.setdefault("aliases", {})[alias] = cluster_id
+
+
+def rename_identity_everywhere(char_map: dict, old_name: str, new_name: str, source_meta: dict | None = None) -> int:
+    changed = 0
+    for cluster_id, payload in list(char_map.get("clusters", {}).items()):
+        current_name = canonical_person_name(str(payload.get("name", cluster_id)))
+        if normalize_alias_name(current_name) != normalize_alias_name(old_name):
+            continue
+        priority = bool(payload.get("priority", False))
+        assign_character_name(char_map, cluster_id, new_name, priority=priority)
+        add_name_alias(char_map, cluster_id, old_name)
+        if source_meta:
+            payload = char_map.get("clusters", {}).get(cluster_id, {})
+            payload["internet_name_lookup"] = {
+                "previous_name": old_name,
+                "resolved_name": new_name,
+                "confidence": float(source_meta.get("confidence", 0.0) or 0.0),
+                "source": source_meta.get("source", ""),
+                "url": source_meta.get("url", ""),
+            }
+        changed += 1
+    return changed
+
+
+def enrich_existing_character_names_from_internet(cfg: dict, char_map: dict, *, force_refresh: bool = False) -> dict[str, object]:
+    lookup_cfg = internet_lookup_config(cfg)
+    if not bool(lookup_cfg.get("enabled", True)):
+        return {"checked": 0, "renamed": 0, "updates": [], "disabled": True}
+    names = []
+    for _cluster_id, payload in sorted(char_map.get("clusters", {}).items(), key=cluster_sort_key):
+        if is_ignored_face_payload(payload):
+            continue
+        name = canonical_person_name(str(payload.get("name", "")))
+        if not name or is_background_person_name(name) or not has_manual_person_name(name):
+            continue
+        if normalize_alias_name(name) not in [normalize_alias_name(item) for item in names]:
+            names.append(name)
+
+    updates: list[dict[str, object]] = []
+    max_updates = int(lookup_cfg.get("max_updates", 50) or 50)
+    checked = 0
+    for name in names:
+        checked += 1
+        candidate = best_internet_name_completion(name, cfg, force_refresh=force_refresh)
+        if not candidate:
+            continue
+        new_name = canonical_person_name(str(candidate.get("label", "")))
+        changed = rename_identity_everywhere(char_map, name, new_name, candidate)
+        if changed:
+            updates.append(
+                {
+                    "old_name": name,
+                    "new_name": new_name,
+                    "clusters": changed,
+                    "confidence": float(candidate.get("confidence", 0.0) or 0.0),
+                    "source": candidate.get("source", ""),
+                    "url": candidate.get("url", ""),
+                }
+            )
+        if max_updates > 0 and len(updates) >= max_updates:
+            break
+    if updates:
+        rebuild_character_map_identities(char_map)
+    return {"checked": checked, "renamed": len(updates), "updates": updates}
+
+
+def face_lookup_command_template(cfg: dict) -> list[str]:
+    lookup_cfg = internet_lookup_config(cfg)
+    configured = lookup_cfg.get("face_lookup_command", "")
+    env_name = str(lookup_cfg.get("face_lookup_env", "SERIES_FACE_LOOKUP_COMMAND"))
+    if not configured and env_name:
+        configured = os.environ.get(env_name, "")
+    if isinstance(configured, list):
+        return [str(item) for item in configured if str(item).strip()]
+    if isinstance(configured, str) and configured.strip():
+        return shlex.split(configured.strip(), posix=(current_os() != "windows"))
+    return []
+
+
+def render_face_lookup_command(template: list[str], image_path: Path, cluster_id: str) -> list[str]:
+    replacements = {
+        "image_path": str(image_path),
+        "cluster_id": cluster_id,
+        "project_root": str(PROJECT_DIR),
+    }
+    return [part.format(**replacements) for part in template]
+
+
+def normalize_face_lookup_matches(matches: object, image_path: Path, default_source: str) -> list[dict[str, object]]:
+    if not isinstance(matches, list):
+        return []
+    normalized: list[dict[str, object]] = []
+    for match in matches:
+        if not isinstance(match, dict):
+            continue
+        label = canonical_person_name(str(match.get("name") or match.get("label") or ""))
+        if not label:
+            continue
+        normalized.append(
+            {
+                "label": label,
+                "confidence": float(match.get("confidence", 0.0) or 0.0),
+                "source": str(match.get("source", default_source)),
+                "url": str(match.get("url", "")),
+                "image": str(image_path),
+            }
+        )
+    normalized.sort(key=lambda item: (-float(item.get("confidence", 0.0)), str(item.get("label", ""))))
+    return normalized
+
+
+def run_online_face_lookup_command(template: list[str], image_path: Path, cluster_id: str, cfg: dict) -> list[dict[str, object]]:
+    lookup_cfg = internet_lookup_config(cfg)
+    command = render_face_lookup_command(template, image_path, cluster_id)
+    if not command:
+        return []
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=str(Path(__file__).resolve().parent),
+            capture_output=True,
+            text=True,
+            timeout=float(lookup_cfg.get("timeout_seconds", 5.0) or 5.0),
+            check=False,
+        )
+    except Exception as exc:
+        warn(f"Online face lookup failed for {cluster_id}: {exc}. Continuing offline.")
+        return []
+    if completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout or "").strip()
+        warn(f"Online face lookup returned exit code {completed.returncode} for {cluster_id}. {detail[:220]}")
+        return []
+    try:
+        import json
+
+        payload = json.loads(completed.stdout or "{}")
+    except Exception as exc:
+        warn(f"Online face lookup returned invalid JSON for {cluster_id}: {exc}. Continuing offline.")
+        return []
+    if not isinstance(payload, dict):
+        return []
+    return normalize_face_lookup_matches(payload.get("matches", []), image_path, "online_face_lookup_command")
+
+
+def image_mime_type(path: Path) -> str:
+    suffix = path.suffix.lower()
+    if suffix in {".jpg", ".jpeg"}:
+        return "image/jpeg"
+    if suffix == ".png":
+        return "image/png"
+    if suffix == ".webp":
+        return "image/webp"
+    return "application/octet-stream"
+
+
+def run_online_face_lookup_http(url: str, image_path: Path, cluster_id: str, cfg: dict) -> list[dict[str, object]]:
+    lookup_cfg = internet_lookup_config(cfg)
+    if not url:
+        return []
+    try:
+        import json
+
+        image_bytes = image_path.read_bytes()
+        request_body = {
+            "cluster_id": cluster_id,
+            "filename": image_path.name,
+            "mime_type": image_mime_type(image_path),
+            "image_base64": base64.b64encode(image_bytes).decode("ascii"),
+            "project_root": str(PROJECT_DIR),
+        }
+        data = json.dumps(request_body).encode("utf-8")
+        headers = {
+            "User-Agent": "AI-Series-Training/1.0 online-face-lookup",
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+        }
+        token_env = str(lookup_cfg.get("face_lookup_token_env", "SERIES_FACE_LOOKUP_TOKEN"))
+        token = os.environ.get(token_env, "").strip() if token_env else ""
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        request = urllib.request.Request(url, data=data, headers=headers, method="POST")
+        with urllib.request.urlopen(request, timeout=float(lookup_cfg.get("timeout_seconds", 5.0) or 5.0)) as response:
+            payload = json.loads(response.read().decode("utf-8", errors="replace"))
+    except Exception as exc:
+        warn(f"Online face lookup API failed for {cluster_id}: {exc}. Continuing offline.")
+        return []
+    if not isinstance(payload, dict):
+        return []
+    return normalize_face_lookup_matches(payload.get("matches", []), image_path, "online_face_lookup_api")
+
+
+def safe_cache_stem(text: str) -> str:
+    return re.sub(r"[^a-zA-Z0-9._-]+", "_", text).strip("._-")[:90] or "item"
+
+
+def public_face_lookup_cache_root(cfg: dict) -> Path:
+    lookup_cfg = internet_lookup_config(cfg)
+    return resolve_project_path(str(lookup_cfg.get("face_lookup_public_image_cache", "runtime/internet_face_lookup_public_images")))
+
+
+def project_facenet_checkpoint_path() -> Path:
+    return resolve_project_path("runtime/models/torch/checkpoints/20180402-114759-vggface2.pt")
+
+
+def ensure_project_facenet_checkpoint_available() -> bool:
+    project_checkpoint = project_facenet_checkpoint_path()
+    if project_checkpoint.exists() and project_checkpoint.stat().st_size > 0:
+        return True
+    user_checkpoint = Path.home() / ".cache" / "torch" / "checkpoints" / project_checkpoint.name
+    if user_checkpoint.exists() and user_checkpoint.stat().st_size > 0:
+        try:
+            project_checkpoint.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(user_checkpoint, project_checkpoint)
+            return True
+        except Exception:
+            return False
+    return False
+
+
+def public_face_lookup_reference_names(cfg: dict, char_map: dict) -> list[str]:
+    lookup_cfg = internet_lookup_config(cfg)
+    max_names = int(lookup_cfg.get("face_lookup_public_image_max_names", 24) or 24)
+    counts: dict[str, int] = {}
+    for _cluster_id, payload in sorted(char_map.get("clusters", {}).items(), key=cluster_sort_key):
+        if is_ignored_face_payload(payload):
+            continue
+        name = canonical_person_name(str(payload.get("identity_name") or payload.get("name") or ""))
+        if not name or looks_auto_named(name) or is_background_person_name(name) or not has_manual_person_name(name):
+            continue
+        counts[name] = counts.get(name, 0) + int(payload.get("samples", 1) or 1)
+    ranked = sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+    return [name for name, _count in ranked[:max_names]]
+
+
+def public_image_urls_from_candidate(candidate: dict, cfg: dict) -> list[str]:
+    lookup_cfg = internet_lookup_config(cfg)
+    timeout_seconds = float(lookup_cfg.get("timeout_seconds", 5.0) or 5.0)
+    candidate_url = str(candidate.get("url", "") or "")
+    label = canonical_person_name(str(candidate.get("label", "")))
+    urls: list[str] = []
+    try:
+        parsed = urllib.parse.urlparse(candidate_url)
+    except Exception:
+        parsed = urllib.parse.urlparse("")
+
+    try:
+        if parsed.netloc.endswith(".fandom.com"):
+            title = urllib.parse.unquote(parsed.path.rsplit("/", 1)[-1]).replace("_", " ").strip() or label
+            params = urllib.parse.urlencode(
+                {
+                    "action": "query",
+                    "titles": title,
+                    "prop": "pageimages",
+                    "pithumbsize": 900,
+                    "format": "json",
+                }
+            )
+            payload = request_json(f"{parsed.scheme or 'https'}://{parsed.netloc}/api.php?{params}", timeout_seconds)
+            pages = payload.get("query", {}).get("pages", {}) if isinstance(payload, dict) else {}
+            for page in pages.values() if isinstance(pages, dict) else []:
+                thumb = page.get("thumbnail", {}) if isinstance(page, dict) else {}
+                source = str(thumb.get("source", "") or "")
+                if source:
+                    urls.append(source)
+        elif "wikipedia.org" in parsed.netloc:
+            language = parsed.netloc.split(".", 1)[0] if "." in parsed.netloc else "en"
+            query: dict[str, object] = {
+                "action": "query",
+                "prop": "pageimages",
+                "pithumbsize": 900,
+                "format": "json",
+            }
+            qs = urllib.parse.parse_qs(parsed.query)
+            if qs.get("curid"):
+                query["pageids"] = qs["curid"][0]
+            else:
+                title = urllib.parse.unquote(parsed.path.rsplit("/", 1)[-1]).replace("_", " ").strip() or label
+                query["titles"] = title
+            payload = request_json(f"https://{language}.wikipedia.org/w/api.php?{urllib.parse.urlencode(query)}", timeout_seconds)
+            pages = payload.get("query", {}).get("pages", {}) if isinstance(payload, dict) else {}
+            for page in pages.values() if isinstance(pages, dict) else []:
+                thumb = page.get("thumbnail", {}) if isinstance(page, dict) else {}
+                source = str(thumb.get("source", "") or "")
+                if source:
+                    urls.append(source)
+        elif parsed.netloc == "www.wikidata.org":
+            entity_id = parsed.path.rsplit("/", 1)[-1].strip()
+            if entity_id:
+                params = urllib.parse.urlencode(
+                    {
+                        "action": "wbgetentities",
+                        "ids": entity_id,
+                        "props": "claims",
+                        "format": "json",
+                    }
+                )
+                payload = request_json(f"https://www.wikidata.org/w/api.php?{params}", timeout_seconds)
+                entity = payload.get("entities", {}).get(entity_id, {}) if isinstance(payload, dict) else {}
+                claims = entity.get("claims", {}) if isinstance(entity, dict) else {}
+                image_claims = claims.get("P18", []) if isinstance(claims, dict) else []
+                for claim in image_claims[:2]:
+                    value = (
+                        claim.get("mainsnak", {})
+                        .get("datavalue", {})
+                        .get("value", "")
+                        if isinstance(claim, dict)
+                        else ""
+                    )
+                    if value:
+                        urls.append(f"https://commons.wikimedia.org/wiki/Special:FilePath/{urllib.parse.quote(str(value))}")
+    except Exception:
+        return []
+    deduped: list[str] = []
+    for url in urls:
+        if url and url not in deduped:
+            deduped.append(url)
+    return deduped
+
+
+def download_public_face_image(url: str, target: Path, cfg: dict) -> Path | None:
+    lookup_cfg = internet_lookup_config(cfg)
+    if target.exists() and target.stat().st_size > 0:
+        return target
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        request = urllib.request.Request(
+            url,
+            headers={
+                "User-Agent": "AI-Series-Training/1.0 public-face-image-lookup",
+                "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+            },
+        )
+        with urllib.request.urlopen(request, timeout=float(lookup_cfg.get("timeout_seconds", 5.0) or 5.0)) as response:
+            data = response.read(8 * 1024 * 1024)
+        if not data:
+            return None
+        target.write_bytes(data)
+        return target
+    except Exception:
+        return None
+
+
+def public_image_embeddings_for_name(name: str, cfg: dict, *, deadline: float | None = None) -> list[dict[str, object]]:
+    if deadline is not None and time.monotonic() >= deadline:
+        return []
+    lookup_cfg = internet_lookup_config(cfg)
+    max_images = int(lookup_cfg.get("face_lookup_public_image_max_images_per_name", 2) or 2)
+    cache_root = public_face_lookup_cache_root(cfg)
+    image_root = cache_root / safe_cache_stem(normalize_alias_name(name))
+    candidates = internet_name_candidates(name, cfg)
+    image_urls: list[str] = []
+    for candidate in candidates[:8]:
+        label = canonical_person_name(str(candidate.get("label", "")))
+        if label and normalize_alias_name(name) not in normalize_alias_name(label) and normalize_alias_name(label) not in normalize_alias_name(name):
+            continue
+        for url in public_image_urls_from_candidate(candidate, cfg):
+            if url not in image_urls:
+                image_urls.append(url)
+            if len(image_urls) >= max_images:
+                break
+        if len(image_urls) >= max_images:
+            break
+    image_paths: list[Path] = []
+    source_urls: list[str] = []
+    for index, url in enumerate(image_urls[:max_images], start=1):
+        if deadline is not None and time.monotonic() >= deadline:
+            break
+        suffix = Path(urllib.parse.urlparse(url).path).suffix
+        if suffix.lower() not in {".jpg", ".jpeg", ".png", ".webp"}:
+            suffix = ".jpg"
+        target = image_root / f"public_{index:02d}{suffix}"
+        downloaded = download_public_face_image(url, target, cfg)
+        if downloaded:
+            image_paths.append(downloaded)
+            source_urls.append(url)
+    if not image_paths:
+        return []
+    lookup_cfg = internet_lookup_config(cfg)
+    if not bool(lookup_cfg.get("face_lookup_public_image_allow_slow_torch", False)) and "torch" not in sys.modules:
+        warn(
+            "Built-in public-image face lookup found public images but skipped FaceNet comparison because Torch "
+            "is not already loaded and deep public-image matching was disabled in config."
+        )
+        return []
+    if not ensure_project_facenet_checkpoint_available():
+        warn(
+            "Built-in public-image face lookup skipped embedding comparison because the FaceNet "
+            "checkpoint is not project-local yet. Prepare/copy the FaceNet vggface2 checkpoint into "
+            f"{project_facenet_checkpoint_path()}."
+        )
+        return []
+
+    torch_home = str(resolve_project_path("runtime/models/torch"))
+    previous_torch_home = os.environ.get("TORCH_HOME")
+    os.environ.setdefault("TORCH_HOME", torch_home)
+    try:
+        embedding_payload = character_appearance_embedding(image_paths)
+    finally:
+        if previous_torch_home is None:
+            os.environ.pop("TORCH_HOME", None)
+        else:
+            os.environ["TORCH_HOME"] = previous_torch_home
+    embeddings = embedding_payload.get("embeddings", []) if isinstance(embedding_payload, dict) else []
+    rows: list[dict[str, object]] = []
+    for image_path, source_url, embedding in zip(image_paths, source_urls, embeddings):
+        if embedding:
+            rows.append({"label": name, "embedding": embedding, "image": str(image_path), "url": source_url})
+    return rows
+
+
+def public_face_lookup_bank(cfg: dict, char_map: dict) -> list[dict[str, object]]:
+    lookup_cfg = internet_lookup_config(cfg)
+    if not bool(lookup_cfg.get("face_lookup_builtin_public_images", True)):
+        return []
+    if not bool(lookup_cfg.get("face_lookup_public_image_allow_slow_torch", False)) and "torch" not in sys.modules:
+        warn(
+            "Built-in public-image face lookup is enabled, but Torch/FaceNet is not already loaded. "
+            "Skipping the heavy local image comparison because deep public-image matching was disabled in config."
+        )
+        return []
+    deadline = time.monotonic() + float(lookup_cfg.get("face_lookup_public_image_max_seconds", 30.0) or 30.0)
+    bank: list[dict[str, object]] = []
+    for name in public_face_lookup_reference_names(cfg, char_map):
+        if time.monotonic() >= deadline:
+            break
+        bank.extend(public_image_embeddings_for_name(name, cfg, deadline=deadline))
+    return bank
+
+
+def run_builtin_public_image_face_lookup(payload: dict, public_bank: list[dict[str, object]], cfg: dict) -> list[dict[str, object]]:
+    embedding = payload.get("embedding") or []
+    if not embedding or not public_bank:
+        return []
+    lookup_cfg = internet_lookup_config(cfg)
+    min_similarity = float(lookup_cfg.get("face_lookup_public_image_min_similarity", 0.72) or 0.72)
+    min_margin = float(lookup_cfg.get("face_lookup_public_image_min_margin", 0.05) or 0.05)
+    scored: list[dict[str, object]] = []
+    for reference in public_bank:
+        reference_embedding = reference.get("embedding") or []
+        if not reference_embedding:
+            continue
+        similarity = cosine_similarity(embedding, reference_embedding)
+        scored.append({**reference, "similarity": similarity})
+    scored.sort(key=lambda item: (-float(item.get("similarity", 0.0)), str(item.get("label", ""))))
+    if not scored:
+        return []
+    best = scored[0]
+    second = float(scored[1].get("similarity", 0.0)) if len(scored) > 1 else 0.0
+    best_similarity = float(best.get("similarity", 0.0))
+    if best_similarity < min_similarity or (best_similarity - second) < min_margin:
+        return []
+    return [
+        {
+            "label": canonical_person_name(str(best.get("label", ""))),
+            "confidence": 1.0,
+            "source": "builtin_public_image_embedding",
+            "url": str(best.get("url", "")),
+            "image": str(best.get("image", "")),
+            "similarity": round(best_similarity, 4),
+            "margin": round(best_similarity - second, 4),
+        }
+    ]
+
+
+def online_face_lookup_candidates(
+    cfg: dict,
+    cluster_id: str,
+    payload: dict,
+    *,
+    offline: bool = False,
+    public_bank: list[dict[str, object]] | None = None,
+) -> list[dict[str, object]]:
+    lookup_cfg = internet_lookup_config(cfg)
+    if offline or not bool(lookup_cfg.get("face_lookup_enabled", True)):
+        return []
+    command_template = face_lookup_command_template(cfg)
+    api_url = str(lookup_cfg.get("face_lookup_url", "") or "").strip()
+    public_bank = public_bank or []
+    if not command_template and not api_url and not public_bank:
+        return []
+    max_images = int(lookup_cfg.get("face_lookup_max_images", 2) or 2)
+    candidates: list[dict[str, object]] = []
+    for image_path in preview_crop_paths(payload, max_images):
+        if command_template:
+            candidates.extend(run_online_face_lookup_command(command_template, image_path, cluster_id, cfg))
+        if api_url:
+            candidates.extend(run_online_face_lookup_http(api_url, image_path, cluster_id, cfg))
+    candidates.extend(run_builtin_public_image_face_lookup(payload, public_bank, cfg))
+    deduped: dict[str, dict[str, object]] = {}
+    for candidate in candidates:
+        label = canonical_person_name(str(candidate.get("label", "")))
+        if not label or not has_manual_person_name(label) or is_background_person_name(label):
+            continue
+        key = normalize_alias_name(label)
+        previous = deduped.get(key)
+        if previous is None or float(candidate.get("confidence", 0.0) or 0.0) > float(previous.get("confidence", 0.0) or 0.0):
+            deduped[key] = {**candidate, "label": label}
+    return sorted(deduped.values(), key=lambda item: (-float(item.get("confidence", 0.0)), str(item.get("label", ""))))
+
+
+def apply_online_face_lookup(cfg: dict, char_map: dict, *, offline: bool = False) -> dict[str, object]:
+    lookup_cfg = internet_lookup_config(cfg)
+    if offline or not bool(lookup_cfg.get("face_lookup_enabled", True)):
+        return {"checked": 0, "assigned": 0, "updates": [], "disabled": True}
+    command_template = face_lookup_command_template(cfg)
+    api_url = str(lookup_cfg.get("face_lookup_url", "") or "").strip()
+    builtin_enabled = bool(lookup_cfg.get("face_lookup_builtin_public_images", True))
+    if not command_template and not api_url and not builtin_enabled:
+        return {"checked": 0, "assigned": 0, "updates": [], "missing_lookup_backend": True}
+
+    min_confidence = float(lookup_cfg.get("face_lookup_min_confidence", 0.95) or 0.95)
+    max_clusters = int(lookup_cfg.get("face_lookup_max_clusters", 80) or 80)
+    candidates = unknown_face_candidates(
+        char_map,
+        include_background=bool(lookup_cfg.get("match_background_faces", True)),
+    )
+    if max_clusters > 0:
+        candidates = candidates[:max_clusters]
+    public_bank: list[dict[str, object]] = []
+    if builtin_enabled and candidates:
+        try:
+            public_bank = public_face_lookup_bank(cfg, char_map)
+        except Exception as exc:
+            warn(f"Built-in public-image face lookup failed to prepare reference images: {exc}. Continuing offline.")
+            public_bank = []
+    if not command_template and not api_url and not public_bank:
+        return {
+            "checked": 0,
+            "assigned": 0,
+            "updates": [],
+            "builtin_public_images": bool(builtin_enabled),
+            "builtin_reference_images": 0,
+        }
+    updates: list[dict[str, object]] = []
+    checked = 0
+    for cluster_id, payload in candidates:
+        checked += 1
+        matches = online_face_lookup_candidates(cfg, cluster_id, payload, offline=offline, public_bank=public_bank)
+        if not matches:
+            continue
+        best = matches[0]
+        if float(best.get("confidence", 0.0) or 0.0) < min_confidence:
+            continue
+        assigned_name = canonical_person_name(str(best.get("label", "")))
+        assign_character_name(char_map, cluster_id, assigned_name, priority=None)
+        char_map["clusters"][cluster_id]["internet_face_lookup"] = {
+            "resolved_name": assigned_name,
+            "confidence": float(best.get("confidence", 0.0) or 0.0),
+            "source": best.get("source", ""),
+            "url": best.get("url", ""),
+            "image": best.get("image", ""),
+        }
+        updates.append(
+            {
+                "cluster_id": cluster_id,
+                "name": assigned_name,
+                "confidence": float(best.get("confidence", 0.0) or 0.0),
+                "source": best.get("source", ""),
+            }
+        )
+    if updates:
+        rebuild_character_map_identities(char_map)
+    return {
+        "checked": checked,
+        "assigned": len(updates),
+        "updates": updates,
+        "builtin_public_images": bool(builtin_enabled),
+        "builtin_reference_images": len(public_bank),
     }
 
 
@@ -2052,6 +3248,14 @@ def persist_updates(cfg: dict, char_map: dict, voice_map: dict) -> tuple[int, in
     return changed_linked_files, review_count
 
 
+def persist_maps_only(cfg: dict, char_map: dict, voice_map: dict) -> int:
+    rebuild_character_map_identities(char_map)
+    refresh_voice_map(char_map, voice_map)
+    write_json(resolve_project_path(cfg["paths"]["character_map"]), normalize_portable_project_paths(char_map))
+    write_json(resolve_project_path(cfg["paths"]["voice_map"]), normalize_portable_project_paths(voice_map))
+    return open_review_item_count(cfg)
+
+
 def print_cluster(char_map: dict, cluster_id: str, payload: dict) -> None:
     status = "ignored" if is_ignored_face_payload(payload) else "aktiv"
     name = payload.get("name", cluster_id)
@@ -2075,6 +3279,168 @@ def print_cluster(char_map: dict, cluster_id: str, payload: dict) -> None:
     print(f"  Role hint: {role_hint}")
     print(f"  Review hint: {action_hint}")
     print(f"  Preview: {preview_dir}")
+
+
+def name_editor_rows(char_map: dict, voice_map: dict) -> list[dict[str, object]]:
+    rows: dict[str, dict[str, object]] = {}
+    for cluster_id, payload in char_map.get("clusters", {}).items():
+        name = canonical_person_name(str(payload.get("name", cluster_id)))
+        if not name or looks_auto_named(name) or is_ignored_face_payload(payload):
+            continue
+        row = rows.setdefault(name, {"name": name, "faces": 0, "speakers": 0, "priority": False})
+        row["faces"] = int(row.get("faces", 0)) + 1
+        row["priority"] = bool(row.get("priority")) or bool(payload.get("priority", False))
+    for speaker_id, payload in voice_map.get("clusters", {}).items():
+        name = canonical_person_name(str(payload.get("name", speaker_id)))
+        if not name or looks_auto_named(name) or is_background_person_name(name):
+            continue
+        row = rows.setdefault(name, {"name": name, "faces": 0, "speakers": 0, "priority": False})
+        row["speakers"] = int(row.get("speakers", 0)) + 1
+    return sorted(rows.values(), key=lambda row: str(row.get("name", "")).lower())
+
+
+def rename_name_everywhere(char_map: dict, voice_map: dict, old_name: str, new_name: str, *, priority: bool | None = None) -> dict[str, int]:
+    old_final = canonical_person_name(old_name)
+    new_final = canonical_person_name(new_name)
+    if not old_final or not new_final:
+        raise ValueError("Both old and new names are required.")
+    old_norm = normalize_alias_name(old_final)
+    faces = 0
+    speakers = 0
+    for cluster_id, payload in list(char_map.get("clusters", {}).items()):
+        current = canonical_person_name(str(payload.get("name", cluster_id)))
+        if normalize_alias_name(current) != old_norm:
+            continue
+        assign_character_name(
+            char_map,
+            cluster_id,
+            new_final,
+            priority=priority if priority is not None else bool(payload.get("priority", False)),
+        )
+        add_name_alias(char_map, cluster_id, old_final)
+        payload = char_map.get("clusters", {}).get(cluster_id, {})
+        payload["manual_name_edit"] = {"previous_name": old_final, "new_name": new_final}
+        faces += 1
+    for speaker_id, payload in list(voice_map.get("clusters", {}).items()):
+        current = canonical_person_name(str(payload.get("name", speaker_id)))
+        if normalize_alias_name(current) != old_norm:
+            continue
+        payload["name"] = new_final
+        payload["auto_named"] = False
+        payload["manual_name_edit"] = {"previous_name": old_final, "new_name": new_final}
+        speakers += 1
+    if faces:
+        rebuild_character_map_identities(char_map)
+    return {"faces": faces, "speakers": speakers}
+
+
+def open_name_editor_gui(cfg: dict, char_map: dict, voice_map: dict) -> bool:
+    if not gui_preview_available():
+        warn("Name editor GUI is not available in this session. Use a local desktop session or --rename-face.")
+        return False
+    try:
+        import tkinter as tk
+        from tkinter import messagebox, ttk
+    except Exception as exc:
+        warn(f"Name editor GUI could not start: {exc}")
+        return False
+
+    changed = {"value": False}
+    root = tk.Tk()
+    root.title("AI Series Training - Name Editor")
+    root.geometry("840x560")
+
+    frame = ttk.Frame(root, padding=10)
+    frame.pack(fill="both", expand=True)
+    ttk.Label(
+        frame,
+        text="Select an existing face/speaker name, enter the corrected name, then save.",
+        font=("Segoe UI", 10, "bold"),
+    ).pack(anchor="w", pady=(0, 8))
+
+    tree = ttk.Treeview(frame, columns=("name", "faces", "speakers", "priority"), show="headings", height=16)
+    for column, label, width in (
+        ("name", "Name", 360),
+        ("faces", "Face clusters", 110),
+        ("speakers", "Speaker entries", 120),
+        ("priority", "Main", 70),
+    ):
+        tree.heading(column, text=label)
+        tree.column(column, width=width, anchor="w")
+    tree.pack(fill="both", expand=True)
+
+    edit_frame = ttk.Frame(frame)
+    edit_frame.pack(fill="x", pady=(10, 0))
+    old_var = tk.StringVar()
+    new_var = tk.StringVar()
+    priority_var = tk.BooleanVar(value=False)
+    ttk.Label(edit_frame, text="Selected").grid(row=0, column=0, sticky="w", padx=(0, 6))
+    ttk.Entry(edit_frame, textvariable=old_var, state="readonly", width=34).grid(row=0, column=1, sticky="ew", padx=(0, 10))
+    ttk.Label(edit_frame, text="New name").grid(row=0, column=2, sticky="w", padx=(0, 6))
+    new_entry = ttk.Entry(edit_frame, textvariable=new_var, width=34)
+    new_entry.grid(row=0, column=3, sticky="ew")
+    ttk.Checkbutton(edit_frame, text="Main character", variable=priority_var).grid(row=1, column=3, sticky="w", pady=(8, 0))
+    edit_frame.grid_columnconfigure(1, weight=1)
+    edit_frame.grid_columnconfigure(3, weight=1)
+
+    def refresh() -> None:
+        tree.delete(*tree.get_children())
+        for row in name_editor_rows(char_map, voice_map):
+            tree.insert("", "end", values=(row.get("name", ""), row.get("faces", 0), row.get("speakers", 0), "yes" if row.get("priority") else ""))
+
+    def selected_name() -> str:
+        selection = tree.selection()
+        if not selection:
+            return ""
+        values = tree.item(selection[0], "values")
+        return str(values[0]) if values else ""
+
+    def on_select(_event=None) -> None:
+        name = selected_name()
+        old_var.set(name)
+        new_var.set(name)
+        priority_var.set(any(row.get("name") == name and row.get("priority") for row in name_editor_rows(char_map, voice_map)))
+        new_entry.focus_set()
+        new_entry.selection_range(0, "end")
+
+    def save_selected() -> None:
+        old_name = old_var.get().strip()
+        new_name = new_var.get().strip()
+        if not old_name or not new_name:
+            messagebox.showwarning("Missing name", "Select a row and enter a new name.")
+            return
+        if normalize_alias_name(old_name) == normalize_alias_name(new_name):
+            messagebox.showinfo("No change", "The name is unchanged.")
+            return
+        try:
+            summary = rename_name_everywhere(char_map, voice_map, old_name, new_name, priority=priority_var.get())
+            changed_linked_files, review_count = persist_updates(cfg, char_map, voice_map)
+        except Exception as exc:
+            messagebox.showerror("Save failed", str(exc))
+            return
+        changed["value"] = True
+        refresh()
+        old_var.set(new_name)
+        new_var.set(new_name)
+        messagebox.showinfo(
+            "Saved",
+            f"{old_name} -> {new_name}\n"
+            f"Faces: {summary['faces']} | Speakers: {summary['speakers']}\n"
+            f"Linked files updated: {changed_linked_files}\n"
+            f"Open review cases: {review_count}",
+        )
+
+    button_frame = ttk.Frame(frame)
+    button_frame.pack(fill="x", pady=(10, 0))
+    ttk.Button(button_frame, text="Save rename", command=save_selected).pack(side="left")
+    ttk.Button(button_frame, text="Refresh", command=refresh).pack(side="left", padx=(8, 0))
+    ttk.Button(button_frame, text="Close", command=root.destroy).pack(side="right")
+
+    tree.bind("<<TreeviewSelect>>", on_select)
+    new_entry.bind("<Return>", lambda _event: save_selected())
+    refresh()
+    root.mainloop()
+    return bool(changed["value"])
 
 
 def list_faces(char_map: dict, limit: int, include_named: bool) -> None:
@@ -2176,7 +3542,9 @@ def interactive_face_review(cfg: dict, char_map: dict, voice_map: dict, include_
         if remaining_queue_count > 0:
             info(
                 f"No face clusters were found for review. "
-                f"There are still {remaining_queue_count} speaker/segment review cases in review_queue.json; use --show-queue to inspect them."
+                f"There are still {remaining_queue_count} speaker/segment review cases in review_queue.json; "
+                "use --show-queue for a summary, assign the repeated speaker/face IDs first, "
+                "or use --edit-names to correct existing names in a GUI."
             )
         else:
             info("No face clusters were found for review.")
@@ -2353,7 +3721,7 @@ def set_character_priority(char_map: dict, reference: str, priority: bool) -> tu
     if is_ignored_face_payload(payload):
         raise ValueError(f"{cluster_id} is marked as noface/ignored and cannot be prioritized.")
     if is_background_person_name(final_name):
-        raise ValueError(f"{cluster_id} is marked as statist/minor character and cannot be prioritized.")
+        raise ValueError(f"{cluster_id} is marked as Statist/background role and cannot be prioritized.")
     if not has_manual_person_name(final_name):
         raise ValueError(f"{cluster_id} does not have a manual character name yet and can only be prioritized afterwards.")
 
@@ -2373,13 +3741,57 @@ def update_face_priority(cfg: dict, char_map: dict, voice_map: dict, reference: 
     )
 
 
-def show_review_queue(cfg: dict) -> None:
+def review_queue_summary(items: list[dict]) -> dict[str, object]:
+    speaker_open = 0
+    visible_open = 0
+    speaker_names: Counter[str] = Counter()
+    visible_names: Counter[str] = Counter()
+    scenes: Counter[str] = Counter()
+    for item in items:
+        scene_id = str(item.get("scene_id", "") or "-")
+        scenes[scene_id] += 1
+        speaker_name = str(item.get("speaker_name", "") or "")
+        if looks_auto_named(speaker_name):
+            speaker_open += 1
+            speaker_names[speaker_name or "unknown"] += 1
+        for name in [str(name) for name in item.get("visible_character_names", [])]:
+            if looks_auto_named(name):
+                visible_open += 1
+                visible_names[name or "unknown"] += 1
+    return {
+        "total": len(items),
+        "speaker_open": speaker_open,
+        "visible_open": visible_open,
+        "top_speakers": speaker_names.most_common(8),
+        "top_visible": visible_names.most_common(8),
+        "top_scenes": scenes.most_common(8),
+    }
+
+
+def format_counter_rows(rows: list[tuple[str, int]]) -> str:
+    if not rows:
+        return "-"
+    return ", ".join(f"{name} ({count})" for name, count in rows)
+
+
+def show_review_queue(cfg: dict, limit: int = 50) -> None:
     queue = read_json(resolve_project_path(cfg["paths"]["review_queue"]), {"items": []})
     items = queue.get("items", [])
     if not items:
         info("No open review cases.")
         return
-    for index, item in enumerate(items, start=1):
+    summary = review_queue_summary(items)
+    print(f"Open review cases: {summary['total']}")
+    print(f"Open speaker references: {summary['speaker_open']}")
+    print(f"Open visible-face references: {summary['visible_open']}")
+    print(f"Top unresolved speakers: {format_counter_rows(summary['top_speakers'])}")
+    print(f"Top unresolved visible names: {format_counter_rows(summary['top_visible'])}")
+    print(f"Scenes with most open cases: {format_counter_rows(summary['top_scenes'])}")
+    print("Tip: assign or rename the top repeated speaker/face IDs first, then run 22_refresh_after_manual_review.py.")
+    shown_items = items if limit <= 0 else items[:limit]
+    if len(shown_items) < len(items):
+        print(f"Showing first {len(shown_items)} cases. Use --queue-limit 0 to print all cases.")
+    for index, item in enumerate(shown_items, start=1):
         print("-" * 72)
         print(f"Case {index}")
         print(f"Scene: {item.get('scene_id')}")
@@ -2397,6 +3809,10 @@ def main() -> None:
     effective_limit = 0 if args.all else max(0, args.limit)
     headline("Review Open Assignments")
     cfg = load_config()
+    cfg.setdefault("character_detection", {})["internet_face_lookup_public_image_allow_slow_torch_import"] = True
+    if args.show_queue:
+        show_review_queue(cfg, limit=args.queue_limit)
+        return
     worker_id = shared_worker_id_for_args(args)
     shared_workers = shared_workers_enabled_for_args(cfg, args)
     mark_step_started("05_review_unknowns", "global")
@@ -2440,6 +3856,77 @@ def main() -> None:
         hydrated = hydrate_face_clusters_from_previews(cfg, char_map)
         if hydrated:
             info(f"{hydrated} face clusters hydrated from existing preview folders.")
+        offline_mode = bool(args.offline)
+        rollback_summary = rollback_low_confidence_internet_names(cfg, char_map)
+        if int(rollback_summary.get("restored", 0) or 0):
+            for item in list(rollback_summary.get("items", []) or [])[:8]:
+                info(
+                    "Restored low-confidence public metadata rename: "
+                    f"{item.get('rejected_name')} -> {item.get('restored_name')} "
+                    f"({float(item.get('confidence', 0.0) or 0.0):.0%})"
+                )
+            if int(rollback_summary.get("restored", 0) or 0) > 8:
+                info(f"Restored {int(rollback_summary.get('restored', 0) or 0) - 8} additional low-confidence metadata renames.")
+        if int(rollback_summary.get("cleared_history", 0) or 0):
+            info(
+                "Cleared rejected low-confidence public metadata history for "
+                f"{rollback_summary.get('cleared_history')} already-correct face cluster(s)."
+            )
+        internet_summary: dict[str, object] = {"checked": 0, "renamed": 0, "updates": []}
+        face_lookup_summary: dict[str, object] = {"checked": 0, "assigned": 0, "updates": []}
+        if not offline_mode:
+            info("Online-first mode: trying public metadata and configured face lookup before local review fallback.")
+            if args.no_internet_lookup:
+                info("Public metadata/name lookup skipped by --no-internet-lookup; configured online face lookup can still run.")
+            else:
+                try:
+                    internet_summary = enrich_existing_character_names_from_internet(
+                        cfg,
+                        char_map,
+                        force_refresh=bool(args.refresh_internet_lookup),
+                    )
+                except Exception as exc:
+                    warn(f"Public character-name lookup failed: {exc}. Continuing with local/offline review data.")
+                    internet_summary = {"checked": 0, "renamed": 0, "updates": [], "error": str(exc)}
+                updates = internet_summary.get("updates", []) if isinstance(internet_summary, dict) else []
+                if updates:
+                    for update in updates[:8]:
+                        info(
+                            "Public metadata completed character name: "
+                            f"{update.get('old_name')} -> {update.get('new_name')} "
+                            f"({float(update.get('confidence', 0.0) or 0.0):.0%})"
+                        )
+                    if len(updates) > 8:
+                        info(f"Public metadata completed {len(updates) - 8} additional character names.")
+                elif int(internet_summary.get("checked", 0) or 0):
+                    info(f"Public metadata checked {internet_summary.get('checked')} existing character name(s); no safe completion found.")
+            try:
+                face_lookup_summary = apply_online_face_lookup(cfg, char_map, offline=False)
+            except Exception as exc:
+                warn(f"Online face lookup failed: {exc}. Continuing with local/offline review data.")
+                face_lookup_summary = {"checked": 0, "assigned": 0, "updates": [], "error": str(exc)}
+            if int(face_lookup_summary.get("assigned", 0) or 0):
+                info(
+                    f"Online face lookup assigned {face_lookup_summary.get('assigned')} face cluster(s) "
+                    "before manual review."
+                )
+            elif face_lookup_summary.get("builtin_public_images"):
+                info(
+                    "Built-in public-image face lookup is available without login/API credentials "
+                    f"({face_lookup_summary.get('builtin_reference_images', 0)} public reference image embeddings); "
+                    "no safe 95% match was found."
+                )
+            elif face_lookup_summary.get("missing_lookup_backend"):
+                info(
+                    "Online face lookup is available but no command or API endpoint is configured. "
+                    "Set SERIES_FACE_LOOKUP_COMMAND, SERIES_FACE_LOOKUP_URL, "
+                    "character_detection.internet_face_lookup_command, or "
+                    "character_detection.internet_face_lookup_url to enable face-image upload lookup."
+                )
+            if not int(internet_summary.get("renamed", 0) or 0) and not int(face_lookup_summary.get("assigned", 0) or 0):
+                info("No online assignment was applied; continuing with local/offline review checks.")
+        else:
+            info("Offline mode: public metadata and online face-image lookup are skipped for this run.")
         auto_ignored_false_faces = auto_ignore_false_positive_face_clusters(cfg, char_map)
         if auto_ignored_false_faces:
             info(
@@ -2469,21 +3956,27 @@ def main() -> None:
             )
             if auto_statist_marked:
                 info(f"Marked {len(auto_statist_marked)} low-activity face clusters as 'statist'.")
-        if (
-            seeded_voices
-            or normalized_faces
+        needs_linked_sync = (
+            normalized_faces
             or normalized_voices
-            or hydrated
+            or int(rollback_summary.get("restored", 0) or 0)
+            or int(rollback_summary.get("cleared_history", 0) or 0)
+            or int(internet_summary.get("renamed", 0) or 0)
+            or int(face_lookup_summary.get("assigned", 0) or 0)
             or auto_ignored_false_faces
             or auto_matched.get("matched_faces", 0)
             or auto_matched.get("matched_speakers", 0)
             or auto_statist_marked
-        ):
+        )
+        if needs_linked_sync:
             changed_linked_files, review_count = persist_updates(cfg, char_map, voice_map)
             info(
                 f"Maps synchronized: {changed_linked_files + int(auto_matched.get('linked_files', 0))} linked-segment files updated, "
                 f"{review_count} open review cases."
             )
+        elif seeded_voices or hydrated:
+            review_count = persist_maps_only(cfg, char_map, voice_map)
+            info(f"Maps saved without segment rewrite, {review_count} open review cases.")
 
         if args.assign_face:
             assigned_name = "noface" if args.ignore else (args.name or "").strip()
@@ -2507,6 +4000,10 @@ def main() -> None:
             update_face_priority(cfg, char_map, voice_map, args.clear_priority, False)
             action = "clear_priority"
             completion_payload = {"reference": args.clear_priority, "priority": False}
+        elif args.edit_names:
+            changed = open_name_editor_gui(cfg, char_map, voice_map)
+            action = "edit_names"
+            completion_payload = {"changed": bool(changed)}
         elif args.auto_mark_statists:
             if auto_statist_marked:
                 ok(f"{len(auto_statist_marked)} low-activity face clusters were marked as 'statist'.")
@@ -2536,7 +4033,7 @@ def main() -> None:
             print_created_face_names(char_map)
             action = "created_faces"
         elif args.show_queue:
-            show_review_queue(cfg)
+            show_review_queue(cfg, limit=args.queue_limit)
             action = "show_queue"
         elif not is_interactive_session():
             info("No interactive console detected. Showing unnamed face clusters with preview paths instead.")

@@ -202,6 +202,26 @@ class ReviewPreviewTests(unittest.TestCase):
         with mock.patch("sys.argv", ["05_review_unknowns.py", "--no-open-previews"]):
             self.assertFalse(STEP06.parse_args().open_previews)
 
+        with mock.patch("sys.argv", ["05_review_unknowns.py", "--offline"]):
+            self.assertTrue(STEP06.parse_args().offline)
+
+        with mock.patch("sys.argv", ["05_review_unknowns.py", "--no-internet-lookup"]):
+            parsed = STEP06.parse_args()
+            self.assertTrue(parsed.no_internet_lookup)
+            self.assertFalse(parsed.offline)
+
+        with mock.patch("sys.argv", ["05_review_unknowns.py", "--edit-names"]):
+            self.assertTrue(STEP06.parse_args().edit_names)
+
+        with mock.patch("sys.argv", ["05_review_unknowns.py", "--deep-online-face-lookup"]):
+            self.assertTrue(STEP06.parse_args().deep_online_face_lookup)
+
+        with mock.patch("sys.argv", ["05_review_unknowns.py", "--show-queue", "--queue-limit", "0"]):
+            self.assertEqual(STEP06.parse_args().queue_limit, 0)
+
+    def test_internet_face_lookup_allows_deep_public_image_lookup_by_default(self) -> None:
+        self.assertTrue(STEP06.internet_lookup_config({"character_detection": {}})["face_lookup_public_image_allow_slow_torch"])
+
     def test_gui_preview_unavailable_on_headless_linux(self) -> None:
         with mock.patch.object(STEP06, "current_os", return_value="linux"), mock.patch.dict(
             os.environ,
@@ -209,6 +229,340 @@ class ReviewPreviewTests(unittest.TestCase):
             clear=False,
         ):
             self.assertFalse(STEP06.gui_preview_available())
+
+    def test_internet_lookup_completes_partial_character_name_and_keeps_alias(self) -> None:
+        char_map = {
+            "clusters": {
+                "face_001": {"name": "Babe", "embedding": [1.0, 0.0], "samples": 2},
+                "face_002": {"name": "Babe", "embedding": [0.98, 0.02], "samples": 1},
+            },
+            "aliases": {},
+        }
+        cfg = {
+            "character_detection": {
+                "internet_name_lookup": True,
+            }
+        }
+
+        with mock.patch.object(
+            STEP06,
+            "internet_name_candidates",
+            return_value=[
+                {
+                    "label": "Babe Carano",
+                    "confidence": 0.95,
+                    "source": "wikidata",
+                    "url": "https://www.wikidata.org/wiki/Q-test",
+                }
+            ],
+        ):
+            summary = STEP06.enrich_existing_character_names_from_internet(cfg, char_map)
+
+        self.assertEqual(summary["renamed"], 1)
+        self.assertEqual(char_map["clusters"]["face_001"]["name"], "Babe Carano")
+        self.assertEqual(char_map["clusters"]["face_002"]["name"], "Babe Carano")
+        self.assertIn("babe", char_map["clusters"]["face_001"]["aliases"])
+        self.assertIn("babe", char_map["aliases"])
+
+    def test_internet_lookup_does_not_rename_below_minimum_confidence(self) -> None:
+        char_map = {
+            "clusters": {
+                "face_001": {"name": "Triple G", "embedding": [1.0, 0.0], "samples": 2},
+            },
+            "aliases": {},
+        }
+
+        with mock.patch.object(
+            STEP06,
+            "internet_name_candidates",
+            return_value=[
+                {
+                    "label": "Babe & Triple G",
+                    "confidence": 0.94,
+                    "source": "fandom",
+                }
+            ],
+        ):
+            summary = STEP06.enrich_existing_character_names_from_internet({"character_detection": {}}, char_map)
+
+        self.assertEqual(summary["renamed"], 0)
+        self.assertEqual(char_map["clusters"]["face_001"]["name"], "Triple G")
+
+    def test_internet_lookup_renames_at_ninety_five_percent_confidence(self) -> None:
+        char_map = {
+            "clusters": {
+                "face_001": {"name": "Babe", "embedding": [1.0, 0.0], "samples": 2},
+            },
+            "aliases": {},
+        }
+
+        with mock.patch.object(
+            STEP06,
+            "internet_name_candidates",
+            return_value=[
+                {
+                    "label": "Babe Carano",
+                    "confidence": 0.95,
+                    "source": "wikidata",
+                }
+            ],
+        ):
+            summary = STEP06.enrich_existing_character_names_from_internet({"character_detection": {}}, char_map)
+
+        self.assertEqual(summary["renamed"], 1)
+        self.assertEqual(char_map["clusters"]["face_001"]["name"], "Babe Carano")
+
+    def test_low_confidence_internet_rename_is_rolled_back(self) -> None:
+        char_map = {
+            "clusters": {
+                "face_001": {
+                    "name": "Babe & Triple G",
+                    "internet_name_lookup": {
+                        "previous_name": "Triple G",
+                        "resolved_name": "Babe & Triple G",
+                        "confidence": 0.74,
+                    },
+                },
+            },
+            "aliases": {},
+        }
+
+        summary = STEP06.rollback_low_confidence_internet_names({"character_detection": {}}, char_map)
+
+        self.assertEqual(summary["restored"], 1)
+        self.assertEqual(char_map["clusters"]["face_001"]["name"], "Triple G")
+
+    def test_low_confidence_internet_history_is_cleared_when_already_restored(self) -> None:
+        char_map = {
+            "clusters": {
+                "face_001": {
+                    "name": "Triple G",
+                    "internet_name_lookup": {
+                        "previous_name": "Triple G",
+                        "resolved_name": "Babe & Triple G",
+                        "confidence": 0.74,
+                    },
+                },
+            },
+            "aliases": {},
+        }
+
+        summary = STEP06.rollback_low_confidence_internet_names({"character_detection": {}}, char_map)
+
+        self.assertEqual(summary["restored"], 0)
+        self.assertEqual(summary["cleared_history"], 1)
+        self.assertNotIn("internet_name_lookup", char_map["clusters"]["face_001"])
+        self.assertEqual(char_map["clusters"]["face_001"]["internet_name_lookup_rejected"][0]["rejected_name"], "Babe & Triple G")
+
+    def test_online_face_lookup_can_use_http_endpoint(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            image_path = Path(tmpdir) / "face_001_crop.jpg"
+            image_path.write_bytes(b"fake-jpeg")
+
+            class FakeResponse:
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, exc_type, exc, tb):
+                    return False
+
+                def read(self) -> bytes:
+                    return b'{"matches":[{"name":"Babe Carano","confidence":1.0,"source":"mock-api"}]}'
+
+            captured: dict[str, str] = {}
+
+            def fake_urlopen(request, timeout=0):
+                captured["url"] = request.full_url
+                captured["body"] = request.data.decode("utf-8")
+                return FakeResponse()
+
+            cfg = {"character_detection": {"internet_face_lookup_url": "https://lookup.example/api"}}
+            with mock.patch.object(STEP06.urllib.request, "urlopen", side_effect=fake_urlopen):
+                matches = STEP06.run_online_face_lookup_http(
+                    "https://lookup.example/api",
+                    image_path,
+                    "face_001",
+                    cfg,
+                )
+
+        self.assertEqual(matches[0]["label"], "Babe Carano")
+        self.assertEqual(matches[0]["confidence"], 1.0)
+        self.assertEqual(captured["url"], "https://lookup.example/api")
+        self.assertIn("image_base64", captured["body"])
+
+    def test_builtin_public_image_lookup_scores_local_embeddings_without_api_key(self) -> None:
+        payload = {"embedding": [1.0, 0.0, 0.0]}
+        bank = [
+            {"label": "Babe Carano", "embedding": [0.99, 0.01, 0.0], "url": "https://example.test/babe.jpg"},
+            {"label": "Kenzie Bell", "embedding": [0.1, 0.9, 0.0], "url": "https://example.test/kenzie.jpg"},
+        ]
+        cfg = {
+            "character_detection": {
+                "internet_face_lookup_public_image_min_similarity": 0.72,
+                "internet_face_lookup_public_image_min_margin": 0.05,
+            }
+        }
+
+        matches = STEP06.run_builtin_public_image_face_lookup(payload, bank, cfg)
+
+        self.assertEqual(matches[0]["label"], "Babe Carano")
+        self.assertEqual(matches[0]["confidence"], 1.0)
+        self.assertEqual(matches[0]["source"], "builtin_public_image_embedding")
+
+    def test_name_editor_rename_updates_face_and_speaker_names(self) -> None:
+        char_map = {
+            "clusters": {
+                "face_001": {"name": "Babe", "priority": True},
+                "face_002": {"name": "Babe"},
+            },
+            "aliases": {},
+        }
+        voice_map = {"clusters": {"speaker_001": {"name": "Babe", "auto_named": True}}, "aliases": {}}
+
+        summary = STEP06.rename_name_everywhere(char_map, voice_map, "Babe", "Babe Carano", priority=True)
+
+        self.assertEqual(summary, {"faces": 2, "speakers": 1})
+        self.assertEqual(char_map["clusters"]["face_001"]["name"], "Babe Carano")
+        self.assertEqual(char_map["clusters"]["face_002"]["name"], "Babe Carano")
+        self.assertEqual(voice_map["clusters"]["speaker_001"]["name"], "Babe Carano")
+        self.assertFalse(voice_map["clusters"]["speaker_001"]["auto_named"])
+
+    def test_auto_match_known_faces_can_rescue_background_statist_clusters(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            char_map = {
+                "clusters": {
+                    "face_known": {
+                        "name": "Babe Carano",
+                        "embedding": [1.0, 0.0, 0.0],
+                        "samples": 4,
+                        "scene_count": 5,
+                        "detection_count": 20,
+                    },
+                    "face_statist": {
+                        "name": "statist",
+                        "embedding": [0.99, 0.01, 0.0],
+                        "samples": 1,
+                        "scene_count": 1,
+                        "detection_count": 2,
+                    },
+                },
+                "aliases": {},
+            }
+            voice_map = {"clusters": {}, "aliases": {}}
+            cfg = {
+                "paths": {"linked_segments": str(Path(tmpdir) / "linked")},
+                "character_detection": {
+                    "review_known_face_threshold": 0.70,
+                    "review_known_face_margin": 0.02,
+                    "review_known_face_min_consensus": 2,
+                    "review_known_face_strong_match_threshold": 0.84,
+                    "review_match_background_faces": True,
+                },
+            }
+
+            summary = STEP06.auto_match_known_faces(cfg, char_map, voice_map, include_background=True)
+
+        self.assertEqual(summary["matched"], 1)
+        self.assertNotIn("face_statist", char_map["clusters"])
+        self.assertIn("face_statist", char_map["clusters"]["face_known"]["merged_cluster_ids"])
+
+    def test_speaker_assignment_uses_direct_speaker_face_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            linked_root = Path(tmpdir) / "linked"
+            linked_root.mkdir(parents=True, exist_ok=True)
+            rows = [
+                {
+                    "speaker_cluster": "speaker_001",
+                    "speaker_face_cluster": "face_babe",
+                    "visible_face_clusters": ["face_babe", "face_other"],
+                },
+                {
+                    "speaker_cluster": "speaker_001",
+                    "speaker_face_cluster": "face_babe",
+                    "visible_face_clusters": ["face_other"],
+                },
+            ]
+            STEP06.write_json(linked_root / "episode_linked_segments.json", rows)
+            char_map = {
+                "clusters": {
+                    "face_babe": {"name": "Babe Carano"},
+                    "face_other": {"name": "Kenzie Bell"},
+                }
+            }
+            voice_map = {"clusters": {"speaker_001": {"name": "speaker_001", "auto_named": True}}, "aliases": {}}
+            cfg = {
+                "paths": {"linked_segments": str(linked_root)},
+                "character_detection": {
+                    "speaker_face_cluster_vote_weight": 4.0,
+                    "speaker_single_visible_vote_weight": 1.0,
+                    "speaker_face_link_min_votes": 8.0,
+                    "speaker_face_link_min_share": 0.45,
+                    "speaker_face_link_min_margin": 3.0,
+                },
+            }
+
+            summary = STEP06.auto_link_speakers_from_single_visible_faces(cfg, char_map, voice_map)
+
+        self.assertEqual(summary["matched"], 1)
+        self.assertEqual(voice_map["clusters"]["speaker_001"]["linked_face_cluster"], "face_babe")
+        self.assertEqual(voice_map["clusters"]["speaker_001"]["name"], "Babe Carano")
+
+    def test_review_queue_summary_counts_repeated_unresolved_ids(self) -> None:
+        items = [
+            {
+                "scene_id": "scene_001",
+                "speaker_name": "speaker_001",
+                "visible_character_names": ["Babe Carano", "face_001"],
+            },
+            {
+                "scene_id": "scene_001",
+                "speaker_name": "Babe Carano",
+                "visible_character_names": ["face_001", "face_002"],
+            },
+        ]
+
+        summary = STEP06.review_queue_summary(items)
+
+        self.assertEqual(summary["total"], 2)
+        self.assertEqual(summary["speaker_open"], 1)
+        self.assertEqual(summary["visible_open"], 3)
+        self.assertEqual(summary["top_speakers"][0], ("speaker_001", 1))
+        self.assertEqual(summary["top_visible"][0], ("face_001", 2))
+
+    def test_hydrate_face_clusters_adds_queue_referenced_preview_dirs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            previews = root / "previews"
+            missing_preview = previews / "face_999"
+            existing_preview = previews / "face_known"
+            missing_preview.mkdir(parents=True)
+            existing_preview.mkdir(parents=True)
+            (missing_preview / "scene_001_crop.jpg").write_text("image", encoding="utf-8")
+            queue_path = root / "review_queue.json"
+            STEP06.write_json(
+                queue_path,
+                {
+                    "items": [
+                        {
+                            "visible_face_clusters": ["face_999"],
+                            "visible_character_names": ["face_999"],
+                        }
+                    ]
+                },
+            )
+            cfg = {
+                "paths": {
+                    "character_previews": str(previews),
+                    "review_queue": str(queue_path),
+                }
+            }
+            char_map = {"clusters": {"face_known": {"name": "Babe Carano"}}, "aliases": {}}
+
+            added = STEP06.hydrate_face_clusters_from_previews(cfg, char_map)
+
+        self.assertEqual(added, 1)
+        self.assertIn("face_999", char_map["clusters"])
+        self.assertEqual(char_map["clusters"]["face_999"]["samples"], 1)
 
 
 if __name__ == "__main__":
