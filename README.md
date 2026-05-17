@@ -50,8 +50,17 @@ The repository root contains the numbered pipeline scripts directly beside `ai_s
 - fresh GitHub clones include the required `ai_series_project/tmp` placeholder so the local test suite can run without manual folder creation
 - optional analysis/export tools are now registered as a generation toolkit and run automatically at pre-training, pre-generation, post-story, post-render, post-quality-gate, and post-export phases
 - `05_review_unknowns.py` shows known-character quick-assign counts from the actual identity total, including automatically merged/recognized face clusters
+- `05_review_unknowns.py` now performs a public metadata/name lookup before manual review to complete partial labels such as `Babe` to `Babe Carano`; name completion is only written at `95%` confidence or higher, and older lower-confidence completions are rolled back on the next run
+- `05_review_unknowns.py` can optionally upload preview face crops to a configured lookup command or HTTP endpoint before manual review; when no private service is configured, it also tries a built-in public-image lookup that downloads public character images and compares them locally without login/API credentials
+- `05_review_unknowns.py --edit-names` opens a Tk name editor for correcting existing face and speaker names directly
+- `05_review_unknowns.py` also scans existing `statist`/background clusters against known local identity embeddings before opening manual review, so wrongly parked known faces can be rescued automatically
+- `05_review_unknowns.py` now uses direct `speaker_face_cluster` evidence from linked segments to assign speaker entries more reliably, instead of relying only on single-visible-face scenes
 - `06_manage_character_relationships.py` is now a main pipeline step after review; it opens a Tk GUI for character groups, relationships, and per-series input groups
 - manual relationship data is stored in `ai_series_project/characters/relationships.json` and is fed into the trained series model, episode prompts, and series bible
+- `08b_analyze_behavior_model.py` now builds `generation/model/behavior_model.json` from reviewed transcript, speaker, character, scene, and relationship data, with a readable summary at `generation/model/behavior_model_summary.md`
+- generated scenes now carry `scene_purpose`, `conflict`, `character_intents`, behavior constraints, dialogue-style constraints, comedy/callback hints, and per-line voice metadata for downstream voice/lip-sync backends
+- `17_render_episode.py` now writes a versioned lip-sync backend interface into scene packages so Wav2Lip, MuseTalk, LatentSync, or future runners can be selected by config priority
+- `18_quality_gate.py` now warns about missing behavior context, template-heavy dialogue, missing voice metadata, missing voice-clone output, missing lip-sync output, and missing character reference data
 - `18_quality_gate.py` keeps running regeneration/rerender cycles until the gate passes or the configured retry-cycle limit is reached
 - final output quality now depends on the real local backend stack being ready: SDXL/diffusers for frames, LTX/diffusers for video, XTTS for cloned dialogue, and Wav2Lip for lip-sync
 
@@ -87,10 +96,11 @@ Run the numbered scripts from the repository root.
 - `02_split_scenes.py`
 - `03_diarize_and_transcribe.py`
 - `04_link_faces_and_speakers.py`
-- `05_review_unknowns.py`
+- `05_review_unknowns.py`: review GUI plus full local scan, false-face cleanup, public metadata name completion, built-in public-image face lookup, optional custom online face lookup, speaker-face auto-linking, GUI name editor, and known-face/statist rescue before manual input
 - `06_manage_character_relationships.py`: Tk GUI for character groups, relationships, and multiple source inputs
 - `07_build_dataset.py`
 - `08_train_series_model.py`
+- `08b_analyze_behavior_model.py`: analyzes speaking style, relationship behavior, scene pacing, episode structure, and dialogue patterns
 - `09_prepare_foundation_training.py`
 - `10_train_foundation_models.py`
 - `11_train_adapter_models.py`
@@ -136,13 +146,14 @@ Run the numbered scripts from the repository root.
 
 If your review data is already ready, the intended main order is:
 
-`00 -> 06 -> 07 -> 08 -> 09 -> 10 -> 11 -> 12 -> 13 -> 14 -> 15 -> 16 -> 17 -> 18 -> (19 if weak scenes are queued) -> 20 -> 21`
+`00 -> 06 -> 07 -> 08 -> 08b -> 09 -> 10 -> 11 -> 12 -> 13 -> 14 -> 15 -> 16 -> 17 -> 18 -> (19 if weak scenes are queued) -> 20 -> 21`
 
 That means:
 
 - downloads and setup happen in `00`
 - character groups and relationships are reviewed in `06` after faces/speakers have names
 - dataset building and all training stages happen after review and relationship setup
+- `08b` analyzes behavior after the base series model exists and before foundation/backend training and generation
 - backend fine-tune runs happen before new episode generation
 - storyboard backend materialization happens before render
 - render, quality gate, conditional regeneration, bible, and export happen only after generation
@@ -152,7 +163,7 @@ That means:
 
 For a raw new episode source, the full order is:
 
-`00 -> 01 -> 02 -> 03 -> 04 -> 05 -> 06 -> 07 -> 08 -> 09 -> 10 -> 11 -> 12 -> 13 -> 14 -> 15 -> 16 -> 17 -> 18 -> (19 if weak scenes are queued) -> 20 -> 21`
+`00 -> 01 -> 02 -> 03 -> 04 -> 05 -> 06 -> 07 -> 08 -> 08b -> 09 -> 10 -> 11 -> 12 -> 13 -> 14 -> 15 -> 16 -> 17 -> 18 -> (19 if weak scenes are queued) -> 20 -> 21`
 
 `24_process_next_episode.py` runs that complete chain and starts with `00` automatically.
 
@@ -197,6 +208,28 @@ python 05_review_unknowns.py
 python 06_manage_character_relationships.py
 ```
 
+To force a completely offline review run:
+
+```powershell
+python 05_review_unknowns.py --offline
+```
+
+Without `--offline`, `05_review_unknowns.py` is online-first: it tries public text metadata, the built-in no-login public-image face lookup, and any configured face-image lookup backend before local/offline review checks. If the internet or lookup backend is unavailable, the script warns and continues with local review data. `--no-internet-lookup` only disables the public text metadata lookup; use `--offline` when no online lookup should be attempted at all. Deep public-image matching is enabled by default, so Torch/FaceNet may be loaded during this step.
+
+To correct existing face and speaker names in a small GUI:
+
+```powershell
+python 05_review_unknowns.py --edit-names
+```
+
+If `05_review_unknowns.py` reports thousands of open review cases, inspect the summary instead of printing the full queue:
+
+```powershell
+python 05_review_unknowns.py --show-queue
+```
+
+The queue is segment-based, so thousands of rows usually mean repeated speaker IDs or visible face IDs. Rename or assign the most repeated IDs first, then run `python 22_refresh_after_manual_review.py`; one correct assignment can clear many segment cases.
+
 Or full orchestration:
 
 ```powershell
@@ -233,8 +266,11 @@ The project is configured for quality-first finished-episode generation:
 - delegated quality-backend runners now resolve project-local backend scripts from the project root even when scene packages run from nested working directories
 - project-local quality backends now prefer the platform-correct FFmpeg binary from `ai_series_project/runtime/host_runtime/ffmpeg/bin` before falling back to older tool copies
 - render-time scene duration now respects the planned per-scene runtime from episode generation instead of compressing most scenes into a short 8 to 22 second window
+- scene packages now include behavior-model guidance and per-line voice metadata (`emotion`, `pace`, `energy`, `target_duration_seconds`, and `voice_reference_priority`) so voice runners can clone speech with clearer intent and timing
+- lip-sync packages now expose `lipsync_backends.preferred_order`, `allow_fallback`, and `min_sync_score`; Quality-First keeps fallback lip-sync blocked unless explicitly allowed locally
 - batch and quality-gate output messages now include the generated display title, for example `Folge 19: ... (folge_19)`, instead of relying only on the technical episode ID
 - the quality score can reach `100%` only when generated scene video/lip-sync, cloned dialogue audio, scene mastering, and style/continuity support are all complete
+- the quality gate also checks behavior constraints, scene purpose/conflict, relationship context, generic template-dialogue share, voice metadata, voice references, voice-clone output, and lip-sync output
 - `16_run_storyboard_backend.py` now fails if `external_backends.storyboard_scene_runner` does not create a real frame; it no longer creates blue/filter-style seed-frame stand-ins by default
 - `17_render_episode.py` no longer writes local motion fallback clips into the same production paths used by the real video backend, so backend runners are not skipped by pre-existing fake outputs
 - `17_render_episode.py` now defers quality-first audio to `finished_episode_voice_runner`; local preview TTS/silence is not used as the final voice path
@@ -245,6 +281,7 @@ The project is configured for quality-first finished-episode generation:
 Important:
 
 - if the real backend path is not ready, the pipeline should fail early instead of pretending a fallback render is a final TV-quality episode
+- use voice cloning and lip sync for real people only when you have the required rights, consent, and legal basis for the source material and generated output
 - `24_process_next_episode.py` refreshes `00_prepare_runtime.py` automatically when an old autosave/config still points at rejected fallback backends
 - Wav2Lip still requires a real checkpoint file such as `wav2lip_gan.pth` under `ai_series_project/tools/quality_models/lipsync/` or via `SERIES_WAV2LIP_CHECKPOINT`
 - the diagnostic fallback backends are useful for plumbing and iteration, but they are still not equal to real original-episode-quality image/video/lip-sync generation
@@ -267,19 +304,39 @@ Important areas:
 
 - `paths.*`: project folders
 - `paths.character_relationships`: portable manual relationship file, defaulting to `characters/relationships.json`
+- `paths.behavior_model` and `paths.behavior_model_summary`: outputs written by `08b_analyze_behavior_model.py`
 - `runtime.*`: device, FFmpeg GPU preference, torch index URL
 - `distributed.*`: NAS/shared-worker lease timing
+- `character_detection.internet_name_lookup`: public metadata lookup in `05_review_unknowns.py` for completing partial character labels; only suggestions with at least `95%` confidence are written
+- `character_detection.internet_name_lookup_context_terms`: optional show/title terms to improve name completion when filenames do not clearly contain the series name
+- `character_detection.internet_face_lookup`: optional online face-image lookup in `05_review_unknowns.py`; configure either `SERIES_FACE_LOOKUP_COMMAND`/`character_detection.internet_face_lookup_command` or `SERIES_FACE_LOOKUP_URL`/`character_detection.internet_face_lookup_url`
+- `character_detection.internet_face_lookup_token_env`: optional bearer-token environment variable for private face-lookup APIs, defaulting to `SERIES_FACE_LOOKUP_TOKEN`
+- `character_detection.internet_face_lookup_builtin_public_images`: built-in no-login public-image lookup; it downloads public character images from public metadata results, embeds them locally, and only assigns a face when the local similarity/margin rules are met
+- `character_detection.review_match_background_faces`: lets the local embedding scan rescue known faces that were previously marked as `statist`
+- `character_detection.speaker_face_cluster_vote_weight` and `speaker_face_link_*`: tune how strongly direct face/speaker evidence can auto-name speaker clusters
 - `generation_toolkit.*`: automatic use of optional analysis, continuity, pacing, subtitle, metadata, review, and export helper tools during episode generation
 - `transcription.language`: keep `auto` for new series unless you intentionally want to force a specific source language
 - `transcription.auto_language_forced_probe`: enabled by default so language detection compares candidate transcriptions instead of trusting one Whisper hint
 - `generation.allow_fallbacks`: must stay `false` for final generation
 - `storyboard_backend.*`: controls whether local storyboard seed-frame fallbacks are allowed; quality-first defaults keep them disabled
 - `render.allow_local_motion_fallback` and `render.require_*`: keep production output paths reserved for real generated video, voice clone, and lip-sync outputs
+- `lipsync_backends.preferred_order`: priority list for lip-sync runners, defaulting to `musetalk`, `latentsync`, then `wav2lip`
+- `lipsync_backends.allow_fallback`: keep `false` for Quality-First so missing lip-sync is reported instead of silently muxed
+- `lipsync_backends.min_sync_score`: reserved threshold for backend sync metrics; current local checks expose the field even when a backend cannot yet calculate it
 - `foundation_training.*`, `adapter_training.*`, `fine_tune_training.*`, `backend_fine_tune.*`
 - `external_backends.*`: runner templates and project-local backend commands
 - `external_backends.*.environment`: set real generation commands for storyboard/image/video/lip-sync; fallback scripts such as `project_local_video_backend.py` are blocked by default in quality-first mode
 - `release_mode.*`: quality gate thresholds and retry behavior, including `retry_until_pass`, `max_auto_retry_cycles`, and full-rerender retries when no weak-scene queue remains
 - `quality_backend_assets.*`: project-local backend tool/model targets
+
+### Behavior Model
+
+`08b_analyze_behavior_model.py` reads available dataset rows, transcripts, speaker libraries, character names, and `characters/relationships.json`. It writes:
+
+- `ai_series_project/generation/model/behavior_model.json`
+- `ai_series_project/generation/model/behavior_model_summary.md`
+
+The model contains per-character speaking style, relationship behavior, scene pacing, episode-structure estimates, and dialogue patterns. Missing data does not stop the pipeline; diagnostics are written into the summary and safe defaults are used. `14_generate_episode.py` uses this model to add scene purpose, conflict, character intents, behavior constraints, dialogue-style constraints, callback targets, and voice metadata to generated scenes.
 
 ### Character Groups And Relationships
 
@@ -315,7 +372,7 @@ python -m unittest discover -s ai_series_project\tests -v
 Useful smoke checks:
 
 ```powershell
-python -m py_compile 00_prepare_runtime.py 06_manage_character_relationships.py 22_refresh_after_manual_review.py 23_generate_finished_episodes.py 24_process_next_episode.py ai_series_project\support_scripts\pipeline_common.py ai_series_project\support_scripts\generation_toolkit.py ai_series_project\support_scripts\configure_quality_backends.py ai_series_project\support_scripts\prepare_quality_backends.py ai_series_project\support_scripts\manage_character_relationships.py
+python -m py_compile 00_prepare_runtime.py 06_manage_character_relationships.py 08_train_series_model.py 08b_analyze_behavior_model.py 14_generate_episode.py 17_render_episode.py 18_quality_gate.py 22_refresh_after_manual_review.py 23_generate_finished_episodes.py 24_process_next_episode.py ai_series_project\support_scripts\pipeline_common.py ai_series_project\support_scripts\generation_toolkit.py ai_series_project\support_scripts\configure_quality_backends.py ai_series_project\support_scripts\prepare_quality_backends.py ai_series_project\support_scripts\manage_character_relationships.py
 ```
 
 ## Known Limitations
@@ -323,6 +380,8 @@ python -m py_compile 00_prepare_runtime.py 06_manage_character_relationships.py 
 - project-local fallback image/video generation still does not equal strong dedicated TV-quality generation backends
 - project-local lip-sync is still weaker than a full dedicated production lip-sync stack
 - project-local XTTS voice cloning still depends on clean speaker mapping and real reference segments; speakers with zero linked voice data still cannot clone correctly
+- behavior analysis is heuristic and depends on reviewed transcript/speaker quality; it improves scene planning metadata but is not a replacement for a real large generative model or dedicated acting/performance evaluation
+- character-style similarity and lip-sync confidence are exposed as clean placeholder metrics until real external backends return measurable scores
 - when backend scene-video or scene-audio generation still fails in quality-first mode, rendering stops with explicit missing-output details instead of exporting a fake final episode
 - if external runners fail repeatedly, the quality gate will keep rejecting the episode even when the render technically finishes
 - shared NAS runs still depend on file-system stability and can be slower for large backend/model downloads
@@ -330,7 +389,7 @@ python -m py_compile 00_prepare_runtime.py 06_manage_character_relationships.py 
 
 ## Finished
 
-- the numbered main scripts now live directly in the repository root and are continuous with no gaps: `00` through `24`
+- the numbered main scripts now live directly in the repository root; `08b_analyze_behavior_model.py` is an explicit substep between base model training and foundation/backend training
 - `06_manage_character_relationships.py` is now the official relationship/group review step between character review and dataset building
 - `ai_series_project/` now contains the project internals only: configs, data, runtime state, tests, support scripts, backend tools, training artifacts, and generated outputs
 - `00_prepare_runtime.py` now owns the normal setup flow completely, including folder creation, backend config, and project-local downloads
@@ -345,10 +404,14 @@ python -m py_compile 00_prepare_runtime.py 06_manage_character_relationships.py 
 - `03_diarize_and_transcribe.py` now stores Whisper and SpeechBrain model data only inside `ai_series_project/` and refreshes stale language caches with process version `12`
 - quality-first render now blocks local seed-frame, local motion, system-TTS, and silent fallback paths from being labeled as finished generated episodes
 - forced voice cloning ignores stale per-line audio files and regenerates dialogue through XTTS/voice-clone output instead of reusing old TTS artifacts
+- `05_review_unknowns.py` now supports `--offline`, `--edit-names`, built-in public-image face lookup without login/API credentials, optional uploaded face-crop lookup, `95%` minimum public name completion, cleanup/rollback of older low-confidence public metadata renames, and stronger speaker auto-linking from direct face/speaker evidence
+- `08b_analyze_behavior_model.py`, behavior-aware scene metadata, voice metadata propagation, and stricter content checks in `18_quality_gate.py` are now part of the main generation path
 
 ## In Progress
 
 - improving the real external image/video backend path so generated scenes replace still-frame composites completely
+- wiring real measurable lip-sync scores and character-style similarity scores back from external backends into the Quality Gate
+- improving ready-made adapters for online face recognition services; the project currently exposes a portable command/API hook, but does not ship private service credentials
 - improving project-local XTTS voice cloning coverage so scenes have natural speech from cloned character voices
 - improving render-time diagnostics so missing backend outputs point directly to the failing runner logs and expected target files
 - improving the project-local lip-sync path beyond simple fallback mux behavior

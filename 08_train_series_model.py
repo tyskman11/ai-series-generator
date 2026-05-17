@@ -9,6 +9,7 @@ if str(PROJECT_DIR) not in sys.path:
     sys.path.insert(0, str(PROJECT_DIR))
 
 import argparse
+import itertools
 import math
 import random
 import re
@@ -847,6 +848,8 @@ def build_series_model(dataset_files: list, cfg: dict, char_map: dict) -> dict:
         "average_segment_duration_seconds": round(average_segment_duration, 3),
         "markov_order": 2,
         "markov_chain": markov_chain,
+        "behavior_model_path": str(behavior_model_path(cfg)),
+        "behavior_model": load_behavior_model(cfg),
         "generation_defaults": cfg.get("generation", {}),
     }
 
@@ -1169,6 +1172,202 @@ def build_dialogue(
     return enriched_lines[:final_length], line_sources[:final_length]
 
 
+def behavior_model_path(cfg: dict) -> Path:
+    paths = cfg.get("paths", {}) if isinstance(cfg.get("paths", {}), dict) else {}
+    return resolve_project_path(str(paths.get("behavior_model", "generation/model/behavior_model.json")))
+
+
+def load_behavior_model(cfg: dict) -> dict:
+    path = behavior_model_path(cfg)
+    payload = read_json(path, {}) if path.exists() else {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def active_behavior_model(model: dict, cfg: dict) -> dict:
+    embedded = model.get("behavior_model", {}) if isinstance(model.get("behavior_model", {}), dict) else {}
+    if embedded:
+        return embedded
+    return load_behavior_model(cfg)
+
+
+def behavior_relationship_key(a: str, b: str) -> str:
+    left, right = sorted([coalesce_text(a), coalesce_text(b)])
+    return f"{left}||{right}"
+
+
+def speaking_style_for_character(behavior_model: dict, character: str) -> dict:
+    styles = behavior_model.get("speaking_style", {}) if isinstance(behavior_model.get("speaking_style"), dict) else {}
+    style = styles.get(character, {}) if character else {}
+    return style if isinstance(style, dict) else {}
+
+
+def relationship_behavior_for_scene(behavior_model: dict, characters: list[str]) -> list[dict]:
+    relationships = (
+        behavior_model.get("relationship_behavior", {})
+        if isinstance(behavior_model.get("relationship_behavior"), dict)
+        else {}
+    )
+    rows: list[dict] = []
+    for left, right in itertools.combinations([name for name in characters if name], 2):
+        entry = relationships.get(behavior_relationship_key(left, right), {})
+        if isinstance(entry, dict) and entry:
+            rows.append(entry)
+    return rows
+
+
+def line_text_from_dialogue_line(line: str) -> tuple[str, str]:
+    text = coalesce_text(line)
+    if ":" not in text:
+        return "", text
+    speaker, line_text = text.split(":", 1)
+    return coalesce_text(speaker), coalesce_text(line_text)
+
+
+def voice_metadata_for_line(
+    speaker: str,
+    text: str,
+    source: dict,
+    behavior_model: dict,
+    average_segment_duration: float,
+) -> dict:
+    style = speaking_style_for_character(behavior_model, speaker)
+    word_count = max(1, len(tokens_from_text(text)))
+    average_words = float(style.get("average_words_per_line", 0.0) or 0.0)
+    energy = float(style.get("energy_level", 0.52) or 0.52)
+    if "!" in text:
+        energy = max(energy, 0.72)
+    if "?" in text:
+        energy = max(energy, 0.58)
+    if word_count <= max(4.0, average_words * 0.55):
+        pace = "quick"
+    elif average_words and word_count >= average_words * 1.45:
+        pace = "measured"
+    else:
+        pace = "natural"
+    emotion = "curious" if "?" in text else "excited" if "!" in text else "focused"
+    source_type = coalesce_text(source.get("type", "")) if isinstance(source, dict) else ""
+    duration_floor = max(1.1, word_count * (0.22 if pace == "quick" else 0.31 if pace == "measured" else 0.27))
+    target_duration = max(duration_floor, min(8.0, float(average_segment_duration or 2.7) * max(0.8, word_count / max(5.0, average_words or 7.0))))
+    return {
+        "speaker": speaker or "Narrator",
+        "text": text,
+        "emotion": emotion,
+        "pace": pace,
+        "energy": round(max(0.0, min(1.0, energy)), 3),
+        "target_duration_seconds": round(target_duration, 3),
+        "voice_reference_priority": [
+            value
+            for value in (
+                "matched_original_segment" if source_type == "original_line" else "",
+                "trained_character_voice_model",
+                "speaker_reference_samples",
+                "closest_language_reference",
+            )
+            if value
+        ],
+    }
+
+
+def build_dialogue_voice_metadata(
+    dialogue: list[str],
+    dialogue_sources: list[dict],
+    behavior_model: dict,
+    model: dict,
+) -> list[dict]:
+    average_segment_duration = float(model.get("average_segment_duration_seconds", 2.7) or 2.7)
+    metadata: list[dict] = []
+    for index, line in enumerate(dialogue):
+        speaker, text = line_text_from_dialogue_line(line)
+        source = dialogue_sources[index] if index < len(dialogue_sources) and isinstance(dialogue_sources[index], dict) else {}
+        metadata.append(voice_metadata_for_line(speaker, text, source, behavior_model, average_segment_duration))
+    return metadata
+
+
+def build_behavior_scene_fields(
+    *,
+    beat: str,
+    keyword: str,
+    scene_characters: list[str],
+    scene_index: int,
+    scene_count: int,
+    behavior_model: dict,
+    relationship_context: list[dict],
+    dialogue: list[str],
+    language: str,
+) -> dict:
+    defaults = behavior_model.get("defaults", {}) if isinstance(behavior_model.get("defaults"), dict) else {}
+    relationships = relationship_behavior_for_scene(behavior_model, scene_characters)
+    styles = [speaking_style_for_character(behavior_model, character) for character in scene_characters]
+    behavior_constraints: list[str] = []
+    dialogue_constraints: list[str] = []
+    character_intents: dict[str, str] = {}
+    for character, style in zip(scene_characters, styles):
+        words = style.get("average_words_per_line", "")
+        energy = style.get("energy_label", "medium")
+        phrases = style.get("typical_phrases", []) if isinstance(style.get("typical_phrases"), list) else []
+        reactions = style.get("recurring_reactions", []) if isinstance(style.get("recurring_reactions"), list) else []
+        if words:
+            behavior_constraints.append(f"{character}: keep lines near {words} words with {energy} energy")
+        if phrases:
+            dialogue_constraints.append(f"{character}: allow natural callbacks like '{phrases[0]}'")
+        if reactions:
+            dialogue_constraints.append(f"{character}: reaction pattern '{reactions[0]}'")
+        if beat == "Cold Open":
+            intent = f"introduce pressure around {keyword}"
+        elif beat in {"Komplikation", "Verwechslung"}:
+            intent = f"push against the misunderstanding around {keyword}"
+        elif beat == "Auflösung":
+            intent = f"help resolve {keyword} without losing character voice"
+        else:
+            intent = f"advance the plan around {keyword}"
+        character_intents[character] = intent
+    if relationships:
+        for row in relationships[:3]:
+            characters = row.get("characters", []) if isinstance(row.get("characters"), list) else []
+            dynamic = coalesce_text(row.get("typical_dynamic", "") or row.get("configured_dynamic", ""))
+            leader = coalesce_text(row.get("conversation_leader", ""))
+            if characters and dynamic:
+                behavior_constraints.append(f"{' / '.join(characters)} dynamic: {dynamic}")
+            if leader:
+                behavior_constraints.append(f"{leader} tends to drive the exchange")
+    elif relationship_context:
+        behavior_constraints.append("Use the configured relationship context to motivate the scene conflict")
+    dialogue_patterns = behavior_model.get("dialogue_patterns", {}) if isinstance(behavior_model.get("dialogue_patterns"), dict) else {}
+    comedy_pattern = coalesce_text(
+        (dialogue_patterns.get("setup_reaction_punchline", {}) if isinstance(dialogue_patterns.get("setup_reaction_punchline"), dict) else {}).get("default_pattern", "")
+    ) or coalesce_text(defaults.get("comedy_pattern", "")) or "setup -> reaction -> complication -> punchline/callback"
+    callback_targets = clean_generation_keywords(
+        extract_keywords(["\n".join(dialogue), keyword, *scene_characters], limit=8),
+        limit=5,
+    )
+    progress = scene_index / max(1, scene_count - 1)
+    if progress < 0.18:
+        arc = "curiosity rises into a clear problem"
+    elif progress < 0.68:
+        arc = "pressure escalates through conflicting assumptions"
+    else:
+        arc = "energy narrows toward repair and payoff"
+    family = language_family(language)
+    scene_purpose = (
+        f"{localized_beat_label(beat, language)}: {keyword} im Episodenbogen vorantreiben"
+        if family == "de"
+        else f"{localized_beat_label(beat, language)}: move {keyword} through the episode arc"
+    )
+    conflict = behavior_constraints[0] if behavior_constraints else coalesce_text(defaults.get("scene_conflict", ""))
+    if not conflict:
+        conflict = f"{keyword} creates a small misunderstanding that the scene must escalate and clarify"
+    return {
+        "scene_purpose": scene_purpose,
+        "conflict": conflict,
+        "character_intents": character_intents,
+        "behavior_constraints": behavior_constraints[:10],
+        "dialogue_style_constraints": dialogue_constraints[:10],
+        "comedy_pattern": comedy_pattern,
+        "emotional_arc": arc,
+        "callback_targets": callback_targets,
+    }
+
+
 def select_target_runtime_seconds(model: dict, cfg: dict) -> int:
     generation_cfg = cfg.get("generation", {})
     durations = [int(float(value or 0.0)) for value in (model.get("source_episode_durations", {}) or {}).values() if float(value or 0.0) > 0.0]
@@ -1466,6 +1665,7 @@ def build_scene_generation_plan(
     series_language: str = "",
     style_descriptor: str = "",
     relationship_context: list[dict] | None = None,
+    behavior_fields: dict | None = None,
 ) -> dict:
     continuity_memory = continuity_memory if isinstance(continuity_memory, dict) else load_character_continuity_memory(PROJECT_ROOT)
     style_constraints = style_constraints if isinstance(style_constraints, dict) else derive_prompt_constraints_from_bible(PROJECT_ROOT, {})
@@ -1495,6 +1695,17 @@ def build_scene_generation_plan(
     style_profile = normalized_style_constraints(style_constraints)
     continuity_fragments = continuity_prompt_fragments(character_continuity)
     relationship_context = relationship_context if isinstance(relationship_context, list) else []
+    behavior_fields = behavior_fields if isinstance(behavior_fields, dict) else {}
+    behavior_constraints = [
+        coalesce_text(value)
+        for value in behavior_fields.get("behavior_constraints", [])
+        if coalesce_text(value)
+    ] if isinstance(behavior_fields.get("behavior_constraints", []), list) else []
+    dialogue_style_constraints = [
+        coalesce_text(value)
+        for value in behavior_fields.get("dialogue_style_constraints", [])
+        if coalesce_text(value)
+    ] if isinstance(behavior_fields.get("dialogue_style_constraints", []), list) else []
     relationship_fragments = relationship_prompt_fragments(
         {"relationships": relationship_context},
         scene_characters,
@@ -1521,6 +1732,10 @@ def build_scene_generation_plan(
         positive_prompt += f", continuity notes: {'; '.join(continuity_fragments)}"
     if relationship_fragments:
         positive_prompt += f", relationship dynamics: {'; '.join(relationship_fragments)}"
+    if behavior_constraints:
+        positive_prompt += f", behavior constraints: {'; '.join(behavior_constraints[:3])}"
+    if dialogue_style_constraints:
+        positive_prompt += f", dialogue style: {'; '.join(dialogue_style_constraints[:2])}"
     if style_guidance.get("camera"):
         positive_prompt += f", series camera preference: {style_guidance['camera']}"
     if style_guidance.get("angle"):
@@ -1561,6 +1776,14 @@ def build_scene_generation_plan(
         "style_constraints": style_profile,
         "character_continuity": character_continuity,
         "relationship_context": relationship_context,
+        "scene_purpose": coalesce_text(behavior_fields.get("scene_purpose", "")),
+        "conflict": coalesce_text(behavior_fields.get("conflict", "")),
+        "character_intents": behavior_fields.get("character_intents", {}) if isinstance(behavior_fields.get("character_intents"), dict) else {},
+        "behavior_constraints": behavior_constraints,
+        "dialogue_style_constraints": dialogue_style_constraints,
+        "comedy_pattern": coalesce_text(behavior_fields.get("comedy_pattern", "")),
+        "emotional_arc": coalesce_text(behavior_fields.get("emotional_arc", "")),
+        "callback_targets": behavior_fields.get("callback_targets", []) if isinstance(behavior_fields.get("callback_targets"), list) else [],
         "quality_targets": {
             "quality_mode": quality_mode,
             "series_language": series_language or "auto",
@@ -1571,6 +1794,9 @@ def build_scene_generation_plan(
             "style_guidance_available": bool(style_profile.get("positive") or style_guidance),
             "continuity_character_count": len(character_continuity),
             "relationship_context_count": len(relationship_context),
+            "behavior_model_available": bool(behavior_fields),
+            "behavior_constraints_count": len(behavior_constraints),
+            "dialogue_style_constraints_count": len(dialogue_style_constraints),
         },
         "positive_prompt": positive_prompt,
         "negative_prompt": negative_prompt,
@@ -1599,6 +1825,9 @@ def generate_episode_package(model: dict, cfg: dict, episode_index: int = 1) -> 
         or coalesce_text(model.get("style_descriptor", ""))
         or "source-series faithful TV episode frame"
     )
+    behavior_model = active_behavior_model(model, cfg)
+    if behavior_model:
+        model = {**model, "behavior_model": behavior_model}
     relationship_payload = model.get("character_relationships") or load_character_relationships(cfg)
     if not model.get("character_groups") and isinstance(relationship_payload, dict):
         model = {
@@ -1674,6 +1903,18 @@ def generate_episode_package(model: dict, cfg: dict, episode_index: int = 1) -> 
             target_length=target_lines_per_scene,
             language=series_language,
         )
+        behavior_fields = build_behavior_scene_fields(
+            beat=beat,
+            keyword=keyword,
+            scene_characters=scene_characters,
+            scene_index=scene_index,
+            scene_count=scene_count,
+            behavior_model=behavior_model,
+            relationship_context=scene_relationship_context,
+            dialogue=dialogue,
+            language=series_language,
+        )
+        dialogue_voice_metadata = build_dialogue_voice_metadata(dialogue, dialogue_sources, behavior_model, model)
         scene_id = f"scene_{scene_index + 1:04d}"
         generation_plan = build_scene_generation_plan(
             scene_id,
@@ -1691,6 +1932,7 @@ def generate_episode_package(model: dict, cfg: dict, episode_index: int = 1) -> 
             series_language=series_language,
             style_descriptor=style_descriptor,
             relationship_context=scene_relationship_context,
+            behavior_fields=behavior_fields,
         )
         scenes.append(
             {
@@ -1699,12 +1941,14 @@ def generate_episode_package(model: dict, cfg: dict, episode_index: int = 1) -> 
                 "beat": beat,
                 "language": package_language,
                 "summary": summary,
+                **behavior_fields,
                 "characters": scene_characters,
                 "relationship_context": scene_relationship_context,
                 "location": f"Set {((scene_index % 3) + 1)}",
                 "mood": ("energetisch" if scene_index < scene_count - 1 else "auflösend") if language_family(series_language) == "de" else ("energetic" if scene_index < scene_count - 1 else "resolved"),
                 "dialogue_lines": dialogue,
                 "dialogue_sources": dialogue_sources,
+                "dialogue_voice_metadata": dialogue_voice_metadata,
                 "prompt": (
                     (
                         f"{beat} mit {', '.join(scene_characters)}. Fokus auf {keyword}, schnelle Pointen "

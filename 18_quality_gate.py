@@ -199,7 +199,152 @@ def artifact_path_exists(path_value: object) -> bool:
     return candidate.exists() and candidate.is_file()
 
 
-def build_warnings(artifacts: dict[str, Any]) -> list[str]:
+def load_production_package(artifacts: dict[str, Any]) -> dict[str, Any]:
+    package_path = stored_path_if_present(artifacts.get("production_package", ""))
+    if not package_path or not package_path.exists() or not package_path.is_file():
+        return {}
+    payload = read_json(package_path, {})
+    return payload if isinstance(payload, dict) else {}
+
+
+def safe_ratio(numerator: int, denominator: int) -> float:
+    return round(float(numerator) / max(1.0, float(denominator)), 4)
+
+
+def safe_float(value: object, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def scene_content_quality_checks(package_payload: dict[str, Any]) -> dict[str, Any]:
+    scenes = package_payload.get("scenes", []) if isinstance(package_payload.get("scenes", []), list) else []
+    warnings: list[str] = []
+    rows: list[dict[str, Any]] = []
+    counters = {
+        "missing_behavior_scene_count": 0,
+        "missing_conflict_or_purpose_scene_count": 0,
+        "missing_relationship_context_scene_count": 0,
+        "missing_voice_metadata_line_count": 0,
+        "missing_voice_clone_output_scene_count": 0,
+        "missing_lipsync_output_scene_count": 0,
+        "missing_reference_data_line_count": 0,
+        "template_heavy_scene_count": 0,
+    }
+    total_lines = 0
+    total_template_lines = 0
+    if not package_payload:
+        return {
+            "scene_count": 0,
+            "scene_rows": [],
+            "warnings": ["Production package content could not be inspected."],
+            **counters,
+            "generic_template_line_ratio": 0.0,
+            "placeholder_metrics": {
+                "character_style_similarity": "pending_external_metric",
+                "lip_sync_confidence": "pending_backend_metric",
+            },
+        }
+
+    for scene in scenes:
+        if not isinstance(scene, dict):
+            continue
+        scene_id = str(scene.get("scene_id", "") or "scene").strip()
+        behavior_constraints = scene.get("behavior_constraints", []) if isinstance(scene.get("behavior_constraints", []), list) else []
+        dialogue_style_constraints = (
+            scene.get("dialogue_style_constraints", [])
+            if isinstance(scene.get("dialogue_style_constraints", []), list)
+            else []
+        )
+        relationship_context = scene.get("relationship_context", []) if isinstance(scene.get("relationship_context", []), list) else []
+        has_behavior = bool(behavior_constraints and dialogue_style_constraints)
+        has_conflict_or_purpose = bool(str(scene.get("scene_purpose", "") or "").strip() and str(scene.get("conflict", "") or "").strip())
+        if not has_behavior:
+            counters["missing_behavior_scene_count"] += 1
+        if not has_conflict_or_purpose:
+            counters["missing_conflict_or_purpose_scene_count"] += 1
+        if not relationship_context:
+            counters["missing_relationship_context_scene_count"] += 1
+
+        dialogue_sources = scene.get("dialogue_sources", []) if isinstance(scene.get("dialogue_sources", []), list) else []
+        scene_template_lines = sum(
+            1
+            for item in dialogue_sources
+            if isinstance(item, dict) and str(item.get("type", "") or "").strip() == "generated_template"
+        )
+        total_template_lines += scene_template_lines
+        total_lines += len(dialogue_sources)
+        template_ratio = safe_ratio(scene_template_lines, len(dialogue_sources))
+        if dialogue_sources and template_ratio > 0.5:
+            counters["template_heavy_scene_count"] += 1
+
+        voice_clone = scene.get("voice_clone", {}) if isinstance(scene.get("voice_clone", {}), dict) else {}
+        voice_lines = voice_clone.get("lines", []) if isinstance(voice_clone.get("lines", []), list) else []
+        for line in voice_lines:
+            if not isinstance(line, dict):
+                counters["missing_voice_metadata_line_count"] += 1
+                continue
+            missing_metadata = (
+                not str(line.get("emotion", "") or "").strip()
+                or not str(line.get("pace", "") or "").strip()
+                or safe_float(line.get("target_duration_seconds", 0.0), 0.0) <= 0.0
+                or not isinstance(line.get("voice_reference_priority", []), list)
+            )
+            if missing_metadata:
+                counters["missing_voice_metadata_line_count"] += 1
+            if not line.get("reference_audio_candidates"):
+                counters["missing_reference_data_line_count"] += 1
+        voice_outputs = voice_clone.get("target_outputs", {}) if isinstance(voice_clone.get("target_outputs", {}), dict) else {}
+        if bool(voice_clone.get("required", False)) and not artifact_path_exists(voice_outputs.get("scene_dialogue_audio", "")):
+            counters["missing_voice_clone_output_scene_count"] += 1
+
+        lip_sync = scene.get("lip_sync", {}) if isinstance(scene.get("lip_sync", {}), dict) else {}
+        lipsync_outputs = lip_sync.get("target_outputs", {}) if isinstance(lip_sync.get("target_outputs", {}), dict) else {}
+        if bool(lip_sync.get("required", False)) and not artifact_path_exists(lipsync_outputs.get("lipsync_video", "")):
+            counters["missing_lipsync_output_scene_count"] += 1
+        rows.append(
+            {
+                "scene_id": scene_id,
+                "has_behavior_constraints": has_behavior,
+                "has_conflict_or_purpose": has_conflict_or_purpose,
+                "has_relationship_context": bool(relationship_context),
+                "generic_template_line_ratio": template_ratio,
+                "voice_line_count": len(voice_lines),
+                "lipsync_backend": str(lip_sync.get("selected_backend", "") or "").strip(),
+            }
+        )
+
+    if counters["missing_behavior_scene_count"]:
+        warnings.append(f"{counters['missing_behavior_scene_count']} scene(s) are missing behavior or dialogue-style constraints.")
+    if counters["missing_conflict_or_purpose_scene_count"]:
+        warnings.append(f"{counters['missing_conflict_or_purpose_scene_count']} scene(s) are missing scene purpose/conflict metadata.")
+    if counters["missing_relationship_context_scene_count"]:
+        warnings.append(f"{counters['missing_relationship_context_scene_count']} scene(s) are missing relationship context.")
+    if counters["missing_voice_metadata_line_count"]:
+        warnings.append(f"{counters['missing_voice_metadata_line_count']} voice line(s) are missing emotion/pace/energy/duration metadata.")
+    if counters["missing_reference_data_line_count"]:
+        warnings.append(f"{counters['missing_reference_data_line_count']} voice line(s) are missing character reference audio candidates.")
+    if counters["missing_voice_clone_output_scene_count"]:
+        warnings.append(f"{counters['missing_voice_clone_output_scene_count']} scene(s) are missing voice-clone output audio.")
+    if counters["missing_lipsync_output_scene_count"]:
+        warnings.append(f"{counters['missing_lipsync_output_scene_count']} scene(s) are missing lip-sync output video.")
+    if counters["template_heavy_scene_count"]:
+        warnings.append(f"{counters['template_heavy_scene_count']} scene(s) are still too template-heavy.")
+    return {
+        "scene_count": len(rows),
+        "scene_rows": rows,
+        "warnings": warnings,
+        **counters,
+        "generic_template_line_ratio": safe_ratio(total_template_lines, total_lines),
+        "placeholder_metrics": {
+            "character_style_similarity": "pending_external_metric",
+            "lip_sync_confidence": "pending_backend_metric",
+        },
+    }
+
+
+def build_warnings(artifacts: dict[str, Any], content_checks: dict[str, Any] | None = None) -> list[str]:
     warnings: list[str] = []
     readiness = str(artifacts.get("production_readiness", "") or "").strip().lower()
     if readiness not in {"ready", "fully_generated_episode_ready"}:
@@ -220,6 +365,8 @@ def build_warnings(artifacts: dict[str, Any]) -> list[str]:
         warnings.append("Full generated-episode master path is missing.")
     if not artifact_path_exists(artifacts.get("delivery_episode", "")):
         warnings.append("Delivery watchable episode path is missing.")
+    if isinstance(content_checks, dict):
+        warnings.extend(str(item) for item in (content_checks.get("warnings", []) or []) if str(item).strip())
     return warnings
 
 
@@ -275,7 +422,9 @@ def main() -> None:
         max_regeneration_batch=int(release_cfg.get("max_regeneration_batch", 8) or 8),
         max_regeneration_retries=int(release_cfg.get("max_regeneration_retries", 3) or 3),
     )
-    warnings = build_warnings(artifacts)
+    production_package_payload = load_production_package(artifacts)
+    content_checks = scene_content_quality_checks(production_package_payload)
+    warnings = build_warnings(artifacts, content_checks)
     strict_fail = bool(strict_warnings_enabled(effective_cfg, args) and warnings)
 
     report = {
@@ -292,6 +441,7 @@ def main() -> None:
         "remaining_backend_tasks": list(artifacts.get("remaining_backend_tasks", []) or []),
         "release_gate": release_result,
         "warnings": warnings,
+        "content_quality_checks": content_checks,
         "strict_fail": strict_fail,
         "max_regeneration_retries": int(release_cfg.get("max_regeneration_retries", 3) or 3),
         "regeneration_queue": regeneration_queue,

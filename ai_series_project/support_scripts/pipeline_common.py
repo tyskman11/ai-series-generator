@@ -146,6 +146,8 @@ DEFAULT_CONFIG = {
         "voice_samples": "characters/voice_samples",
         "voice_models": "characters/voice_models",
         "series_model": "generation/model/series_model.json",
+        "behavior_model": "generation/model/behavior_model.json",
+        "behavior_model_summary": "generation/model/behavior_model_summary.md",
         "storyboard_requests": "generation/storyboard_requests",
         "storyboard_assets": "generation/storyboard_assets",
         "final_episode_packages": "generation/final_episode_packages",
@@ -239,6 +241,36 @@ DEFAULT_CONFIG = {
         "review_known_face_identity_margin_bonus_max": 0.02,
         "review_known_face_identity_weak_threshold_penalty": 0.02,
         "review_known_face_identity_weak_margin_penalty": 0.01,
+        "internet_name_lookup": True,
+        "internet_name_lookup_timeout_seconds": 2.0,
+        "internet_name_lookup_cache_days": 30,
+        "internet_name_lookup_min_confidence": 0.95,
+        "internet_name_lookup_max_updates": 50,
+        "internet_name_lookup_languages": ["en", "de"],
+        "internet_name_lookup_context_terms": [],
+        "internet_face_lookup": True,
+        "internet_face_lookup_env": "SERIES_FACE_LOOKUP_COMMAND",
+        "internet_face_lookup_command": "",
+        "internet_face_lookup_url_env": "SERIES_FACE_LOOKUP_URL",
+        "internet_face_lookup_url": "",
+        "internet_face_lookup_token_env": "SERIES_FACE_LOOKUP_TOKEN",
+        "internet_face_lookup_builtin_public_images": True,
+        "internet_face_lookup_public_image_min_similarity": 0.72,
+        "internet_face_lookup_public_image_min_margin": 0.05,
+        "internet_face_lookup_public_image_max_names": 24,
+        "internet_face_lookup_public_image_max_images_per_name": 2,
+        "internet_face_lookup_public_image_max_seconds": 30.0,
+        "internet_face_lookup_public_image_allow_slow_torch_import": True,
+        "internet_face_lookup_public_image_cache": "runtime/internet_face_lookup_public_images",
+        "internet_face_lookup_min_confidence": 0.95,
+        "internet_face_lookup_max_clusters": 80,
+        "internet_face_lookup_max_images": 2,
+        "review_match_background_faces": True,
+        "speaker_face_cluster_vote_weight": 4.0,
+        "speaker_single_visible_vote_weight": 1.0,
+        "speaker_face_link_min_votes": 3.0,
+        "speaker_face_link_min_share": 0.7,
+        "speaker_face_link_min_margin": 2.0,
         "auto_mark_statist_candidates": True,
         "auto_statist_max_scenes": 2,
         "auto_statist_max_detections": 12,
@@ -371,6 +403,11 @@ DEFAULT_CONFIG = {
         "mouth_sensitivity": 1.6,
         "jaw_pixels": 10,
         "blink_interval_frames": 90,
+    },
+    "lipsync_backends": {
+        "preferred_order": ["musetalk", "latentsync", "wav2lip"],
+        "allow_fallback": False,
+        "min_sync_score": 0.75,
     },
 "render": {
         "width": 1280,
@@ -1343,9 +1380,19 @@ def pip_install_command(py: str | Path, *args: str) -> list[str]:
 
 
 def rerun_in_runtime(script_path: str | Path | None = None) -> None:
-    target = runtime_python().resolve()
-    current = Path(sys.executable).resolve()
-    if current != target:
+    target = runtime_python()
+    current = Path(sys.executable)
+    try:
+        already_runtime = current.samefile(target)
+    except Exception:
+        already_runtime = current.resolve() == target.resolve()
+    if not already_runtime and current.name.lower() == target.name.lower():
+        current_parts = [part.lower() for part in current.parts]
+        target_parts = [part.lower() for part in target.parts]
+        marker = "ai_series_project"
+        if marker in current_parts and marker in target_parts:
+            already_runtime = current_parts[current_parts.index(marker) :] == target_parts[target_parts.index(marker) :]
+    if not already_runtime:
         script = Path(script_path or sys.argv[0]).resolve()
         raise SystemExit(subprocess.run([str(target), str(script), *sys.argv[1:]]).returncode)
 
@@ -1943,6 +1990,11 @@ def scene_quality_assessment(
     continuity_character_count: int = 0,
     style_guidance_available: bool = False,
     quality_targets_available: bool = False,
+    behavior_constraints_available: bool | None = None,
+    voice_metadata_available: bool | None = None,
+    relationship_context_available: bool | None = None,
+    scene_conflict_available: bool | None = None,
+    generic_template_line_ratio: float | None = None,
 ) -> dict[str, Any]:
     outputs = current_outputs if isinstance(current_outputs, dict) else {}
     asset_source_type = coalesce_text(outputs.get("asset_source_type", ""))
@@ -2040,6 +2092,36 @@ def scene_quality_assessment(
         master_score = 0.32
     master_score = clamp_quality_score(master_score)
 
+    behavior_checks_active = any(
+        value is not None
+        for value in (
+            behavior_constraints_available,
+            voice_metadata_available,
+            relationship_context_available,
+            scene_conflict_available,
+            generic_template_line_ratio,
+        )
+    )
+    behavior_score = 1.0
+    generic_ratio = clamp_quality_score(generic_template_line_ratio or 0.0)
+    if behavior_checks_active:
+        behavior_score = 0.22
+        if behavior_constraints_available:
+            behavior_score += 0.24
+        if voice_metadata_available:
+            behavior_score += 0.2
+        if relationship_context_available:
+            behavior_score += 0.14
+        if scene_conflict_available:
+            behavior_score += 0.14
+        if generic_template_line_ratio is None or generic_ratio <= 0.25:
+            behavior_score += 0.06
+        elif generic_ratio <= 0.5:
+            behavior_score += 0.02
+        else:
+            behavior_score -= min(0.22, (generic_ratio - 0.5) * 0.44)
+        behavior_score = clamp_quality_score(behavior_score)
+
     weighted_scores = [
         (visual_score, 0.34),
         (audio_score, 0.24),
@@ -2047,6 +2129,8 @@ def scene_quality_assessment(
         (continuity_score, 0.12),
         (lipsync_score, 0.08),
     ]
+    if behavior_checks_active:
+        weighted_scores.append((behavior_score, 0.12))
     quality_score = clamp_quality_score(
         sum(score * weight for score, weight in weighted_scores) / max(0.01, sum(weight for _, weight in weighted_scores))
     )
@@ -2065,6 +2149,8 @@ def scene_quality_assessment(
         strengths.append("series_style_guidance_present")
     if lipsync_required and lipsync_score >= 0.9:
         strengths.append("dedicated_lipsync_ready")
+    if behavior_checks_active and behavior_score >= 0.9:
+        strengths.append("behavior_voice_metadata_ready")
 
     weaknesses: list[str] = []
     if visual_score < 0.68:
@@ -2079,19 +2165,34 @@ def scene_quality_assessment(
         weaknesses.append("series_style_guidance_missing")
     if lipsync_required and lipsync_score < 0.55:
         weaknesses.append("lipsync_not_ready")
+    if behavior_checks_active:
+        if not behavior_constraints_available:
+            weaknesses.append("behavior_constraints_missing")
+        if voice_required and not voice_metadata_available:
+            weaknesses.append("voice_metadata_missing")
+        if not relationship_context_available:
+            weaknesses.append("relationship_context_missing")
+        if not scene_conflict_available:
+            weaknesses.append("scene_conflict_missing")
+        if generic_template_line_ratio is not None and generic_ratio > 0.5:
+            weaknesses.append("dialogue_too_template_heavy")
+
+    component_scores = {
+        "visual": visual_score,
+        "audio": audio_score,
+        "mastering": master_score,
+        "continuity": continuity_score,
+        "lip_sync": lipsync_score,
+    }
+    if behavior_checks_active:
+        component_scores["behavior"] = behavior_score
 
     return {
         "scene_id": coalesce_text(scene_id),
         "quality_score": quality_score,
         "quality_percent": int(round(quality_score * 100.0)),
         "quality_label": quality_label,
-        "component_scores": {
-            "visual": visual_score,
-            "audio": audio_score,
-            "mastering": master_score,
-            "continuity": continuity_score,
-            "lip_sync": lipsync_score,
-        },
+        "component_scores": component_scores,
         "strengths": strengths,
         "weaknesses": weaknesses,
     }

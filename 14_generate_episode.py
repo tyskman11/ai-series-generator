@@ -78,6 +78,15 @@ def storyboard_episode_request(episode_id: str, shotlist_payload: dict) -> dict:
                 "title": scene.get("title", ""),
                 "characters": scene.get("characters", []) or [],
                 "summary": scene.get("summary", ""),
+                "scene_purpose": scene.get("scene_purpose", ""),
+                "conflict": scene.get("conflict", ""),
+                "character_intents": scene.get("character_intents", {}) if isinstance(scene.get("character_intents", {}), dict) else {},
+                "behavior_constraints": scene.get("behavior_constraints", []) if isinstance(scene.get("behavior_constraints", []), list) else [],
+                "dialogue_style_constraints": scene.get("dialogue_style_constraints", []) if isinstance(scene.get("dialogue_style_constraints", []), list) else [],
+                "comedy_pattern": scene.get("comedy_pattern", ""),
+                "emotional_arc": scene.get("emotional_arc", ""),
+                "callback_targets": scene.get("callback_targets", []) if isinstance(scene.get("callback_targets", []), list) else [],
+                "dialogue_voice_metadata": scene.get("dialogue_voice_metadata", []) if isinstance(scene.get("dialogue_voice_metadata", []), list) else [],
                 "location": scene.get("location", ""),
                 "mood": scene.get("mood", ""),
                 "generation_plan": scene.get("generation_plan", {}) if isinstance(scene.get("generation_plan", {}), dict) else {},
@@ -170,6 +179,12 @@ def main() -> None:
             reporter.finish(current_label="Series Model", extra_label="Stopped: model is empty")
             info("The series model is empty. Run 08_train_series_model.py first.")
             return
+        behavior_model = STEP08.load_behavior_model(cfg)
+        if behavior_model:
+            model["behavior_model"] = behavior_model
+            info("Behavior model loaded for scene and dialogue constraints.")
+        else:
+            info("No behavior model found yet. Run 08b_analyze_behavior_model.py for stronger character behavior.")
         reporter.update(1, current_label="Validate Training Status", extra_label="Checking foundation, adapter, fine-tune and backend status")
         ensure_foundation_training_ready(cfg, model_path=model_path)
         ensure_adapter_training_ready(cfg)

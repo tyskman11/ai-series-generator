@@ -435,6 +435,13 @@ def clean_text(value: object) -> str:
     return str(value or "").strip()
 
 
+def safe_float(value: object, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
 STRICT_GENERATED_VIDEO_TYPES = {"generated_scene_video", "generated_lipsync_video"}
 STRICT_VOICE_BACKENDS = {"xtts", "xtts_voice_clone", "voice_clone"}
 LOCAL_COMPOSED_VIDEO_TYPES = {
@@ -468,6 +475,40 @@ def local_motion_fallback_allowed(cfg: dict, render_cfg: dict) -> bool:
 def audio_backend_is_voice_clone(audio_backend: object) -> bool:
     value = clean_text(audio_backend).lower()
     return value in STRICT_VOICE_BACKENDS or value.endswith("_voice_clone")
+
+
+def clean_text_list(value: object, limit: int | None = None) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    rows = [clean_text(item) for item in value if clean_text(item)]
+    return rows if limit is None else rows[:limit]
+
+
+def lipsync_backend_profile(cfg: dict) -> dict:
+    lipsync_cfg = cfg.get("lipsync_backends", {}) if isinstance(cfg.get("lipsync_backends", {}), dict) else {}
+    preferred_order = clean_text_list(lipsync_cfg.get("preferred_order", [])) or ["musetalk", "latentsync", "wav2lip"]
+    min_sync_score = max(0.0, min(1.0, safe_float(lipsync_cfg.get("min_sync_score", 0.75), 0.75)))
+    return {
+        "backend_interface_version": 2,
+        "preferred_order": preferred_order,
+        "selected_backend": preferred_order[0] if preferred_order else "wav2lip",
+        "allow_fallback": bool(lipsync_cfg.get("allow_fallback", False)),
+        "min_sync_score": round(min_sync_score, 3),
+        "backend_requirements": {
+            "musetalk": {
+                "status": "optional_configured_backend",
+                "input_contract": "source video/frame sequence + cloned speech wav + speaker target",
+            },
+            "latentsync": {
+                "status": "optional_configured_backend",
+                "input_contract": "source video/frame sequence + cloned speech wav + speaker target",
+            },
+            "wav2lip": {
+                "status": "existing_configured_backend",
+                "input_contract": "face video/image + cloned speech wav + checkpoint",
+            },
+        },
+    }
 
 
 def scene_runner_statuses(package_payload: dict) -> dict[str, dict[str, str]]:
@@ -771,6 +812,11 @@ def build_scene_voice_plan(
     dialogue_lines = scene.get("dialogue_lines", []) if isinstance(scene.get("dialogue_lines", []), list) else []
     if not dialogue_lines:
         return []
+    dialogue_voice_metadata = (
+        scene.get("dialogue_voice_metadata", [])
+        if isinstance(scene.get("dialogue_voice_metadata", []), list)
+        else []
+    )
     voice_rate = int(render_cfg.get("voice_rate", 175) or 175)
     audio_pad_seconds = float(render_cfg.get("audio_pad_seconds", 0.35) or 0.35)
     scene_language = normalize_language_code(scene.get("language", "") or scene.get("series_language", ""))
@@ -780,6 +826,20 @@ def build_scene_voice_plan(
         speaker_name, line_text = parse_dialogue_line(str(raw_line), source)
         if not line_text:
             continue
+        voice_meta = (
+            dialogue_voice_metadata[line_index]
+            if line_index < len(dialogue_voice_metadata) and isinstance(dialogue_voice_metadata[line_index], dict)
+            else {}
+        )
+        emotion = clean_text(voice_meta.get("emotion", "")) or ("curious" if "?" in line_text else "excited" if "!" in line_text else "focused")
+        pace = clean_text(voice_meta.get("pace", "")) or "natural"
+        energy = max(0.0, min(1.0, safe_float(voice_meta.get("energy", 0.52), 0.52)))
+        target_duration_seconds = safe_float(voice_meta.get("target_duration_seconds", 0.0), 0.0)
+        voice_reference_priority = (
+            [clean_text(value) for value in voice_meta.get("voice_reference_priority", []) if clean_text(value)]
+            if isinstance(voice_meta.get("voice_reference_priority", []), list)
+            else []
+        )
         retrieval_segment: dict | None = None
         if clean_text(source.get("type", "")) == "original_line" and clean_text(source.get("segment_id", "")):
             retrieval_segment = {
@@ -808,23 +868,35 @@ def build_scene_voice_plan(
                 "retrieval_segment": retrieval_segment or {},
                 "reference_segments": reference_segments,
                 "voice_profile": voice_profile_for_speaker_name(voice_lookup, speaker_name, cfg),
-                "raw_duration_seconds": estimate_dialogue_duration_seconds(line_text, voice_rate, audio_pad_seconds),
+                "raw_duration_seconds": max(
+                    estimate_dialogue_duration_seconds(line_text, voice_rate, audio_pad_seconds),
+                    target_duration_seconds,
+                ),
+                "emotion": emotion,
+                "pace": pace,
+                "energy": energy,
+                "target_duration_seconds": target_duration_seconds,
+                "voice_reference_priority": voice_reference_priority or [
+                    "matched_original_segment",
+                    "trained_character_voice_model",
+                    "speaker_reference_samples",
+                ],
             }
         )
 
-    raw_total = sum(float(row.get("raw_duration_seconds", 0.0) or 0.0) for row in prepared)
+    raw_total = sum(safe_float(row.get("raw_duration_seconds", 0.0), 0.0) for row in prepared)
     line_gap_seconds = 0.18 if len(prepared) > 1 else 0.0
     raw_total_with_gaps = raw_total + max(0, len(prepared) - 1) * line_gap_seconds
-    effective_scene_duration = max(float(scene_duration_seconds or 0.0), raw_total_with_gaps, len(prepared) * 1.15)
+    effective_scene_duration = max(safe_float(scene_duration_seconds, 0.0), raw_total_with_gaps, len(prepared) * 1.15)
     scale = 1.0
     if raw_total_with_gaps > effective_scene_duration:
         scale = max(0.82, effective_scene_duration / max(raw_total_with_gaps, 0.001))
 
-    cursor = float(scene_start_seconds)
-    scene_end = float(scene_start_seconds) + max(0.0, float(effective_scene_duration))
+    cursor = safe_float(scene_start_seconds, 0.0)
+    scene_end = safe_float(scene_start_seconds, 0.0) + max(0.0, safe_float(effective_scene_duration, 0.0))
     plan: list[dict] = []
     for row_index, row in enumerate(prepared):
-        duration = round(float(row["raw_duration_seconds"]) * scale, 3)
+        duration = round(safe_float(row.get("raw_duration_seconds", 0.0), 0.0) * scale, 3)
         start_seconds = round(cursor, 3)
         end_seconds = round(min(scene_end, cursor + duration), 3)
         retrieval_segment = row["retrieval_segment"] if isinstance(row["retrieval_segment"], dict) else {}
@@ -843,6 +915,11 @@ def build_scene_voice_plan(
                 "start_seconds": start_seconds,
                 "end_seconds": end_seconds,
                 "estimated_duration_seconds": round(max(0.0, end_seconds - start_seconds), 3),
+                "target_duration_seconds": round(safe_float(row.get("target_duration_seconds", 0.0), 0.0), 3),
+                "emotion": clean_text(row.get("emotion", "")) or "focused",
+                "pace": clean_text(row.get("pace", "")) or "natural",
+                "energy": round(max(0.0, min(1.0, safe_float(row.get("energy", 0.52), 0.52))), 3),
+                "voice_reference_priority": row.get("voice_reference_priority", []) if isinstance(row.get("voice_reference_priority", []), list) else [],
                 "audio_strategy": "reuse_original_segment" if retrieval_segment else "synthesize_preview_tts",
                 "source_type": clean_text((row["source"] or {}).get("type", "")) or "generated",
                 "source_segment_id": clean_text((row["source"] or {}).get("segment_id", "")),
@@ -1241,6 +1318,16 @@ def build_voice_clone_line_package(cfg: dict, episode_package_root: Path, line: 
     retrieval_segment = line.get("retrieval_segment", {}) if isinstance(line.get("retrieval_segment", {}), dict) else {}
     reference_segments = line.get("reference_segments", []) if isinstance(line.get("reference_segments", []), list) else []
     cloning_cfg = cfg.get("cloning", {}) if isinstance(cfg.get("cloning", {}), dict) else {}
+    voice_reference_priority = clean_text_list(line.get("voice_reference_priority", [])) or [
+        "matched_original_segment",
+        "trained_character_voice_model",
+        "speaker_reference_samples",
+    ]
+    target_duration_seconds = safe_float(
+        line.get("target_duration_seconds", line.get("estimated_duration_seconds", 0.0)),
+        safe_float(line.get("estimated_duration_seconds", 0.0), 0.0),
+    )
+    energy = max(0.0, min(1.0, safe_float(line.get("energy", 0.52), 0.52)))
     voice_samples_root = resolve_project_path(str((cfg.get("paths", {}) if isinstance(cfg.get("paths", {}), dict) else {}).get("voice_samples", "characters/voice_samples")))
     voice_models_root = resolve_project_path(str((cfg.get("paths", {}) if isinstance(cfg.get("paths", {}), dict) else {}).get("voice_models", "characters/voice_models")))
     cluster_id = clean_text(voice_profile.get("cluster_id", ""))
@@ -1257,9 +1344,14 @@ def build_voice_clone_line_package(cfg: dict, episode_package_root: Path, line: 
         "speaker_name": speaker_name,
         "text": clean_text(line.get("text", "")),
         "language": normalize_language_code(line.get("language", "") or voice_profile.get("dominant_language", "")),
-        "start_seconds": float(line.get("start_seconds", 0.0) or 0.0),
-        "end_seconds": float(line.get("end_seconds", 0.0) or 0.0),
-        "estimated_duration_seconds": float(line.get("estimated_duration_seconds", 0.0) or 0.0),
+        "emotion": clean_text(line.get("emotion", "")) or "focused",
+        "pace": clean_text(line.get("pace", "")) or "natural",
+        "energy": round(energy, 3),
+        "target_duration_seconds": round(target_duration_seconds, 3),
+        "voice_reference_priority": voice_reference_priority,
+        "start_seconds": safe_float(line.get("start_seconds", 0.0), 0.0),
+        "end_seconds": safe_float(line.get("end_seconds", 0.0), 0.0),
+        "estimated_duration_seconds": safe_float(line.get("estimated_duration_seconds", 0.0), 0.0),
         "voice_profile": {
             "cluster_id": cluster_id,
             "linked_face_cluster": clean_text(voice_profile.get("linked_face_cluster", "")),
@@ -1273,7 +1365,7 @@ def build_voice_clone_line_package(cfg: dict, episode_package_root: Path, line: 
             "audio_path": clean_text(retrieval_segment.get("audio_path", "")),
             "scene_clip_path": clean_text(retrieval_segment.get("scene_clip_path", "")),
             "segment_id": clean_text(retrieval_segment.get("segment_id", "")),
-            "match_score": float(retrieval_segment.get("match_score", 0.0) or 0.0),
+            "match_score": safe_float(retrieval_segment.get("match_score", 0.0), 0.0),
             "language": normalize_language_code(retrieval_segment.get("language", "")),
         },
         "reference_segments": [
@@ -1414,6 +1506,31 @@ def build_scene_production_package(
         build_video_generation_prompt(scene, generation_plan),
         f"Generate a new video shot for {scene_id} with the listed characters and continuity.",
     )
+    lipsync_profile = lipsync_backend_profile(cfg)
+    behavior_constraints = clean_text_list(scene.get("behavior_constraints", []))
+    dialogue_style_constraints = clean_text_list(scene.get("dialogue_style_constraints", []))
+    callback_targets = clean_text_list(scene.get("callback_targets", []))
+    character_intents = scene.get("character_intents", {}) if isinstance(scene.get("character_intents", {}), dict) else {}
+    relationship_context = scene.get("relationship_context", []) if isinstance(scene.get("relationship_context", []), list) else []
+    dialogue_voice_metadata = [
+        dict(item)
+        for item in (scene.get("dialogue_voice_metadata", []) if isinstance(scene.get("dialogue_voice_metadata", []), list) else [])
+        if isinstance(item, dict)
+    ]
+    dialogue_sources = scene.get("dialogue_sources", []) if isinstance(scene.get("dialogue_sources", []), list) else []
+    generic_source_count = sum(
+        1
+        for item in dialogue_sources
+        if isinstance(item, dict) and clean_text(item.get("type", "")) == "generated_template"
+    )
+    generic_template_line_ratio = generic_source_count / max(1, len(dialogue_sources))
+    voice_metadata_available = bool(voice_lines) and all(
+        clean_text(line.get("emotion", ""))
+        and clean_text(line.get("pace", ""))
+        and safe_float(line.get("target_duration_seconds", 0.0), 0.0) > 0.0
+        and isinstance(line.get("voice_reference_priority", []), list)
+        for line in voice_lines
+    )
     scene_package = {
         "episode_id": episode_id,
         "scene_id": scene_id,
@@ -1421,6 +1538,17 @@ def build_scene_production_package(
         "summary": clean_text(scene.get("summary", "")),
         "location": clean_text(scene.get("location", "")),
         "mood": clean_text(scene.get("mood", "")),
+        "scene_purpose": clean_text(scene.get("scene_purpose", "")),
+        "conflict": clean_text(scene.get("conflict", "")),
+        "character_intents": character_intents,
+        "behavior_constraints": behavior_constraints,
+        "dialogue_style_constraints": dialogue_style_constraints,
+        "comedy_pattern": clean_text(scene.get("comedy_pattern", "")),
+        "emotional_arc": clean_text(scene.get("emotional_arc", "")),
+        "callback_targets": callback_targets,
+        "relationship_context": relationship_context,
+        "dialogue_voice_metadata": dialogue_voice_metadata,
+        "dialogue_sources": dialogue_sources,
         "characters": scene.get("characters", []) if isinstance(scene.get("characters", []), list) else [],
         "duration_seconds": float(scene_manifest.get("duration_seconds", scene_voice_plan.get("duration_seconds", 0.0)) or 0.0),
         "current_preview_assets": {
@@ -1446,6 +1574,16 @@ def build_scene_production_package(
         },
         "storyboard": {
             "requires_new_storyboard_frames": True,
+            "behavior": {
+                "scene_purpose": clean_text(scene.get("scene_purpose", "")),
+                "conflict": clean_text(scene.get("conflict", "")),
+                "character_intents": character_intents,
+                "behavior_constraints": behavior_constraints,
+                "dialogue_style_constraints": dialogue_style_constraints,
+                "comedy_pattern": clean_text(scene.get("comedy_pattern", "")),
+                "emotional_arc": clean_text(scene.get("emotional_arc", "")),
+                "callback_targets": callback_targets,
+            },
             "reference_slots": reference_slots,
             "camera_plan": camera_plan,
             "control_hints": control_hints,
@@ -1496,6 +1634,7 @@ def build_scene_production_package(
         },
         "voice_clone": {
             "required": bool(voice_lines),
+            "metadata_schema_version": 2,
             "mode": "original_character_voice_clone",
             "target_outputs": {
                 "scene_dialogue_audio": str(scene_dialogue_output_audio_path(episode_package_root, scene_id)),
@@ -1504,6 +1643,7 @@ def build_scene_production_package(
         },
         "lip_sync": {
             "required": bool(voice_lines),
+            **lipsync_profile,
             "mode": "character_lip_sync_composite",
             "target_outputs": {
                 "lipsync_video": str(lipsync_output_root / f"{scene_slug}_lipsync.mp4"),
@@ -1536,6 +1676,11 @@ def build_scene_production_package(
             continuity_character_count=len(character_continuity),
             style_guidance_available=bool(style_constraints.get("positive") or style_constraints.get("guidance")),
             quality_targets_available=bool(quality_targets),
+            behavior_constraints_available=bool(behavior_constraints and dialogue_style_constraints),
+            voice_metadata_available=voice_metadata_available,
+            relationship_context_available=bool(relationship_context),
+            scene_conflict_available=bool(clean_text(scene.get("conflict", ""))),
+            generic_template_line_ratio=generic_template_line_ratio,
         ),
         previous_quality,
     )
@@ -1966,6 +2111,24 @@ def refresh_scene_package_outputs(scene_package: dict, package_root: Path) -> di
     scene_master_clip_path = resolve_stored_project_path(scene_master_clip_text) if scene_master_clip_text else Path()
     lipsync_video_path = resolve_stored_project_path(lipsync_video_text) if lipsync_video_text else Path()
     voice_lines = voice_clone.get("lines", []) if isinstance(voice_clone.get("lines", []), list) else []
+    behavior_constraints = clean_text_list(refreshed.get("behavior_constraints", []))
+    dialogue_style_constraints = clean_text_list(refreshed.get("dialogue_style_constraints", []))
+    relationship_context = refreshed.get("relationship_context", []) if isinstance(refreshed.get("relationship_context", []), list) else []
+    dialogue_sources = refreshed.get("dialogue_sources", []) if isinstance(refreshed.get("dialogue_sources", []), list) else []
+    generic_source_count = sum(
+        1
+        for item in dialogue_sources
+        if isinstance(item, dict) and clean_text(item.get("type", "")) == "generated_template"
+    )
+    generic_template_line_ratio = generic_source_count / max(1, len(dialogue_sources))
+    voice_metadata_available = bool(voice_lines) and all(
+        isinstance(line, dict)
+        and clean_text(line.get("emotion", ""))
+        and clean_text(line.get("pace", ""))
+        and safe_float(line.get("target_duration_seconds", 0.0), 0.0) > 0.0
+        and isinstance(line.get("voice_reference_priority", []), list)
+        for line in voice_lines
+    )
     voice_runtime = {}
     for line in voice_lines:
         if isinstance(line, dict) and isinstance(line.get("runtime", {}), dict):
@@ -2030,6 +2193,11 @@ def refresh_scene_package_outputs(scene_package: dict, package_root: Path) -> di
                 )
             ),
             quality_targets_available=bool(storyboard.get("quality_targets", {})),
+            behavior_constraints_available=bool(behavior_constraints and dialogue_style_constraints),
+            voice_metadata_available=voice_metadata_available,
+            relationship_context_available=bool(relationship_context),
+            scene_conflict_available=bool(clean_text(refreshed.get("conflict", ""))),
+            generic_template_line_ratio=generic_template_line_ratio,
         ),
         previous_quality,
     )
