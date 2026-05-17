@@ -36,10 +36,12 @@
     "series_model": "generation/model/series_model.json",
     "behavior_model": "generation/model/behavior_model.json",
     "behavior_model_summary": "generation/model/behavior_model_summary.md",
+    "set_bible": "generation/model/set_bible.json",
     "storyboard_requests": "generation/storyboard_requests",
     "storyboard_assets": "generation/storyboard_assets",
     "final_episode_packages": "generation/final_episode_packages",
     "episode_deliveries": "generation/renders/deliveries",
+    "quality_reports": "generation/quality_reports",
     "series_bible_json": "series_bible/episode_summaries/auto_series_bible.json",
     "series_bible_markdown": "series_bible/episode_summaries/auto_series_bible.md",
     "foundation_frames": "training/foundation/datasets/frames",
@@ -313,6 +315,28 @@
     ],
     "allow_fallback": false,
     "min_sync_score": 0.75
+  },
+  "finished_episode_mode": {
+    "enabled": true,
+    "require_real_motion_video": true,
+    "require_voice_clone_audio": true,
+    "require_lipsync_video": true,
+    "require_audio_mix": true,
+    "require_scene_continuity": true,
+    "require_backend_manifests": true,
+    "block_placeholder_outputs": true,
+    "block_stale_outputs": true,
+    "min_episode_realism_score": 0.82,
+    "min_scene_realism_score": 0.72
+  },
+  "audio_mastering": {
+    "enabled": true,
+    "target_lufs": -16.0,
+    "true_peak_limit_db": -1.0,
+    "require_dialogue_stem": true,
+    "require_final_mix": true,
+    "allow_music_placeholders": false,
+    "allow_sfx_placeholders": false
   },
   "render": {
     "width": 1280,

@@ -10,12 +10,14 @@ if str(PROJECT_DIR) not in sys.path:
 
 import argparse
 import difflib
+import hashlib
 import os
 import re
 import shutil
 import subprocess
 import tempfile
 import textwrap
+from datetime import datetime, timezone
 from pathlib import Path
 
 from PIL import Image, ImageColor, ImageDraw, ImageEnhance, ImageFilter, ImageFont, ImageOps
@@ -484,6 +486,21 @@ def clean_text_list(value: object, limit: int | None = None) -> list[str]:
     return rows if limit is None else rows[:limit]
 
 
+def utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def file_sha256(path_value: object) -> str:
+    path = resolve_stored_project_path(path_value)
+    if not path.exists() or not path.is_file():
+        return ""
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def lipsync_backend_profile(cfg: dict) -> dict:
     lipsync_cfg = cfg.get("lipsync_backends", {}) if isinstance(cfg.get("lipsync_backends", {}), dict) else {}
     preferred_order = clean_text_list(lipsync_cfg.get("preferred_order", [])) or ["musetalk", "latentsync", "wav2lip"]
@@ -634,6 +651,74 @@ def remove_stale_generated_output(path_value: object) -> None:
 def remove_stale_scene_runner_outputs(section_name: str, context: dict[str, object]) -> None:
     for key in SCENE_RUNNER_OUTPUT_KEYS.get(section_name, ()):
         remove_stale_generated_output(context.get(key, ""))
+
+
+def backend_runner_fallback_used(runner_result: dict) -> bool:
+    command_text = clean_text(runner_result.get("command_text", "")).lower()
+    command_parts = (
+        " ".join(str(part).lower() for part in runner_result.get("command", []) if str(part).strip())
+        if isinstance(runner_result.get("command", []), list)
+        else ""
+    )
+    combined = f"{command_text} {command_parts}"
+    return any(marker in combined for marker in ("project_local_", "fallback", "pyttsx3"))
+
+
+def write_backend_task_manifest(
+    *,
+    package_root: Path,
+    scene_package: dict,
+    scene_package_path: Path,
+    runner_name: str,
+    section_name: str,
+    runner_result: dict,
+) -> str:
+    scene_id = clean_text(scene_package.get("scene_id", "")) or "scene"
+    section_payload = scene_package.get(section_name, {}) if isinstance(scene_package.get(section_name, {}), dict) else {}
+    target_outputs = section_payload.get("target_outputs", {}) if isinstance(section_payload.get("target_outputs", {}), dict) else {}
+    manifest_dir = package_root / "manifests" / production_scene_slug(scene_id)
+    manifest_dir.mkdir(parents=True, exist_ok=True)
+    manifest_path = manifest_dir / f"{runner_name}.json"
+    produced_outputs = (
+        [clean_text(path) for path in runner_result.get("produced_outputs", []) if clean_text(path)]
+        if isinstance(runner_result.get("produced_outputs", []), list)
+        else []
+    )
+    output_hashes: dict[str, str] = {}
+    for output_path in produced_outputs:
+        digest = file_sha256(output_path)
+        if digest:
+            output_hashes[output_path] = digest
+    runner_status = clean_text(runner_result.get("status", "")) or "skipped"
+    manifest = {
+        "task_id": f"{scene_id}_{runner_name}",
+        "scene_id": scene_id,
+        "shot_id": "",
+        "task_type": {
+            "finished_episode_image_runner": "image",
+            "finished_episode_video_runner": "video",
+            "finished_episode_voice_runner": "voice",
+            "finished_episode_lipsync_runner": "lipsync",
+        }.get(runner_name, section_name),
+        "backend": runner_name,
+        "command": runner_result.get("command", []) if isinstance(runner_result.get("command", []), list) else runner_result.get("command_text", ""),
+        "inputs": {"scene_package": str(scene_package_path), "section": section_name},
+        "outputs": dict(target_outputs),
+        "produced_outputs": produced_outputs,
+        "output_hashes": output_hashes,
+        "started_at": utc_now_iso(),
+        "finished_at": utc_now_iso(),
+        "duration_seconds": 0,
+        "exit_code": int(runner_result.get("returncode", 0) or 0),
+        "status": "success" if runner_status == "completed" else "skipped" if runner_status in {"disabled", "existing_outputs"} else "failed",
+        "runner_status": runner_status,
+        "fallback_used": backend_runner_fallback_used(runner_result),
+        "placeholder_used": bool(runner_status not in {"completed", "existing_outputs"}),
+        "stale_output": bool(runner_status == "existing_outputs"),
+        "log_path": clean_text(runner_result.get("log_path", "")),
+    }
+    write_json(manifest_path, manifest)
+    return str(manifest_path)
 
 
 def usable_library_speaker_name(name: str) -> bool:
@@ -1447,6 +1532,63 @@ def build_voice_clone_line_package(cfg: dict, episode_package_root: Path, line: 
     }
 
 
+def build_shot_packages(episode_package_root: Path, scene_id: str, shot_plan: list[dict]) -> list[dict]:
+    scene_slug = production_scene_slug(scene_id)
+    rows: list[dict] = []
+    for index, shot in enumerate(shot_plan, start=1):
+        if not isinstance(shot, dict):
+            continue
+        shot_id = clean_text(shot.get("shot_id", "")) or f"{scene_id}_shot_{index:03d}"
+        shot_slug = production_scene_slug(shot_id)
+        shot_root = episode_package_root / "shots" / scene_slug / shot_slug
+        rows.append(
+            {
+                "shot_id": shot_id,
+                "scene_id": scene_id,
+                "shot_type": clean_text(shot.get("shot_type", "")),
+                "duration_seconds": safe_float(shot.get("duration_seconds", 0.0), 0.0),
+                "camera_angle": clean_text(shot.get("camera_angle", "")),
+                "camera_movement": clean_text(shot.get("camera_movement", "")),
+                "characters_visible": clean_text_list(shot.get("characters_visible", [])),
+                "dialogue_line_indices": [
+                    int(value)
+                    for value in (shot.get("dialogue_line_indices", []) if isinstance(shot.get("dialogue_line_indices", []), list) else [])
+                    if str(value).strip().lstrip("-").isdigit()
+                ],
+                "purpose": clean_text(shot.get("purpose", "")),
+                "target_outputs": {
+                    "primary_frame": str(shot_root / "primary_frame.png"),
+                    "video_clip": str(shot_root / f"{shot_slug}_video.mp4"),
+                    "lipsync_clip": str(shot_root / f"{shot_slug}_lipsync.mp4"),
+                    "manifest": str(shot_root / f"{shot_slug}_manifest.json"),
+                },
+                "backend_metadata_required": True,
+            }
+        )
+    return rows
+
+
+def scene_audio_mix_package(episode_package_root: Path, scene_id: str, audio_mix: dict) -> dict:
+    scene_slug = production_scene_slug(scene_id)
+    mix_root = episode_package_root / "audio" / scene_slug / "mix"
+    return {
+        "required": bool(audio_mix.get("required", True)) if isinstance(audio_mix, dict) else True,
+        "mode": "dialogue_ambience_music_sfx_scene_mix",
+        "target_lufs": safe_float(audio_mix.get("loudness_target_lufs", -16.0), -16.0) if isinstance(audio_mix, dict) else -16.0,
+        "stems": {
+            "dialogue": str(mix_root / f"{scene_slug}_dialogue_stem.wav"),
+            "ambience": str(mix_root / f"{scene_slug}_ambience_stem.wav"),
+            "music": str(mix_root / f"{scene_slug}_music_stem.wav"),
+            "sfx": str(mix_root / f"{scene_slug}_sfx_stem.wav"),
+            "final_mix": str(mix_root / f"{scene_slug}_final_mix.wav"),
+        },
+        "placeholder_policy": {
+            "allow_music_placeholder": False,
+            "allow_sfx_placeholder": False,
+        },
+    }
+
+
 def merge_scene_regeneration_metadata(
     quality_assessment: dict,
     previous_quality: dict | None = None,
@@ -1559,6 +1701,24 @@ def build_scene_production_package(
         if isinstance(item, dict)
     ]
     dialogue_sources = scene.get("dialogue_sources", []) if isinstance(scene.get("dialogue_sources", []), list) else []
+    dialogue_line_metadata = [
+        dict(item)
+        for item in (scene.get("dialogue_line_metadata", []) if isinstance(scene.get("dialogue_line_metadata", []), list) else [])
+        if isinstance(item, dict)
+    ]
+    shot_plan = [
+        dict(item)
+        for item in (scene.get("shot_plan", []) if isinstance(scene.get("shot_plan", []), list) else [])
+        if isinstance(item, dict)
+    ]
+    character_continuity_lock = scene.get("character_continuity_lock", {}) if isinstance(scene.get("character_continuity_lock", {}), dict) else {}
+    set_context = scene.get("set_context", {}) if isinstance(scene.get("set_context", {}), dict) else {}
+    audio_mix = scene_audio_mix_package(
+        episode_package_root,
+        scene_id,
+        scene.get("audio_mix", {}) if isinstance(scene.get("audio_mix", {}), dict) else {},
+    )
+    shot_packages = build_shot_packages(episode_package_root, scene_id, shot_plan)
     generic_source_count = sum(
         1
         for item in dialogue_sources
@@ -1579,7 +1739,10 @@ def build_scene_production_package(
         "title": clean_text(scene.get("title", "")),
         "summary": clean_text(scene.get("summary", "")),
         "location": clean_text(scene.get("location", "")),
+        "location_id": clean_text(scene.get("location_id", "")),
+        "set_context": set_context,
         "mood": clean_text(scene.get("mood", "")),
+        "scene_function": clean_text(scene.get("scene_function", "")),
         "scene_purpose": clean_text(scene.get("scene_purpose", "")),
         "conflict": clean_text(scene.get("conflict", "")),
         "character_intents": character_intents,
@@ -1591,8 +1754,13 @@ def build_scene_production_package(
         "writer_room_plan": writer_room_plan,
         "relationship_context": relationship_context,
         "dialogue_voice_metadata": dialogue_voice_metadata,
+        "dialogue_line_metadata": dialogue_line_metadata,
         "dialogue_sources": dialogue_sources,
         "characters": scene.get("characters", []) if isinstance(scene.get("characters", []), list) else [],
+        "character_continuity_lock": character_continuity_lock,
+        "shot_plan": shot_plan,
+        "shot_packages": shot_packages,
+        "audio_mix": audio_mix,
         "duration_seconds": float(scene_manifest.get("duration_seconds", scene_voice_plan.get("duration_seconds", 0.0)) or 0.0),
         "current_preview_assets": {
             "asset_source_type": clean_text(scene_manifest.get("asset_source_type", "")),
@@ -1634,6 +1802,10 @@ def build_scene_production_package(
             "continuity": continuity,
             "style_constraints": style_constraints,
             "character_continuity": character_continuity,
+            "character_continuity_lock": character_continuity_lock,
+            "shot_plan": shot_plan,
+            "shot_packages": shot_packages,
+            "set_context": set_context,
             "quality_targets": quality_targets,
             "scene_package_path": str(episode_package_root / "scenes" / f"{scene_slug}_production.json"),
         },
@@ -1646,10 +1818,15 @@ def build_scene_production_package(
             "reference_slots": reference_slots,
             "style_constraints": style_constraints,
             "character_continuity": character_continuity,
+            "character_continuity_lock": character_continuity_lock,
+            "shot_plan": shot_plan,
+            "shot_packages": shot_packages,
+            "set_context": set_context,
             "target_outputs": {
                 "primary_frame": str(image_output_root / "frame_0001.png"),
                 "alternate_frame_dir": str(image_output_root / "alternates"),
                 "layered_storyboard_frame": str(image_output_root / "storyboard_frame.png"),
+                "backend_manifest": str(episode_package_root / "manifests" / scene_slug / "finished_episode_image_runner.json"),
             },
         },
         "video_generation": {
@@ -1661,6 +1838,10 @@ def build_scene_production_package(
             "continuity": continuity,
             "style_constraints": style_constraints,
             "character_continuity": character_continuity,
+            "character_continuity_lock": character_continuity_lock,
+            "shot_plan": shot_plan,
+            "shot_packages": shot_packages,
+            "set_context": set_context,
             "quality_targets": quality_targets,
             "compose_strategy": compose_strategy,
             "local_video_plan": {
@@ -1674,6 +1855,7 @@ def build_scene_production_package(
                 "scene_video": str(scene_video_output_path(episode_package_root, scene_id)),
                 "preview_frame": str(scene_video_preview_output_path(episode_package_root, scene_id)),
                 "poster_frame": str(scene_video_poster_output_path(episode_package_root, scene_id)),
+                "backend_manifest": str(episode_package_root / "manifests" / scene_slug / "finished_episode_video_runner.json"),
             },
         },
         "voice_clone": {
@@ -1682,6 +1864,7 @@ def build_scene_production_package(
             "mode": "original_character_voice_clone",
             "target_outputs": {
                 "scene_dialogue_audio": str(scene_dialogue_output_audio_path(episode_package_root, scene_id)),
+                "backend_manifest": str(episode_package_root / "manifests" / scene_slug / "finished_episode_voice_runner.json"),
             },
             "lines": voice_lines,
         },
@@ -1692,6 +1875,7 @@ def build_scene_production_package(
             "target_outputs": {
                 "lipsync_video": str(lipsync_output_root / f"{scene_slug}_lipsync.mp4"),
                 "poster_frame": str(lipsync_output_root / "poster.png"),
+                "backend_manifest": str(episode_package_root / "manifests" / scene_slug / "finished_episode_lipsync_runner.json"),
             },
             "speaker_targets": sorted({clean_text(line.get("speaker_name", "")) for line in voice_lines if clean_text(line.get("speaker_name", ""))}),
             "audio_dependencies": [clean_text(line.get("target_output_audio", "")) for line in voice_lines if clean_text(line.get("target_output_audio", ""))],
@@ -1701,6 +1885,7 @@ def build_scene_production_package(
             "mode": "scene_master_clip",
             "target_outputs": {
                 "scene_master_clip": str(scene_master_clip_output_path(episode_package_root, scene_id)),
+                "backend_manifest": str(episode_package_root / "manifests" / scene_slug / "scene_master.json"),
             },
         },
     }
@@ -1763,6 +1948,9 @@ def build_episode_production_package_payload(
             )
         )
     total_line_count = sum(len(scene.get("voice_clone", {}).get("lines", [])) for scene in scene_packages if isinstance(scene.get("voice_clone", {}), dict))
+    edit_decision_list = shotlist.get("edit_decision_list", []) if isinstance(shotlist.get("edit_decision_list", []), list) else []
+    audio_mix_plan = shotlist.get("audio_mix_plan", {}) if isinstance(shotlist.get("audio_mix_plan", {}), dict) else {}
+    audio_mastering_cfg = cfg.get("audio_mastering", {}) if isinstance(cfg.get("audio_mastering", {}), dict) else {}
     generated_scene_video_count = sum(
         1
         for scene in scene_packages
@@ -1819,6 +2007,21 @@ def build_episode_production_package_payload(
         "source_storyboard_request_dir": clean_text(shotlist.get("storyboard_request_dir", "")),
         "source_render_manifest": clean_text(manifest.get("render_manifest_path", "")),
         "source_voice_plan": clean_text(manifest.get("voice_plan", "")),
+        "episode_blueprint": shotlist.get("episode_blueprint", {}) if isinstance(shotlist.get("episode_blueprint", {}), dict) else {},
+        "set_bible": shotlist.get("set_bible", {}) if isinstance(shotlist.get("set_bible", {}), dict) else {},
+        "edit_decision_list": edit_decision_list,
+        "audio_mastering": {
+            "config": audio_mastering_cfg,
+            "mix_plan": audio_mix_plan,
+            "required": bool(audio_mastering_cfg.get("enabled", True)),
+            "target_outputs": {
+                "dialogue_stem": str(package_root / "master" / f"{episode_id}_dialogue_stem.wav"),
+                "ambience_stem": str(package_root / "master" / f"{episode_id}_ambience_stem.wav"),
+                "music_stem": str(package_root / "master" / f"{episode_id}_music_stem.wav"),
+                "sfx_stem": str(package_root / "master" / f"{episode_id}_sfx_stem.wav"),
+                "final_mix": str(package_root / "master" / f"{episode_id}_final_mix.wav"),
+            },
+        },
         "current_preview_outputs": {
             "draft_render": clean_text(manifest.get("draft_render", "")),
             "final_storyboard_render": clean_text(manifest.get("final_render", "")),
@@ -1846,6 +2049,8 @@ def build_episode_production_package_payload(
             "lipsync_root": str(package_root / "lipsync"),
             "scene_package_root": str(package_root / "scenes"),
             "scene_master_root": str(package_root / "master" / "scenes"),
+            "manifest_root": str(package_root / "manifests"),
+            "final_audio_mix": str(package_root / "master" / f"{episode_id}_final_mix.wav"),
             "final_master_episode": str(package_root / "master" / f"{episode_id}_full_generated_episode.mp4"),
         },
         "scene_count": len(scene_packages),
@@ -2391,6 +2596,8 @@ def run_finished_episode_scene_runners(
             continue
         context = build_scene_runner_context(scene_package, scene_package_path, package_path, prompt_preview_path, package_root)
         runner_rows: list[dict] = []
+        backend_manifests = scene_package.get("backend_manifests", {}) if isinstance(scene_package.get("backend_manifests", {}), dict) else {}
+        backend_manifest_rows = scene_package.get("backend_manifest_rows", []) if isinstance(scene_package.get("backend_manifest_rows", []), list) else []
         for runner_name, section_name in runner_specs:
             section_payload = scene_package.get(section_name, {}) if isinstance(scene_package.get(section_name, {}), dict) else {}
             if not bool(section_payload.get("required", False)):
@@ -2407,6 +2614,27 @@ def run_finished_episode_scene_runners(
                     log_dir=resolve_project_path("logs") / "external_backends" / runner_name / clean_text(scene_package.get("episode_id", "")) / clean_text(scene_package.get("scene_id", "")),
                 )
             )
+            manifest_path = write_backend_task_manifest(
+                package_root=package_root,
+                scene_package=scene_package,
+                scene_package_path=scene_package_path,
+                runner_name=runner_name,
+                section_name=section_name,
+                runner_result=runner_rows[-1],
+            )
+            backend_manifests[runner_name] = manifest_path
+            backend_manifest_rows.append(
+                {
+                    "runner_name": runner_name,
+                    "section": section_name,
+                    "manifest_path": manifest_path,
+                    "status": clean_text(runner_rows[-1].get("status", "")),
+                }
+            )
+        if backend_manifests:
+            scene_package["backend_manifests"] = backend_manifests
+            scene_package["backend_manifest_rows"] = backend_manifest_rows
+            write_json(scene_package_path, scene_package)
         scene_results.append(
             {
                 "scene_id": clean_text(scene_package.get("scene_id", "")),
@@ -2462,8 +2690,38 @@ def run_finished_episode_master_runner(
         log_dir=resolve_project_path("logs") / "external_backends" / "finished_episode_master_runner" / clean_text(package_payload.get("episode_id", "")),
     )
     summary_path = package_path.parent / f"{package_path.stem}_master_runner.json"
+    manifest_root = package_root / "manifests" / "master"
+    manifest_root.mkdir(parents=True, exist_ok=True)
+    master_manifest_path = manifest_root / "finished_episode_master_runner.json"
+    produced_outputs = [clean_text(path) for path in result.get("produced_outputs", []) if clean_text(path)] if isinstance(result.get("produced_outputs", []), list) else []
+    write_json(
+        master_manifest_path,
+        {
+            "task_id": f"{clean_text(package_payload.get('episode_id', 'episode'))}_finished_episode_master_runner",
+            "scene_id": "",
+            "shot_id": "",
+            "task_type": "master",
+            "backend": "finished_episode_master_runner",
+            "command": result.get("command", []) if isinstance(result.get("command", []), list) else result.get("command_text", ""),
+            "inputs": {"package_path": str(package_path)},
+            "outputs": {"final_master_episode": clean_text(target_master_outputs.get("final_master_episode", ""))},
+            "produced_outputs": produced_outputs,
+            "output_hashes": {path: file_sha256(path) for path in produced_outputs if file_sha256(path)},
+            "started_at": utc_now_iso(),
+            "finished_at": utc_now_iso(),
+            "duration_seconds": 0,
+            "exit_code": int(result.get("returncode", 0) or 0),
+            "status": "success" if clean_text(result.get("status", "")) == "completed" else "skipped" if clean_text(result.get("status", "")) == "existing_outputs" else "failed",
+            "runner_status": clean_text(result.get("status", "")),
+            "fallback_used": backend_runner_fallback_used(result),
+            "placeholder_used": clean_text(result.get("status", "")) not in {"completed", "existing_outputs"},
+            "stale_output": clean_text(result.get("status", "")) == "existing_outputs",
+            "log_path": clean_text(result.get("log_path", "")),
+        },
+    )
     write_json(summary_path, result)
     result["summary_path"] = str(summary_path)
+    result["backend_manifest"] = str(master_manifest_path)
     return result
 
 

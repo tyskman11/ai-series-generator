@@ -70,12 +70,15 @@ def storyboard_episode_request(episode_id: str, shotlist_payload: dict) -> dict:
         "storyboard_plan_mode": shotlist_payload.get("storyboard_plan_mode", ""),
         "display_title": shotlist_payload.get("display_title", episode_id),
         "episode_title": shotlist_payload.get("episode_title", ""),
+        "episode_blueprint": shotlist_payload.get("episode_blueprint", {}) if isinstance(shotlist_payload.get("episode_blueprint", {}), dict) else {},
+        "set_bible": shotlist_payload.get("set_bible", {}) if isinstance(shotlist_payload.get("set_bible", {}), dict) else {},
         "focus_characters": shotlist_payload.get("focus_characters", []) or [],
         "keywords": shotlist_payload.get("keywords", []) or [],
         "scene_requests": [
             {
                 "scene_id": scene.get("scene_id", ""),
                 "title": scene.get("title", ""),
+                "scene_function": scene.get("scene_function", ""),
                 "characters": scene.get("characters", []) or [],
                 "summary": scene.get("summary", ""),
                 "scene_purpose": scene.get("scene_purpose", ""),
@@ -88,6 +91,11 @@ def storyboard_episode_request(episode_id: str, shotlist_payload: dict) -> dict:
                 "callback_targets": scene.get("callback_targets", []) if isinstance(scene.get("callback_targets", []), list) else [],
                 "writer_room_plan": scene.get("writer_room_plan", {}) if isinstance(scene.get("writer_room_plan", {}), dict) else {},
                 "dialogue_voice_metadata": scene.get("dialogue_voice_metadata", []) if isinstance(scene.get("dialogue_voice_metadata", []), list) else [],
+                "dialogue_line_metadata": scene.get("dialogue_line_metadata", []) if isinstance(scene.get("dialogue_line_metadata", []), list) else [],
+                "shot_plan": scene.get("shot_plan", []) if isinstance(scene.get("shot_plan", []), list) else [],
+                "character_continuity_lock": scene.get("character_continuity_lock", {}) if isinstance(scene.get("character_continuity_lock", {}), dict) else {},
+                "location_id": scene.get("location_id", ""),
+                "set_context": scene.get("set_context", {}) if isinstance(scene.get("set_context", {}), dict) else {},
                 "location": scene.get("location", ""),
                 "mood": scene.get("mood", ""),
                 "generation_plan": scene.get("generation_plan", {}) if isinstance(scene.get("generation_plan", {}), dict) else {},
@@ -216,6 +224,10 @@ def main() -> None:
             **episode_package,
         }
         write_json(shotlist_path, shotlist_payload)
+        paths_cfg = cfg.get("paths", {}) if isinstance(cfg.get("paths", {}), dict) else {}
+        set_bible_path = resolve_project_path(str(paths_cfg.get("set_bible", "generation/model/set_bible.json")))
+        if isinstance(episode_package.get("set_bible", {}), dict) and episode_package.get("set_bible"):
+            write_json(set_bible_path, episode_package["set_bible"])
         reporter.update(4, current_label=episode_id, extra_label="Running now: export model-side storyboard backend requests")
         storyboard_request_paths = write_storyboard_backend_requests(cfg, episode_id, shotlist_payload)
         shotlist_payload.update(

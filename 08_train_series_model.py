@@ -1381,6 +1381,380 @@ def first_relationship_value(relationships: list[dict], key: str) -> str:
     return ""
 
 
+SCENE_FUNCTION_SEQUENCE = [
+    "cold_open",
+    "setup",
+    "inciting_incident",
+    "plan",
+    "complication",
+    "misunderstanding",
+    "escalation",
+    "midpoint_turn",
+    "low_point",
+    "reveal",
+    "resolution",
+    "tag_joke",
+]
+
+
+def scene_function_for_position(scene_index: int, scene_count: int) -> str:
+    if scene_count <= 1:
+        return "resolution"
+    if scene_index <= 0:
+        return "cold_open"
+    if scene_index >= scene_count - 1:
+        return "tag_joke"
+    progress = scene_index / max(1, scene_count - 1)
+    if progress < 0.14:
+        return "setup"
+    if progress < 0.22:
+        return "inciting_incident"
+    if progress < 0.34:
+        return "plan"
+    if progress < 0.46:
+        return "complication"
+    if progress < 0.58:
+        return "misunderstanding"
+    if progress < 0.70:
+        return "escalation"
+    if progress < 0.78:
+        return "midpoint_turn"
+    if progress < 0.86:
+        return "low_point"
+    if progress < 0.94:
+        return "reveal"
+    return "resolution"
+
+
+def build_episode_blueprint(
+    *,
+    focus_characters: list[str],
+    keywords: list[str],
+    relationship_context: list[dict],
+    behavior_model: dict,
+    target_runtime_seconds: int,
+    scene_count: int,
+    language: str,
+) -> dict:
+    primary = focus_characters[0] if focus_characters else "the lead character"
+    secondary = focus_characters[1] if len(focus_characters) > 1 else primary
+    topic = keywords[0] if keywords else "a new problem"
+    callback_candidates = (
+        behavior_model.get("scene_behavior", {}).get("callback_candidates", [])
+        if isinstance(behavior_model.get("scene_behavior", {}), dict)
+        else []
+    )
+    callbacks = [coalesce_text(value) for value in callback_candidates if coalesce_text(value)][:5]
+    if not callbacks and keywords:
+        callbacks = keywords[:3]
+    dynamic = first_relationship_value(relationship_context, "typical_dynamic") or first_relationship_value(
+        relationship_context,
+        "configured_dynamic",
+    )
+    scene_functions = [
+        {
+            "scene_id": f"scene_{index + 1:04d}",
+            "scene_function": scene_function_for_position(index, scene_count),
+        }
+        for index in range(scene_count)
+    ]
+    family = language_family(language)
+    logline = (
+        f"{primary} und {secondary} jagen {topic}, aber ihre Dynamik macht das Problem groesser."
+        if family == "de"
+        else f"{primary} and {secondary} chase {topic}, but their dynamic makes the problem bigger."
+    )
+    theme = "teamwork under pressure" if family != "de" else "Teamwork unter Druck"
+    return {
+        "schema_version": 1,
+        "logline": logline,
+        "theme": theme,
+        "target_runtime_seconds": int(target_runtime_seconds),
+        "target_scene_count": int(scene_count),
+        "cold_open": {"purpose": "plant the comic problem and first callback", "focus_character": primary},
+        "act_1": {"purpose": "setup the desire, rules, and inciting incident", "conflict_owner": primary},
+        "act_2": {"purpose": "escalate through failed fixes and relationship friction", "dynamic": dynamic},
+        "act_3": {"purpose": "force a turn, reveal the real cause, and repair the relationship"},
+        "resolution": {"purpose": "pay off callbacks and leave a final character button", "resolver": secondary},
+        "a_story": {"driver": primary, "goal": topic, "conflict": dynamic or "relationship pressure"},
+        "b_story": {"driver": secondary, "goal": "protect the relationship while solving the problem"},
+        "running_gag": callbacks[0] if callbacks else topic,
+        "callbacks": callbacks,
+        "character_arcs": {
+            character: {
+                "start": "confident but incomplete",
+                "turn": "forced to react to another character's pressure",
+                "end": "keeps identity while adjusting behavior",
+            }
+            for character in focus_characters
+        },
+        "continuity_requirements": [
+            "Keep character identity, outfit, hairstyle, and voice consistent unless a scene explicitly changes them.",
+            "Carry props and unresolved callbacks forward until they pay off.",
+            "Keep set geography stable across shot/reaction cuts.",
+        ],
+        "scene_function_sequence": scene_functions,
+    }
+
+
+def build_set_bible(focus_characters: list[str], keywords: list[str], style_descriptor: str) -> dict:
+    topic = keywords[0] if keywords else "episode conflict"
+    return {
+        "schema_version": 1,
+        "sets": [
+            {
+                "set_id": "main_workroom",
+                "name": "Main Workroom",
+                "visual_description": f"primary recurring sitcom set for {topic}; {style_descriptor}",
+                "key_props": ["work table", "screens", "character-specific props"],
+                "lighting": "bright multi-camera TV lighting",
+                "camera_axis": "front-facing multi-camera axis with repeatable reverse angles",
+                "allowed_camera_angles": ["wide establishing shot", "medium two-shot", "reaction close-up", "insert shot"],
+                "reference_frames": [],
+            },
+            {
+                "set_id": "secondary_hangout",
+                "name": "Secondary Hangout",
+                "visual_description": "smaller recurring conversation area for B-story reactions",
+                "key_props": ["sofa", "side table", "background dressing"],
+                "lighting": "consistent sitcom fill light",
+                "camera_axis": "stable 180-degree conversation axis",
+                "allowed_camera_angles": ["medium two-shot", "close-up", "cutaway"],
+                "reference_frames": [],
+            },
+            {
+                "set_id": "public_demo_space",
+                "name": "Public Demo Space",
+                "visual_description": "slightly larger set for reveals, demos, and crowd pressure",
+                "key_props": ["presentation area", "display", "audience edge"],
+                "lighting": "brighter reveal lighting",
+                "camera_axis": "wide stage-facing axis",
+                "allowed_camera_angles": ["wide establishing shot", "insert shot", "reaction close-up", "final button shot"],
+                "reference_frames": [],
+            },
+        ],
+        "default_set_id": "main_workroom",
+        "character_home_set": {character: "main_workroom" for character in focus_characters},
+    }
+
+
+def set_for_scene(set_bible: dict, scene_index: int) -> dict:
+    sets = set_bible.get("sets", []) if isinstance(set_bible.get("sets", []), list) else []
+    if not sets:
+        return {"set_id": "main_workroom", "name": "Main Workroom"}
+    if scene_index % 6 in {2, 5} and len(sets) > 1:
+        return sets[1]
+    if scene_index % 7 == 4 and len(sets) > 2:
+        return sets[2]
+    return sets[0]
+
+
+def build_character_continuity_lock(scene_characters: list[str], model: dict) -> dict:
+    reference_library = model.get("character_reference_library", {}) if isinstance(model.get("character_reference_library", {}), dict) else {}
+    locks: dict[str, dict] = {}
+    for character in scene_characters:
+        references = reference_library.get(character, {}) if isinstance(reference_library.get(character, {}), dict) else {}
+        reference_images = [
+            *list((references.get("portrait_images", []) or [])[:3]),
+            *list((references.get("context_images", []) or [])[:3]),
+        ]
+        locks[character] = {
+            "identity_required": True,
+            "outfit_lock": True,
+            "hair_lock": True,
+            "voice_lock": True,
+            "canonical_outfit": coalesce_text(references.get("canonical_outfit", "")) or "match reviewed source references",
+            "canonical_hairstyle": coalesce_text(references.get("canonical_hairstyle", "")) or "match reviewed source references",
+            "canonical_body_shape": coalesce_text(references.get("canonical_body_shape", "")) or "preserve source proportions",
+            "allowed_variations": ["minor pose and expression changes"],
+            "forbidden_variations": ["wrong face", "wrong hairstyle", "unmotivated outfit change", "extra duplicate character"],
+            "reference_images": reference_images,
+            "reference_audio": [],
+        }
+    return locks
+
+
+def build_scene_shot_plan(
+    *,
+    scene_id: str,
+    scene_function: str,
+    scene_characters: list[str],
+    dialogue: list[str],
+    dialogue_metadata: list[dict],
+    duration_seconds: float,
+    location_id: str,
+) -> list[dict]:
+    total_duration = max(12.0, float(duration_seconds or 0.0))
+    shot_plan: list[dict] = []
+
+    def add_shot(
+        shot_type: str,
+        duration: float,
+        indices: list[int],
+        purpose: str,
+        characters_visible: list[str] | None = None,
+        movement: str = "static",
+    ) -> None:
+        shot_index = len(shot_plan) + 1
+        shot_plan.append(
+            {
+                "shot_id": f"{scene_id}_shot_{shot_index:03d}",
+                "shot_type": shot_type,
+                "duration_seconds": round(max(0.8, float(duration)), 3),
+                "camera_angle": "eye level",
+                "camera_movement": movement,
+                "characters_visible": characters_visible if characters_visible is not None else scene_characters[:2],
+                "dialogue_line_indices": indices,
+                "purpose": purpose,
+                "location_id": location_id,
+                "scene_function": scene_function,
+            }
+        )
+
+    add_shot(
+        "wide establishing shot",
+        min(3.2, total_duration * 0.12),
+        [],
+        "establish set geography and blocking",
+        scene_characters[: min(3, len(scene_characters))],
+    )
+    if not dialogue:
+        add_shot("final button shot", max(2.0, total_duration - 3.2), [], "hold the scene button", scene_characters[:1])
+        return shot_plan
+
+    line_budget = max(1, len(dialogue))
+    remaining = max(4.0, total_duration - sum(row["duration_seconds"] for row in shot_plan) - 2.0)
+    per_line = remaining / line_budget
+    line_index = 0
+    while line_index < len(dialogue):
+        chunk = list(range(line_index, min(len(dialogue), line_index + 2)))
+        speakers = []
+        for idx in chunk:
+            meta = dialogue_metadata[idx] if idx < len(dialogue_metadata) and isinstance(dialogue_metadata[idx], dict) else {}
+            speaker = coalesce_text(meta.get("speaker", "")) or coalesce_text(meta.get("speaker_name", ""))
+            if speaker and speaker not in speakers:
+                speakers.append(speaker)
+        if len(chunk) == 1:
+            shot_type = "reaction close-up" if line_index else "medium close-up"
+        else:
+            shot_type = "medium two-shot"
+        add_shot(
+            shot_type,
+            max(1.4, per_line * len(chunk)),
+            chunk,
+            "cover dialogue beat and reaction",
+            speakers or scene_characters[:2],
+        )
+        line_index += len(chunk)
+    add_shot(
+        "final button shot",
+        min(2.8, total_duration * 0.12),
+        [len(dialogue) - 1],
+        "land payoff or tag joke",
+        scene_characters[:1],
+        movement="small push-in",
+    )
+    return shot_plan
+
+
+def build_dialogue_line_metadata(
+    dialogue: list[str],
+    dialogue_voice_metadata: list[dict],
+    writer_room_plan: dict,
+) -> list[dict]:
+    rows: list[dict] = []
+    callback_targets = writer_room_plan.get("callback_targets", []) if isinstance(writer_room_plan.get("callback_targets", []), list) else []
+    previous_speaker = ""
+    for index, line in enumerate(dialogue):
+        speaker, text = line_text_from_dialogue_line(line)
+        voice_meta = dialogue_voice_metadata[index] if index < len(dialogue_voice_metadata) and isinstance(dialogue_voice_metadata[index], dict) else {}
+        dialogue_function = coalesce_text(voice_meta.get("dialogue_function", "")) or "reacts"
+        lower_text = text.lower()
+        pays_off = any(coalesce_text(target).lower() in lower_text for target in callback_targets if coalesce_text(target))
+        rows.append(
+            {
+                "line_index": index,
+                "speaker": speaker,
+                "text": text,
+                "dialogue_function": dialogue_function,
+                "subtext": {
+                    "contradicts": "pushes back against the previous assumption",
+                    "makes_joke": "turns pressure into a character-specific joke",
+                    "solves_problem": "tries to repair the scene problem",
+                    "drives_plan": "moves the plan forward while hiding uncertainty",
+                }.get(dialogue_function, "reacts to the previous beat"),
+                "reaction_to_previous": "starts beat" if index == 0 else f"responds to {previous_speaker or 'previous line'}",
+                "interrupting": bool(index > 0 and dialogue_function == "contradicts" and len(text.split()) <= 7),
+                "sets_up_callback": bool(index == 0 and callback_targets),
+                "pays_off_callback": bool(pays_off or (index == len(dialogue) - 1 and bool(callback_targets))),
+                "physical_action": {
+                    "contradicts": "leans in with quick pushback",
+                    "makes_joke": "throws a look to the room",
+                    "solves_problem": "points to the practical fix",
+                    "drives_plan": "gestures toward the object of the plan",
+                }.get(dialogue_function, "reacts in character"),
+                "facial_expression": {
+                    "contradicts": "skeptical focus",
+                    "makes_joke": "playful confidence",
+                    "solves_problem": "relieved certainty",
+                    "drives_plan": "forced confidence",
+                }.get(dialogue_function, "listening reaction"),
+                "camera_focus": "reaction close-up" if index % 3 == 2 else "medium close-up" if index % 2 else "medium two-shot",
+            }
+        )
+        previous_speaker = speaker
+    return rows
+
+
+def build_episode_edit_decision_list(scenes: list[dict]) -> list[dict]:
+    cursor = 0.0
+    rows: list[dict] = []
+    for scene in scenes:
+        for shot in scene.get("shot_plan", []) if isinstance(scene.get("shot_plan", []), list) else []:
+            duration = max(0.0, float(shot.get("duration_seconds", 0.0) or 0.0))
+            rows.append(
+                {
+                    "clip": f"shots/{scene.get('scene_id', 'scene')}/{shot.get('shot_id', 'shot')}_lipsync.mp4",
+                    "scene_id": scene.get("scene_id", ""),
+                    "shot_id": shot.get("shot_id", ""),
+                    "start": round(cursor, 3),
+                    "end": round(cursor + duration, 3),
+                    "audio_layers": ["dialogue", "ambience"],
+                    "cut": "hard_cut",
+                }
+            )
+            cursor += duration
+    return rows
+
+
+def build_audio_mix_plan(episode_id: str, scenes: list[dict], cfg: dict) -> dict:
+    audio_cfg = cfg.get("audio_mastering", {}) if isinstance(cfg.get("audio_mastering", {}), dict) else {}
+    return {
+        "enabled": bool(audio_cfg.get("enabled", True)),
+        "target_lufs": float(audio_cfg.get("target_lufs", -16.0) or -16.0),
+        "true_peak_limit_db": float(audio_cfg.get("true_peak_limit_db", -1.0) or -1.0),
+        "require_dialogue_stem": bool(audio_cfg.get("require_dialogue_stem", True)),
+        "require_final_mix": bool(audio_cfg.get("require_final_mix", True)),
+        "stems": {
+            "dialogue": f"audio/{episode_id}_dialogue_stem.wav",
+            "ambience": f"audio/{episode_id}_ambience_stem.wav",
+            "music": f"audio/{episode_id}_music_stem.wav",
+            "sfx": f"audio/{episode_id}_sfx_stem.wav",
+            "final_mix": f"audio/{episode_id}_final_mix.wav",
+        },
+        "scene_mix_targets": [
+            {
+                "scene_id": scene.get("scene_id", ""),
+                "dialogue_stem": f"audio/{scene.get('scene_id', 'scene')}/{scene.get('scene_id', 'scene')}_dialogue.wav",
+                "ambience": "room_tone",
+                "music_cue": "none",
+                "sfx_cues": [],
+            }
+            for scene in scenes
+        ],
+    }
+
+
 def build_writer_room_plan(
     *,
     beat: str,
@@ -1391,6 +1765,7 @@ def build_writer_room_plan(
     behavior_model: dict,
     relationships: list[dict],
     target_length: int,
+    scene_function: str = "",
 ) -> dict:
     setup_character = first_relationship_value(relationships, "conversation_starter") or first_relationship_value(relationships, "conversation_leader")
     if setup_character not in scene_characters:
@@ -1409,14 +1784,15 @@ def build_writer_room_plan(
     if resolution_character not in scene_characters:
         resolution_character = choose_character_for_function(scene_characters, behavior_model, "solves_problem", 1)
     progress = scene_index / max(1, scene_count - 1)
+    canonical_scene_function = coalesce_text(scene_function) or scene_function_for_position(scene_index, scene_count)
     if progress < 0.18:
-        scene_function = "setup establishes character desire and plants a callback"
+        scene_function_text = "setup establishes character desire and plants a callback"
     elif beat in {"Komplikation", "Verwechslung"} or progress < 0.62:
-        scene_function = "misunderstanding escalates through relationship conflict"
+        scene_function_text = "misunderstanding escalates through relationship conflict"
     elif beat == "Wendepunkt" or progress < 0.82:
-        scene_function = "turning point forces a new plan"
+        scene_function_text = "turning point forces a new plan"
     else:
-        scene_function = "payoff resolves conflict and lands callback"
+        scene_function_text = "payoff resolves conflict and lands callback"
     base_order = [
         setup_character,
         opposing_character or setup_character,
@@ -1431,7 +1807,20 @@ def build_writer_room_plan(
         if not scene_characters:
             break
     return {
-        "scene_function": scene_function,
+        "scene_function": canonical_scene_function,
+        "scene_function_description": scene_function_text,
+        "emotional_goal": "pressure rises but remains comedic" if canonical_scene_function not in {"resolution", "tag_joke"} else "release pressure with a clean payoff",
+        "conflict_source": f"{setup_character or 'lead'} and {opposing_character or 'partner'} disagree about {keyword}",
+        "comedy_engine": "fast denial -> precise correction -> awkward admission",
+        "required_information": [f"{keyword} changes the next scene decision"],
+        "character_turning_point": f"{resolution_character or setup_character or 'lead'} sees the practical fix",
+        "scene_button": f"{joke_character or setup_character or 'lead'} lands the final reaction to {keyword}",
+        "previous_scene_dependency": "carry forward the previous scene's promise or mistake",
+        "next_scene_hook": f"{keyword} creates pressure for the next scene",
+        "who_drives_scene": setup_character,
+        "who_resists_scene": opposing_character,
+        "who_resolves_scene": resolution_character,
+        "who_gets_punchline": joke_character,
         "setup_character": setup_character,
         "opposing_character": opposing_character,
         "joke_character": joke_character,
@@ -2139,6 +2528,21 @@ def generate_episode_package(model: dict, cfg: dict, episode_index: int = 1) -> 
     episode_title = build_episode_title(focus_characters, keywords, rng, episode_index, model=model, language=series_language)
     episode_label = format_episode_number(episode_index, series_language)
     display_title = f"{episode_label}: {episode_title}"
+    episode_blueprint = build_episode_blueprint(
+        focus_characters=focus_characters,
+        keywords=keywords,
+        relationship_context=relationship_context,
+        behavior_model=behavior_model,
+        target_runtime_seconds=target_runtime_seconds,
+        scene_count=scene_count,
+        language=series_language,
+    )
+    set_bible = build_set_bible(focus_characters, keywords, style_descriptor)
+    scene_function_index = {
+        coalesce_text(row.get("scene_id", "")): coalesce_text(row.get("scene_function", ""))
+        for row in episode_blueprint.get("scene_function_sequence", [])
+        if isinstance(row, dict)
+    }
 
     scenes = []
     markdown_lines = [
@@ -2186,6 +2590,8 @@ def generate_episode_package(model: dict, cfg: dict, episode_index: int = 1) -> 
             include_group_members=False,
         )
         behavior_relationships = relationship_behavior_for_scene(behavior_model, scene_characters)
+        scene_id = f"scene_{scene_index + 1:04d}"
+        scene_function = scene_function_index.get(scene_id, "") or scene_function_for_position(scene_index, scene_count)
         writer_room_plan = build_writer_room_plan(
             beat=beat,
             keyword=keyword,
@@ -2195,6 +2601,7 @@ def generate_episode_package(model: dict, cfg: dict, episode_index: int = 1) -> 
             behavior_model=behavior_model,
             relationships=behavior_relationships,
             target_length=target_lines_per_scene,
+            scene_function=scene_function,
         )
         summary = summary_line(scene_characters, keyword, beat, series_language)
         dialogue, dialogue_sources = build_dialogue(
@@ -2233,7 +2640,8 @@ def generate_episode_package(model: dict, cfg: dict, episode_index: int = 1) -> 
                 "writer_room_plan": writer_room_plan,
             },
         )
-        scene_id = f"scene_{scene_index + 1:04d}"
+        dialogue_line_metadata = build_dialogue_line_metadata(dialogue, dialogue_voice_metadata, writer_room_plan)
+        scene_set = set_for_scene(set_bible, scene_index)
         generation_plan = build_scene_generation_plan(
             scene_id,
             scene_index,
@@ -2262,11 +2670,16 @@ def generate_episode_package(model: dict, cfg: dict, episode_index: int = 1) -> 
                 **behavior_fields,
                 "characters": scene_characters,
                 "relationship_context": scene_relationship_context,
-                "location": f"Set {((scene_index % 3) + 1)}",
+                "scene_function": scene_function,
+                "location_id": coalesce_text(scene_set.get("set_id", "")) or "main_workroom",
+                "location": coalesce_text(scene_set.get("name", "")) or "Main Workroom",
+                "set_context": scene_set,
                 "mood": ("energetisch" if scene_index < scene_count - 1 else "auflösend") if language_family(series_language) == "de" else ("energetic" if scene_index < scene_count - 1 else "resolved"),
                 "dialogue_lines": dialogue,
                 "dialogue_sources": dialogue_sources,
                 "dialogue_voice_metadata": dialogue_voice_metadata,
+                "dialogue_line_metadata": dialogue_line_metadata,
+                "character_continuity_lock": build_character_continuity_lock(scene_characters, model),
                 "prompt": (
                     (
                         f"{beat} mit {', '.join(scene_characters)}. Fokus auf {keyword}, schnelle Pointen "
@@ -2312,15 +2725,40 @@ def generate_episode_package(model: dict, cfg: dict, episode_index: int = 1) -> 
     allocated_scene_runtimes = allocate_scene_runtime_seconds(target_runtime_seconds, scene_runtime_floors, scene_beats)
     for scene, runtime_seconds in zip(scenes, allocated_scene_runtimes):
         scene["estimated_runtime_seconds"] = round(float(runtime_seconds or 0.0), 2)
+        scene["shot_plan"] = build_scene_shot_plan(
+            scene_id=coalesce_text(scene.get("scene_id", "")),
+            scene_function=coalesce_text(scene.get("scene_function", "")),
+            scene_characters=scene.get("characters", []) if isinstance(scene.get("characters", []), list) else [],
+            dialogue=scene.get("dialogue_lines", []) if isinstance(scene.get("dialogue_lines", []), list) else [],
+            dialogue_metadata=scene.get("dialogue_voice_metadata", []) if isinstance(scene.get("dialogue_voice_metadata", []), list) else [],
+            duration_seconds=float(runtime_seconds or 0.0),
+            location_id=coalesce_text(scene.get("location_id", "")),
+        )
+        scene["audio_mix"] = {
+            "required": True,
+            "dialogue_stem": f"audio/{scene.get('scene_id', 'scene')}/{scene.get('scene_id', 'scene')}_dialogue.wav",
+            "ambience_stem": f"audio/{scene.get('scene_id', 'scene')}/{scene.get('scene_id', 'scene')}_ambience.wav",
+            "music_stem": f"audio/{scene.get('scene_id', 'scene')}/{scene.get('scene_id', 'scene')}_music.wav",
+            "sfx_stem": f"audio/{scene.get('scene_id', 'scene')}/{scene.get('scene_id', 'scene')}_sfx.wav",
+            "final_mix": f"audio/{scene.get('scene_id', 'scene')}/{scene.get('scene_id', 'scene')}_final_mix.wav",
+            "loudness_target_lufs": float((cfg.get("audio_mastering", {}) if isinstance(cfg.get("audio_mastering", {}), dict) else {}).get("target_lufs", -16.0) or -16.0),
+        }
 
+    edit_decision_list = build_episode_edit_decision_list(scenes)
+    audio_mix_plan = build_audio_mix_plan(f"episode_{episode_index:03d}", scenes, cfg)
     return {
         "episode_title": episode_title,
         "episode_label": episode_label,
         "display_title": display_title,
         "generation_mode": "synthetic_preview",
+        "production_generation_mode": "finished_episode_plan",
         "quality_mode": quality_mode,
         "series_language": package_language,
         "style_descriptor": style_descriptor,
+        "episode_blueprint": episode_blueprint,
+        "set_bible": set_bible,
+        "edit_decision_list": edit_decision_list,
+        "audio_mix_plan": audio_mix_plan,
         "storyboard_plan_mode": "multi_reference_storyboard",
         "target_runtime_seconds": target_runtime_seconds,
         "target_scene_count": scene_count,

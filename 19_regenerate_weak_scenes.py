@@ -199,7 +199,25 @@ def regeneration_scope_from_entry(entry: dict[str, Any]) -> str:
     if explicit:
         return explicit
     hints = entry.get("regeneration_hints", {}) if isinstance(entry.get("regeneration_hints"), dict) else {}
-    if hints.get("rerun_voice_clone") or hints.get("rerun_lipsync") or hints.get("collect_missing_references"):
+    if hints.get("collect_missing_references"):
+        return "blocked_missing_references"
+    if hints.get("repair_backend_manifests"):
+        return "blocked_missing_backend"
+    if hints.get("blocked_low_identity_score"):
+        return "blocked_low_identity_score"
+    if hints.get("blocked_low_lipsync_score"):
+        return "blocked_low_lipsync_score"
+    if hints.get("rerun_audio_mix"):
+        return "audio_mix_only"
+    if hints.get("rerun_lipsync") and not hints.get("rerun_voice_clone"):
+        return "lipsync_only"
+    if hints.get("rerun_voice_clone") and not hints.get("rerun_lipsync"):
+        return "voice_only"
+    if hints.get("repair_shot_plan"):
+        return "shot_plan"
+    if hints.get("generate_real_motion_video"):
+        return "visual_rerender"
+    if hints.get("rerun_voice_clone") or hints.get("rerun_lipsync"):
         return "voice_lipsync"
     if hints.get("reduce_template_lines") or hints.get("increase_speaker_specific_phrases") or hints.get("use_relationship_conflict"):
         return "story_dialogue"
@@ -207,10 +225,26 @@ def regeneration_scope_from_entry(entry: dict[str, Any]) -> str:
 
 
 def regeneration_sections_for_scope(scope: str) -> list[str]:
+    if scope == "voice_only":
+        return ["voice_clone"]
+    if scope == "lipsync_only":
+        return ["lip_sync"]
+    if scope == "audio_mix_only":
+        return ["audio_mix"]
     if scope == "voice_lipsync":
         return ["voice_clone", "lip_sync"]
     if scope == "story_dialogue":
         return ["story", "dialogue", "voice_metadata", "storyboard", "render"]
+    if scope == "shot_plan":
+        return ["shot_plan", "storyboard", "render"]
+    if scope == "visual_rerender":
+        return ["image_generation", "video_generation", "render"]
+    if scope == "scene_master_only":
+        return ["scene_master"]
+    if scope == "full_episode_master":
+        return ["full_episode_master"]
+    if scope.startswith("blocked_"):
+        return ["blocked_diagnostic"]
     if scope == "references":
         return ["voice_references", "character_references"]
     return ["storyboard", "render", "quality_gate"]
@@ -230,8 +264,14 @@ def rerun_strategy_for_queue(queue: list[dict[str, Any]], scene_ids: list[str]) 
     if not scene_ids:
         return "full_episode_pipeline"
     scopes = [regeneration_scope_from_entry(entry) for entry in queue if isinstance(entry, dict)]
-    if scopes and all(scope == "voice_lipsync" for scope in scopes):
+    if any(scope.startswith("blocked_") for scope in scopes):
+        return "blocked"
+    if scopes and all(scope in {"voice_lipsync", "voice_only", "lipsync_only", "audio_mix_only", "scene_master_only"} for scope in scopes):
         return "voice_lipsync_only"
+    if scopes and all(scope == "shot_plan" for scope in scopes):
+        return "shot_plan_refresh"
+    if scopes and all(scope == "visual_rerender" for scope in scopes):
+        return "visual_rerender"
     if any(scope == "story_dialogue" for scope in scopes):
         return "story_dialogue_refresh"
     return "scene_selective"
@@ -262,13 +302,26 @@ def build_rerun_plan(
     queue = regeneration_queue if isinstance(regeneration_queue, list) else []
     strategy = rerun_strategy_for_queue(queue, scene_ids or [])
     plan: list[dict[str, Any]] = []
-    if strategy == "story_dialogue_refresh":
+    if strategy == "blocked":
+        return [
+            {
+                "script": "18_quality_gate.py",
+                "args": gate_args,
+                "note": "Blocked regeneration: missing references/backend/integrity must be fixed before retrying render loops.",
+                "blocked": True,
+            }
+        ]
+    if strategy in {"story_dialogue_refresh", "shot_plan_refresh"}:
         plan.extend(
             [
                 {
                     "script": "14_generate_episode.py",
                     "args": ["--episode-id", episode_id],
-                    "note": "Story/dialogue realism failed; refresh the behavior-guided shotlist before visual/audio rebuild.",
+                    "note": (
+                        "Shot planning failed; refresh shot metadata before visual/audio rebuild."
+                        if strategy == "shot_plan_refresh"
+                        else "Story/dialogue realism failed; refresh the behavior-guided shotlist before visual/audio rebuild."
+                    ),
                 },
                 {
                     "script": "15_generate_storyboard_assets.py",

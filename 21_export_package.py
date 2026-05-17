@@ -45,6 +45,12 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Copy referenced media into the export folder for easier handoff.",
     )
+    parser.add_argument(
+        "--export-type",
+        default="auto",
+        choices=("auto", "preview_export", "review_export", "finished_episode_export"),
+        help="Classify the handoff package. finished_episode_export is blocked unless the finished episode gate passes.",
+    )
     return parser.parse_args()
 
 
@@ -79,6 +85,39 @@ def load_production_package(artifacts: dict[str, Any]) -> dict[str, Any]:
         return {}
     payload = read_json(package_path, {})
     return payload if isinstance(payload, dict) else {}
+
+
+def load_quality_gate_payload(artifacts: dict[str, Any]) -> dict[str, Any]:
+    path = resolve_stored_project_path(artifacts.get("quality_gate_report", ""))
+    if not path.exists():
+        return {}
+    payload = read_json(path, {})
+    return payload if isinstance(payload, dict) else {}
+
+
+def classify_export_type(requested: str, artifacts: dict[str, Any], quality_gate: dict[str, Any]) -> str:
+    requested = str(requested or "auto").strip()
+    if requested != "auto":
+        return requested
+    finished_gate = quality_gate.get("finished_episode_gate", {}) if isinstance(quality_gate.get("finished_episode_gate", {}), dict) else {}
+    if bool(finished_gate.get("passed", False)) and bool(artifacts.get("release_gate_passed", False)):
+        return "finished_episode_export"
+    if quality_gate or artifacts.get("quality_gate_report"):
+        return "review_export"
+    return "preview_export"
+
+
+def collect_backend_manifest_paths(production_package: dict[str, Any]) -> list[str]:
+    paths: list[str] = []
+    for scene in production_package.get("scenes", []) if isinstance(production_package.get("scenes", []), list) else []:
+        if not isinstance(scene, dict):
+            continue
+        manifests = scene.get("backend_manifests", {}) if isinstance(scene.get("backend_manifests", {}), dict) else {}
+        paths.extend(str(path) for path in manifests.values() if str(path).strip())
+        for row in scene.get("backend_manifest_rows", []) if isinstance(scene.get("backend_manifest_rows", []), list) else []:
+            if isinstance(row, dict) and str(row.get("manifest_path", "") or "").strip():
+                paths.append(str(row.get("manifest_path", "")))
+    return list(dict.fromkeys(paths))
 
 
 def preferred_scene_video(scene_payload: dict[str, Any]) -> str:
@@ -180,10 +219,19 @@ def build_common_export_payload(
     production_package: dict[str, Any],
     format_name: str,
     target_root: Path,
+    quality_gate: dict[str, Any] | None = None,
+    export_type: str = "review_export",
 ) -> dict[str, Any]:
+    quality_gate = quality_gate if isinstance(quality_gate, dict) else {}
     scene_rows = collect_scene_export_rows(production_package)
+    finished_gate = quality_gate.get("finished_episode_gate", {}) if isinstance(quality_gate.get("finished_episode_gate", {}), dict) else {}
+    realism_json = str(quality_gate.get("realism_report_json", "") or artifacts.get("realism_report_json", "") or "")
+    realism_md = str(quality_gate.get("realism_report_markdown", "") or artifacts.get("realism_report_markdown", "") or "")
+    audio_mastering = production_package.get("audio_mastering", {}) if isinstance(production_package.get("audio_mastering", {}), dict) else {}
+    audio_outputs = audio_mastering.get("target_outputs", {}) if isinstance(audio_mastering.get("target_outputs", {}), dict) else {}
     return {
         "format": format_name,
+        "export_type": export_type,
         "export_root": str(target_root),
         "episode_id": str(artifacts.get("episode_id", "") or ""),
         "display_title": str(artifacts.get("display_title", "") or ""),
@@ -212,6 +260,7 @@ def build_common_export_payload(
         "release_gate": dict(artifacts.get("release_gate", {}) or {})
         if isinstance(artifacts.get("release_gate"), dict)
         else {},
+        "finished_episode_gate": finished_gate,
         "release_gate_passed": bool(artifacts.get("release_gate_passed", False)),
         "quality_gate_warnings": list(artifacts.get("quality_gate_warnings", []) or [])
         if isinstance(artifacts.get("quality_gate_warnings"), list)
@@ -220,9 +269,59 @@ def build_common_export_payload(
         "regeneration_requested_scene_ids": list(artifacts.get("regeneration_requested_scene_ids", []) or [])
         if isinstance(artifacts.get("regeneration_requested_scene_ids"), list)
         else [],
+        "realism_report_json": stored_path_text(realism_json),
+        "realism_report_markdown": stored_path_text(realism_md),
+        "final_audio_mix": stored_path_text(audio_outputs.get("final_mix", "")),
+        "edit_decision_list": production_package.get("edit_decision_list", []) if isinstance(production_package.get("edit_decision_list", []), list) else [],
+        "backend_manifests": collect_backend_manifest_paths(production_package),
+        "disclosure": {
+            "synthetic_episode": True,
+            "voice_face_lipsync_rights_required": True,
+            "notice": "Voice cloning, face cloning, and lip sync of real people require rights and consent.",
+        },
         "scene_count": len(scene_rows),
         "scenes": scene_rows,
     }
+
+
+def enforce_export_type(export_type: str, export_payload: dict[str, Any]) -> None:
+    if export_type != "finished_episode_export":
+        return
+    finished_gate = export_payload.get("finished_episode_gate", {}) if isinstance(export_payload.get("finished_episode_gate", {}), dict) else {}
+    if not bool(finished_gate.get("passed", False)):
+        blockers = finished_gate.get("blockers", []) if isinstance(finished_gate.get("blockers", []), list) else []
+        details = "\n".join(f"- {blocker}" for blocker in blockers if str(blocker).strip())
+        raise RuntimeError(
+            "finished_episode_export is blocked because the finished episode gate has not passed."
+            + (f"\n{details}" if details else "")
+        )
+
+
+def write_episode_export_readme(target_root: Path, export_payload: dict[str, Any]) -> str:
+    readme_path = target_root / "README_episode_export.md"
+    finished_gate = export_payload.get("finished_episode_gate", {}) if isinstance(export_payload.get("finished_episode_gate", {}), dict) else {}
+    lines = [
+        "# Episode Export Package",
+        "",
+        f"- Episode ID: {export_payload.get('episode_id') or '-'}",
+        f"- Display title: {export_payload.get('display_title') or '-'}",
+        f"- Export type: {export_payload.get('export_type') or '-'}",
+        f"- Finished episode gate: {'PASS' if finished_gate.get('passed') else 'FAIL'}",
+        f"- Final master: {export_payload.get('full_generated_episode') or export_payload.get('delivery_episode') or '-'}",
+        f"- Final audio mix: {export_payload.get('final_audio_mix') or '-'}",
+        f"- Realism report: {export_payload.get('realism_report_markdown') or '-'}",
+        "",
+        "## Disclosure",
+        "This package may contain synthetic voice, face, and lip-sync outputs. Use real-person cloning only with rights and consent.",
+    ]
+    readme_path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+    return str(readme_path)
+
+
+def write_disclosure_metadata(target_root: Path, export_payload: dict[str, Any]) -> str:
+    disclosure_path = target_root / "disclosure_metadata.json"
+    write_json(disclosure_path, export_payload.get("disclosure", {}) if isinstance(export_payload.get("disclosure", {}), dict) else {})
+    return str(disclosure_path)
 
 
 def copy_referenced_media(export_payload: dict[str, Any], media_root: Path) -> dict[str, str]:
@@ -244,6 +343,9 @@ def copy_referenced_media(export_payload: dict[str, Any], media_root: Path) -> d
         "latest_delivery_manifest",
         "latest_delivery_episode",
         "quality_gate_report",
+        "realism_report_json",
+        "realism_report_markdown",
+        "final_audio_mix",
         "regeneration_queue_manifest",
     )
     for field in top_level_fields:
@@ -278,6 +380,18 @@ def copy_referenced_media(export_payload: dict[str, Any], media_root: Path) -> d
             shutil.copy2(source_path, target_path)
             scene[f"{field}_copied"] = str(target_path)
             copied_by_source[str(source_path)] = str(target_path)
+    backend_root = media_root / "backend_manifests"
+    for index, source in enumerate(export_payload.get("backend_manifests", []) if isinstance(export_payload.get("backend_manifests", []), list) else [], start=1):
+        if not path_ready(source):
+            continue
+        source_path = resolve_stored_project_path(source)
+        if str(source_path) in seen_sources:
+            continue
+        seen_sources.add(str(source_path))
+        backend_root.mkdir(parents=True, exist_ok=True)
+        target_path = backend_root / f"{index:04d}_{source_path.name}"
+        shutil.copy2(source_path, target_path)
+        copied[f"backend_manifest_{index:04d}"] = str(target_path)
     return copied
 
 
@@ -371,9 +485,20 @@ def main() -> None:
         info(f"No production package found for {artifacts.get('episode_id') or args.episode_id or 'latest'}.")
         raise SystemExit(1)
 
+    quality_gate = load_quality_gate_payload(artifacts)
+    export_type = classify_export_type(args.export_type, artifacts, quality_gate)
     target_root = export_root(cfg, str(artifacts.get("episode_id", "") or "latest"), args.format)
     target_root.mkdir(parents=True, exist_ok=True)
-    export_payload = build_common_export_payload(cfg, artifacts, production_package, args.format, target_root)
+    export_payload = build_common_export_payload(
+        cfg,
+        artifacts,
+        production_package,
+        args.format,
+        target_root,
+        quality_gate=quality_gate,
+        export_type=export_type,
+    )
+    enforce_export_type(export_type, export_payload)
 
     copied_top_level: dict[str, str] = {}
     if args.copy_media:
@@ -382,6 +507,8 @@ def main() -> None:
 
     export_manifest_path = target_root / "export_manifest.json"
     write_json(export_manifest_path, export_payload)
+    episode_readme_path = write_episode_export_readme(target_root, export_payload)
+    disclosure_path = write_disclosure_metadata(target_root, export_payload)
 
     export_handlers = {
         "davinci": export_for_davinci,
@@ -395,6 +522,9 @@ def main() -> None:
         "format": args.format,
         "export_root": str(target_root),
         "export_manifest": str(export_manifest_path),
+        "export_type": export_type,
+        "episode_readme": episode_readme_path,
+        "disclosure_metadata": disclosure_path,
         "copy_media": bool(args.copy_media),
         **handler_result,
     }
