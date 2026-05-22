@@ -4862,6 +4862,31 @@ class ManualNamingTests(unittest.TestCase):
         self.assertEqual(language, "es")
         self.assertGreater(scores["es"], scores["en"])
 
+    def test_episode_language_selection_prefers_confident_audio_probability(self) -> None:
+        language, selection_source = STEP04.select_episode_language("de", "es", "")
+
+        self.assertEqual(language, "de")
+        self.assertEqual(selection_source, "audio_probability")
+
+    def test_scene_cache_completed_rejects_configured_language_mismatch(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cache_file = Path(tmp) / "scene_0001.json"
+            STEP04.write_json(
+                cache_file,
+                [
+                    {
+                        "process_version": STEP04.PROCESS_VERSION,
+                        "scene_id": "scene_0001",
+                        "segment_id": "scene_0001_seg_001",
+                        "language": "es",
+                        "text": "Ahora tenemos un plan.",
+                    }
+                ],
+            )
+
+            self.assertFalse(STEP04.scene_cache_completed(cache_file, {"transcription": {"language": "de"}}))
+            self.assertTrue(STEP04.scene_cache_completed(cache_file, {"transcription": {"language": "auto"}}))
+
     def test_transcribe_scene_forces_configured_episode_language(self) -> None:
         class DummyModel:
             def __init__(self) -> None:

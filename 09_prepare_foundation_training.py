@@ -42,17 +42,19 @@ from support_scripts.pipeline_common import (
     pip_install_command,
     read_json,
     rerun_in_runtime,
+    non_speech_text_reason,
     normalize_language_code,
     resolve_project_path,
     resolve_stored_project_path,
     runtime_python,
     shared_worker_id_for_args,
     shared_workers_enabled_for_args,
+    voice_segment_reference_eligible,
     write_json,
     write_text,
 )
 
-PROCESS_VERSION = 2
+PROCESS_VERSION = 3
 DOWNLOAD_METADATA_FILE = ".foundation_download.json"
 
 
@@ -387,10 +389,18 @@ def is_voice_reference_text(text: str) -> bool:
     candidate = coalesce_text(text).strip().lower()
     if not candidate:
         return False
-    return candidate not in {"musik", "music", "applaus", "lachen", "gelächter", "atmen"}
+    return not bool(non_speech_text_reason(candidate))
 
 
-def original_voice_candidates(rows: list[dict], character_name: str) -> list[dict]:
+def is_voice_reference_segment(segment: dict, cfg: dict | None = None) -> bool:
+    if not isinstance(segment, dict):
+        return False
+    if not is_voice_reference_text(coalesce_text(segment.get("text", ""))):
+        return False
+    return voice_segment_reference_eligible(segment, cfg, default_when_unscored=True)
+
+
+def original_voice_candidates(rows: list[dict], character_name: str, cfg: dict | None = None) -> list[dict]:
     candidates: list[dict] = []
     fallback_candidates: list[dict] = []
     for row in rows:
@@ -403,6 +413,8 @@ def original_voice_candidates(rows: list[dict], character_name: str) -> list[dic
                 continue
             speaker_name = coalesce_text(segment.get("speaker_name", ""))
             if speaker_name.lower() != character_name.lower():
+                continue
+            if not is_voice_reference_segment(segment, cfg):
                 continue
             audio_path = resolve_stored_project_path(segment.get("audio_file", ""))
             if not audio_path.exists() or not audio_path.is_file():
@@ -418,6 +430,9 @@ def original_voice_candidates(rows: list[dict], character_name: str) -> list[dic
                 "duration_seconds": duration_seconds,
                 "language": normalize_language_code(segment.get("language", ""), row.get("language", "")),
                 "text": coalesce_text(segment.get("text", "")),
+                "speech_confidence": float(segment.get("speech_confidence", 1.0) or 1.0),
+                "audio_content_type": coalesce_text(segment.get("audio_content_type", "")),
+                "voice_quality": segment.get("voice_quality", {}) if isinstance(segment.get("voice_quality", {}), dict) else {},
             }
             candidates.append(candidate_row)
             visible_names = [coalesce_text(name) for name in segment.get("visible_character_names", []) or [] if has_primary_person_name(name)]
@@ -434,7 +449,7 @@ def original_voice_candidates(rows: list[dict], character_name: str) -> list[dic
             if len(unique_visible_names) != 1 or character_name.lower() not in unique_visible_names:
                 continue
             text = coalesce_text(segment.get("text", ""))
-            if not is_voice_reference_text(text):
+            if not is_voice_reference_segment(segment, cfg):
                 continue
             audio_path = resolve_stored_project_path(segment.get("audio_file", ""))
             if not audio_path.exists() or not audio_path.is_file():
@@ -451,6 +466,9 @@ def original_voice_candidates(rows: list[dict], character_name: str) -> list[dic
                     "duration_seconds": duration_seconds,
                     "language": normalize_language_code(segment.get("language", ""), row.get("language", "")),
                     "text": text,
+                    "speech_confidence": float(segment.get("speech_confidence", 1.0) or 1.0),
+                    "audio_content_type": coalesce_text(segment.get("audio_content_type", "")),
+                    "voice_quality": segment.get("voice_quality", {}) if isinstance(segment.get("voice_quality", {}), dict) else {},
                 }
             )
     if candidates:
@@ -459,6 +477,7 @@ def original_voice_candidates(rows: list[dict], character_name: str) -> list[dic
         selected = fallback_candidates
     selected.sort(
         key=lambda row: (
+            -float(row.get("speech_confidence", 1.0) or 1.0),
             -float(row.get("duration_seconds", 0.0) or 0.0),
             row.get("episode_id", ""),
             row.get("scene_id", ""),
@@ -761,7 +780,7 @@ def prepare_character_dataset(
 
     voice_samples: list[dict] = []
     seen_sources: set[str] = set()
-    original_candidates = original_voice_candidates(rows, character["name"])
+    original_candidates = original_voice_candidates(rows, character["name"], cfg)
     for index, source in enumerate(original_candidates[:max_voice], start=1):
         source_path = Path(str(source.get("audio_path", "")))
         if not source_path.is_file():
@@ -770,8 +789,7 @@ def prepare_character_dataset(
         if not source_path.exists() or source_key in seen_sources:
             continue
         target = voice_root / f"{character['slug']}_{index:03d}{source_path.suffix.lower() or '.wav'}"
-        if not target.exists() or force:
-            shutil.copy2(source_path, target)
+        shutil.copy2(source_path, target)
         voice_samples.append(
             {
                 "path": str(target),
@@ -783,6 +801,9 @@ def prepare_character_dataset(
                 "language": normalize_language_code(source.get("language", "")),
                 "duration_seconds": round(float(source.get("duration_seconds", 0.0) or 0.0), 3),
                 "text": coalesce_text(source.get("text", "")),
+                "speech_confidence": round(float(source.get("speech_confidence", 1.0) or 1.0), 3),
+                "audio_content_type": coalesce_text(source.get("audio_content_type", "")),
+                "voice_quality": source.get("voice_quality", {}) if isinstance(source.get("voice_quality", {}), dict) else {},
             }
         )
         seen_sources.add(source_key)
@@ -798,8 +819,7 @@ def prepare_character_dataset(
             if not source.exists() or source_key in seen_sources:
                 continue
             target = voice_root / f"{character['slug']}_{next_index:03d}{source.suffix.lower() or '.wav'}"
-            if not target.exists() or force:
-                shutil.copy2(source, target)
+            shutil.copy2(source, target)
             voice_samples.append(
                 {
                     "path": str(target),
@@ -822,6 +842,7 @@ def prepare_character_dataset(
     )
 
     return {
+        "process_version": PROCESS_VERSION,
         "name": character["name"],
         "slug": character["slug"],
         "priority": bool(character.get("priority", False)),

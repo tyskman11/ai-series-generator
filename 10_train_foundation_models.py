@@ -40,10 +40,11 @@ from support_scripts.pipeline_common import (
     resolve_project_path,
     shared_worker_id_for_args,
     shared_workers_enabled_for_args,
+    voice_segment_reference_eligible,
     write_json,
 )
 
-PROCESS_VERSION = 2
+PROCESS_VERSION = 3
 
 
 def parse_args() -> argparse.Namespace:
@@ -115,6 +116,8 @@ def voice_stats(entries: list[dict], cfg: dict) -> dict:
     for entry in entries:
         if not isinstance(entry, dict):
             continue
+        if not voice_segment_reference_eligible(entry, cfg, default_when_unscored=True):
+            continue
         path = Path(str(entry.get("path", "")))
         if not path.exists():
             continue
@@ -135,6 +138,10 @@ def voice_stats(entries: list[dict], cfg: dict) -> dict:
                     "language": language,
                     "duration_seconds": round(float(entry.get("duration_seconds", 0.0) or 0.0), 3),
                     "text": coalesce_text(entry.get("text", "")),
+                    "speech_confidence": round(float(entry.get("speech_confidence", 1.0) or 1.0), 3),
+                    "audio_content_type": coalesce_text(entry.get("audio_content_type", "")),
+                    "voice_quality": entry.get("voice_quality", {}) if isinstance(entry.get("voice_quality", {}), dict) else {},
+                    "voice_reference_eligible": True,
                 }
             )
     if not durations:

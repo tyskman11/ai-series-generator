@@ -193,6 +193,11 @@ DEFAULT_CONFIG = {
         "voice_embedding_context_padding_seconds": 0.45,
         "voice_embedding_threshold": 0.84,
         "voice_embedding_threshold_speechbrain": 0.44,
+        "speaker_cluster_min_speech_confidence": 0.52,
+        "voice_reference_min_speech_confidence": 0.62,
+        "voice_reference_min_duration_seconds": 0.75,
+        "voice_reference_max_duration_seconds": 12.0,
+        "voice_reference_min_words": 1,
         "speaker_cluster_high_quality_min_seconds": 1.0,
         "speaker_cluster_min_segments": 2,
         "speaker_unknown_rescue_margin": 0.08,
@@ -4334,6 +4339,165 @@ def extract_keywords(texts: Iterable[str], limit: int = 20) -> list[str]:
 
 def coalesce_text(text: str) -> str:
     return re.sub(r"\s+", " ", (text or "").strip())
+
+
+NON_SPEECH_AUDIO_TYPES = {
+    "music",
+    "applause",
+    "laughter",
+    "noise",
+    "ambience",
+    "sfx",
+    "silence",
+    "uncertain_non_speech",
+}
+
+
+NON_SPEECH_TEXT_MARKERS = {
+    "music",
+    "musik",
+    "musique",
+    "musica",
+    "música",
+    "song",
+    "instrumental",
+    "applause",
+    "applaus",
+    "applauso",
+    "clapping",
+    "cheering",
+    "crowd",
+    "laughter",
+    "laughing",
+    "laughs",
+    "lachen",
+    "gelächter",
+    "atmen",
+    "breathing",
+    "noise",
+    "geräusch",
+    "geraeusch",
+    "sound",
+    "sfx",
+    "ambience",
+    "ambiente",
+    "silence",
+    "stille",
+}
+
+
+def transcription_settings(cfg: dict | None) -> dict:
+    if isinstance(cfg, dict) and isinstance(cfg.get("transcription"), dict):
+        return cfg["transcription"]
+    return {}
+
+
+def non_speech_text_reason(text: object) -> str:
+    cleaned = coalesce_text(str(text or "")).lower()
+    if not cleaned:
+        return ""
+    if "♪" in cleaned or "♫" in cleaned:
+        return "music_symbol"
+    bracketed = bool(re.search(r"[\[(].{0,40}[\])]", cleaned))
+    normalized = re.sub(r"[\[\]\(\)\{\}:;,.!?\"'`~*_<>/\\|-]+", " ", cleaned)
+    tokens = tokens_from_text(normalized)
+    if not tokens:
+        return ""
+    marker_hits = [token for token in tokens if token in NON_SPEECH_TEXT_MARKERS]
+    if not marker_hits:
+        return ""
+    if bracketed or len(tokens) <= 4:
+        return marker_hits[0]
+    return ""
+
+
+def voice_segment_duration_seconds(row: dict) -> float:
+    if not isinstance(row, dict):
+        return 0.0
+    if row.get("duration_seconds") is not None:
+        try:
+            return max(0.0, float(row.get("duration_seconds", 0.0) or 0.0))
+        except Exception:
+            return 0.0
+    try:
+        return max(0.0, float(row.get("end", 0.0) or 0.0) - float(row.get("start", 0.0) or 0.0))
+    except Exception:
+        return 0.0
+
+
+def voice_segment_speech_confidence(row: dict, default: float = 1.0) -> float:
+    if not isinstance(row, dict):
+        return 0.0
+    for key in ("speech_confidence", "voice_speech_confidence"):
+        if key in row:
+            try:
+                return max(0.0, min(1.0, float(row.get(key, 0.0) or 0.0)))
+            except Exception:
+                return 0.0
+    quality = row.get("voice_quality", {})
+    if isinstance(quality, dict) and "speech_confidence" in quality:
+        try:
+            return max(0.0, min(1.0, float(quality.get("speech_confidence", 0.0) or 0.0)))
+        except Exception:
+            return 0.0
+    return max(0.0, min(1.0, default))
+
+
+def voice_segment_content_type(row: dict) -> str:
+    if not isinstance(row, dict):
+        return ""
+    for key in ("audio_content_type", "voice_content_type"):
+        value = coalesce_text(str(row.get(key, "") or "")).lower()
+        if value:
+            return value
+    quality = row.get("voice_quality", {})
+    if isinstance(quality, dict):
+        return coalesce_text(str(quality.get("audio_content_type", "") or "")).lower()
+    return ""
+
+
+def voice_segment_link_eligible(row: dict, cfg: dict | None = None, *, default_when_unscored: bool = True) -> bool:
+    if not isinstance(row, dict):
+        return False
+    if "speaker_cluster_eligible" in row:
+        return bool(row.get("speaker_cluster_eligible"))
+    content_type = voice_segment_content_type(row)
+    if content_type in NON_SPEECH_AUDIO_TYPES:
+        return False
+    if non_speech_text_reason(row.get("text", "")):
+        return False
+    has_score = "speech_confidence" in row or "voice_speech_confidence" in row or isinstance(row.get("voice_quality"), dict)
+    if not has_score:
+        return default_when_unscored
+    settings = transcription_settings(cfg)
+    min_confidence = float(settings.get("speaker_cluster_min_speech_confidence", 0.52) or 0.52)
+    return voice_segment_speech_confidence(row, 0.0) >= min_confidence
+
+
+def voice_segment_reference_eligible(row: dict, cfg: dict | None = None, *, default_when_unscored: bool = True) -> bool:
+    if not isinstance(row, dict):
+        return False
+    if "voice_reference_eligible" in row:
+        return bool(row.get("voice_reference_eligible"))
+    if not voice_segment_link_eligible(row, cfg, default_when_unscored=default_when_unscored):
+        return False
+    text = coalesce_text(str(row.get("text", "") or ""))
+    if non_speech_text_reason(text):
+        return False
+    has_score = "speech_confidence" in row or "voice_speech_confidence" in row or isinstance(row.get("voice_quality"), dict)
+    if not has_score:
+        return default_when_unscored
+    settings = transcription_settings(cfg)
+    min_words = int(settings.get("voice_reference_min_words", 1) or 1)
+    if len(tokens_from_text(text)) < min_words:
+        return False
+    duration = voice_segment_duration_seconds(row)
+    min_duration = float(settings.get("voice_reference_min_duration_seconds", 0.75) or 0.75)
+    max_duration = float(settings.get("voice_reference_max_duration_seconds", 12.0) or 12.0)
+    if duration < min_duration or (max_duration > 0 and duration > max_duration):
+        return False
+    min_confidence = float(settings.get("voice_reference_min_speech_confidence", 0.62) or 0.62)
+    return voice_segment_speech_confidence(row, 0.0) >= min_confidence
 
 
 LANGUAGE_ALIASES = {

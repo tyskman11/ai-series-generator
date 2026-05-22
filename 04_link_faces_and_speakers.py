@@ -57,6 +57,7 @@ from support_scripts.pipeline_common import (
     shared_worker_id_for_args,
     shared_workers_enabled_for_args,
     terminal_clickable_path,
+    voice_segment_link_eligible,
     warn,
     mark_step_started,
     mark_step_completed,
@@ -65,7 +66,7 @@ from support_scripts.pipeline_common import (
     write_json,
 )
 
-PROCESS_VERSION = 8
+PROCESS_VERSION = 10
 EMPTY_CLUSTER_MAP = {"clusters": {}, "aliases": {}}
 IGNORED_FACE_NAMES = {
     "noface",
@@ -501,6 +502,8 @@ def ensure_voice_clusters_for_transcripts(voice_map: dict, transcript_rows: list
     voice_map.setdefault("aliases", {})
     added = 0
     for row in transcript_rows:
+        if not voice_segment_link_eligible(row):
+            continue
         speaker_cluster = str(row.get("speaker_cluster", "")).strip()
         if not speaker_cluster or speaker_cluster == "speaker_unknown":
             continue
@@ -1077,7 +1080,11 @@ def process_scene_faces(
     return payload
 
 
-def resolve_voice_names(voice_map: dict, speaker_votes: dict[str, dict[str, float]], char_map: dict) -> None:
+def resolve_voice_names(voice_map: dict, speaker_votes: dict[str, dict[str, float]], char_map: dict, cfg: dict | None = None) -> None:
+    face_cfg = cfg.get("character_detection", {}) if isinstance(cfg, dict) and isinstance(cfg.get("character_detection"), dict) else {}
+    min_votes = float(face_cfg.get("speaker_face_link_min_votes", 3.0) or 3.0)
+    min_share = float(face_cfg.get("speaker_face_link_min_share", 0.70) or 0.70)
+    min_margin = float(face_cfg.get("speaker_face_link_min_margin", 2.0) or 2.0)
     for speaker_cluster, votes in speaker_votes.items():
         if speaker_cluster == "speaker_unknown":
             continue
@@ -1089,7 +1096,9 @@ def resolve_voice_names(voice_map: dict, speaker_votes: dict[str, dict[str, floa
         if sorted_votes:
             best_face, best_score = sorted_votes[0]
             second_score = sorted_votes[1][1] if len(sorted_votes) > 1 else 0.0
-            if best_score >= 2.5 and (best_score >= second_score + 1.0 or best_score >= second_score * 1.2):
+            total_score = sum(max(0.0, float(score)) for _face, score in sorted_votes)
+            vote_share = (float(best_score) / total_score) if total_score else 0.0
+            if best_score >= min_votes and vote_share >= min_share and (float(best_score) - float(second_score)) >= min_margin:
                 linked_face = best_face
         if linked_face:
             face_payload = char_map["clusters"].get(linked_face, {})
@@ -1254,6 +1263,8 @@ def process_episode_dir(
 
         speaker_votes: dict[str, dict[str, float]] = defaultdict(lambda: defaultdict(float))
         for row in transcript_rows:
+            if not voice_segment_link_eligible(row, cfg):
+                continue
             scene_payload = face_by_scene.get(row["scene_id"], {})
             visible_faces = visible_faces_for_segment(
                 row,
@@ -1270,7 +1281,7 @@ def process_episode_dir(
             for rank, face_cluster in enumerate(visible_faces, start=1):
                 speaker_votes[row["speaker_cluster"]][face_cluster] += base_weight / rank
 
-        resolve_voice_names(voice_map, speaker_votes, char_map)
+        resolve_voice_names(voice_map, speaker_votes, char_map, cfg)
         linked_voice_entries = sum(
             1
             for payload in voice_map.get("clusters", {}).values()
@@ -1291,6 +1302,7 @@ def process_episode_dir(
         )
         for index, row in enumerate(transcript_rows, start=1):
             scene_payload = face_by_scene.get(row["scene_id"], {})
+            link_eligible = voice_segment_link_eligible(row, cfg)
             visible_faces = visible_faces_for_segment(
                 row,
                 scene_payload,
@@ -1307,12 +1319,12 @@ def process_episode_dir(
             linked_face = voice_payload.get("linked_face_cluster")
             segment_linked_face = linked_face if linked_face in visible_faces else None
             speaker_name_source = "voice_map"
-            if row.get("speaker_cluster") == "speaker_unknown":
+            if link_eligible and row.get("speaker_cluster") == "speaker_unknown":
                 unknown_rescue = rescue_unknown_speaker_from_single_visible_face(char_map, visible_faces)
                 if unknown_rescue is not None:
                     segment_linked_face, speaker_name = unknown_rescue
                     speaker_name_source = "single_visible_named_face"
-            needs_preview = looks_auto_named(speaker_name)
+            needs_preview = link_eligible and looks_auto_named(speaker_name)
             speaker_reference_frames: list[str] = []
             if needs_preview:
                 scene_file = scenes.get(row["scene_id"])
@@ -1342,9 +1354,14 @@ def process_episode_dir(
                 "visible_face_clusters": visible_faces,
                 "visible_character_names": visible_names,
                 "speaker_reference_frames": speaker_reference_frames,
+                "speech_confidence": row.get("speech_confidence", 1.0),
+                "audio_content_type": row.get("audio_content_type", ""),
+                "speaker_cluster_eligible": bool(row.get("speaker_cluster_eligible", link_eligible)),
+                "voice_reference_eligible": bool(row.get("voice_reference_eligible", link_eligible)),
+                "voice_quality": row.get("voice_quality", {}) if isinstance(row.get("voice_quality", {}), dict) else {},
             }
             linked_rows.append(linked_row)
-            if looks_auto_named(speaker_name) or any(looks_auto_named(name) for name in visible_names):
+            if link_eligible and (looks_auto_named(speaker_name) or any(looks_auto_named(name) for name in visible_names)):
                 review_items.append(linked_row)
             if live_reporter is not None:
                 live_reporter.update(

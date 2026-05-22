@@ -15,6 +15,7 @@ from backend_common import (
 )
 
 AUDIO_PATTERNS = ("*.wav", "*.flac", "*.mp3", "*.m4a", "*.ogg")
+NON_SPEECH_AUDIO_TYPES = {"music", "applause", "laughter", "noise", "ambience", "sfx", "silence", "uncertain_non_speech"}
 
 
 def clean_text(value: object) -> str:
@@ -30,6 +31,20 @@ def normalize_language_code(value: object) -> str:
     if text.startswith("en"):
         return "en"
     return text.split("-", 1)[0]
+
+
+def reference_dict_eligible(item: dict) -> bool:
+    if not isinstance(item, dict):
+        return True
+    if item.get("voice_reference_eligible") is False:
+        return False
+    content_type = clean_text(item.get("audio_content_type", "")).lower()
+    if content_type in NON_SPEECH_AUDIO_TYPES:
+        return False
+    text = clean_text(item.get("text", "")).lower()
+    if text in {"music", "musik", "applause", "applaus", "laughter", "lachen", "gelächter", "silence", "stille"}:
+        return False
+    return True
 
 
 def load_voice_model_metadata(path_value: object) -> dict:
@@ -56,23 +71,19 @@ def collect_reference_audio_paths(line: dict) -> list[Path]:
     voice_model = load_voice_model_metadata(voice_profile.get("voice_model_path", ""))
 
     candidates: list[Path] = []
-    ordered_values: list[object] = [
-        original_reference.get("audio_path", ""),
-        voice_profile.get("reference_audio", ""),
-        *(
-            clean_text(item.get("audio_path", ""))
-            for item in (line.get("reference_segments", []) if isinstance(line.get("reference_segments", []), list) else [])
-            if isinstance(item, dict)
-        ),
-        *(line.get("reference_audio_candidates", []) if isinstance(line.get("reference_audio_candidates", []), list) else []),
-        voice_model.get("reference_audio", ""),
-        *(voice_model.get("sample_paths", []) if isinstance(voice_model.get("sample_paths", []), list) else []),
-        *(
-            clean_text(item.get("audio_path", ""))
-            for item in (voice_model.get("reference_segments", []) if isinstance(voice_model.get("reference_segments", []), list) else [])
-            if isinstance(item, dict)
-        ),
-    ]
+    ordered_values: list[object] = []
+    if reference_dict_eligible(original_reference):
+        ordered_values.append(original_reference.get("audio_path", ""))
+    ordered_values.append(voice_profile.get("reference_audio", ""))
+    for item in line.get("reference_segments", []) if isinstance(line.get("reference_segments", []), list) else []:
+        if isinstance(item, dict) and reference_dict_eligible(item):
+            ordered_values.append(clean_text(item.get("audio_path", "")))
+    ordered_values.extend(line.get("reference_audio_candidates", []) if isinstance(line.get("reference_audio_candidates", []), list) else [])
+    ordered_values.append(voice_model.get("reference_audio", ""))
+    ordered_values.extend(voice_model.get("sample_paths", []) if isinstance(voice_model.get("sample_paths", []), list) else [])
+    for item in voice_model.get("reference_segments", []) if isinstance(voice_model.get("reference_segments", []), list) else []:
+        if isinstance(item, dict) and reference_dict_eligible(item):
+            ordered_values.append(clean_text(item.get("audio_path", "")))
     seen: set[str] = set()
     for value in ordered_values:
         candidate = existing_file_path(value)

@@ -58,6 +58,7 @@ from support_scripts.pipeline_common import (
     shared_worker_id_for_args,
     shared_workers_enabled_for_args,
     terminal_clickable_path,
+    voice_segment_link_eligible,
     warn,
     write_json,
 )
@@ -1899,6 +1900,8 @@ def ensure_voice_clusters_from_project_speakers(cfg: dict, voice_map: dict) -> i
     voice_map.setdefault("aliases", {})
     added = 0
     for row in [*speaker_transcript_rows(cfg), *linked_segment_rows(cfg)]:
+        if not voice_segment_link_eligible(row, cfg):
+            continue
         speaker_cluster = str(row.get("speaker_cluster", "")).strip()
         if not speaker_cluster or speaker_cluster == "speaker_unknown":
             continue
@@ -1923,6 +1926,8 @@ def auto_link_speakers_from_single_visible_faces(cfg: dict, char_map: dict, voic
     speaker_votes: dict[str, dict[str, float]] = {}
     direct_counts: dict[str, dict[str, int]] = {}
     for row in linked_segment_rows(cfg):
+        if not voice_segment_link_eligible(row, cfg):
+            continue
         speaker_cluster = str(row.get("speaker_cluster", "")).strip()
         if not speaker_cluster:
             continue

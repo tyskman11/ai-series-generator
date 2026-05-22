@@ -50,6 +50,7 @@ from support_scripts.pipeline_common import (
     normalize_language_code,
     relationship_prompt_fragments,
     relationships_for_characters,
+    voice_segment_reference_eligible,
     write_json,
     write_text,
 )
@@ -670,6 +671,8 @@ def build_linked_segment_line_library(cfg: dict) -> tuple[dict[str, list[str]], 
         episode_id = linked_path.stem.replace("_linked_segments", "")
         rows = read_json(linked_path, [])
         for row in rows:
+            if not voice_segment_reference_eligible(row, cfg):
+                continue
             resolved_name = resolve_segment_character_name(row, {"characters_visible": row.get("visible_character_names", []) or []})
             text = coalesce_text(row.get("text", ""))
             if not useful_character(resolved_name) or not text:
@@ -685,9 +688,12 @@ def build_linked_segment_line_library(cfg: dict) -> tuple[dict[str, list[str]], 
                     "text": text,
                     "start": float(row.get("start", 0.0) or 0.0),
                     "end": float(row.get("end", 0.0) or 0.0),
-                    "audio_file": str(audio_root / episode_id / f"{row.get('segment_id', '')}.wav"),
+                    "audio_file": coalesce_text(row.get("audio_file", "")) or str(audio_root / episode_id / f"{row.get('segment_id', '')}.wav"),
                     "video_file": str(scene_root / episode_id / f"{row.get('scene_id', '')}.mp4"),
                     "keywords": [],
+                    "speech_confidence": row.get("speech_confidence", 1.0),
+                    "audio_content_type": row.get("audio_content_type", ""),
+                    "voice_reference_eligible": bool(row.get("voice_reference_eligible", True)),
                 },
             )
 
@@ -741,6 +747,8 @@ def build_series_model(dataset_files: list, cfg: dict, char_map: dict) -> dict:
                         character_directory[character].get("face_cluster_count", 0) or 0
                     )
             for segment in row.get("transcript_segments", []):
+                if not voice_segment_reference_eligible(segment, cfg):
+                    continue
                 speaker_name = segment.get("speaker_name", "")
                 line_character_name = resolve_segment_character_name(segment, row)
                 text = coalesce_text(segment.get("text", ""))

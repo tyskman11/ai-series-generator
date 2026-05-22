@@ -45,6 +45,7 @@ from support_scripts.pipeline_common import (
     mark_step_completed,
     mark_step_failed,
     mark_step_started,
+    non_speech_text_reason,
     normalize_language_code,
     ok,
     read_json,
@@ -56,6 +57,7 @@ from support_scripts.pipeline_common import (
     release_distributed_lease,
     shared_worker_id_for_args,
     shared_workers_enabled_for_args,
+    voice_segment_reference_eligible,
     write_json,
     write_text,
     write_realtime_preview,
@@ -770,9 +772,14 @@ def build_original_line_library(cfg: dict) -> dict[str, list[dict]]:
                 continue
             segment_id = clean_text(row.get("segment_id", ""))
             linked = episode_linked.get(segment_id, {})
+            merged_row = {**row, **linked}
+            if not voice_segment_reference_eligible(merged_row, cfg):
+                continue
             speaker_name = clean_text(linked.get("speaker_name", ""))
             text = clean_text(linked.get("text", "") or row.get("text", ""))
             if not usable_library_speaker_name(speaker_name) or not text:
+                continue
+            if non_speech_text_reason(text):
                 continue
             scene_id = clean_text(row.get("scene_id", "") or linked.get("scene_id", ""))
             scene_clip_path = scene_root / episode_id / f"{scene_id}.mp4" if scene_id else Path()
@@ -789,6 +796,9 @@ def build_original_line_library(cfg: dict) -> dict[str, list[dict]]:
                     "language": normalize_language_code(row.get("language", "")),
                     "start": float(row.get("start", 0.0) or 0.0),
                     "end": float(row.get("end", 0.0) or 0.0),
+                    "speech_confidence": merged_row.get("speech_confidence", 1.0),
+                    "audio_content_type": clean_text(merged_row.get("audio_content_type", "")),
+                    "voice_reference_eligible": bool(merged_row.get("voice_reference_eligible", True)),
                 }
             )
     return library
@@ -799,6 +809,8 @@ def collect_speaker_reference_segments(original_line_library: dict[str, list[dic
     ranked_entries: list[dict] = []
     for entry in entries:
         if not isinstance(entry, dict):
+            continue
+        if not voice_segment_reference_eligible(entry, default_when_unscored=True):
             continue
         audio_path = clean_text(entry.get("audio_path", ""))
         if not audio_path:
@@ -831,6 +843,9 @@ def collect_speaker_reference_segments(original_line_library: dict[str, list[dic
                 "language": normalize_language_code(entry.get("language", "")),
                 "start": float(entry.get("start", 0.0) or 0.0),
                 "end": float(entry.get("end", 0.0) or 0.0),
+                "speech_confidence": entry.get("speech_confidence", 1.0),
+                "audio_content_type": clean_text(entry.get("audio_content_type", "")),
+                "voice_reference_eligible": bool(entry.get("voice_reference_eligible", True)),
             }
         )
         if len(prepared) >= max(1, int(max_segments or 1)):
@@ -1492,6 +1507,9 @@ def build_voice_clone_line_package(cfg: dict, episode_package_root: Path, line: 
             "segment_id": clean_text(retrieval_segment.get("segment_id", "")),
             "match_score": safe_float(retrieval_segment.get("match_score", 0.0), 0.0),
             "language": normalize_language_code(retrieval_segment.get("language", "")),
+            "speech_confidence": safe_float(retrieval_segment.get("speech_confidence", 1.0), 1.0),
+            "audio_content_type": clean_text(retrieval_segment.get("audio_content_type", "")),
+            "voice_reference_eligible": bool(retrieval_segment.get("voice_reference_eligible", True)),
         },
         "reference_segments": [
             {
@@ -1501,6 +1519,9 @@ def build_voice_clone_line_package(cfg: dict, episode_package_root: Path, line: 
                 "text": clean_text(item.get("text", "")),
                 "audio_path": clean_text(item.get("audio_path", "")),
                 "language": normalize_language_code(item.get("language", "")),
+                "speech_confidence": safe_float(item.get("speech_confidence", 1.0), 1.0),
+                "audio_content_type": clean_text(item.get("audio_content_type", "")),
+                "voice_reference_eligible": bool(item.get("voice_reference_eligible", True)),
             }
             for item in reference_segments
             if isinstance(item, dict) and clean_text(item.get("audio_path", ""))

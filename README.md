@@ -36,6 +36,7 @@ The repository root contains the numbered pipeline scripts directly beside `ai_s
 - `00_prepare_runtime.py` now owns normal setup completely, including runtime prep, backend configuration, project-local downloads, model download verification, and folder creation
 - `04_link_faces_and_speakers.py` now keeps portable segment-audio and language metadata in linked speaker rows
 - `09_prepare_foundation_training.py` now backfills missing voice-reference audio from `speaker_transcripts` for older datasets
+- voice assignment is now speech-gated end to end: `03_diarize_and_transcribe.py` labels speech confidence/content type, `04`/`05` only auto-link eligible speech segments, and `09`/`10`/`17` only use clean speech as voice-clone references
 - the GitHub repo now treats `ai_series_project/configs/project.template.json` as the tracked base template; the working `project.json` is generated locally
 - quality-first generation is enforced more strictly than before
 - generated episode runtime now follows the average length of the input episodes instead of collapsing toward short dialogue-only timing
@@ -44,7 +45,7 @@ The repository root contains the numbered pipeline scripts directly beside `ai_s
 - quality-first generation now treats every fallback switch as an error: generated frames, scene video, cloned dialogue audio, lip-sync, and mastering must be produced by the configured backend runners
 - the project-local voice backend now treats original dialogue audio as XTTS reference material, not as a finished generated dialogue line, when voice cloning is forced
 - automatic transcription now cross-checks Whisper language detection against transcript text across common source languages instead of assuming German or any other fixed language
-- `03_diarize_and_transcribe.py` now detects the episode language from several larger probe scenes, aggregates forced-language probe scores across those scenes, lets clear transcript text override wrong file-name/Whisper hints, and invalidates older transcription caches
+- `03_diarize_and_transcribe.py` now detects the episode language from several larger probe scenes, aggregates forced-language probe scores across those scenes, lets clear transcript text override wrong file-name/Whisper hints, prefers confident audio probability over forced-probe hallucinations, and invalidates older transcription caches
 - SpeechBrain speaker-model downloads now stay under `ai_series_project/runtime/models/speechbrain/ecapa` instead of creating a separate root-level `runtime/` folder
 - generated story keywords now filter filler/function words such as `halt`, `weswegen`, `eigentlich`, and `irgendwie` instead of treating them as story topics
 - episode generation now carries the detected series language into titles, dialogue templates, voice packages, and visual backend prompts instead of forcing German/English defaults
@@ -56,6 +57,7 @@ The repository root contains the numbered pipeline scripts directly beside `ai_s
 - `05_review_unknowns.py --edit-names` opens a Tk name editor for correcting existing face and speaker names directly
 - `05_review_unknowns.py` also scans existing `statist`/background clusters against known local identity embeddings before opening manual review, so wrongly parked known faces can be rescued automatically
 - `05_review_unknowns.py` now uses direct `speaker_face_cluster` evidence from linked segments to assign speaker entries more reliably, instead of relying only on single-visible-face scenes
+- `04_link_faces_and_speakers.py` and `05_review_unknowns.py` ignore music, applause, laughter, silence, and low-confidence audio rows for speaker auto-naming so visible non-speakers do not get assigned to the wrong voice cluster
 - `06_manage_character_relationships.py` is now a main pipeline step after review; it opens a Tk GUI for character groups, relationships, and per-series input groups
 - manual relationship data is stored in `ai_series_project/characters/relationships.json` and is fed into the trained series model, episode prompts, and series bible
 - `08b_analyze_behavior_model.py` now writes behavior-model schema version `2`, including sentence starts/ends, dialogue functions, relationship tempo, conflict repair, beat sequence, and callback candidates
@@ -171,7 +173,14 @@ For a raw new episode source, the full order is:
 
 `00 -> 01 -> 02 -> 03 -> 04 -> 05 -> 06 -> 07 -> 08 -> 08b -> 09 -> 10 -> 11 -> 12 -> 13 -> 14 -> 15 -> 16 -> 17 -> 18 -> (19 if weak scenes are queued) -> 20 -> 21`
 
-`24_process_next_episode.py` runs that complete chain and starts with `00` automatically.
+`24_process_next_episode.py` runs that complete chain and starts with `00` automatically. It now builds a source backlog from:
+
+- new files in `data/inbox/episodes`
+- already imported raw working files in `data/raw/episodes`
+- partially processed scene folders in `data/processed/scene_clips`
+- unfinished autosaves from a previous `24` run
+
+This means a failed or interrupted `01` to `04` run can be resumed without moving the source episode back into the inbox. Fully completed `01` to `04` artifacts are detected and skipped.
 
 `22_refresh_after_manual_review.py` and `23_generate_finished_episodes.py` also start with `00` automatically before their own main work.
 
@@ -242,6 +251,18 @@ Or full orchestration:
 python 24_process_next_episode.py
 ```
 
+By default, `24_process_next_episode.py` processes all pending/imported/partial source episodes it can find before rebuilding the dataset, training artifacts, generated episode, render, quality gate, bible, and export. To intentionally process only one backlog item, use:
+
+```powershell
+python 24_process_next_episode.py --single
+```
+
+To process a fixed batch size:
+
+```powershell
+python 24_process_next_episode.py --max-source-episodes 3
+```
+
 ### 4. Generate A Finished Episode From Reviewed Data
 
 ```powershell
@@ -268,6 +289,7 @@ The project is configured for quality-first finished-episode generation:
 - the XTTS voice runner now clones from character reference audio and does not use system TTS in quality-first mode
 - `cloning.force_voice_cloning` is enabled by default, so quality-first dialogue lines must be synthesized as cloned speech instead of copied from original episode audio
 - XTTS still needs `xtts_license_accepted = true` in the local `configs/project.json` and usable character reference audio
+- voice references are accepted only when they pass the speech/content gate; `[music]`, applause/laughter, silence, ambience, low-confidence noise, and explicitly ineligible rows are excluded from speaker clustering, voice maps, foundation voice packs, render reference segments, and the project-local XTTS reference list
 - render-time dialogue planning now falls back directly to `characters/voice_models/<character>_voice_model.json` when `voice_map` is stale or missing a named speaker entry
 - delegated quality-backend runners now resolve project-local backend scripts from the project root even when scene packages run from nested working directories
 - project-local quality backends now prefer the platform-correct FFmpeg binary from `ai_series_project/runtime/host_runtime/ffmpeg/bin` before falling back to older tool copies
@@ -356,8 +378,9 @@ Important areas:
 - `character_detection.review_match_background_faces`: lets the local embedding scan rescue known faces that were previously marked as `statist`
 - `character_detection.speaker_face_cluster_vote_weight` and `speaker_face_link_*`: tune how strongly direct face/speaker evidence can auto-name speaker clusters
 - `generation_toolkit.*`: automatic use of optional analysis, continuity, pacing, subtitle, metadata, review, and export helper tools during episode generation
-- `transcription.language`: keep `auto` for new series unless you intentionally want to force a specific source language
+- `transcription.language`: keep `auto` for new or mixed-language series; set it to a language code such as `de` for a known monolingual source project so wrong Auto-Detection caches are rejected and rebuilt
 - `transcription.auto_language_forced_probe`: enabled by default so language detection compares candidate transcriptions instead of trusting one Whisper hint
+- `transcription.speaker_cluster_min_speech_confidence`, `voice_reference_min_speech_confidence`, `voice_reference_min_duration_seconds`, `voice_reference_max_duration_seconds`, and `voice_reference_min_words`: control how strict the speech gate is before audio may become a speaker cluster or clone reference
 - `generation.allow_fallbacks`: must stay `false` for final generation
 - `storyboard_backend.*`: controls whether local storyboard seed-frame fallbacks are allowed; quality-first defaults keep them disabled
 - `render.allow_local_motion_fallback` and `render.require_*`: keep production output paths reserved for real generated video, voice clone, and lip-sync outputs
@@ -450,14 +473,15 @@ python -m unittest discover -s ai_series_project\tests -v
 Useful smoke checks:
 
 ```powershell
-python -m py_compile 00_prepare_runtime.py 06_manage_character_relationships.py 08_train_series_model.py 08b_analyze_behavior_model.py 14_generate_episode.py 15_generate_storyboard_assets.py 16_run_storyboard_backend.py 17_render_episode.py 18_quality_gate.py 19_regenerate_weak_scenes.py 20_build_series_bible.py 21_export_package.py 22_refresh_after_manual_review.py 23_generate_finished_episodes.py 24_process_next_episode.py ai_series_project\support_scripts\pipeline_common.py ai_series_project\support_scripts\generation_toolkit.py ai_series_project\support_scripts\configure_quality_backends.py ai_series_project\support_scripts\prepare_quality_backends.py ai_series_project\support_scripts\manage_character_relationships.py
+python -m py_compile 00_prepare_runtime.py 03_diarize_and_transcribe.py 04_link_faces_and_speakers.py 05_review_unknowns.py 06_manage_character_relationships.py 08_train_series_model.py 08b_analyze_behavior_model.py 09_prepare_foundation_training.py 10_train_foundation_models.py 14_generate_episode.py 15_generate_storyboard_assets.py 16_run_storyboard_backend.py 17_render_episode.py 18_quality_gate.py 19_regenerate_weak_scenes.py 20_build_series_bible.py 21_export_package.py 22_refresh_after_manual_review.py 23_generate_finished_episodes.py 24_process_next_episode.py ai_series_project\support_scripts\pipeline_common.py ai_series_project\support_scripts\generation_toolkit.py ai_series_project\support_scripts\configure_quality_backends.py ai_series_project\support_scripts\prepare_quality_backends.py ai_series_project\support_scripts\manage_character_relationships.py ai_series_project\tools\quality_backends\project_local_voice_backend.py
 ```
 
 ## Known Limitations
 
 - project-local fallback image/video generation still does not equal strong dedicated TV-quality generation backends
 - project-local lip-sync is still weaker than a full dedicated production lip-sync stack
-- project-local XTTS voice cloning still depends on clean speaker mapping and real reference segments; speakers with zero linked voice data still cannot clone correctly
+- project-local XTTS voice cloning still depends on clean speaker mapping and real reference segments; speakers with zero linked eligible speech data still cannot clone correctly
+- existing bad voice maps or voice models created before the speech gate should be regenerated by rerunning `03` through `10` for the affected episodes/characters
 - behavior analysis is heuristic and depends on reviewed transcript/speaker quality; it improves scene planning metadata but is not a replacement for a real large generative model or dedicated acting/performance evaluation
 - character-style similarity, post-render ASR matching, and lip-sync confidence are reported as `unavailable` metrics until real external backends return measurable scores
 - Finished Episode Mode can plan real TV-episode structure, shots, manifests, and gates, but it still depends on actual external image/video/voice/lip-sync backends producing real media
@@ -478,11 +502,13 @@ python -m py_compile 00_prepare_runtime.py 06_manage_character_relationships.py 
 - `22_refresh_after_manual_review.py`, `23_generate_finished_episodes.py`, and `24_process_next_episode.py` now begin with `00_prepare_runtime.py`
 - the documented order is now setup/downloads first, then review, relationships, dataset/training, backend fine-tunes, then generate/render/gate/export
 - the orchestrators now export `21_export_package.py` after `20_build_series_bible.py` so finished packages are the final pipeline artifact
+- `24_process_next_episode.py` now processes the whole pending source backlog, including raw files imported before the run and scene folders left behind by aborted `02/03/04` steps; `--single` or `--max-source-episodes` can cap the batch when needed
 - release-gate auto-retry now calls `19_regenerate_weak_scenes.py` from the repository root layout correctly after the root/`ai_series_project` split
 - `23_generate_finished_episodes.py` and `24_process_next_episode.py` now call the generation toolkit so optional tools actively feed continuity, voice, pacing, subtitle, review, metadata, and export quality signals into finished-episode generation
-- `03_diarize_and_transcribe.py` now stores Whisper and SpeechBrain model data only inside `ai_series_project/` and refreshes stale language caches with process version `12`
+- `03_diarize_and_transcribe.py` now stores Whisper and SpeechBrain model data only inside `ai_series_project/`, refreshes stale language caches with process version `14`, rejects cached scene languages that conflict with an explicit project transcription language, and records speech-confidence/content-type fields used by downstream voice filtering
 - quality-first render now blocks local seed-frame, local motion, system-TTS, and silent fallback paths from being labeled as finished generated episodes
 - forced voice cloning ignores stale per-line audio files and regenerates dialogue through XTTS/voice-clone output instead of reusing old TTS artifacts
+- voice-clone references are now filtered across transcription, face/speaker linking, manual-review auto-linking, foundation-pack creation, render voice plans, and the project-local XTTS backend so music/noise cannot silently become a character voice
 - `05_review_unknowns.py` now supports `--offline`, `--edit-names`, built-in public-image face lookup without login/API credentials, optional uploaded face-crop lookup, `95%` minimum public name completion, cleanup/rollback of older low-confidence public metadata renames, and stronger speaker auto-linking from direct face/speaker evidence
 - `08b_analyze_behavior_model.py`, behavior-aware scene metadata, voice metadata propagation, and stricter content checks in `18_quality_gate.py` are now part of the main generation path
 - behavior-model schema version `2`, writer-room scene plans, richer delivery metadata, lip-sync backend priority resolution, and scope-aware weak-scene regeneration are now part of the main generation path

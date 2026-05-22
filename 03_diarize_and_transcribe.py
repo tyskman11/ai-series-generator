@@ -58,12 +58,15 @@ from support_scripts.pipeline_common import (
     mark_step_started,
     mark_step_completed,
     mark_step_failed,
+    non_speech_text_reason,
     tokens_from_text,
+    voice_segment_link_eligible,
+    voice_segment_reference_eligible,
     warn,
     write_json,
 )
 
-PROCESS_VERSION = 12
+PROCESS_VERSION = 14
 
 
 def parse_args() -> argparse.Namespace:
@@ -89,6 +92,12 @@ def episode_transcription_completed(episode_dir: Path, cfg: dict) -> bool:
     if int(cluster_payload.get("process_version", 0) or 0) != PROCESS_VERSION:
         return False
     if rows and rows[0].get("process_version") != PROCESS_VERSION:
+        return False
+    if not rows_match_configured_transcription_language(rows, cfg):
+        return False
+    explicit_language = configured_transcription_language(cfg)
+    cluster_language = normalize_language_code(cluster_payload.get("detected_language", ""))
+    if explicit_language and cluster_language != explicit_language:
         return False
     autosave_state = completed_step_state("03_diarize_and_transcribe", episode_dir.name, PROCESS_VERSION)
     if autosave_state:
@@ -142,7 +151,7 @@ def scene_cache_path(scene_cache_dir: Path, scene_name: str) -> Path:
     return scene_cache_dir / f"{scene_name}.json"
 
 
-def scene_cache_completed(cache_file: Path) -> bool:
+def scene_cache_completed(cache_file: Path, cfg: dict | None = None) -> bool:
     if not cache_file.exists():
         return False
     try:
@@ -153,25 +162,27 @@ def scene_cache_completed(cache_file: Path) -> bool:
         return False
     if not rows:
         return True
-    return bool(rows[0].get("process_version") == PROCESS_VERSION)
+    if rows[0].get("process_version") != PROCESS_VERSION:
+        return False
+    return rows_match_configured_transcription_language(rows, cfg or {})
 
 
-def completed_scene_cache_ids(scene_cache_dir: Path) -> set[str]:
+def completed_scene_cache_ids(scene_cache_dir: Path, cfg: dict | None = None) -> set[str]:
     completed: set[str] = set()
     if not scene_cache_dir.exists():
         return completed
     for cache_file in scene_cache_dir.glob("scene_*.json"):
-        if scene_cache_completed(cache_file):
+        if scene_cache_completed(cache_file, cfg):
             completed.add(cache_file.stem)
     return completed
 
 
-def completed_scene_segment_count(scene_cache_dir: Path) -> int:
+def completed_scene_segment_count(scene_cache_dir: Path, cfg: dict | None = None) -> int:
     total = 0
     if not scene_cache_dir.exists():
         return total
     for cache_file in scene_cache_dir.glob("scene_*.json"):
-        if not scene_cache_completed(cache_file):
+        if not scene_cache_completed(cache_file, cfg):
             continue
         rows = resolve_rows(cache_file)
         if isinstance(rows, list):
@@ -194,7 +205,6 @@ def pool_vector(values: np.ndarray, bins: int) -> np.ndarray:
 
 def load_audio_excerpt(wav_path: Path, start_sec: float, end_sec: float, sample_rate: int = 16000) -> np.ndarray:
     import soundfile as sf
-    from scipy.signal import resample_poly
 
     with sf.SoundFile(str(wav_path)) as handle:
         native_rate = int(handle.samplerate or sample_rate)
@@ -207,7 +217,15 @@ def load_audio_excerpt(wav_path: Path, start_sec: float, end_sec: float, sample_
         audio = audio.mean(axis=1)
     audio = np.asarray(audio, dtype=np.float32)
     if native_rate != sample_rate and audio.size:
-        audio = resample_poly(audio, sample_rate, native_rate).astype(np.float32)
+        try:
+            from scipy.signal import resample_poly
+
+            audio = resample_poly(audio, sample_rate, native_rate).astype(np.float32)
+        except Exception:
+            source_times = np.linspace(0.0, 1.0, num=audio.size, endpoint=False, dtype=np.float32)
+            target_size = max(1, int(round(audio.size * (sample_rate / max(1, native_rate)))))
+            target_times = np.linspace(0.0, 1.0, num=target_size, endpoint=False, dtype=np.float32)
+            audio = np.interp(target_times, source_times, audio).astype(np.float32)
     return audio
 
 
@@ -340,6 +358,121 @@ def compute_speechbrain_voice_embedding(audio: np.ndarray, encoder, device: str)
     return (embedding / norm).round(6).tolist()
 
 
+def simple_spectral_flatness(audio: np.ndarray) -> float:
+    if audio.size < 64:
+        return 1.0
+    spectrum = np.abs(np.fft.rfft(audio.astype(np.float32))) + 1e-9
+    geometric = float(np.exp(np.mean(np.log(spectrum))))
+    arithmetic = float(np.mean(spectrum))
+    if not np.isfinite(geometric) or not np.isfinite(arithmetic) or arithmetic <= 0.0:
+        return 1.0
+    return max(0.0, min(1.0, geometric / arithmetic))
+
+
+def simple_zero_crossing_rate(audio: np.ndarray) -> float:
+    if audio.size < 2:
+        return 0.0
+    signs = np.signbit(audio)
+    return float(np.mean(signs[1:] != signs[:-1]))
+
+
+def content_type_from_non_speech_reason(reason: str) -> str:
+    lowered = reason.lower()
+    if any(token in lowered for token in ("music", "musik", "musique", "musica", "música", "song", "instrumental")):
+        return "music"
+    if any(token in lowered for token in ("applause", "applaus", "clapping", "cheering")):
+        return "applause"
+    if any(token in lowered for token in ("laughter", "laugh", "lachen", "gelächter")):
+        return "laughter"
+    if any(token in lowered for token in ("silence", "stille")):
+        return "silence"
+    return "noise"
+
+
+def assess_voice_segment_audio(
+    scene_wav: Path,
+    start_sec: float,
+    end_sec: float,
+    text: str,
+    cfg: dict,
+) -> dict:
+    sample_rate = 16000
+    duration = max(0.0, float(end_sec) - float(start_sec))
+    audio = load_audio_excerpt(scene_wav, start_sec, end_sec, sample_rate=sample_rate)
+    if audio.size == 0:
+        metrics = {
+            "duration_seconds": round(duration, 3),
+            "speech_confidence": 0.0,
+            "audio_content_type": "silence",
+            "non_speech_reason": "empty_audio",
+            "rms": 0.0,
+            "peak": 0.0,
+            "non_silent_ratio": 0.0,
+            "zero_crossing_rate": 0.0,
+            "spectral_flatness": 1.0,
+        }
+    else:
+        peak = float(np.max(np.abs(audio)))
+        rms = float(np.sqrt(np.mean(np.square(audio.astype(np.float32)))))
+        silence_floor = max(0.0025, peak * 0.08)
+        non_silent_ratio = float(np.mean(np.abs(audio) >= silence_floor)) if peak > 0.0 else 0.0
+        zcr = simple_zero_crossing_rate(audio)
+        flatness = simple_spectral_flatness(trim_silence(audio, top_db=32.0))
+        marker_reason = non_speech_text_reason(text)
+        token_count = len(tokens_from_text(text))
+
+        score = 0.0
+        if token_count >= 1:
+            score += 0.35
+        if token_count >= 3:
+            score += 0.12
+        if 0.45 <= duration <= 12.0:
+            score += 0.12
+        elif duration > 12.0:
+            score += 0.04
+        if rms >= 0.003 and peak >= 0.02:
+            score += 0.10
+        if 0.12 <= non_silent_ratio <= 0.98:
+            score += 0.10
+        if 0.01 <= zcr <= 0.28:
+            score += 0.08
+        if flatness < 0.72:
+            score += 0.08
+        if marker_reason:
+            score = 0.0
+            content_type = content_type_from_non_speech_reason(marker_reason)
+        elif peak <= 0.006 or non_silent_ratio <= 0.03:
+            score = min(score, 0.15)
+            content_type = "silence"
+        elif token_count == 0 and score < 0.52:
+            content_type = "uncertain_non_speech"
+        else:
+            content_type = "speech"
+        metrics = {
+            "duration_seconds": round(duration, 3),
+            "speech_confidence": round(max(0.0, min(1.0, score)), 3),
+            "audio_content_type": content_type,
+            "non_speech_reason": marker_reason,
+            "rms": round(rms, 6),
+            "peak": round(peak, 6),
+            "non_silent_ratio": round(max(0.0, min(1.0, non_silent_ratio)), 3),
+            "zero_crossing_rate": round(max(0.0, min(1.0, zcr)), 4),
+            "spectral_flatness": round(max(0.0, min(1.0, flatness)), 4),
+            "word_count": token_count,
+        }
+
+    row_stub = {
+        "text": text,
+        "start": start_sec,
+        "end": end_sec,
+        "speech_confidence": metrics["speech_confidence"],
+        "audio_content_type": metrics["audio_content_type"],
+    }
+    metrics["speaker_cluster_eligible"] = voice_segment_link_eligible(row_stub, cfg, default_when_unscored=False)
+    metrics["voice_reference_eligible"] = voice_segment_reference_eligible(row_stub, cfg, default_when_unscored=False)
+    return metrics
+
+
 def export_audio(ffmpeg_path: Path, input_video: Path, output_wav: Path) -> None:
     if output_wav.exists() and output_wav.stat().st_size > 0:
         return
@@ -438,6 +571,19 @@ def configured_transcription_language(cfg: dict) -> str:
     transcription_cfg = cfg.get("transcription", {}) if isinstance(cfg.get("transcription", {}), dict) else {}
     configured = normalize_language_code(transcription_cfg.get("language", ""))
     return "" if configured in {"", "auto", "detect"} else configured
+
+
+def rows_match_configured_transcription_language(rows: list[dict], cfg: dict) -> bool:
+    explicit_language = configured_transcription_language(cfg)
+    if not explicit_language:
+        return True
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        row_language = normalize_language_code(row.get("language", ""))
+        if row_language and row_language != explicit_language:
+            return False
+    return True
 
 
 def auto_language_candidates(cfg: dict) -> list[str]:
@@ -652,6 +798,21 @@ def rank_forced_language_scores(score_rows: list[dict[str, float]]) -> tuple[str
     return "", scores
 
 
+def select_episode_language(probability_language: str, forced_language: str, fallback_hint: str) -> tuple[str, str]:
+    probability = normalize_language_code(probability_language)
+    if probability:
+        # Forced probes run Whisper once per candidate and can create fluent text
+        # in the wrong language. A confident audio probability is safer first.
+        return probability, "audio_probability"
+    forced = normalize_language_code(forced_language)
+    if forced:
+        return forced, "forced_probe"
+    fallback = normalize_language_code(fallback_hint)
+    if fallback:
+        return fallback, "filename_hint"
+    return "", "unresolved"
+
+
 def detect_episode_language(
     model,
     ffmpeg_path: Path,
@@ -665,6 +826,20 @@ def detect_episode_language(
 ) -> str:
     explicit_language = configured_transcription_language(cfg)
     if explicit_language:
+        write_json(
+            episode_language_cache_path(scene_cache_dir),
+            {
+                "process_version": PROCESS_VERSION,
+                "detected_language": explicit_language,
+                "selection_source": "configured_language",
+                "probability_language": "",
+                "forced_language": "",
+                "fallback_hint": "",
+                "probability_scores": {},
+                "forced_scores": {},
+                "probe_scenes": [],
+            },
+        )
         return explicit_language
 
     cache_file = episode_language_cache_path(scene_cache_dir)
@@ -711,12 +886,13 @@ def detect_episode_language(
     forced_language, forced_scores = rank_forced_language_scores(forced_score_rows)
 
     fallback_hint = language_hint_from_name(episode_dir.name)
-    detected_language = forced_language or probability_language or fallback_hint
+    detected_language, selection_source = select_episode_language(probability_language, forced_language, fallback_hint)
     write_json(
         cache_file,
         {
             "process_version": PROCESS_VERSION,
             "detected_language": detected_language,
+            "selection_source": selection_source,
             "probability_language": probability_language,
             "forced_language": forced_language,
             "fallback_hint": fallback_hint,
@@ -901,7 +1077,7 @@ def process_scene(
     cache_file = scene_cache_dir / f"{scene_file.stem}.json"
     if cache_file.exists():
         rows = resolve_rows(cache_file)
-        if rows and rows[0].get("process_version") == PROCESS_VERSION:
+        if rows and rows[0].get("process_version") == PROCESS_VERSION and rows_match_configured_transcription_language(rows, cfg):
             return rows
 
     scene_wav = audio_root / episode_name / f"{scene_file.stem}.wav"
@@ -914,8 +1090,21 @@ def process_scene(
     for index, segment in enumerate(segments, start=1):
         start_sec = float(segment["start"])
         end_sec = float(segment["end"])
+        text = coalesce_text(str(segment.get("text", "")))
+        voice_quality = assess_voice_segment_audio(scene_wav, start_sec, end_sec, text, cfg)
         segment_wav = audio_root / episode_name / f"{scene_file.stem}_seg_{index:03d}.wav"
         cut_audio_segment(ffmpeg_path, scene_wav, segment_wav, start_sec, end_sec)
+        voice_embedding = []
+        if bool(voice_quality.get("speaker_cluster_eligible", False)):
+            voice_embedding = compute_voice_embedding(
+                scene_wav,
+                start_sec,
+                end_sec,
+                cfg,
+                speaker_embedding_backend,
+                speechbrain_model=speechbrain_model,
+                device=device,
+            )
         rows.append(
             {
                 "process_version": PROCESS_VERSION,
@@ -925,17 +1114,14 @@ def process_scene(
                 "start": round(start_sec, 3),
                 "end": round(end_sec, 3),
                 "audio_file": str(segment_wav),
-                "text": coalesce_text(str(segment.get("text", ""))),
+                "text": text,
                 "language": normalize_language_code(segment.get("language", ""), detected_language),
-                "voice_embedding": compute_voice_embedding(
-                    scene_wav,
-                    start_sec,
-                    end_sec,
-                    cfg,
-                    speaker_embedding_backend,
-                    speechbrain_model=speechbrain_model,
-                    device=device,
-                ),
+                "voice_embedding": voice_embedding,
+                "speech_confidence": voice_quality.get("speech_confidence", 0.0),
+                "audio_content_type": voice_quality.get("audio_content_type", ""),
+                "speaker_cluster_eligible": bool(voice_quality.get("speaker_cluster_eligible", False)),
+                "voice_reference_eligible": bool(voice_quality.get("voice_reference_eligible", False)),
+                "voice_quality": voice_quality,
             }
         )
     write_json(cache_file, rows)
@@ -949,6 +1135,8 @@ def resolve_rows(path: Path) -> list[dict]:
 
 
 def segment_quality(row: dict, cfg: dict) -> str:
+    if not voice_segment_link_eligible(row, cfg):
+        return "non_speech"
     duration = float(row["end"]) - float(row["start"])
     words = len(tokens_from_text(str(row.get("text", ""))))
     high_duration = float(cfg["transcription"].get("speaker_cluster_high_quality_min_seconds", 1.0))
@@ -1018,6 +1206,8 @@ def rescue_unknown_speaker_rows(
     for scene_rows in rows_by_scene.values():
         for index, row in enumerate(scene_rows):
             if row.get("speaker_cluster") != "speaker_unknown":
+                continue
+            if not voice_segment_link_eligible(row, cfg):
                 continue
             embedding = row.get("voice_embedding") or []
             if not embedding:
@@ -1128,6 +1318,8 @@ def rescue_unknown_speaker_rows_with_episode_consensus(
     for row in ordered_rows:
         if row.get("speaker_cluster") != "speaker_unknown":
             continue
+        if not voice_segment_link_eligible(row, cfg):
+            continue
         embedding = row.get("voice_embedding") or []
         if not embedding:
             continue
@@ -1175,10 +1367,25 @@ def rescue_unknown_speaker_rows_with_episode_consensus(
 def assign_speaker_clusters(rows: list[dict], threshold: float, cfg: dict) -> tuple[list[dict], list[dict]]:
     clusters: list[dict] = []
     ordered_rows = sorted(rows, key=lambda item: (item["scene_id"], float(item["start"]), item["segment_id"]))
+    for row in ordered_rows:
+        if not voice_segment_link_eligible(row, cfg):
+            row["speaker_cluster"] = "speaker_unknown"
     grouped_rows = {
-        "high": [row for row in ordered_rows if (row.get("voice_embedding") and segment_quality(row, cfg) == "high")],
-        "medium": [row for row in ordered_rows if (row.get("voice_embedding") and segment_quality(row, cfg) == "medium")],
-        "low": [row for row in ordered_rows if (row.get("voice_embedding") and segment_quality(row, cfg) == "low")],
+        "high": [
+            row
+            for row in ordered_rows
+            if (row.get("voice_embedding") and voice_segment_link_eligible(row, cfg) and segment_quality(row, cfg) == "high")
+        ],
+        "medium": [
+            row
+            for row in ordered_rows
+            if (row.get("voice_embedding") and voice_segment_link_eligible(row, cfg) and segment_quality(row, cfg) == "medium")
+        ],
+        "low": [
+            row
+            for row in ordered_rows
+            if (row.get("voice_embedding") and voice_segment_link_eligible(row, cfg) and segment_quality(row, cfg) == "low")
+        ],
     }
 
     def assign_row(row: dict, allow_new_cluster: bool, threshold_value: float) -> None:
@@ -1264,11 +1471,11 @@ def assign_speaker_clusters(rows: list[dict], threshold: float, cfg: dict) -> tu
     return ordered_rows, cluster_payload
 
 
-def collect_episode_scene_rows(scene_cache_dir: Path, scenes: list[Path]) -> list[dict]:
+def collect_episode_scene_rows(scene_cache_dir: Path, scenes: list[Path], cfg: dict | None = None) -> list[dict]:
     all_rows: list[dict] = []
     for scene_file in scenes:
         cache_file = scene_cache_path(scene_cache_dir, scene_file.stem)
-        if not scene_cache_completed(cache_file):
+        if not scene_cache_completed(cache_file, cfg):
             raise RuntimeError(f"Scene cache is not ready yet: {scene_file.stem}")
         rows = resolve_rows(cache_file)
         if isinstance(rows, list):
@@ -1284,7 +1491,7 @@ def finalize_episode_transcription_outputs(
     combined_dir: Path,
     speaker_backend: str,
 ) -> tuple[Path, Path, int]:
-    all_rows = collect_episode_scene_rows(scene_cache_dir, scenes)
+    all_rows = collect_episode_scene_rows(scene_cache_dir, scenes, cfg)
     all_rows, episode_language, language_counts = apply_episode_language_consensus(all_rows, cfg)
     threshold_key = "voice_embedding_threshold_speechbrain" if speaker_backend == "speechbrain" else "voice_embedding_threshold"
     threshold_default = 0.58 if speaker_backend == "speechbrain" else 0.84
@@ -1361,7 +1568,7 @@ def process_episode_dir(
     lease_ttl_seconds = distributed_lease_ttl_seconds(cfg)
     heartbeat_interval_seconds = distributed_heartbeat_interval_seconds(cfg)
     poll_interval_seconds = distributed_poll_interval_seconds(cfg)
-    completed_scene_ids: list[str] = sorted(completed_scene_cache_ids(scene_cache_dir))
+    completed_scene_ids: list[str] = sorted(completed_scene_cache_ids(scene_cache_dir, cfg))
     autosave_state = load_step_autosave("03_diarize_and_transcribe", autosave_target)
     active_leases = active_scene_lease_ids(scene_lease_root) if shared_workers else []
     recovered_stale_run = stale_shared_transcription_run(
@@ -1405,12 +1612,13 @@ def process_episode_dir(
             device,
         )
         effective_cfg = config_with_transcription_language(cfg, episode_language)
+        completed_scene_ids = sorted(completed_scene_cache_ids(scene_cache_dir, effective_cfg))
         scene_index_by_id = {scene_file.stem: index for index, scene_file in enumerate(scenes, start=1)}
         while len(completed_scene_ids) < len(scenes):
             claimed_scene = False
             for scene_file in scenes:
                 cache_file = scene_cache_path(scene_cache_dir, scene_file.stem)
-                if scene_cache_completed(cache_file):
+                if scene_cache_completed(cache_file, effective_cfg):
                     continue
                 heartbeat = None
                 if shared_workers:
@@ -1440,7 +1648,7 @@ def process_episode_dir(
                     )
                     heartbeat.start()
                 try:
-                    if scene_cache_completed(cache_file):
+                    if scene_cache_completed(cache_file, effective_cfg):
                         continue
                     scene_rows = process_scene(
                         model,
@@ -1456,7 +1664,7 @@ def process_episode_dir(
                         device=device,
                     )
                     contributed = True
-                    completed_scene_ids = sorted(completed_scene_cache_ids(scene_cache_dir))
+                    completed_scene_ids = sorted(completed_scene_cache_ids(scene_cache_dir, effective_cfg))
                     save_step_autosave(
                         "03_diarize_and_transcribe",
                         autosave_target,
@@ -1466,7 +1674,7 @@ def process_episode_dir(
                             "process_version": PROCESS_VERSION,
                             "scene_count": len(scenes),
                             "completed_scene_ids": completed_scene_ids,
-                            "segment_count": completed_scene_segment_count(scene_cache_dir),
+                            "segment_count": completed_scene_segment_count(scene_cache_dir, effective_cfg),
                             "last_scene_id": scene_file.stem,
                             "worker_id": worker_id,
                             "shared_workers": shared_workers,
@@ -1495,7 +1703,7 @@ def process_episode_dir(
             if claimed_scene:
                 continue
 
-            completed_scene_ids = sorted(completed_scene_cache_ids(scene_cache_dir))
+            completed_scene_ids = sorted(completed_scene_cache_ids(scene_cache_dir, effective_cfg))
             if live_reporter is not None:
                 live_reporter.update(
                     (episode_index - 1) + (len(completed_scene_ids) / max(1, len(scenes))),
@@ -1511,7 +1719,7 @@ def process_episode_dir(
                 break
             time.sleep(poll_interval_seconds)
 
-        completed_scene_ids = sorted(completed_scene_cache_ids(scene_cache_dir))
+        completed_scene_ids = sorted(completed_scene_cache_ids(scene_cache_dir, effective_cfg))
         combined_file = combined_dir / f"{episode_dir.name}_segments.json"
         cluster_file = scene_cache_dir / "_speaker_clusters.json"
         if not episode_transcription_completed(episode_dir, cfg):

@@ -10,6 +10,7 @@ if str(PROJECT_DIR) not in sys.path:
 
 import argparse
 import json
+import re
 import subprocess
 import time
 from datetime import datetime
@@ -27,12 +28,12 @@ from support_scripts.pipeline_common import (
     LiveProgressReporter,
     SCRIPT_DIR,
     error,
+    list_videos,
     latest_generated_episode_artifacts,
     headline,
     info,
     load_config,
     load_batch_jobs,
-    next_unprocessed_video,
     ok,
     quality_first_requirements_report,
     read_json,
@@ -43,6 +44,7 @@ from support_scripts.pipeline_common import (
     shared_worker_cli_args,
     shared_worker_id_for_args,
     shared_workers_enabled_for_args,
+    step_autosave_path,
     update_batch_job_status,
     warn,
 )
@@ -50,7 +52,7 @@ from support_scripts.generation_toolkit import run_generation_toolkit_phase
 
 AUTOSAVE_VERSION = 1
 AUTOSAVE_KEEP_COUNT = 2
-SOURCE_EPISODES_PER_RUN = 1
+DEFAULT_SOURCE_EPISODE_LIMIT = 0
 SETUP_STEP = "00_prepare_runtime.py"
 EPISODE_STEPS = [
     "01_import_episode.py",
@@ -84,6 +86,17 @@ def parse_args() -> argparse.Namespace:
         "--skip-downloads",
         action="store_true",
         help="Skip model downloads in 09 and only use existing downloads/updates.",
+    )
+    parser.add_argument(
+        "--single",
+        action="store_true",
+        help="Compatibility mode: process only one pending/backlog source episode in this run.",
+    )
+    parser.add_argument(
+        "--max-source-episodes",
+        type=int,
+        default=DEFAULT_SOURCE_EPISODE_LIMIT,
+        help="Maximum pending/backlog source episodes to process. 0 means all.",
     )
     add_shared_worker_arguments(parser)
     return parser.parse_args()
@@ -171,6 +184,7 @@ def default_state() -> dict:
         "current_phase": None,
         "current_episode_file": None,
         "current_episode_name": None,
+        "current_episode_source": None,
         "current_step": None,
         "episode_steps_completed": {},
         "processed_episodes": [],
@@ -293,6 +307,7 @@ def build_status_snapshot(cfg: dict, state: dict, inbox_dir: Path | None = None)
         "current_phase": state.get("current_phase"),
         "current_episode_file": state.get("current_episode_file"),
         "current_episode_name": state.get("current_episode_name"),
+        "current_episode_source": state.get("current_episode_source"),
         "current_step": state.get("current_step"),
         "global_planned_steps": list(state.get("global_planned_steps", []) or []),
         "global_completed_step_labels": list(state.get("global_completed_step_labels", []) or []),
@@ -335,6 +350,7 @@ def render_status_markdown(snapshot: dict) -> str:
         f"- Files currently in inbox: {snapshot.get('pending_inbox_count', 0)}",
         f"- Phase: {snapshot.get('current_phase') or '-'}",
         f"- Current episode: {snapshot.get('current_episode_name') or '-'}",
+        f"- Current episode source: {snapshot.get('current_episode_source') or '-'}",
         f"- Current step: {snapshot.get('current_step') or '-'}",
         "",
         "## Episode Status",
@@ -485,7 +501,208 @@ def mark_episode_completed(state: dict, episode_name: str) -> None:
     state["current_phase"] = None
     state["current_episode_file"] = None
     state["current_episode_name"] = None
+    state["current_episode_source"] = None
     state["current_step"] = None
+
+
+def source_episode_limit(args: argparse.Namespace) -> int | None:
+    if bool(getattr(args, "single", False)):
+        return 1
+    raw_limit = int(getattr(args, "max_source_episodes", DEFAULT_SOURCE_EPISODE_LIMIT) or 0)
+    return raw_limit if raw_limit > 0 else None
+
+
+def script_process_version(script_name: str) -> int | None:
+    script_path = WORKSPACE_ROOT / script_name
+    try:
+        source = script_path.read_text(encoding="utf-8")
+    except Exception:
+        return None
+    match = re.search(r"^PROCESS_VERSION\s*=\s*(\d+)\s*$", source, flags=re.MULTILINE)
+    return int(match.group(1)) if match else None
+
+
+def scene_file_count(scene_dir: Path) -> int:
+    if not scene_dir.is_dir():
+        return 0
+    return len([path for path in scene_dir.glob("scene_*.mp4") if path.is_file()])
+
+
+def csv_scene_count(scene_csv: Path) -> int:
+    if not scene_csv.exists():
+        return 0
+    try:
+        lines = [line.strip() for line in scene_csv.read_text(encoding="utf-8").splitlines() if line.strip()]
+    except Exception:
+        return 0
+    return max(0, len(lines) - 1)
+
+
+def split_step_completed_from_artifacts(cfg: dict, episode_name: str, episode_file: str | None = None) -> bool:
+    scene_root = resolve_project_path(cfg["paths"]["scene_clips"])
+    scene_index_root = resolve_project_path(cfg["paths"]["scene_index"])
+    episodes_dir = resolve_project_path(cfg["paths"]["episodes"])
+    scene_count = scene_file_count(scene_root / episode_name)
+    if scene_count <= 0:
+        return False
+
+    marker_path = scene_index_root / f"{episode_name}_split_success.json"
+    marker = read_json(marker_path, {}) if marker_path.exists() else {}
+    marker_count = int(marker.get("clip_count", 0) or 0) if isinstance(marker, dict) else 0
+    if marker_count > 0:
+        return scene_count >= marker_count
+
+    indexed_scene_count = csv_scene_count(scene_index_root / f"{episode_name}_scenes.csv")
+    if indexed_scene_count > 0:
+        return scene_count >= indexed_scene_count
+
+    raw_candidate = episodes_dir / Path(str(episode_file or episode_name)).name
+    # If the raw working copy is still available and no success marker exists,
+    # treat the split as unfinished so an aborted 02 run can be rebuilt cleanly.
+    return not raw_candidate.is_file()
+
+
+def transcription_step_completed_from_artifacts(cfg: dict, episode_name: str) -> bool:
+    expected_version = script_process_version("03_diarize_and_transcribe.py")
+    combined_file = resolve_project_path(cfg["paths"]["speaker_transcripts"]) / f"{episode_name}_segments.json"
+    cluster_file = resolve_project_path(cfg["paths"]["speaker_segments"]) / episode_name / "_speaker_clusters.json"
+    if not combined_file.exists() or not cluster_file.exists():
+        return False
+    rows = read_json(combined_file, [])
+    cluster_payload = read_json(cluster_file, {})
+    if not isinstance(rows, list) or not isinstance(cluster_payload, dict):
+        return False
+    if expected_version is not None:
+        if int(cluster_payload.get("process_version", 0) or 0) != expected_version:
+            return False
+        if rows and int(rows[0].get("process_version", 0) or 0) != expected_version:
+            return False
+    return True
+
+
+def linking_step_completed_from_artifacts(cfg: dict, episode_name: str) -> bool:
+    expected_version = script_process_version("04_link_faces_and_speakers.py")
+    linked_file = resolve_project_path(cfg["paths"]["linked_segments"]) / f"{episode_name}_linked_segments.json"
+    faces_episode_dir = resolve_project_path(cfg["paths"]["faces"]) / episode_name
+    face_summary_file = faces_episode_dir / f"{episode_name}_face_summary.json"
+    marker_file = faces_episode_dir / "_face_linking_success.json"
+    if not linked_file.exists() or not face_summary_file.exists():
+        return False
+    linked_rows = read_json(linked_file, [])
+    face_summary = read_json(face_summary_file, [])
+    if not isinstance(linked_rows, list) or not linked_rows:
+        return False
+    if not isinstance(face_summary, list) or not face_summary:
+        return False
+
+    marker = read_json(marker_file, {}) if marker_file.exists() else {}
+    if isinstance(marker, dict) and marker:
+        if expected_version is not None and int(marker.get("process_version", 0) or 0) != expected_version:
+            return False
+        linked_count = int(marker.get("linked_row_count", 0) or 0)
+        face_scene_count = int(marker.get("face_scene_count", 0) or 0)
+        if linked_count > len(linked_rows) or face_scene_count > len(face_summary):
+            return False
+        return True
+
+    autosave = read_json(step_autosave_path("04_link_faces_and_speakers", episode_name), {})
+    if isinstance(autosave, dict) and str(autosave.get("status")) == "completed":
+        if expected_version is not None and int(autosave.get("process_version", 0) or 0) != expected_version:
+            return False
+        linked_count = int(autosave.get("linked_row_count", 0) or 0)
+        return linked_count <= len(linked_rows)
+
+    return False
+
+
+def infer_completed_episode_steps(
+    cfg: dict,
+    state: dict,
+    episode_name: str,
+    episode_file: str,
+    source_kind: str,
+    *,
+    persist: bool = True,
+) -> list[str]:
+    completed = set((state.get("episode_steps_completed", {}) or {}).get(episode_name, []) or [])
+    metadata_file = resolve_project_path(cfg["paths"]["metadata"]) / f"{episode_name}.json"
+    raw_file = resolve_project_path(cfg["paths"]["episodes"]) / Path(str(episode_file or episode_name)).name
+    scene_dir = resolve_project_path(cfg["paths"]["scene_clips"]) / episode_name
+    if source_kind != "inbox" or metadata_file.exists() or raw_file.exists() or scene_dir.exists():
+        completed.add("01_import_episode.py")
+    if split_step_completed_from_artifacts(cfg, episode_name, episode_file):
+        completed.add("02_split_scenes.py")
+    if transcription_step_completed_from_artifacts(cfg, episode_name):
+        completed.add("03_diarize_and_transcribe.py")
+    if linking_step_completed_from_artifacts(cfg, episode_name):
+        completed.add("04_link_faces_and_speakers.py")
+    ordered = [step for step in EPISODE_STEPS if step in completed]
+    if persist:
+        state.setdefault("episode_steps_completed", {})[episode_name] = ordered
+    return ordered
+
+
+def episode_needs_processing(cfg: dict, state: dict, episode_name: str, episode_file: str, source_kind: str) -> bool:
+    if episode_name in set(state.get("processed_episodes", []) or []):
+        return False
+    completed = set(infer_completed_episode_steps(cfg, state, episode_name, episode_file, source_kind, persist=False))
+    return any(step not in completed for step in EPISODE_STEPS)
+
+
+def metadata_episode_file_name(metadata_dir: Path, episode_name: str) -> str:
+    metadata = read_json(metadata_dir / f"{episode_name}.json", {})
+    if isinstance(metadata, dict):
+        for key in ("working_file", "source_file_inbox"):
+            value = str(metadata.get(key, "") or "").strip()
+            if value:
+                return Path(value).name
+    return episode_name
+
+
+def add_episode_task(
+    tasks: list[dict[str, str]],
+    seen: set[str],
+    cfg: dict,
+    state: dict,
+    episode_name: str,
+    episode_file: str,
+    source_kind: str,
+) -> None:
+    episode_name = str(episode_name or "").strip()
+    episode_file = str(episode_file or episode_name).strip()
+    if not episode_name or episode_name in seen:
+        return
+    if not episode_needs_processing(cfg, state, episode_name, episode_file, source_kind):
+        return
+    tasks.append({"episode_name": episode_name, "episode_file": episode_file, "source_kind": source_kind})
+    seen.add(episode_name)
+
+
+def discover_episode_backlog(cfg: dict, state: dict, inbox_dir: Path) -> list[dict[str, str]]:
+    episodes_dir = resolve_project_path(cfg["paths"]["episodes"])
+    scene_root = resolve_project_path(cfg["paths"]["scene_clips"])
+    metadata_dir = resolve_project_path(cfg["paths"]["metadata"])
+    tasks: list[dict[str, str]] = []
+    seen: set[str] = set()
+
+    current_episode_file = str(state.get("current_episode_file") or "").strip()
+    current_episode_name = str(state.get("current_episode_name") or "").strip()
+    if current_episode_file and current_episode_name:
+        current_source = str(state.get("current_episode_source") or "").strip() or "autosave"
+        add_episode_task(tasks, seen, cfg, state, current_episode_name, current_episode_file, current_source)
+
+    for raw_video in list_videos(episodes_dir):
+        add_episode_task(tasks, seen, cfg, state, raw_video.stem, raw_video.name, "raw")
+
+    if scene_root.exists():
+        for scene_dir in sorted(path for path in scene_root.iterdir() if path.is_dir()):
+            episode_file = metadata_episode_file_name(metadata_dir, scene_dir.name)
+            add_episode_task(tasks, seen, cfg, state, scene_dir.name, episode_file, "processed")
+
+    for inbox_video in list_videos(inbox_dir):
+        add_episode_task(tasks, seen, cfg, state, inbox_video.stem, inbox_video.name, "inbox")
+
+    return tasks
 
 
 def global_steps_to_run(cfg: dict) -> list[str]:
@@ -678,17 +895,6 @@ def main() -> None:
     state = load_latest_autosave(cfg) or default_state()
     try:
         state["skip_downloads"] = bool(args.skip_downloads)
-        initial_inbox_files = sorted([path for path in inbox_dir.iterdir() if path.is_file()]) if inbox_dir.exists() else []
-        initial_episode_total = min(SOURCE_EPISODES_PER_RUN, len(initial_inbox_files))
-        resume_episode = str(state.get("current_episode_name") or "").strip()
-        if resume_episode and resume_episode not in set(state.get("processed_episodes", []) or []):
-            initial_episode_total = max(1, initial_episode_total)
-        episode_batch_reporter = LiveProgressReporter(
-            script_name="24_process_next_episode.py",
-            total=max(1, initial_episode_total),
-            phase_label="Process Source Episodes",
-            parent_label="Inbox Batch",
-        )
         processed_in_this_run = 0
 
         if load_latest_autosave(cfg):
@@ -714,26 +920,32 @@ def main() -> None:
         cfg = load_config()
         ensure_quality_first_ready(cfg, context_label="24_process_next_episode.py")
 
-        while processed_in_this_run < SOURCE_EPISODES_PER_RUN:
-            current_episode_file = str(state.get("current_episode_file") or "").strip()
-            current_episode_name = str(state.get("current_episode_name") or "").strip()
-            if current_episode_file and current_episode_name:
-                next_video_name = current_episode_file
-                episode_name = current_episode_name
-            else:
-                next_video = next_unprocessed_video(inbox_dir)
-                if next_video is None:
-                    break
-                next_video_name = next_video.name
-                episode_name = next_video.stem
-                state["current_phase"] = "episode"
-                state["current_episode_file"] = next_video_name
-                state["current_episode_name"] = episode_name
-                state["current_step"] = None
-                state.setdefault("episode_steps_completed", {}).setdefault(episode_name, [])
-                save_autosave(cfg, state, f"episode_selected:{episode_name}", inbox_dir)
+        episode_backlog = discover_episode_backlog(cfg, state, inbox_dir)
+        limit = source_episode_limit(args)
+        if limit is not None:
+            episode_backlog = episode_backlog[:limit]
+        if episode_backlog:
+            info(f"Source episode backlog: {len(episode_backlog)} pending/imported/partial episode(s) will be processed.")
+        episode_batch_reporter = LiveProgressReporter(
+            script_name="24_process_next_episode.py",
+            total=max(1, len(episode_backlog)),
+            phase_label="Process Source Episodes",
+            parent_label="Source Backlog",
+        )
 
-            info(f"Starting batch episode: {next_video_name}")
+        for task in episode_backlog:
+            next_video_name = task["episode_file"]
+            episode_name = task["episode_name"]
+            source_kind = task["source_kind"]
+            state["current_phase"] = "episode"
+            state["current_episode_file"] = next_video_name
+            state["current_episode_name"] = episode_name
+            state["current_episode_source"] = source_kind
+            state["current_step"] = None
+            infer_completed_episode_steps(cfg, state, episode_name, next_video_name, source_kind)
+            save_autosave(cfg, state, f"episode_selected:{episode_name}:{source_kind}", inbox_dir)
+
+            info(f"Starting source episode: {episode_name} ({source_kind})")
             finished_steps = set(completed_episode_steps(state, episode_name))
             episode_step_reporter = LiveProgressReporter(
                 script_name="24_process_next_episode.py",
@@ -781,7 +993,7 @@ def main() -> None:
                 save_autosave(cfg, state, f"{episode_name}:{script_name}", inbox_dir)
 
             inbox_file = inbox_dir / next_video_name
-            if cleanup_processed_inbox_episode(inbox_file):
+            if source_kind == "inbox" and cleanup_processed_inbox_episode(inbox_file):
                 info(f"Inbox file removed: {next_video_name}")
             episode_step_reporter.finish(current_label=episode_name, extra_label=f"Total completed steps: {len(finished_steps)}")
             mark_episode_completed(state, episode_name)
@@ -801,8 +1013,8 @@ def main() -> None:
             )
             save_autosave(cfg, state, f"episode_completed:{episode_name}", inbox_dir)
 
-        if processed_in_this_run >= SOURCE_EPISODES_PER_RUN:
-            info("Single next-episode mode: processed one source episode in this run.")
+        if limit == 1 and processed_in_this_run >= 1:
+            info("Single source-episode mode: processed one pending/backlog source episode in this run.")
 
         review_count = open_face_review_item_count(cfg)
         if review_count > 0:
