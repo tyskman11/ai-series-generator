@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -58,7 +60,7 @@ def prompt_from_context(context: dict[str, Any], scene_package: dict[str, Any]) 
 
 
 def deterministic_seed(context: dict[str, Any]) -> int:
-    raw = "|".join(clean_text(context.get(key, "")) for key in ("episode_id", "scene_id", "scene_title", "runner_kind"))
+    raw = "|".join(clean_text(context.get(key, "")) for key in ("episode_id", "scene_id", "shot_id", "scene_title", "runner_kind"))
     digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()
     return int(digest[:8], 16)
 
@@ -138,6 +140,68 @@ def write_alternate_image(context: dict[str, Any], source: Path) -> None:
     copy_if_needed(source, target)
 
 
+def shot_prompt(prompt: str, shot: dict[str, Any]) -> str:
+    parts = [
+        prompt,
+        clean_text(shot.get("shot_type", "")),
+        clean_text(shot.get("camera_angle", "")),
+        clean_text(shot.get("camera_movement", "")),
+        clean_text(shot.get("purpose", "")),
+        f"visible characters {', '.join(shot.get('characters_visible', []))}"
+        if isinstance(shot.get("characters_visible", []), list) and shot.get("characters_visible", [])
+        else "",
+    ]
+    return ", ".join(part for part in parts if part)
+
+
+def shot_manifest(shot: dict[str, Any], output_path: Path, prompt: str, seed: int) -> None:
+    outputs = shot.get("target_outputs", {}) if isinstance(shot.get("target_outputs", {}), dict) else {}
+    manifest_text = clean_text(outputs.get("manifest", ""))
+    if not manifest_text:
+        return
+    manifest_path = Path(manifest_text)
+    ensure_parent(str(manifest_path))
+    digest = hashlib.sha256(output_path.read_bytes()).hexdigest() if output_path.exists() else ""
+    payload = {
+        "task_id": f"{clean_text(shot.get('shot_id', 'shot'))}_local_sdxl_image",
+        "scene_id": clean_text(shot.get("scene_id", "")),
+        "shot_id": clean_text(shot.get("shot_id", "")),
+        "task_type": "image",
+        "backend": "local_diffusion_image_backend",
+        "inputs": {"prompt": prompt, "seed": seed},
+        "outputs": {"primary_frame": str(output_path)},
+        "output_hashes": {str(output_path): digest} if digest else {},
+        "status": "success" if digest else "failed",
+        "fallback_used": False,
+        "placeholder_used": False,
+        "finished_at": datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
+    }
+    manifest_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def shot_packages(scene_package: dict[str, Any]) -> list[dict[str, Any]]:
+    return [
+        row
+        for row in scene_package.get("shot_packages", []) if isinstance(scene_package.get("shot_packages", []), list)
+        if isinstance(row, dict)
+        and clean_text((row.get("target_outputs", {}) if isinstance(row.get("target_outputs", {}), dict) else {}).get("primary_frame", ""))
+    ]
+
+
+def generate_shot_images(context: dict[str, Any], scene_package: dict[str, Any], prompt: str, negative_prompt: str) -> list[Path]:
+    paths: list[Path] = []
+    for shot in shot_packages(scene_package):
+        outputs = shot.get("target_outputs", {}) if isinstance(shot.get("target_outputs", {}), dict) else {}
+        output_path = Path(clean_text(outputs.get("primary_frame", "")))
+        shot_context = {**context, "shot_id": clean_text(shot.get("shot_id", ""))}
+        seed = deterministic_seed(shot_context)
+        rendered_prompt = shot_prompt(prompt, shot)
+        generate_image(rendered_prompt, negative_prompt, output_path, seed)
+        shot_manifest(shot, output_path, rendered_prompt, seed)
+        paths.append(output_path)
+    return paths
+
+
 def main() -> int:
     context = load_backend_context()
     scene_package_path = clean_text(context.get("scene_package", "")) or clean_text(context.get("backend_input", ""))
@@ -147,7 +211,11 @@ def main() -> int:
         raise RuntimeError("The local diffusion backend did not receive an output image path.")
     primary_output = paths[0]
     prompt, negative_prompt = prompt_from_context(context, scene_package)
-    generate_image(prompt, negative_prompt, primary_output, deterministic_seed(context))
+    generated_shots = generate_shot_images(context, scene_package, prompt, negative_prompt)
+    if generated_shots:
+        copy_if_needed(generated_shots[0], primary_output)
+    else:
+        generate_image(prompt, negative_prompt, primary_output, deterministic_seed(context))
 
     for extra_path in paths[1:]:
         copy_if_needed(primary_output, extra_path)

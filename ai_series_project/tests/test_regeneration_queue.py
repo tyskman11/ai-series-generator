@@ -184,6 +184,21 @@ class RegenerationQueueTests(unittest.TestCase):
         self.assertIn("--min-quality", quality_gate_args)
         self.assertIn("0.73", quality_gate_args)
 
+    def test_regeneration_budget_prioritizes_blocked_and_low_realism_rows(self) -> None:
+        selected, deferred, used = STEP53.budget_regeneration_queue(
+            [
+                {"scene_id": "scene_0003", "regeneration_scope": "visual_rerender", "realism_score": 0.82},
+                {"scene_id": "scene_0002", "regeneration_scope": "story_dialogue", "realism_score": 0.31},
+                {"scene_id": "scene_0001", "regeneration_scope": "blocked_missing_backend", "realism_score": 0.1},
+            ],
+            6,
+        )
+
+        self.assertEqual(used, 6)
+        self.assertEqual([row["scene_id"] for row in selected], ["scene_0002", "scene_0001"])
+        self.assertEqual([row["scene_id"] for row in deferred], ["scene_0003"])
+        self.assertEqual(selected[1]["regeneration_cost"], 0)
+
     def test_ensure_quality_gate_report_disables_auto_retry_during_refresh(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)

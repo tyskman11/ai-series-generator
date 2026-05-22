@@ -116,6 +116,35 @@ class GenerationQualityTests(unittest.TestCase):
         self.assertIn("washed out lighting", plan["negative_prompt"])
         self.assertTrue(plan["quality_targets"]["style_guidance_available"])
 
+    def test_build_scene_generation_plan_applies_show_profile_and_toolkit_guidance(self) -> None:
+        plan = STEP08.build_scene_generation_plan(
+            "scene_0002",
+            1,
+            "Escalation",
+            "demo",
+            ["Babe", "Kenzie"],
+            "A demo escalates.",
+            {"character_reference_library": {}, "scene_library": []},
+            set(),
+            "scene_0001",
+            continuity_memory={},
+            style_constraints={},
+            show_profile={
+                "profile_id": "sitcom_fast",
+                "style_rules": ["bright source-series palette"],
+                "camera_rules": ["favor reaction closeups"],
+                "continuity_rules": ["keep main-office props stable"],
+            },
+            toolkit_guidance={"prompt_fragments": ["preserve callback pacing"]},
+        )
+
+        self.assertIn("bright source-series palette", plan["positive_prompt"])
+        self.assertIn("keep main-office props stable", plan["positive_prompt"])
+        self.assertIn("preserve callback pacing", plan["positive_prompt"])
+        self.assertIn("favor reaction closeups", plan["control_hints"]["show_profile_camera"])
+        self.assertEqual(plan["quality_targets"]["show_profile_id"], "sitcom_fast")
+        self.assertTrue(plan["quality_targets"]["toolkit_guidance_available"])
+
     def test_build_video_generation_prompt_reads_dict_camera_and_control_hints(self) -> None:
         prompt = STEP15.build_video_generation_prompt(
             {

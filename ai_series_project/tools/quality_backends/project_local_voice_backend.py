@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import json
 import subprocess
 import tempfile
+from datetime import datetime
 from pathlib import Path
 
 from backend_common import (
@@ -132,6 +134,11 @@ def collect_line_specs(scene_package: dict) -> list[dict]:
                 "reference_audio_candidates": line.get("reference_audio_candidates", []) if isinstance(line.get("reference_audio_candidates", []), list) else [],
                 "candidate_sample_dirs": line.get("candidate_sample_dirs", []) if isinstance(line.get("candidate_sample_dirs", []), list) else [],
                 "target_output_audio": clean_text(line.get("target_output_audio", "")),
+                "emotion": clean_text(line.get("emotion", "")),
+                "pace": clean_text(line.get("pace", "")),
+                "energy": float(line.get("energy", 0.0) or 0.0),
+                "pause_after_seconds": max(0.0, float(line.get("pause_after_seconds", 0.0) or 0.0)),
+                "delivery_notes": clean_text(line.get("delivery_notes", "")),
                 "runtime": runtime_cfg,
                 "force_voice_cloning": force_voice_cloning,
             }
@@ -274,6 +281,53 @@ def synthesize_missing_lines(temp_root: Path, line_specs: list[dict]) -> tuple[d
     return synthesize_missing_lines_pyttsx3(temp_root, line_specs), "pyttsx3"
 
 
+def generate_silence(ffmpeg: str, target: Path, duration_seconds: float) -> Path | None:
+    if duration_seconds <= 0.01:
+        return None
+    ensure_parent(str(target))
+    command = [
+        ffmpeg,
+        "-hide_banner",
+        "-y",
+        "-f",
+        "lavfi",
+        "-i",
+        "anullsrc=r=24000:cl=mono",
+        "-t",
+        f"{duration_seconds:.3f}",
+        "-c:a",
+        "pcm_s16le",
+        str(target),
+    ]
+    completed = subprocess.run(command, check=False, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    return target if completed.returncode == 0 and target.exists() and target.stat().st_size > 0 else None
+
+
+def write_voice_diagnostics(output_path: Path, line_specs: list[dict], backend_name: str, audio_files: list[Path]) -> None:
+    diagnostics_path = output_path.with_suffix(output_path.suffix + ".diagnostics.json")
+    payload = {
+        "created_at": datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
+        "backend": backend_name,
+        "scene_dialogue_audio": str(output_path),
+        "audio_piece_count": len(audio_files),
+        "lines": [
+            {
+                "line_index": int(line.get("line_index", 0) or 0),
+                "speaker_name": clean_text(line.get("speaker_name", "")),
+                "language": clean_text(line.get("language", "")),
+                "emotion": clean_text(line.get("emotion", "")),
+                "pace": clean_text(line.get("pace", "")),
+                "energy": float(line.get("energy", 0.0) or 0.0),
+                "pause_after_seconds": float(line.get("pause_after_seconds", 0.0) or 0.0),
+                "delivery_notes": clean_text(line.get("delivery_notes", "")),
+                "reference_candidate_count": len(collect_reference_audio_paths(line)),
+            }
+            for line in line_specs
+        ],
+    }
+    diagnostics_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
 def main() -> int:
     context = load_backend_context()
     scene_package = load_json(str(context.get("scene_package", "") or ""))
@@ -298,11 +352,18 @@ def main() -> int:
             candidate = line.get("audio_path")
             if isinstance(candidate, Path) and candidate.exists():
                 audio_files.append(candidate)
-                continue
-            line_index = int(line.get("line_index", 0) or 0)
-            synthesized_path = synthesized.get(line_index)
-            if synthesized_path is not None and synthesized_path.exists():
-                audio_files.append(synthesized_path)
+            else:
+                line_index = int(line.get("line_index", 0) or 0)
+                synthesized_path = synthesized.get(line_index)
+                if synthesized_path is not None and synthesized_path.exists():
+                    audio_files.append(synthesized_path)
+            silence = generate_silence(
+                ffmpeg,
+                temp_root / f"line_{int(line.get('line_index', 0) or 0):04d}_pause.wav",
+                float(line.get("pause_after_seconds", 0.0) or 0.0),
+            )
+            if silence is not None:
+                audio_files.append(silence)
         if not audio_files:
             raise RuntimeError(
                 "No reusable or synthesized per-line audio exists yet for this scene. Prepare character voice references first."
@@ -337,6 +398,7 @@ def main() -> int:
 
     if completed.returncode != 0 or not output_path.exists() or output_path.stat().st_size <= 0:
         raise RuntimeError(f"Project-local voice backend failed with {backend_name}. {(completed.stdout or '')[-1200:]}")
+    write_voice_diagnostics(output_path, line_specs, backend_name, audio_files)
     return 0
 
 

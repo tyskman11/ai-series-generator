@@ -168,12 +168,20 @@ def build_tool_invocations(
                 if spec.episode_scoped:
                     args.extend(["--source-episode", clean_episode_id])
                 args.extend(["--character", character])
-                invocations.append({"script": spec.script, "args": args, "purpose": spec.purpose, "character": character})
+                invocations.append(
+                    {
+                        "script": spec.script,
+                        "args": args,
+                        "purpose": spec.purpose,
+                        "character": character,
+                        "output_role": spec.output_role,
+                    }
+                )
             continue
         args = list(spec.args)
         if spec.episode_scoped:
             args.extend(["--episode-id", clean_episode_id])
-        invocations.append({"script": spec.script, "args": args, "purpose": spec.purpose})
+        invocations.append({"script": spec.script, "args": args, "purpose": spec.purpose, "output_role": spec.output_role})
     return invocations, skipped
 
 
@@ -217,6 +225,7 @@ def run_generation_toolkit_phase(
             "args": args,
             "purpose": invocation.get("purpose", ""),
             "character": invocation.get("character", ""),
+            "output_role": invocation.get("output_role", ""),
             "status": "pending",
         }
         if not script_path.exists():
@@ -267,6 +276,7 @@ def run_generation_toolkit_phase(
     path = _report_path(phase, episode_id)
     write_json(path, report)
     write_json(REPORT_ROOT / f"latest_{phase}.json", report)
+    write_json(REPORT_ROOT / "latest_guidance.json", build_direct_generation_guidance(report))
 
     summary = report["summary"]
     message = (
@@ -280,3 +290,34 @@ def run_generation_toolkit_phase(
     elif invocations or skipped:
         info(message)
     return report
+
+
+def build_direct_generation_guidance(report: dict[str, Any]) -> dict[str, Any]:
+    ok_rows = [
+        row
+        for row in report.get("results", []) if isinstance(report.get("results", []), list)
+        if isinstance(row, dict) and row.get("status") == "ok"
+    ]
+    roles = sorted({str(row.get("output_role", "") or "").strip() for row in ok_rows if str(row.get("output_role", "") or "").strip()})
+    prompt_fragments: list[str] = []
+    regeneration_hints: list[str] = []
+    if "series_memory" in roles:
+        prompt_fragments.append("respect recurring story memory and callback candidates")
+    if "character_continuity" in roles:
+        prompt_fragments.append("preserve tracked outfit, relationship, and character continuity")
+    if "pacing_quality" in roles or "edit_quality" in roles:
+        prompt_fragments.append("keep shot pacing and transitions cuttable for the edit plan")
+        regeneration_hints.append("prefer pacing or shot-plan repair before full story replacement")
+    if "voice_quality" in roles:
+        prompt_fragments.append("keep dialogue delivery compatible with the latest voice-emotion guidance")
+        regeneration_hints.append("repair voice references before retrying failed clone lines")
+    if "visual_quality" in roles:
+        prompt_fragments.append("follow style and atmosphere diagnostics from the latest visual quality pass")
+    return {
+        "phase": report.get("phase", ""),
+        "episode_id": report.get("episode_id", ""),
+        "created_at": report.get("finished_at", report.get("started_at", "")),
+        "source_roles": roles,
+        "prompt_fragments": prompt_fragments,
+        "regeneration_hints": regeneration_hints,
+    }

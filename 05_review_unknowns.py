@@ -62,6 +62,7 @@ from support_scripts.pipeline_common import (
     warn,
     write_json,
 )
+from support_scripts.production_diagnostics import write_production_diagnostics
 
 IGNORED_FACE_NAMES = {
     "noface",
@@ -94,6 +95,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--show-queue", action="store_true", help="Show the open review_queue.json instead of the face review.")
     parser.add_argument("--queue-limit", type=int, default=50, help="Maximum review queue rows printed by --show-queue. Use 0 for all.")
     parser.add_argument("--edit-names", action="store_true", help="Open a Tk name editor for existing face and speaker names.")
+    parser.add_argument(
+        "--reference-audit",
+        action="store_true",
+        help="Write the reference-quality dashboard and backend/worker readiness reports, then stop.",
+    )
     parser.add_argument("--assign-face", help="Face cluster ID such as face_001.")
     parser.add_argument("--name", help="Name for --assign-face, for example 'Babe Carano'.")
     parser.add_argument("--priority", action="store_true", help="Mark --assign-face or --rename-face as a prioritized main character.")
@@ -3983,7 +3989,13 @@ def main() -> None:
             review_count = persist_maps_only(cfg, char_map, voice_map)
             info(f"Maps saved without segment rewrite, {review_count} open review cases.")
 
-        if args.assign_face:
+        if args.reference_audit:
+            diagnostics = write_production_diagnostics(cfg)
+            ok(f"Reference audit written: {terminal_clickable_path(diagnostics.get('reference_quality_markdown', ''))}")
+            info(f"Backend readiness: {terminal_clickable_path(diagnostics.get('backend_readiness_markdown', ''))}")
+            action = "reference_audit"
+            completion_payload = diagnostics
+        elif args.assign_face:
             assigned_name = "noface" if args.ignore else (args.name or "").strip()
             if not assigned_name:
                 raise ValueError("Please provide --name or use --ignore.")

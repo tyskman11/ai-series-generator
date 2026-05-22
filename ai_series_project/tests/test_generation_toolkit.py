@@ -45,6 +45,26 @@ class GenerationToolkitTests(unittest.TestCase):
         self.assertIn("54_backup_project.py", skipped_scripts)
         self.assertIn("55_restore_project.py", skipped_scripts)
 
+    def test_successful_tool_roles_become_direct_generation_guidance(self) -> None:
+        guidance = generation_toolkit.build_direct_generation_guidance(
+            {
+                "phase": "pre_generation",
+                "episode_id": "folge_42",
+                "finished_at": "2026-05-22T12:00:00Z",
+                "results": [
+                    {"status": "ok", "output_role": "character_continuity"},
+                    {"status": "ok", "output_role": "voice_quality"},
+                    {"status": "failed", "output_role": "visual_quality"},
+                ],
+            }
+        )
+
+        self.assertIn("character_continuity", guidance["source_roles"])
+        self.assertIn("voice_quality", guidance["source_roles"])
+        self.assertNotIn("visual_quality", guidance["source_roles"])
+        self.assertTrue(any("continuity" in row for row in guidance["prompt_fragments"]))
+        self.assertTrue(any("voice references" in row for row in guidance["regeneration_hints"]))
+
 
 if __name__ == "__main__":
     unittest.main()

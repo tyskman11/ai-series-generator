@@ -179,6 +179,31 @@ class FinishedEpisodeModePipelineTests(unittest.TestCase):
         self.assertEqual(payload["finished_episode_readiness"], "blocked")
         self.assertEqual(payload["weakest_scenes"][0]["scene_id"], "scene_0001")
 
+    def test_quality_gate_prefers_backend_measured_technical_metrics(self) -> None:
+        metrics = STEP18.prefer_backend_metrics(
+            [
+                STEP18.technical_metric(
+                    "lipsync_confidence_score",
+                    "unavailable",
+                    0.0,
+                    "no backend metric",
+                )
+            ],
+            [
+                {
+                    "metric": "lipsync_confidence_score",
+                    "status": "measured",
+                    "score": 0.84,
+                    "reason": "duration alignment proxy",
+                    "source": "sync_metrics.json",
+                }
+            ],
+        )
+
+        self.assertEqual(len(metrics), 1)
+        self.assertEqual(metrics[0]["status"], "measured")
+        self.assertEqual(metrics[0]["score"], 0.84)
+
     def test_regeneration_scopes_are_precise_and_blocked_scopes_do_not_loop(self) -> None:
         self.assertEqual(STEP19.regeneration_scope_from_entry({"regeneration_hints": {"rerun_voice_clone": True}}), "voice_only")
         self.assertEqual(STEP19.regeneration_scope_from_entry({"regeneration_hints": {"rerun_lipsync": True}}), "lipsync_only")

@@ -2329,6 +2329,31 @@ def normalized_style_constraints(raw_constraints: dict | None) -> dict:
     }
 
 
+def normalized_show_profile(cfg: dict) -> dict:
+    generation_cfg = cfg.get("generation", {}) if isinstance(cfg.get("generation", {}), dict) else {}
+    raw = generation_cfg.get("show_profile", {}) if isinstance(generation_cfg.get("show_profile", {}), dict) else {}
+    return {
+        "profile_id": coalesce_text(raw.get("profile_id", "")) or "default",
+        "style_rules": [coalesce_text(value) for value in raw.get("style_rules", []) if coalesce_text(value)]
+        if isinstance(raw.get("style_rules", []), list)
+        else [],
+        "camera_rules": [coalesce_text(value) for value in raw.get("camera_rules", []) if coalesce_text(value)]
+        if isinstance(raw.get("camera_rules", []), list)
+        else [],
+        "continuity_rules": [coalesce_text(value) for value in raw.get("continuity_rules", []) if coalesce_text(value)]
+        if isinstance(raw.get("continuity_rules", []), list)
+        else [],
+        "subtitle_policy": coalesce_text(raw.get("subtitle_policy", "")) or "source_language",
+        "export_disclosure_policy": coalesce_text(raw.get("export_disclosure_policy", "")) or "synthetic_media_disclosure_required",
+    }
+
+
+def latest_toolkit_guidance() -> dict:
+    path = PROJECT_ROOT / "runtime" / "generation_toolkit" / "latest_guidance.json"
+    payload = read_json(path, {}) if path.exists() else {}
+    return payload if isinstance(payload, dict) else {}
+
+
 def build_scene_generation_plan(
     scene_id: str,
     scene_index: int,
@@ -2346,6 +2371,8 @@ def build_scene_generation_plan(
     style_descriptor: str = "",
     relationship_context: list[dict] | None = None,
     behavior_fields: dict | None = None,
+    show_profile: dict | None = None,
+    toolkit_guidance: dict | None = None,
 ) -> dict:
     continuity_memory = continuity_memory if isinstance(continuity_memory, dict) else load_character_continuity_memory(PROJECT_ROOT)
     style_constraints = style_constraints if isinstance(style_constraints, dict) else derive_prompt_constraints_from_bible(PROJECT_ROOT, {})
@@ -2396,6 +2423,12 @@ def build_scene_generation_plan(
     style_negative = ", ".join(style_profile.get("negative", [])[:5])
     style_guidance = style_profile.get("guidance", {}) if isinstance(style_profile.get("guidance", {}), dict) else {}
     style_descriptor = coalesce_text(style_descriptor) or "source-series faithful TV episode frame"
+    show_profile = show_profile if isinstance(show_profile, dict) else {}
+    toolkit_guidance = toolkit_guidance if isinstance(toolkit_guidance, dict) else {}
+    show_style_rules = [coalesce_text(value) for value in show_profile.get("style_rules", []) if coalesce_text(value)] if isinstance(show_profile.get("style_rules", []), list) else []
+    show_camera_rules = [coalesce_text(value) for value in show_profile.get("camera_rules", []) if coalesce_text(value)] if isinstance(show_profile.get("camera_rules", []), list) else []
+    show_continuity_rules = [coalesce_text(value) for value in show_profile.get("continuity_rules", []) if coalesce_text(value)] if isinstance(show_profile.get("continuity_rules", []), list) else []
+    toolkit_prompt_fragments = [coalesce_text(value) for value in toolkit_guidance.get("prompt_fragments", []) if coalesce_text(value)] if isinstance(toolkit_guidance.get("prompt_fragments", []), list) else []
     series_language = normalize_language_code(series_language)
     prompt_language = series_language or "auto-detected source language"
 
@@ -2428,6 +2461,12 @@ def build_scene_generation_plan(
         positive_prompt += f", series camera preference: {style_guidance['camera']}"
     if style_guidance.get("angle"):
         positive_prompt += f", preferred angle: {style_guidance['angle']}"
+    if show_style_rules:
+        positive_prompt += f", show profile style: {'; '.join(show_style_rules[:3])}"
+    if show_continuity_rules:
+        positive_prompt += f", show profile continuity: {'; '.join(show_continuity_rules[:3])}"
+    if toolkit_prompt_fragments:
+        positive_prompt += f", toolkit guidance: {'; '.join(toolkit_prompt_fragments[:3])}"
     negative_prompt = (
         "no collage, no split panel, no duplicate characters, no extra fingers, no warped face, "
         "no mismatched outfit, no generic cartoon style, no blue placeholder frame, no filtered still-frame slideshow, "
@@ -2460,8 +2499,11 @@ def build_scene_generation_plan(
             "motion_emphasis": camera_plan["camera_move"],
             "style_camera": style_guidance.get("camera", ""),
             "style_angle": style_guidance.get("angle", ""),
+            "show_profile_camera": "; ".join(show_camera_rules[:3]),
         },
         "style_constraints": style_profile,
+        "show_profile": show_profile,
+        "toolkit_guidance": toolkit_guidance,
         "character_continuity": character_continuity,
         "relationship_context": relationship_context,
         "scene_purpose": coalesce_text(behavior_fields.get("scene_purpose", "")),
@@ -2487,6 +2529,8 @@ def build_scene_generation_plan(
             "behavior_constraints_count": len(behavior_constraints),
             "dialogue_style_constraints_count": len(dialogue_style_constraints),
             "writer_room_plan_available": bool(writer_room_plan),
+            "show_profile_id": coalesce_text(show_profile.get("profile_id", "")) or "default",
+            "toolkit_guidance_available": bool(toolkit_prompt_fragments),
         },
         "positive_prompt": positive_prompt,
         "negative_prompt": negative_prompt,
@@ -2515,6 +2559,8 @@ def generate_episode_package(model: dict, cfg: dict, episode_index: int = 1) -> 
         or coalesce_text(model.get("style_descriptor", ""))
         or "source-series faithful TV episode frame"
     )
+    show_profile = normalized_show_profile(cfg)
+    toolkit_guidance = latest_toolkit_guidance()
     behavior_model = active_behavior_model(model, cfg)
     if behavior_model:
         model = {**model, "behavior_model": behavior_model}
@@ -2667,6 +2713,8 @@ def generate_episode_package(model: dict, cfg: dict, episode_index: int = 1) -> 
             style_descriptor=style_descriptor,
             relationship_context=scene_relationship_context,
             behavior_fields=behavior_fields,
+            show_profile=show_profile,
+            toolkit_guidance=toolkit_guidance,
         )
         scenes.append(
             {
@@ -2763,6 +2811,8 @@ def generate_episode_package(model: dict, cfg: dict, episode_index: int = 1) -> 
         "quality_mode": quality_mode,
         "series_language": package_language,
         "style_descriptor": style_descriptor,
+        "show_profile": show_profile,
+        "toolkit_guidance": toolkit_guidance,
         "episode_blueprint": episode_blueprint,
         "set_bible": set_bible,
         "edit_decision_list": edit_decision_list,

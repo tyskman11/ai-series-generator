@@ -198,6 +198,14 @@
     "active_series_input": "",
     "active_character_group": "",
     "style_descriptor": "source-series faithful TV episode frame",
+    "show_profile": {
+      "profile_id": "default",
+      "style_rules": [],
+      "camera_rules": [],
+      "continuity_rules": [],
+      "subtitle_policy": "source_language",
+      "export_disclosure_policy": "synthetic_media_disclosure_required"
+    },
     "quality_mode": "original_episode_quality_first",
     "allow_fallbacks": false
   },
@@ -366,6 +374,7 @@
     "max_regeneration_retries": 3,
     "retry_until_pass": true,
     "max_auto_retry_cycles": 12,
+    "max_regeneration_cost_per_cycle": 18,
     "auto_retry_force_full_rerender_when_queue_empty": true,
     "force_finished_episode_generation": true,
     "allow_project_local_fallback_backends": false,

@@ -2,8 +2,11 @@
 from __future__ import annotations
 
 import os
+import json
 import subprocess
 import sys
+import wave
+from datetime import datetime
 from pathlib import Path
 
 from backend_common import PROJECT_DIR, ensure_parent, existing_path, find_project_local_ffmpeg, load_backend_context, print_runtime_error
@@ -72,6 +75,67 @@ def export_poster(video_path: Path, poster_path: Path) -> None:
         raise RuntimeError(f"Could not extract Wav2Lip poster frame. {(completed.stdout or '')[-1200:]}")
 
 
+def audio_duration_seconds(path: Path) -> float:
+    if path.suffix.lower() != ".wav":
+        return 0.0
+    try:
+        with wave.open(str(path), "rb") as handle:
+            rate = int(handle.getframerate() or 0)
+            return handle.getnframes() / rate if rate > 0 else 0.0
+    except Exception:
+        return 0.0
+
+
+def video_duration_seconds(path: Path) -> float:
+    try:
+        import cv2
+
+        capture = cv2.VideoCapture(str(path))
+        try:
+            fps = float(capture.get(cv2.CAP_PROP_FPS) or 0.0)
+            frame_count = float(capture.get(cv2.CAP_PROP_FRAME_COUNT) or 0.0)
+        finally:
+            capture.release()
+        return frame_count / fps if fps > 0 and frame_count > 0 else 0.0
+    except Exception:
+        return 0.0
+
+
+def write_sync_metrics(context: dict, video_path: Path, audio_path: Path) -> None:
+    lip_sync = context.get("lip_sync", {}) if isinstance(context.get("lip_sync", {}), dict) else {}
+    outputs = lip_sync.get("target_outputs", {}) if isinstance(lip_sync.get("target_outputs", {}), dict) else {}
+    metrics_text = clean_text(outputs.get("sync_metrics", ""))
+    if not metrics_text:
+        return
+    metrics_path = Path(metrics_text)
+    ensure_parent(str(metrics_path))
+    audio_duration = audio_duration_seconds(audio_path)
+    video_duration = video_duration_seconds(video_path)
+    comparable = audio_duration > 0.0 and video_duration > 0.0
+    duration_ratio = min(audio_duration, video_duration) / max(audio_duration, video_duration) if comparable else 0.0
+    payload = {
+        "created_at": datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
+        "metrics": [
+            {
+                "metric": "lipsync_confidence_score",
+                "status": "measured" if comparable else "unavailable",
+                "score": round(duration_ratio, 4) if comparable else 0.0,
+                "reason": (
+                    "Wav2Lip duration-alignment proxy; use backend SyncNet/MuseTalk metrics when available."
+                    if comparable
+                    else "Wav2Lip completed, but audio/video durations could not be measured."
+                ),
+                "inputs": {
+                    "audio_duration_seconds": round(audio_duration, 4),
+                    "video_duration_seconds": round(video_duration, 4),
+                },
+                "tool": "local_wav2lip_backend.duration_proxy",
+            }
+        ],
+    }
+    metrics_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
 def main() -> int:
     context = load_backend_context()
     scene_video = existing_path(context.get("scene_video", ""))
@@ -108,6 +172,7 @@ def main() -> int:
     poster_text = clean_text(context.get("lipsync_poster_frame", ""))
     if poster_text:
         export_poster(output_path, Path(poster_text))
+    write_sync_metrics(context, output_path, scene_audio)
     return 0
 
 

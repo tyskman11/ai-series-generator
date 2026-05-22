@@ -260,6 +260,52 @@ def regeneration_scope_counts(queue: list[dict[str, Any]]) -> dict[str, int]:
     return counts
 
 
+def regeneration_scope_cost(scope: str) -> int:
+    if scope.startswith("blocked_"):
+        return 0
+    return {
+        "audio_mix_only": 1,
+        "scene_master_only": 1,
+        "lipsync_only": 2,
+        "voice_only": 2,
+        "voice_lipsync": 3,
+        "shot_plan": 4,
+        "visual_rerender": 6,
+        "story_dialogue": 6,
+        "full_episode_master": 3,
+        "scene_rerender": 5,
+    }.get(scope, 5)
+
+
+def regeneration_cost_budget(cfg: dict[str, Any]) -> int:
+    release_cfg = cfg.get("release_mode", {}) if isinstance(cfg.get("release_mode", {}), dict) else {}
+    return max(0, int(release_cfg.get("max_regeneration_cost_per_cycle", 18) or 0))
+
+
+def budget_regeneration_queue(queue: list[dict[str, Any]], max_cost: int) -> tuple[list[dict[str, Any]], list[dict[str, Any]], int]:
+    if max_cost <= 0:
+        return list(queue), [], sum(regeneration_scope_cost(regeneration_scope_from_entry(entry)) for entry in queue if isinstance(entry, dict))
+    selected: list[dict[str, Any]] = []
+    deferred: list[dict[str, Any]] = []
+    used = 0
+    ordered = sorted(
+        [entry for entry in queue if isinstance(entry, dict)],
+        key=lambda entry: (
+            regeneration_scope_from_entry(entry).startswith("blocked_"),
+            float(entry.get("realism_score", entry.get("quality_score", 1.0)) or 1.0),
+        ),
+    )
+    for entry in ordered:
+        cost = regeneration_scope_cost(regeneration_scope_from_entry(entry))
+        row = {**entry, "regeneration_cost": cost}
+        if cost == 0 or used + cost <= max_cost or not selected:
+            selected.append(row)
+            used += cost
+        else:
+            deferred.append(row)
+    return selected, deferred, used
+
+
 def rerun_strategy_for_queue(queue: list[dict[str, Any]], scene_ids: list[str]) -> str:
     if not scene_ids:
         return "full_episode_pipeline"
@@ -568,9 +614,14 @@ def build_queue_manifest(
     apply_requested: bool,
     update_bible: bool,
     strict: bool,
+    max_regeneration_cost: int | None = None,
 ) -> dict[str, Any]:
     episode_id = clean_text(artifacts.get("episode_id", "")) or "episode"
-    queue = report.get("regeneration_queue", []) if isinstance(report.get("regeneration_queue"), list) else []
+    report_queue = report.get("regeneration_queue", []) if isinstance(report.get("regeneration_queue"), list) else []
+    queue, deferred_queue, regeneration_cost = budget_regeneration_queue(
+        report_queue,
+        int(max_regeneration_cost or 0),
+    )
     scene_ids = [
         clean_text(entry.get("scene_id", ""))
         for entry in queue
@@ -597,10 +648,15 @@ def build_queue_manifest(
         "regeneration_queue_count": len(queue),
         "regeneration_queue_scene_ids": scene_ids,
         "regeneration_scope_counts": scope_counts,
+        "regeneration_cost_budget": int(max_regeneration_cost or 0),
+        "regeneration_cost_selected": regeneration_cost,
+        "regeneration_deferred_count": len(deferred_queue),
+        "regeneration_deferred_queue": deferred_queue,
         "quality_gate_overrides": {
             "min_quality": min_quality,
             "max_weak_scenes": max_weak_scenes,
             "max_regeneration_batch": max_regeneration_batch,
+            "max_regeneration_cost": max_regeneration_cost,
             "max_regeneration_retries": max_regeneration_retries,
             "strict": bool(strict),
         },
@@ -684,6 +740,7 @@ def main() -> None:
         min_quality=args.min_quality,
         max_weak_scenes=args.max_weak_scenes,
         max_regeneration_batch=args.max_regeneration_batch,
+        max_regeneration_cost=regeneration_cost_budget(cfg),
         strict=bool(args.strict),
         max_regeneration_retries=max_regeneration_retries,
         refresh=refresh_quality_gate,

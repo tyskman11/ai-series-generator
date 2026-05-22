@@ -28,6 +28,7 @@ from support_scripts.pipeline_common import (
     error,
     headline,
     info,
+    load_config,
     mark_step_completed,
     mark_step_failed,
     mark_step_started,
@@ -43,6 +44,7 @@ from support_scripts.pipeline_common import (
     warn,
     write_json,
 )
+from support_scripts.production_diagnostics import write_production_diagnostics
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -554,6 +556,9 @@ def main() -> None:
         run_setup_script(py, "support_scripts/configure_quality_backends.py")
         backend_prepare_args: list[str] = ["--skip-downloads"] if bool(args.skip_downloads) else []
         run_setup_script(py, "support_scripts/prepare_quality_backends.py", *backend_prepare_args)
+        diagnostics = write_production_diagnostics(load_config())
+        info(f"Backend readiness report: {diagnostics.get('backend_readiness_markdown', '-')}")
+        info(f"Reference quality dashboard: {diagnostics.get('reference_quality_markdown', '-')}")
         info("Working config ready: ai_series_project/configs/project.json (generated from project.template.json when missing)")
         if torch_info.get("cuda_available"):
             device_names = ", ".join(torch_info.get("device_names") or [])

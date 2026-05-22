@@ -1896,6 +1896,7 @@ def build_scene_production_package(
             "target_outputs": {
                 "lipsync_video": str(lipsync_output_root / f"{scene_slug}_lipsync.mp4"),
                 "poster_frame": str(lipsync_output_root / "poster.png"),
+                "sync_metrics": str(lipsync_output_root / f"{scene_slug}_sync_metrics.json"),
                 "backend_manifest": str(episode_package_root / "manifests" / scene_slug / "finished_episode_lipsync_runner.json"),
             },
             "speaker_targets": sorted({clean_text(line.get("speaker_name", "")) for line in voice_lines if clean_text(line.get("speaker_name", ""))}),
@@ -2041,6 +2042,7 @@ def build_episode_production_package_payload(
                 "music_stem": str(package_root / "master" / f"{episode_id}_music_stem.wav"),
                 "sfx_stem": str(package_root / "master" / f"{episode_id}_sfx_stem.wav"),
                 "final_mix": str(package_root / "master" / f"{episode_id}_final_mix.wav"),
+                "mix_metrics": str(package_root / "master" / f"{episode_id}_audio_mix_metrics.json"),
             },
         },
         "current_preview_outputs": {

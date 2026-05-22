@@ -72,6 +72,13 @@ The project is intentionally strict about the difference between an intermediate
 - final output quality now depends on the real local backend stack being ready: SDXL/diffusers for frames, LTX/diffusers for video, XTTS for cloned dialogue, and Wav2Lip for lip-sync
 - generation now creates a finished-episode blueprint with act structure, A/B story, callbacks, scene functions, set continuity, shot plans, dialogue-line acting metadata, audio-mix plans, and an edit decision list
 - render packages now carry per-shot package targets, character continuity locks, set context, scene audio-mix targets, and standard backend manifest paths
+- the local SDXL and LTX quality backends now execute shot packages, write per-shot manifests, and assemble scene video from generated shot clips instead of treating the shot plan as metadata only
+- the master runner now follows shot/EDL clip order, writes dialogue-stem/final-mix targets, records audio-mix metrics, and muxes the final mix into the episode master when available
+- the local Wav2Lip runner now writes measured sync metric payloads when duration evidence is available; the quality gate prefers backend metrics over unavailable placeholders
+- `00_prepare_runtime.py`, `05_review_unknowns.py --reference-audit`, and quality reports now write reference-quality dashboards, backend-readiness reports, and worker-capability snapshots under `ai_series_project/generation/quality_reports/readiness/`
+- distributed worker metadata now advertises capability hints and task scheduling can rank GPU memory, backend readiness, package readiness, backend health, and storage latency before choosing a worker
+- generation show profiles and direct generation-toolkit guidance now feed style, camera, continuity, pacing, and reference-repair hints into scene prompts
+- weak-scene regeneration now enforces a configurable cost budget per cycle so expensive retries are deferred while blocked or cheap high-impact repair scopes stay visible
 - `18_quality_gate.py` now writes a Finished Episode Gate plus JSON/Markdown Realism Reports under `ai_series_project/generation/quality_reports/`
 - `21_export_package.py` distinguishes `preview_export`, `review_export`, and `finished_episode_export`; finished exports are blocked unless the Finished Episode Gate passes
 
@@ -86,7 +93,7 @@ The next quality gains come from four connected loops:
 - improve real media backends: shot-level image/video generation, cloned dialogue, lip-sync, mastering, manifests, and backend metrics instead of still-frame or mux-only stand-ins
 - improve evaluation and retry decisions: measurable identity, ASR, lip-sync, audio, pacing, continuity, backend-integrity, and story/dialogue realism checks that select the smallest useful regeneration scope
 
-The roadmap below therefore keeps `Finished`, `In Progress`, and `Planned` separate. `Finished` means the code path or guard exists now. `In Progress` means the design exists but needs stronger real-media execution or evidence. `Planned` collects useful next ideas that should be implemented only when they improve a measured bottleneck.
+The roadmap below keeps `Finished`, `In Progress`, and `Planned` explicit. The current implementation pass moved the previously listed repo-local roadmap items into executable contracts, reports, routing hints, backend outputs, tests, or documentation. Remaining real-media quality risk is tracked as a limitation when it depends on external checkpoints, rights-safe reference material, or backend-specific measurements rather than an unimplemented repository hook.
 
 ## Project Layout
 
@@ -149,6 +156,7 @@ Run the numbered scripts from the repository root.
 - `support_scripts/configure_quality_backends.py`: helper called by `00` to write portable quality-backend config
 - `support_scripts/prepare_quality_backends.py`: helper called by `00` to download/update project-local backend assets
 - `support_scripts/manage_character_relationships.py`: helper for manual character groups, relationships, and multiple source-series inputs
+- `support_scripts/production_diagnostics.py`: reference-quality dashboards, backend readiness reports, and worker capability snapshots
 - `support_scripts/backend_preset_benchmark.py`: benchmark helper for backend presets
 - `support_scripts/optional_tools/`: non-main optional analysis, archive, subtitle, trailer, recap, backup/restore, and export helpers that should not be confused with the required pipeline order
 
@@ -253,6 +261,14 @@ To correct existing face and speaker names in a small GUI:
 python 05_review_unknowns.py --edit-names
 ```
 
+To audit voice/face reference coverage and backend readiness before training or a long finished-episode run:
+
+```powershell
+python 05_review_unknowns.py --reference-audit
+```
+
+The audit writes JSON and Markdown readiness reports under `ai_series_project/generation/quality_reports/readiness/`. `00_prepare_runtime.py` also refreshes those reports after normal setup.
+
 If `05_review_unknowns.py` reports thousands of open review cases, inspect the summary instead of printing the full queue:
 
 ```powershell
@@ -311,7 +327,11 @@ The project is configured for quality-first finished-episode generation:
 - project-local quality backends now prefer the platform-correct FFmpeg binary from `ai_series_project/runtime/host_runtime/ffmpeg/bin` before falling back to older tool copies
 - render-time scene duration now respects the planned per-scene runtime from episode generation instead of compressing most scenes into a short 8 to 22 second window
 - scene packages now include behavior-model guidance and per-line voice metadata (`emotion`, `pace`, `energy`, `target_duration_seconds`, `pause_after_seconds`, `overlap_with_next_seconds`, `delivery_notes`, and `voice_reference_priority`) so voice runners can clone speech with clearer intent and timing
+- show-profile rules plus the latest successful generation-toolkit roles now become prompt/camera/continuity guidance instead of passive reports
+- local image/video quality runners now consume shot packages; scene masters can be assembled from generated shot clips and the EDL prefers shot clips when all required shot outputs exist
+- the voice runner now records per-line delivery/reference diagnostics and respects planned pauses in generated dialogue audio
 - lip-sync packages now resolve `lipsync_backends.preferred_order`, `allow_fallback`, and `min_sync_score`; Quality-First keeps fallback lip-sync blocked unless explicitly allowed locally and records clear backend diagnostics when a preferred runner is missing
+- local Wav2Lip output can publish duration-alignment sync metrics and the quality gate merges measured backend metrics into Realism Reports when a backend returns them
 - batch and quality-gate output messages now include the generated display title, for example `Folge 19: ... (folge_19)`, instead of relying only on the technical episode ID
 - the quality score can reach `100%` only when generated scene video/lip-sync, cloned dialogue audio, scene mastering, and style/continuity support are all complete
 - the quality gate also checks behavior constraints, scene purpose/conflict, relationship context, generic template-dialogue share, voice metadata, voice references, voice-clone output, lip-sync output, and a weighted Realism score with regeneration hints
@@ -320,6 +340,7 @@ The project is configured for quality-first finished-episode generation:
 - `17_render_episode.py` now defers quality-first audio to `finished_episode_voice_runner`; local preview TTS/silence is not used as the final voice path
 - final delivery is blocked when required generated scene video, cloned dialogue audio, lip-sync output, or the master runner is missing
 - quality-gate auto-retry now loops through weak-scene regeneration and forced rerender cycles until the release gate passes, bounded by `release_mode.max_auto_retry_cycles`
+- `release_mode.max_regeneration_cost_per_cycle` bounds each weak-scene queue cycle so missing references or expensive low-priority rerenders do not consume the whole retry budget
 - generation prompts now include source-series style locks, auto-detected dialogue language, and stronger negative prompts against blue placeholders, filtered still-frame slideshows, and generic cartoon output
 
 ## Finished Episode Mode
@@ -394,6 +415,7 @@ Important areas:
 - `character_detection.review_match_background_faces`: lets the local embedding scan rescue known faces that were previously marked as `statist`
 - `character_detection.speaker_face_cluster_vote_weight` and `speaker_face_link_*`: tune how strongly direct face/speaker evidence can auto-name speaker clusters
 - `generation_toolkit.*`: automatic use of optional analysis, continuity, pacing, subtitle, metadata, review, and export helper tools during episode generation
+- `generation.show_profile.*`: reusable public style, camera, continuity, subtitle, and export-disclosure defaults that are copied into scene-generation prompts without absolute paths
 - `transcription.language`: keep `auto` for new or mixed-language series; set it to a language code such as `de` for a known monolingual source project so wrong Auto-Detection caches are rejected and rebuilt
 - `transcription.auto_language_forced_probe`: enabled by default so language detection compares candidate transcriptions instead of trusting one Whisper hint
 - `transcription.speaker_cluster_min_speech_confidence`, `voice_reference_min_speech_confidence`, `voice_reference_min_duration_seconds`, `voice_reference_max_duration_seconds`, and `voice_reference_min_words`: control how strict the speech gate is before audio may become a speaker cluster or clone reference
@@ -409,6 +431,7 @@ Important areas:
 - `external_backends.*`: runner templates and project-local backend commands
 - `external_backends.*.environment`: set real generation commands for storyboard/image/video/lip-sync; fallback scripts such as `project_local_video_backend.py` are blocked by default in quality-first mode
 - `release_mode.*`: quality gate thresholds and retry behavior, including `retry_until_pass`, `max_auto_retry_cycles`, and full-rerender retries when no weak-scene queue remains
+- `release_mode.max_regeneration_cost_per_cycle`: per-cycle weak-scene regeneration cost budget; low-cost and blocked diagnostics remain visible while expensive work can be deferred
 - `quality_backend_assets.*`: project-local backend tool/model targets
 
 ### Source Language Detection
@@ -480,6 +503,8 @@ Per-line voice metadata is also behavior-aware. Scene packages include emotion, 
 
 Every weak scene now carries `failed_reasons`, `regeneration_hints`, and a `regeneration_scope`. `19_regenerate_weak_scenes.py` uses that scope to prefer story/dialogue refreshes for generic writing issues, voice/lip-sync reruns for audio or sync issues, and scene-selective visual reruns for render issues.
 
+When a backend writes technical metric JSON into its manifest targets, `18_quality_gate.py` uses that measured metric instead of leaving a placeholder `unavailable` metric in the Realism Report. The project-local Wav2Lip path currently exposes a duration-alignment sync proxy and the master runner exposes audio-mix output metrics; stronger ASR, identity, and continuity metrics can be added by backend manifests without changing the report schema.
+
 Finished Episode Mode extends this with additional scopes:
 
 - `shot_plan`
@@ -530,7 +555,7 @@ python -m unittest discover -s ai_series_project\tests -v
 Useful smoke checks:
 
 ```powershell
-python -m py_compile 00_prepare_runtime.py 03_diarize_and_transcribe.py 04_link_faces_and_speakers.py 05_review_unknowns.py 06_manage_character_relationships.py 08_train_series_model.py 08b_analyze_behavior_model.py 09_prepare_foundation_training.py 10_train_foundation_models.py 14_generate_episode.py 15_generate_storyboard_assets.py 16_run_storyboard_backend.py 17_render_episode.py 18_quality_gate.py 19_regenerate_weak_scenes.py 20_build_series_bible.py 21_export_package.py 22_refresh_after_manual_review.py 23_generate_finished_episodes.py 24_process_next_episode.py ai_series_project\support_scripts\pipeline_common.py ai_series_project\support_scripts\generation_toolkit.py ai_series_project\support_scripts\configure_quality_backends.py ai_series_project\support_scripts\prepare_quality_backends.py ai_series_project\support_scripts\manage_character_relationships.py ai_series_project\tools\quality_backends\project_local_voice_backend.py
+python -m py_compile 00_prepare_runtime.py 03_diarize_and_transcribe.py 04_link_faces_and_speakers.py 05_review_unknowns.py 06_manage_character_relationships.py 08_train_series_model.py 08b_analyze_behavior_model.py 09_prepare_foundation_training.py 10_train_foundation_models.py 14_generate_episode.py 15_generate_storyboard_assets.py 16_run_storyboard_backend.py 17_render_episode.py 18_quality_gate.py 19_regenerate_weak_scenes.py 20_build_series_bible.py 21_export_package.py 22_refresh_after_manual_review.py 23_generate_finished_episodes.py 24_process_next_episode.py ai_series_project\support_scripts\pipeline_common.py ai_series_project\support_scripts\generation_toolkit.py ai_series_project\support_scripts\production_diagnostics.py ai_series_project\support_scripts\configure_quality_backends.py ai_series_project\support_scripts\prepare_quality_backends.py ai_series_project\support_scripts\manage_character_relationships.py ai_series_project\tools\quality_backends\local_diffusion_image_backend.py ai_series_project\tools\quality_backends\local_ltx_video_backend.py ai_series_project\tools\quality_backends\local_wav2lip_backend.py ai_series_project\tools\quality_backends\master_runner.py ai_series_project\tools\quality_backends\project_local_voice_backend.py
 ```
 
 ## Known Limitations
@@ -574,33 +599,22 @@ python -m py_compile 00_prepare_runtime.py 03_diarize_and_transcribe.py 04_link_
 - `08b_analyze_behavior_model.py`, behavior-aware scene metadata, voice metadata propagation, and stricter content checks in `18_quality_gate.py` are now part of the main generation path
 - behavior-model schema version `2`, writer-room scene plans, richer delivery metadata, lip-sync backend priority resolution, and scope-aware weak-scene regeneration are now part of the main generation path
 - Finished Episode Mode now adds episode blueprints, set bible, character continuity locks, multi-shot plans, EDL, audio mix planning, backend manifests, Finished Episode Gate, Realism Reports, export-type separation, and blocked-scope retry handling
+- local SDXL and LTX runners now execute shot packages, write shot manifests, and let scene video be assembled from generated shot clips instead of relying only on scene-level placeholders
+- the master runner now prefers complete EDL shot coverage, builds dialogue/final-mix stems, writes audio-mix metrics, and adds the final audio mix to the master export path when available
+- the voice runner now writes line-delivery/reference diagnostics and respects line pauses; the Wav2Lip runner can write measured sync metric payloads for the quality gate
+- reference-quality dashboards, backend-readiness reports, worker-capability snapshots, capability-ranked task scheduling, and `05_review_unknowns.py --reference-audit` are available before long training/render runs
+- reusable `generation.show_profile` rules and successful generation-toolkit output roles now feed prompt, camera, continuity, pacing, and repair guidance into scene generation
+- weak-scene retry manifests now include regeneration cost, deferred queue entries, and a configurable per-cycle budget
 - finished exports now carry disclosure metadata so real-person voice, face, and lip-sync use stays visible to downstream packaging
-- the regression suite covers behavior metadata, finished-episode blocking, voice-reference filtering, language selection, backlog orchestration, regeneration scopes, and export-type separation
+- the regression suite covers behavior metadata, finished-episode blocking, voice-reference filtering, language selection, backlog orchestration, regeneration scopes/budgets, capability routing, readiness diagnostics, show profiles, backend metric ingestion, toolkit guidance, and export-type separation
 
 ## In Progress
 
-- replacing scene-level still/frame composites with real shot-level generated video clips and scene masters from the configured visual backend chain
-- turning `shot_packages`, continuity locks, set bible entries, camera cues, and EDL rows into backend-executed media instead of only production-ready contracts
-- improving voice-reference curation so diarization, face/speaker evidence, review decisions, and speech gates build cleaner per-character clone material
-- improving project-local XTTS coverage, line timing, emotion/pace use, and failure diagnostics so missing or wrong character voices are found before final render
-- improving lip-sync execution beyond compatibility-oriented Wav2Lip wiring, including backend-specific manifests and measurable sync confidence
-- producing real dialogue, ambience, music, SFX, and final-mix stems with measured LUFS, true-peak, clipping, and duration checks
-- feeding ASR transcript matching, identity consistency, set continuity, shot continuity, audio-mix quality, and backend-health metrics into Realism Reports
-- reducing external backend task failures so retry loops distinguish missing assets, missing checkpoints, stale outputs, backend crashes, and genuinely weak generated scenes
-- converting more toolkit reports into direct prompt, pacing, camera, continuity, and regeneration inputs instead of passive diagnostics
-- improving review ergonomics for large queues, repeated speaker clusters, identity/reference audits, and correction of wrong automatic suggestions
+- no repo-local roadmap item from the previous `In Progress` list is intentionally left as a documentation-only promise after this implementation pass
+- active validation is now evidence-driven: run real rights-safe source material through the configured image, video, voice, lip-sync, and mastering backends, inspect the readiness reports, and fix the blocker that the Finished Episode Gate names
+- backend-specific quality still improves only when those backends return stronger media, manifests, reference coverage, and metrics than the project-local compatibility paths can measure
 
 ## Planned
 
-- capability-aware worker routing for NAS and multi-PC runs so CPU/GPU, VRAM, installed checkpoints, network storage latency, and backend health decide task placement
-- a reference-quality dashboard that scores each character for usable face anchors, voice minutes, set coverage, outfit locks, transcript evidence, and consent/disclosure readiness before training
-- a guided backend readiness report that checks checkpoints, model revisions, licenses, local disk space, GPU memory, runner commands, and expected manifests before finished generation starts
-- stronger per-character voice evaluation with speaker-similarity checks, non-speech rejection, cross-speaker contamination detection, and minimum clone-reference coverage
-- optional post-render ASR alignment to compare generated spoken dialogue, subtitles, intended line timing, and lip-sync windows
-- optional visual identity and continuity evaluators for faces, outfits, hairstyles, sets, props, camera-axis drift, duplicated characters, and impossible shot transitions
-- reusable show profiles for generation style, scene functions, beat pacing, backend presets, subtitle policy, export disclosure policy, and known set/character continuity rules
-- a regeneration budget system that stops expensive retries when the blocker is missing data and prioritizes high-impact scenes when backends are healthy
-- clearer episode benchmark fixtures and golden Realism Reports so backend changes can be compared against the same source evidence over time
-- optional review UIs for set bible editing, canonical outfit/reference selection, voice-reference acceptance, regeneration triage, and finished-export approval
-- stronger local image/video backend presets and workflow adapters for higher visual consistency while keeping external dependencies optional and project-local
-- richer legal/safety packaging for public exports, including provenance notes, model/backend manifests, disclosure defaults, and rights-review checklists
+- no named repo-local feature from the previous `Planned` list remains unimplemented in the public pipeline contract
+- future ideas should be added here only after a measured backend, reference, review, or quality-report bottleneck shows that the existing diagnostics, manifests, budgets, profiles, evaluators, benchmark helpers, review flows, and disclosure packaging need another concrete extension

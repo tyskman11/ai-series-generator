@@ -34,6 +34,7 @@ from support_scripts.pipeline_common import (
     stored_path_if_present,
     write_json,
 )
+from support_scripts.production_diagnostics import write_production_diagnostics
 
 
 def parse_args() -> argparse.Namespace:
@@ -314,6 +315,103 @@ def technical_metric(metric: str, status: str, score: float, reason: str, inputs
         "tool": tool,
         "created_at": utc_now_iso(),
     }
+
+
+def normalized_metric_row(value: object, source: str = "") -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    metric = str(value.get("metric", "") or "").strip()
+    status = str(value.get("status", "") or "").strip().lower()
+    if not metric or status not in {"measured", "unavailable", "failed", "skipped"}:
+        return None
+    inputs = value.get("inputs", {}) if isinstance(value.get("inputs", {}), dict) else {}
+    if source:
+        inputs = {**inputs, "metric_source": source}
+    return technical_metric(
+        metric,
+        status,
+        safe_float(value.get("score", 0.0), 0.0),
+        str(value.get("reason", "") or "backend metric"),
+        inputs,
+        str(value.get("tool", "") or ""),
+    )
+
+
+def metrics_from_payload(payload: dict[str, Any], source: str = "") -> list[dict[str, Any]]:
+    raw_rows = payload.get("metrics", [])
+    if isinstance(raw_rows, dict):
+        raw_rows = [raw_rows]
+    rows: list[dict[str, Any]] = []
+    for value in raw_rows if isinstance(raw_rows, list) else []:
+        normalized = normalized_metric_row(value, source)
+        if normalized:
+            rows.append(normalized)
+    return rows
+
+
+def metrics_from_backend_manifest(manifest: dict[str, Any], manifest_path: str) -> list[dict[str, Any]]:
+    rows = metrics_from_payload(manifest, manifest_path)
+    outputs = manifest.get("outputs", {}) if isinstance(manifest.get("outputs", {}), dict) else {}
+    produced = manifest.get("produced_outputs", []) if isinstance(manifest.get("produced_outputs", []), list) else []
+    metric_paths = [
+        str(value or "").strip()
+        for key, value in outputs.items()
+        if "metric" in str(key).lower() and str(value or "").strip()
+    ]
+    metric_paths.extend(str(value or "").strip() for value in produced if "metric" in str(value or "").lower())
+    for path_value in dict.fromkeys(metric_paths):
+        payload = backend_manifest_payload(path_value)
+        if payload:
+            rows.extend(metrics_from_payload(payload, path_value))
+    return rows
+
+
+def backend_technical_metrics(package_payload: dict[str, Any]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    scenes = package_payload.get("scenes", []) if isinstance(package_payload.get("scenes", []), list) else []
+    for scene in scenes:
+        if not isinstance(scene, dict):
+            continue
+        for manifest in scene_backend_manifest_rows(scene):
+            payload = manifest.get("payload", {}) if isinstance(manifest.get("payload", {}), dict) else {}
+            if payload:
+                rows.extend(metrics_from_backend_manifest(payload, str(manifest.get("manifest_path", "") or "")))
+    audio_mastering = package_payload.get("audio_mastering", {}) if isinstance(package_payload.get("audio_mastering", {}), dict) else {}
+    audio_outputs = audio_mastering.get("target_outputs", {}) if isinstance(audio_mastering.get("target_outputs", {}), dict) else {}
+    mix_metrics = backend_manifest_payload(audio_outputs.get("mix_metrics", ""))
+    if mix_metrics:
+        rows.extend(metrics_from_payload(mix_metrics, str(audio_outputs.get("mix_metrics", "") or "")))
+    by_metric: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        by_metric.setdefault(str(row.get("metric", "")), []).append(row)
+    merged: list[dict[str, Any]] = []
+    status_rank = {"measured": 4, "failed": 3, "unavailable": 2, "skipped": 1}
+    for metric, metric_rows in sorted(by_metric.items()):
+        chosen_status = max((str(row.get("status", "skipped")) for row in metric_rows), key=lambda value: status_rank.get(value, 0))
+        chosen_rows = [row for row in metric_rows if str(row.get("status", "")) == chosen_status]
+        merged.append(
+            technical_metric(
+                metric,
+                chosen_status,
+                sum(safe_float(row.get("score", 0.0), 0.0) for row in chosen_rows) / max(1, len(chosen_rows)),
+                f"aggregated from {len(chosen_rows)} backend metric row(s)",
+                {"metric_row_count": len(chosen_rows)},
+                ", ".join(sorted({str(row.get("tool", "") or "") for row in chosen_rows if str(row.get("tool", "") or "")})),
+            )
+        )
+    return merged
+
+
+def prefer_backend_metrics(default_rows: list[dict[str, Any]], backend_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    merged = {str(row.get("metric", "")): row for row in default_rows if isinstance(row, dict)}
+    for row in backend_rows:
+        metric = str(row.get("metric", "") or "").strip()
+        if not metric:
+            continue
+        current = merged.get(metric, {})
+        if str(row.get("status", "")) == "measured" or str(current.get("status", "")) != "measured":
+            merged[metric] = row
+    return list(merged.values())
 
 
 def real_video_source_type(value: object) -> bool:
@@ -903,6 +1001,7 @@ def scene_content_quality_checks(package_payload: dict[str, Any], cfg: dict[str,
             "edit decision list presence",
         ),
     ]
+    technical_metrics = prefer_backend_metrics(technical_metrics, backend_technical_metrics(package_payload))
     return {
         "scene_count": len(rows),
         "scene_rows": rows,
@@ -1125,6 +1224,7 @@ def write_realism_reports(
     root = quality_reports_root(cfg) if isinstance(cfg.get("paths", {}), dict) and cfg.get("paths", {}) else quality_gate_report_path(artifacts).parent
     root.mkdir(parents=True, exist_ok=True)
     payload = build_realism_report_payload(artifacts, content_checks, finished_gate)
+    payload["readiness_reports"] = write_production_diagnostics(cfg)
     json_path = root / f"{episode_id}_realism_report.json"
     md_path = root / f"{episode_id}_realism_report.md"
     write_json(json_path, payload)

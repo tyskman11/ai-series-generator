@@ -2,8 +2,11 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import subprocess
+import tempfile
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -49,6 +52,10 @@ def prompt_from_package(context: dict[str, Any], scene_package: dict[str, Any]) 
         clean_text(video_generation.get("positive_prompt", "")),
         clean_text(image_generation.get("positive_prompt", "")),
         clean_text(context.get("scene_title", "")),
+        clean_text(context.get("shot_type", "")),
+        clean_text(context.get("shot_purpose", "")),
+        clean_text(context.get("camera_angle", "")),
+        clean_text(context.get("camera_movement", "")),
         clean_text(scene_package.get("summary", "")),
         "faithful original TV episode shot, stable character identity, natural motion, cinematic continuity",
     ]
@@ -56,7 +63,7 @@ def prompt_from_package(context: dict[str, Any], scene_package: dict[str, Any]) 
 
 
 def deterministic_seed(context: dict[str, Any]) -> int:
-    raw = "|".join(clean_text(context.get(key, "")) for key in ("episode_id", "scene_id", "scene_title", "runner_kind"))
+    raw = "|".join(clean_text(context.get(key, "")) for key in ("episode_id", "scene_id", "shot_id", "scene_title", "runner_kind"))
     return int(hashlib.sha256(raw.encode("utf-8")).hexdigest()[:8], 16)
 
 
@@ -161,6 +168,128 @@ def generate_ltx_video(context: dict[str, Any], scene_package: dict[str, Any], o
         raise RuntimeError("LTX video export produced no output.")
 
 
+def shot_packages(scene_package: dict[str, Any]) -> list[dict[str, Any]]:
+    raw = scene_package.get("shot_packages", []) if isinstance(scene_package.get("shot_packages", []), list) else []
+    return [
+        row
+        for row in raw
+        if isinstance(row, dict)
+        and clean_text((row.get("target_outputs", {}) if isinstance(row.get("target_outputs", {}), dict) else {}).get("video_clip", ""))
+    ]
+
+
+def shot_frame_path(shot: dict[str, Any]) -> str:
+    outputs = shot.get("target_outputs", {}) if isinstance(shot.get("target_outputs", {}), dict) else {}
+    return clean_text(outputs.get("primary_frame", ""))
+
+
+def shot_context(context: dict[str, Any], shot: dict[str, Any]) -> dict[str, Any]:
+    return {
+        **context,
+        "shot_id": clean_text(shot.get("shot_id", "")),
+        "shot_type": clean_text(shot.get("shot_type", "")),
+        "shot_purpose": clean_text(shot.get("purpose", "")),
+        "camera_angle": clean_text(shot.get("camera_angle", "")),
+        "camera_movement": clean_text(shot.get("camera_movement", "")),
+        "primary_frame": shot_frame_path(shot) or context.get("primary_frame", ""),
+    }
+
+
+def shot_scene_package(scene_package: dict[str, Any], shot: dict[str, Any]) -> dict[str, Any]:
+    package = dict(scene_package)
+    package["duration_seconds"] = float(shot.get("duration_seconds", scene_package.get("duration_seconds", 5.0)) or 5.0)
+    package["summary"] = ", ".join(
+        part
+        for part in [
+            clean_text(scene_package.get("summary", "")),
+            clean_text(shot.get("purpose", "")),
+            clean_text(shot.get("shot_type", "")),
+        ]
+        if part
+    )
+    return package
+
+
+def write_shot_manifest(shot: dict[str, Any], output_path: Path) -> None:
+    outputs = shot.get("target_outputs", {}) if isinstance(shot.get("target_outputs", {}), dict) else {}
+    manifest_text = clean_text(outputs.get("manifest", ""))
+    if not manifest_text:
+        return
+    manifest_path = Path(manifest_text)
+    ensure_parent(str(manifest_path))
+    digest = hashlib.sha256(output_path.read_bytes()).hexdigest() if output_path.exists() else ""
+    payload = {
+        "task_id": f"{clean_text(shot.get('shot_id', 'shot'))}_local_ltx_video",
+        "scene_id": clean_text(shot.get("scene_id", "")),
+        "shot_id": clean_text(shot.get("shot_id", "")),
+        "task_type": "video",
+        "backend": "local_ltx_video_backend",
+        "inputs": {
+            "shot_type": clean_text(shot.get("shot_type", "")),
+            "camera_angle": clean_text(shot.get("camera_angle", "")),
+            "camera_movement": clean_text(shot.get("camera_movement", "")),
+        },
+        "outputs": {"video_clip": str(output_path)},
+        "output_hashes": {str(output_path): digest} if digest else {},
+        "status": "success" if digest else "failed",
+        "fallback_used": False,
+        "placeholder_used": False,
+        "finished_at": datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
+    }
+    manifest_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def concat_video_clips(clips: list[Path], output_path: Path) -> None:
+    if not clips:
+        raise RuntimeError("No generated shot clips are available for scene assembly.")
+    with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".txt", delete=False) as handle:
+        concat_path = Path(handle.name)
+        for clip in clips:
+            escaped = str(clip).replace("'", "''")
+            handle.write(f"file '{escaped}'\n")
+    try:
+        ensure_parent(str(output_path))
+        command = [
+            find_project_local_ffmpeg(),
+            "-hide_banner",
+            "-y",
+            "-f",
+            "concat",
+            "-safe",
+            "0",
+            "-i",
+            str(concat_path),
+            "-c:v",
+            "libx264",
+            "-preset",
+            "medium",
+            "-crf",
+            "18",
+            "-movflags",
+            "+faststart",
+            str(output_path),
+        ]
+        completed = subprocess.run(command, check=False, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        if completed.returncode != 0 or not output_path.exists() or output_path.stat().st_size <= 0:
+            raise RuntimeError(f"Shot clip concat failed. {(completed.stdout or '')[-1400:]}")
+    finally:
+        concat_path.unlink(missing_ok=True)
+
+
+def generate_ltx_shots(context: dict[str, Any], scene_package: dict[str, Any], scene_output: Path) -> bool:
+    clips: list[Path] = []
+    for shot in shot_packages(scene_package):
+        outputs = shot.get("target_outputs", {}) if isinstance(shot.get("target_outputs", {}), dict) else {}
+        clip = Path(clean_text(outputs.get("video_clip", "")))
+        generate_ltx_video(shot_context(context, shot), shot_scene_package(scene_package, shot), clip)
+        write_shot_manifest(shot, clip)
+        clips.append(clip)
+    if not clips:
+        return False
+    concat_video_clips(clips, scene_output)
+    return True
+
+
 def main() -> int:
     context = load_backend_context()
     scene_package = load_json(clean_text(context.get("scene_package", "")))
@@ -171,7 +300,8 @@ def main() -> int:
         raise RuntimeError("The local LTX video backend did not receive a scene video output path.")
     output_path = Path(output_text)
 
-    generate_ltx_video(context, scene_package, output_path)
+    if not generate_ltx_shots(context, scene_package, output_path):
+        generate_ltx_video(context, scene_package, output_path)
     preview = Path(clean_text(context.get("video_preview_frame", "")))
     poster = Path(clean_text(context.get("video_poster_frame", "")))
     if str(preview):

@@ -297,6 +297,14 @@ DEFAULT_CONFIG = {
         "active_series_input": "",
         "active_character_group": "",
         "style_descriptor": "source-series faithful TV episode frame",
+        "show_profile": {
+            "profile_id": "default",
+            "style_rules": [],
+            "camera_rules": [],
+            "continuity_rules": [],
+            "subtitle_policy": "source_language",
+            "export_disclosure_policy": "synthetic_media_disclosure_required",
+        },
         "quality_mode": "original_episode_quality_first",
         "allow_fallbacks": False,
     },
@@ -460,6 +468,7 @@ DEFAULT_CONFIG = {
         "max_regeneration_retries": 3,
         "retry_until_pass": True,
         "max_auto_retry_cycles": 12,
+        "max_regeneration_cost_per_cycle": 18,
         "auto_retry_force_full_rerender_when_queue_empty": True,
         "force_finished_episode_generation": True,
         "allow_project_local_fallback_backends": False,
@@ -1169,16 +1178,51 @@ def distributed_lease_is_orphaned(current: dict[str, Any]) -> bool:
 
 
 def distributed_worker_metadata(extra: dict[str, Any] | None = None) -> dict[str, Any]:
+    capabilities = distributed_worker_capabilities()
     payload = {
         "worker_id": distributed_worker_id(),
         "hostname": socket.gethostname(),
         "pid": os.getpid(),
         "runtime_tag": runtime_environment_tag(),
         "python": str(Path(sys.executable).resolve()),
+        "has_gpu": bool(capabilities.get("has_gpu", False)),
+        "available_memory_mb": int(capabilities.get("available_memory_mb", 0) or 0),
+        "capabilities": capabilities,
     }
     if extra:
         payload.update(extra)
     return payload
+
+
+def distributed_worker_capabilities() -> dict[str, Any]:
+    snapshot_path = PROJECT_ROOT / "generation" / "quality_reports" / "readiness" / "worker_capabilities.json"
+    snapshot = read_json(snapshot_path, {}) if snapshot_path.exists() else {}
+    if isinstance(snapshot, dict) and snapshot:
+        gpu_memory = int(snapshot.get("gpu_memory_mb", 0) or 0)
+        return {
+            "source": "production_diagnostics",
+            "snapshot_path": str(snapshot_path),
+            "has_gpu": bool(snapshot.get("has_gpu", False)),
+            "available_memory_mb": gpu_memory,
+            "ready_backend_runners": snapshot.get("ready_backend_runners", [])
+            if isinstance(snapshot.get("ready_backend_runners", []), list)
+            else [],
+            "package_capabilities": snapshot.get("package_capabilities", {})
+            if isinstance(snapshot.get("package_capabilities", {}), dict)
+            else {},
+            "routing_profiles": snapshot.get("routing_profiles", {})
+            if isinstance(snapshot.get("routing_profiles", {}), dict)
+            else {},
+        }
+    return {
+        "source": "runtime_probe",
+        "snapshot_path": str(snapshot_path),
+        "has_gpu": nvidia_gpu_available(),
+        "available_memory_mb": 0,
+        "ready_backend_runners": [],
+        "package_capabilities": {},
+        "routing_profiles": {},
+    }
 
 
 def add_shared_worker_arguments(parser) -> None:
@@ -5752,25 +5796,76 @@ def schedule_worker_task(
     available_workers: list[dict[str, Any]],
     task_requirements: dict[str, Any],
 ) -> dict[str, Any]:
-    gpu_required = task_requirements.get("gpu_required", False)
-    min_memory_mb = task_requirements.get("min_memory_mb", 0)
-    preferred_step = task_requirements.get("preferred_step", "")
-    selected = None
+    gpu_required = bool(task_requirements.get("gpu_required", False))
+    min_memory_mb = int(task_requirements.get("min_memory_mb", 0) or 0)
+    required_backend = coalesce_text(task_requirements.get("required_backend_runner", ""))
+    required_package = coalesce_text(task_requirements.get("required_package", ""))
+    max_storage_latency_ms = float(task_requirements.get("max_storage_latency_ms", 0.0) or 0.0)
+    preferred_step = coalesce_text(task_requirements.get("preferred_step", ""))
+    candidates: list[dict[str, Any]] = []
+    rejected: list[dict[str, Any]] = []
     for worker in available_workers:
         if not isinstance(worker, dict):
             continue
-        if gpu_required and not worker.get("has_gpu", False):
+        capabilities = worker.get("capabilities", {}) if isinstance(worker.get("capabilities", {}), dict) else {}
+        has_gpu = bool(worker.get("has_gpu", capabilities.get("has_gpu", False)))
+        available_memory_mb = int(
+            worker.get("available_memory_mb", capabilities.get("available_memory_mb", capabilities.get("gpu_memory_mb", 0))) or 0
+        )
+        ready_runners = worker.get("ready_backend_runners", capabilities.get("ready_backend_runners", []))
+        ready_runners = ready_runners if isinstance(ready_runners, list) else []
+        package_capabilities = worker.get("package_capabilities", capabilities.get("package_capabilities", {}))
+        package_capabilities = package_capabilities if isinstance(package_capabilities, dict) else {}
+        storage_latency_ms = float(worker.get("storage_latency_ms", capabilities.get("storage_latency_ms", 0.0)) or 0.0)
+        reject_reasons: list[str] = []
+        if gpu_required and not has_gpu:
+            reject_reasons.append("gpu required")
+        if min_memory_mb > 0 and available_memory_mb > 0 and available_memory_mb < min_memory_mb:
+            reject_reasons.append(f"memory below {min_memory_mb} MB")
+        if required_backend and ready_runners and required_backend not in ready_runners:
+            reject_reasons.append(f"backend runner {required_backend} is not ready")
+        if required_package and package_capabilities and not bool(package_capabilities.get(required_package, False)):
+            reject_reasons.append(f"package capability {required_package} is missing")
+        if max_storage_latency_ms > 0.0 and storage_latency_ms > max_storage_latency_ms:
+            reject_reasons.append(f"storage latency exceeds {max_storage_latency_ms:g} ms")
+        if reject_reasons:
+            rejected.append({"worker": worker, "reasons": reject_reasons})
             continue
-        if min_memory_mb > 0 and worker.get("available_memory_mb", 0) < min_memory_mb:
-            continue
-        selected = worker
-        break
-    if not selected and available_workers:
-        selected = available_workers[0]
+        score = 1.0
+        reasons: list[str] = []
+        if has_gpu and (gpu_required or preferred_step in {"shot_image", "shot_video", "voice_clone", "lipsync"}):
+            score += 3.0
+            reasons.append("gpu fit")
+        if available_memory_mb and min_memory_mb:
+            score += min(2.0, available_memory_mb / max(1, min_memory_mb))
+            reasons.append("memory headroom")
+        if required_backend and required_backend in ready_runners:
+            score += 2.0
+            reasons.append("required backend ready")
+        if required_package and bool(package_capabilities.get(required_package, False)):
+            score += 1.0
+            reasons.append("required package ready")
+        health_score = float(worker.get("backend_health_score", capabilities.get("backend_health_score", 0.0)) or 0.0)
+        if health_score:
+            score += max(0.0, min(1.0, health_score))
+            reasons.append("backend health")
+        if storage_latency_ms:
+            score += max(0.0, 1.0 - min(1.0, storage_latency_ms / 250.0))
+            reasons.append("storage latency")
+        candidates.append({"worker": worker, "score": round(score, 4), "reasons": reasons})
+    candidates.sort(key=lambda row: float(row.get("score", 0.0) or 0.0), reverse=True)
+    selected = candidates[0]["worker"] if candidates else None
+    selection_reason = candidates[0]["reasons"] if candidates else []
+    if selected is None and available_workers:
+        selected = next((worker for worker in available_workers if isinstance(worker, dict)), None)
+        selection_reason = ["fallback to first worker because no capability match was reported"] if selected else []
     return {
         "scheduled": selected is not None,
         "worker": selected,
         "task_requirements": task_requirements,
+        "selection_reason": selection_reason,
+        "ranked_candidates": candidates,
+        "rejected_workers": rejected,
     }
 
 
