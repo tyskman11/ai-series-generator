@@ -395,6 +395,47 @@ Important areas:
 - `release_mode.*`: quality gate thresholds and retry behavior, including `retry_until_pass`, `max_auto_retry_cycles`, and full-rerender retries when no weak-scene queue remains
 - `quality_backend_assets.*`: project-local backend tool/model targets
 
+### Source Language Detection
+
+The public template keeps source language detection portable:
+
+```json
+{
+  "transcription": {
+    "language": "auto"
+  },
+  "generation": {
+    "language": "auto"
+  }
+}
+```
+
+With `transcription.language = "auto"`, step `03_diarize_and_transcribe.py` probes several source scenes, compares Whisper audio-language probabilities with candidate transcriptions, and locks segment language to the selected episode language by default. Confident audio-language evidence is preferred over forced-probe transcript text so one hallucinated probe is less likely to label a German episode as Spanish, Polish, Turkish, or another candidate language.
+
+For a known single-language project, edit the local generated file `ai_series_project/configs/project.json` and set the language code explicitly. Example for German source episodes:
+
+```json
+{
+  "transcription": {
+    "language": "de"
+  },
+  "generation": {
+    "language": "de"
+  }
+}
+```
+
+`transcription.language` controls source transcription and cached segment-language validation. `generation.language` controls generated titles, dialogue templates, voice packages, and generation prompts. Keep both on `auto` for mixed-language projects, or set both to the same language code when the whole source series is known to use one language.
+
+After changing `transcription.language`, rebuild the affected source episodes so old cached language choices are replaced:
+
+```powershell
+python 03_diarize_and_transcribe.py
+python 04_link_faces_and_speakers.py
+```
+
+The local `project.json` is intentionally ignored by Git. Change `project.template.json` only when you want to change the public default for future clones.
+
 ### Behavior Model
 
 `08b_analyze_behavior_model.py` reads available dataset rows, transcripts, speaker libraries, character names, and `characters/relationships.json`. It writes schema version `2`:
