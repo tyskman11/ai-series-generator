@@ -66,7 +66,7 @@ from support_scripts.pipeline_common import (
     write_json,
 )
 
-PROCESS_VERSION = 10
+PROCESS_VERSION = 11
 EMPTY_CLUSTER_MAP = {"clusters": {}, "aliases": {}}
 IGNORED_FACE_NAMES = {
     "noface",
@@ -77,6 +77,52 @@ IGNORED_FACE_NAMES = {
     "false positive",
     "kein gesicht",
 }
+
+
+def positive_int(value, fallback: int, minimum: int = 1) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        parsed = fallback
+    return max(minimum, parsed)
+
+
+def effective_face_scan_limits(cfg: dict) -> dict[str, int | bool]:
+    detection_cfg = cfg.get("character_detection", {}) if isinstance(cfg, dict) else {}
+    high_recall = bool(detection_cfg.get("high_recall_face_scan", True))
+    sample_every = positive_int(detection_cfg.get("sample_every_n_frames", 6), 6)
+    max_faces_per_frame = positive_int(detection_cfg.get("max_faces_per_frame", 2), 2)
+    max_scene_clusters = positive_int(
+        detection_cfg.get("max_scene_clusters", max(4, max_faces_per_frame * 3)),
+        max(4, max_faces_per_frame * 3),
+    )
+    detection_default = 96 if high_recall else 24
+    max_scene_face_detections = positive_int(
+        detection_cfg.get("max_scene_face_detections", detection_default),
+        detection_default,
+    )
+
+    if high_recall:
+        sample_every = min(
+            sample_every,
+            positive_int(detection_cfg.get("high_recall_max_sample_every_n_frames", 4), 4),
+        )
+        max_faces_per_frame = max(
+            max_faces_per_frame,
+            positive_int(detection_cfg.get("high_recall_min_faces_per_frame", 4), 4),
+        )
+        max_scene_clusters = max(
+            max_scene_clusters,
+            positive_int(detection_cfg.get("high_recall_min_scene_clusters", 10), 10),
+        )
+
+    return {
+        "high_recall": high_recall,
+        "sample_every": sample_every,
+        "max_faces_per_frame": max_faces_per_frame,
+        "max_scene_clusters": max_scene_clusters,
+        "max_scene_face_detections": max_scene_face_detections,
+    }
 
 
 def parse_args() -> argparse.Namespace:
@@ -955,7 +1001,9 @@ def process_scene_faces(
     detections = 0
     extract = engine["extract"]
     scene_threshold = float(cfg["character_detection"].get("scene_embedding_threshold", max(0.68, threshold - 0.04)))
-    max_scene_clusters = int(cfg["character_detection"].get("max_scene_clusters", max(4, max_faces_per_frame * 3)))
+    scan_limits = effective_face_scan_limits(cfg)
+    max_scene_clusters = int(scan_limits["max_scene_clusters"])
+    max_scene_face_detections = int(scan_limits["max_scene_face_detections"])
     local_clusters: dict[str, dict] = {}
     scene_detections: list[dict] = []
     while True:
@@ -1019,7 +1067,7 @@ def process_scene_faces(
                 }
             )
             detections += 1
-        if detections >= 24:
+        if detections >= max_scene_face_detections:
             break
     capture.release()
 
@@ -1479,8 +1527,9 @@ def main() -> None:
     auto_open = bool(cfg.get("preview_open_automatically", False))
     interactive_requested = bool(cfg["character_detection"].get("interactive_assignment", False))
     interactive = interactive_requested and is_interactive_session()
-    sample_every = int(cfg["character_detection"].get("sample_every_n_frames", 8))
-    max_faces_per_frame = int(cfg["character_detection"].get("max_faces_per_frame", 3))
+    scan_limits = effective_face_scan_limits(cfg)
+    sample_every = int(scan_limits["sample_every"])
+    max_faces_per_frame = int(scan_limits["max_faces_per_frame"])
     max_visible_faces_per_segment = int(cfg["character_detection"].get("max_visible_faces_per_segment", 3))
     segment_padding_seconds = float(cfg["character_detection"].get("segment_visibility_padding_seconds", 0.35))
     threshold = float(cfg["character_detection"].get("embedding_threshold", 0.72))
@@ -1488,6 +1537,14 @@ def main() -> None:
     info(f"Execution mode: {preferred_execution_label(cfg)}")
     info(f"Compute device: {preferred_compute_label(cfg)}")
     info(f"Face detection: {engine['mode']}")
+    info(
+        "Face scan: "
+        f"{'high-recall' if scan_limits['high_recall'] else 'configured'} mode, "
+        f"every {sample_every} frame(s), "
+        f"up to {max_faces_per_frame} faces/frame, "
+        f"{scan_limits['max_scene_clusters']} clusters/scene, "
+        f"{scan_limits['max_scene_face_detections']} detections/scene."
+    )
     if interactive_requested or auto_open:
         display_state = print_interactive_display_diagnostics(
             "04_link_faces_and_speakers.py",

@@ -37,7 +37,7 @@ The project is intentionally strict about the difference between an intermediate
 - preprocessing from source episode to reviewed character/speaker data is usable
 - the training chain exists and is ordered before generation/rendering
 - `00_prepare_runtime.py` now owns normal setup completely, including runtime prep, backend configuration, project-local downloads, model download verification, and folder creation
-- `04_link_faces_and_speakers.py` now keeps portable segment-audio and language metadata in linked speaker rows
+- `04_link_faces_and_speakers.py` now keeps portable segment-audio and language metadata in linked speaker rows and uses a high-recall face scan by default so group shots and shorter recurring appearances are less likely to be capped away
 - `09_prepare_foundation_training.py` now backfills missing voice-reference audio from `speaker_transcripts` for older datasets
 - voice assignment is now speech-gated end to end: `03_diarize_and_transcribe.py` labels speech confidence/content type, `04`/`05` only auto-link eligible speech segments, and `09`/`10`/`17` only use clean speech as voice-clone references
 - the GitHub repo now treats `ai_series_project/configs/project.template.json` as the tracked base template; the working `project.json` is generated locally
@@ -54,14 +54,15 @@ The project is intentionally strict about the difference between an intermediate
 - episode generation now carries the detected series language into titles, dialogue templates, voice packages, and visual backend prompts instead of forcing German/English defaults
 - fresh GitHub clones include the required `ai_series_project/tmp` placeholder so the local test suite can run without manual folder creation
 - optional analysis/export tools are now registered as a generation toolkit and run automatically at pre-training, pre-generation, post-story, post-render, post-quality-gate, and post-export phases
-- `05_review_unknowns.py` shows known-character quick-assign counts from the actual identity total, including automatically merged/recognized face clusters
+- `05_review_unknowns.py` labels known-character quick assignments with both merged face-cluster count and available sample evidence so one identity cluster is not mistaken for one appearance
 - `05_review_unknowns.py` now performs a public metadata/name lookup before manual review to complete partial labels such as `Babe` to `Babe Carano`; name completion is only written at `95%` confidence or higher, and older lower-confidence completions are rolled back on the next run
 - `05_review_unknowns.py` can optionally upload preview face crops to a configured lookup command or HTTP endpoint before manual review; when no private service is configured, it also tries a built-in public-image lookup that downloads public character images and compares them locally without login/API credentials
 - `05_review_unknowns.py --edit-names` opens a Tk name editor for correcting existing face and speaker names directly
+- `05_review_unknowns.py --edit-names` also synchronizes slugged character artifacts after a rename: voice-model JSON files, foundation manifests, voice/reference folders, checkpoints, adapters, fine-tunes, and backend-run folders are moved to the new character slug, while conflicting old JSON files are archived under `ai_series_project/training/foundation/logs/renamed_character_artifacts/`
 - `05_review_unknowns.py` also scans existing `statist`/background clusters against known local identity embeddings before opening manual review, so wrongly parked known faces can be rescued automatically
 - `05_review_unknowns.py` now uses direct `speaker_face_cluster` evidence from linked segments to assign speaker entries more reliably, instead of relying only on single-visible-face scenes
 - `04_link_faces_and_speakers.py` and `05_review_unknowns.py` ignore music, applause, laughter, silence, and low-confidence audio rows for speaker auto-naming so visible non-speakers do not get assigned to the wrong voice cluster
-- `06_manage_character_relationships.py` is now a main pipeline step after review; it opens a Tk GUI for character groups, relationships, and per-series input groups
+- `06_manage_character_relationships.py` is now a main pipeline step after review; it opens a Tk GUI for character groups, relationships, and per-series input groups, repairs stale rejected public-metadata names in old relationship rows, and shows face/voice evidence with explicit cluster/sample/segment labels
 - manual relationship data is stored in `ai_series_project/characters/relationships.json` and is fed into the trained series model, episode prompts, and series bible
 - `08b_analyze_behavior_model.py` now writes behavior-model schema version `2`, including sentence starts/ends, dialogue functions, relationship tempo, conflict repair, beat sequence, and callback candidates
 - generated scenes now carry a `writer_room_plan`, `scene_purpose`, `conflict`, `character_intents`, behavior constraints, dialogue-style constraints, comedy/callback hints, and richer per-line voice metadata for downstream voice/lip-sync backends
@@ -247,6 +248,8 @@ python 05_review_unknowns.py
 python 06_manage_character_relationships.py
 ```
 
+`04_link_faces_and_speakers.py` defaults to a high-recall face scan. It samples source scenes more densely, accepts more valid faces per frame, keeps more per-scene face candidates, and raises the old early scene cutoff. This costs more scan time, but helps recurring side characters in group shots. Rerun `04` after changing these face-scan settings; process-version `11` also invalidates older low-recall step-04 scene caches automatically.
+
 To force a completely offline review run:
 
 ```powershell
@@ -408,6 +411,8 @@ Important areas:
 - `runtime.*`: device, FFmpeg GPU preference, torch index URL
 - `distributed.*`: NAS/shared-worker lease timing
 - `character_detection.internet_name_lookup`: public metadata lookup in `05_review_unknowns.py` for completing partial character labels; only suggestions with at least `95%` confidence are written
+- `character_detection.high_recall_face_scan`: uses recall floors for frame sampling, faces per frame, and per-scene clusters even when an older local `project.json` still contains the previous low caps
+- `character_detection.high_recall_max_sample_every_n_frames`, `high_recall_min_faces_per_frame`, `high_recall_min_scene_clusters`, and `max_scene_face_detections`: tune the step-04 recall/performance tradeoff; disable `high_recall_face_scan` locally only when the faster old caps are intentional
 - `character_detection.internet_name_lookup_context_terms`: optional show/title terms to improve name completion when filenames do not clearly contain the series name
 - `character_detection.internet_face_lookup`: optional online face-image lookup in `05_review_unknowns.py`; configure either `SERIES_FACE_LOOKUP_COMMAND`/`character_detection.internet_face_lookup_command` or `SERIES_FACE_LOOKUP_URL`/`character_detection.internet_face_lookup_url`
 - `character_detection.internet_face_lookup_token_env`: optional bearer-token environment variable for private face-lookup APIs, defaulting to `SERIES_FACE_LOOKUP_TOKEN`
@@ -419,6 +424,10 @@ Important areas:
 - `transcription.language`: keep `auto` for new or mixed-language series; set it to a language code such as `de` for a known monolingual source project so wrong Auto-Detection caches are rejected and rebuilt
 - `transcription.auto_language_forced_probe`: enabled by default so language detection compares candidate transcriptions instead of trusting one Whisper hint
 - `transcription.speaker_cluster_min_speech_confidence`, `voice_reference_min_speech_confidence`, `voice_reference_min_duration_seconds`, `voice_reference_max_duration_seconds`, and `voice_reference_min_words`: control how strict the speech gate is before audio may become a speaker cluster or clone reference
+- `foundation_training.visual_samples_require_character_visible`: when `true`, foundation frame/video samples are exported only from rows or transcript segments where the character is visibly present
+- `foundation_training.voice_reference_require_character_evidence`: when `true`, automatic voice-clone references require character evidence such as a linked `speaker_face_cluster` instead of trusting a loose speaker name alone
+- `foundation_training.allow_visible_only_voice_fallback`: keep `false` for quality-first work; when enabled, a single visible character can rescue old datasets, but this is weaker evidence and can mislabel off-screen speakers
+- explicit `transcription.language`/`generation.language` values also constrain automatic foundation voice references, so stale wrong-language transcript rows are not copied into character voice packs
 - `generation.allow_fallbacks`: must stay `false` for final generation
 - `storyboard_backend.*`: controls whether local storyboard seed-frame fallbacks are allowed; quality-first defaults keep them disabled
 - `render.allow_local_motion_fallback` and `render.require_*`: keep production output paths reserved for real generated video, voice clone, and lip-sync outputs
@@ -535,7 +544,11 @@ python 06_manage_character_relationships.py --series-input game_shakers_s01 --la
 python 06_manage_character_relationships.py --list
 ```
 
-Running `06_manage_character_relationships.py` without arguments opens a Tk window similar to the character review flow: check known names, save the checked names as a group, select a relationship type, and add relationships for the checked pair or selected set.
+Running `06_manage_character_relationships.py` without arguments opens a Tk window similar to the character review flow: check known names, save the checked names as a group, select a relationship type, and add relationships for the checked pair or selected set. The known-character rows distinguish `face clusters`, `face samples`, face `detections`, `voice clusters`, named `voice segments`, and explicitly eligible `voice refs`; a single face cluster can therefore still represent many observed samples.
+
+Existing relationship rows in the Tk window use click-to-toggle multi-selection, so several incorrect rows can be selected and removed with one `Remove selected` action.
+
+If an older `05` metadata lookup briefly wrote a rejected public title or pair name such as `Character A & Character B` into `relationships.json`, `06` repairs it only when the Character Map contains a unique `internet_name_lookup_rejected` mapping back to the current reviewed identity. Manual relationship names without that safe rollback evidence are kept.
 
 During `08_train_series_model.py`, these entries are copied into `generation/model/series_model.json`. `14_generate_episode.py` then uses the selected group and relationship context for focus-character selection, scene prompts, dialogue planning metadata, and `20_build_series_bible.py`.
 
@@ -573,6 +586,7 @@ python -m py_compile 00_prepare_runtime.py 03_diarize_and_transcribe.py 04_link_
 - when backend scene-video or scene-audio generation still fails in quality-first mode, rendering stops with explicit missing-output details instead of exporting a fake final episode
 - if external runners fail repeatedly, the quality gate will keep rejecting the episode even when the render technically finishes
 - shared NAS runs still depend on file-system stability and can be slower for large backend/model downloads
+- higher-recall face scanning keeps strict face validation but can take longer and can expose more unknown clusters for manual review when crowded or low-quality source shots contain many candidate faces
 - large Hugging Face model downloads are more reliable with authentication via `HF_TOKEN`
 
 ## Finished
@@ -595,7 +609,10 @@ python -m py_compile 00_prepare_runtime.py 03_diarize_and_transcribe.py 04_link_
 - quality-first render now blocks local seed-frame, local motion, system-TTS, and silent fallback paths from being labeled as finished generated episodes
 - forced voice cloning ignores stale per-line audio files and regenerates dialogue through XTTS/voice-clone output instead of reusing old TTS artifacts
 - voice-clone references are now filtered across transcription, face/speaker linking, manual-review auto-linking, foundation-pack creation, render voice plans, and the project-local XTTS backend so music/noise cannot silently become a character voice
+- foundation-pack creation now requires visible-character evidence for frame/video exports and direct character evidence for automatic voice exports; subtitle/channel boilerplate such as credits, URLs, "thanks for watching", uploaded subtitle markers, or wrong-language rows in explicit-language projects are rejected before they can become voice samples
+- step `04` now defaults to high-recall face detection with a denser frame sample, more valid faces per frame, a higher per-scene cluster budget, and a versioned scene-cache refresh; step `05` shows cluster count separately from review sample evidence
 - `05_review_unknowns.py` now supports `--offline`, `--edit-names`, built-in public-image face lookup without login/API credentials, optional uploaded face-crop lookup, `95%` minimum public name completion, cleanup/rollback of older low-confidence public metadata renames, and stronger speaker auto-linking from direct face/speaker evidence
+- character-name changes now keep active Voice/Training artifact names aligned with the canonical slug; stale active files such as `babe_voice_model.json` or `babe_manifest.json` are removed from the live pipeline when `Babe` is renamed to `Babe Carano`, and any collision is kept in the rename archive instead of being overwritten
 - `08b_analyze_behavior_model.py`, behavior-aware scene metadata, voice metadata propagation, and stricter content checks in `18_quality_gate.py` are now part of the main generation path
 - behavior-model schema version `2`, writer-room scene plans, richer delivery metadata, lip-sync backend priority resolution, and scope-aware weak-scene regeneration are now part of the main generation path
 - Finished Episode Mode now adds episode blueprints, set bible, character continuity locks, multi-shot plans, EDL, audio mix planning, backend manifests, Finished Episode Gate, Realism Reports, export-type separation, and blocked-scope retry handling

@@ -427,6 +427,75 @@ class ReviewPreviewTests(unittest.TestCase):
         self.assertEqual(voice_map["clusters"]["speaker_001"]["name"], "Babe Carano")
         self.assertFalse(voice_map["clusters"]["speaker_001"]["auto_named"])
 
+    def test_character_artifact_sync_moves_slugged_voice_assets(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            voice_samples = root / "characters" / "voice_samples"
+            voice_models = root / "characters" / "voice_models"
+            foundation_voice = root / "training" / "foundation" / "datasets" / "voice"
+            manifests = root / "training" / "foundation" / "manifests"
+            logs = root / "training" / "foundation" / "logs"
+            for path in (voice_models, manifests, foundation_voice / "babe", foundation_voice / "babe_carano", voice_samples / "babe"):
+                path.mkdir(parents=True, exist_ok=True)
+
+            old_voice_sample = foundation_voice / "babe" / "babe_001.wav"
+            old_voice_sample.write_bytes(b"voice")
+            (voice_samples / "babe" / "babe_ref.wav").write_bytes(b"ref")
+            STEP06.write_json(
+                voice_models / "babe_voice_model.json",
+                {
+                    "character": "Babe",
+                    "slug": "babe",
+                    "reference_audio": str(old_voice_sample),
+                    "sample_paths": [str(old_voice_sample)],
+                },
+            )
+            STEP06.write_json(voice_models / "babe_carano_voice_model.json", {"character": "Babe Carano", "slug": "babe_carano"})
+            STEP06.write_json(
+                manifests / "babe_manifest.json",
+                {"name": "Babe", "slug": "babe", "voice_samples": [{"path": str(old_voice_sample)}]},
+            )
+            STEP06.write_json(manifests / "babe_carano_manifest.json", {"name": "Babe Carano", "slug": "babe_carano"})
+            cfg = {
+                "paths": {
+                    "voice_samples": str(voice_samples),
+                    "voice_models": str(voice_models),
+                    "foundation_voice": str(foundation_voice),
+                    "foundation_manifests": str(manifests),
+                    "foundation_logs": str(logs),
+                }
+            }
+
+            summary = STEP06.sync_character_artifacts_for_rename(cfg, "Babe", "Babe Carano")
+
+            self.assertGreaterEqual(summary["renamed_paths"], 2)
+            self.assertEqual(summary["archived_collisions"], 2)
+            self.assertFalse((foundation_voice / "babe").exists())
+            self.assertTrue((foundation_voice / "babe_carano" / "babe_carano_001.wav").exists())
+            self.assertTrue((voice_samples / "babe_carano" / "babe_carano_ref.wav").exists())
+            self.assertFalse((voice_models / "babe_voice_model.json").exists())
+            self.assertFalse((manifests / "babe_manifest.json").exists())
+            archived_model = (
+                logs
+                / "renamed_character_artifacts"
+                / "babe_to_babe_carano"
+                / "voice_models"
+                / "babe_carano_voice_model.json"
+            )
+            archived_manifest = (
+                logs
+                / "renamed_character_artifacts"
+                / "babe_to_babe_carano"
+                / "foundation_manifests"
+                / "babe_carano_manifest.json"
+            )
+            self.assertTrue(archived_model.exists())
+            self.assertTrue(archived_manifest.exists())
+            archived_payload = STEP06.read_json(archived_model, {})
+            self.assertEqual(archived_payload["character"], "Babe Carano")
+            self.assertEqual(archived_payload["slug"], "babe_carano")
+            self.assertIn("babe_carano", archived_payload["reference_audio"])
+
     def test_auto_match_known_faces_can_rescue_background_statist_clusters(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             char_map = {

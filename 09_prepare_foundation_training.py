@@ -25,6 +25,7 @@ from support_scripts.pipeline_common import (
     distributed_step_runtime_root,
     LiveProgressReporter,
     SCRIPT_DIR,
+    canonical_person_name,
     coalesce_text,
     detect_tool,
     dominant_language,
@@ -54,7 +55,7 @@ from support_scripts.pipeline_common import (
     write_text,
 )
 
-PROCESS_VERSION = 3
+PROCESS_VERSION = 4
 DOWNLOAD_METADATA_FILE = ".foundation_download.json"
 
 
@@ -350,6 +351,138 @@ def cluster_name_map(char_map: dict) -> dict[str, str]:
     return mapping
 
 
+def foundation_settings(cfg: dict | None) -> dict:
+    if isinstance(cfg, dict) and isinstance(cfg.get("foundation_training"), dict):
+        return cfg["foundation_training"]
+    return {}
+
+
+def configured_voice_reference_language(cfg: dict | None) -> str:
+    if not isinstance(cfg, dict):
+        return ""
+    for section_name in ("transcription", "generation"):
+        section = cfg.get(section_name, {})
+        if not isinstance(section, dict):
+            continue
+        language = normalize_language_code(section.get("language", ""))
+        if language:
+            return language
+    return ""
+
+
+def character_name_key(name: object) -> str:
+    return canonical_person_name(coalesce_text(str(name or ""))).lower()
+
+
+def character_name_matches(candidate: object, target: object) -> bool:
+    candidate_key = character_name_key(candidate)
+    target_key = character_name_key(target)
+    if not candidate_key or not target_key:
+        return False
+    if candidate_key == target_key:
+        return True
+    if "&" in candidate_key or "&" in target_key:
+        return False
+    shorter, longer = sorted((candidate_key, target_key), key=len)
+    if len(shorter) < 4:
+        return False
+    return longer.startswith(f"{shorter} ")
+
+
+def mapped_character_name(value: object, known_clusters: dict[str, str]) -> str:
+    candidate = coalesce_text(str(value or ""))
+    mapped = known_clusters.get(candidate, "")
+    if mapped:
+        return mapped
+    if has_primary_person_name(candidate):
+        return candidate
+    return ""
+
+
+def segment_visible_character_names(segment: dict, known_clusters: dict[str, str]) -> set[str]:
+    names: set[str] = set()
+    if not isinstance(segment, dict):
+        return names
+    for name in segment.get("visible_character_names", []) or []:
+        mapped = mapped_character_name(name, known_clusters)
+        if mapped:
+            names.add(mapped)
+    for cluster_id in segment.get("visible_face_clusters", []) or []:
+        mapped = mapped_character_name(cluster_id, known_clusters)
+        if mapped:
+            names.add(mapped)
+    speaker_face_cluster = coalesce_text(segment.get("speaker_face_cluster", ""))
+    if speaker_face_cluster:
+        mapped = mapped_character_name(speaker_face_cluster, known_clusters)
+        if mapped:
+            names.add(mapped)
+    return names
+
+
+def row_visible_character_names(row: dict, known_clusters: dict[str, str]) -> set[str]:
+    names: set[str] = set()
+    if not isinstance(row, dict):
+        return names
+    for name in row.get("characters_visible", []) or []:
+        mapped = mapped_character_name(name, known_clusters)
+        if mapped:
+            names.add(mapped)
+    for cluster_id in row.get("face_clusters", []) or []:
+        mapped = mapped_character_name(cluster_id, known_clusters)
+        if mapped:
+            names.add(mapped)
+    for segment in row.get("transcript_segments", []) or []:
+        names.update(segment_visible_character_names(segment, known_clusters))
+    return names
+
+
+def character_visible_in_segment(segment: dict, character_name: str, known_clusters: dict[str, str]) -> bool:
+    return any(character_name_matches(name, character_name) for name in segment_visible_character_names(segment, known_clusters))
+
+
+def character_visible_in_row(row: dict, character_name: str, known_clusters: dict[str, str]) -> bool:
+    return any(character_name_matches(name, character_name) for name in row_visible_character_names(row, known_clusters))
+
+
+def character_visual_window(row: dict, character_name: str, known_clusters: dict[str, str]) -> tuple[float, float, float, str] | None:
+    if not isinstance(row, dict):
+        return None
+    for segment in row.get("transcript_segments", []) or []:
+        if not isinstance(segment, dict) or not character_visible_in_segment(segment, character_name, known_clusters):
+            continue
+        start_seconds = max(0.0, float(segment.get("start", 0.0) or 0.0))
+        end_seconds = max(start_seconds, float(segment.get("end", start_seconds) or start_seconds))
+        if end_seconds <= start_seconds:
+            end_seconds = start_seconds + min(1.0, max(0.5, float(row.get("duration_seconds", 1.0) or 1.0)))
+        midpoint = (start_seconds + end_seconds) / 2.0
+        return start_seconds, end_seconds, midpoint, "segment_visible_character"
+    if not character_visible_in_row(row, character_name, known_clusters):
+        return None
+    duration_seconds = max(0.0, float(row.get("duration_seconds", 0.0) or 0.0))
+    midpoint = duration_seconds / 2.0
+    return max(0.0, midpoint - 0.4), min(duration_seconds, midpoint + 0.4) if duration_seconds else midpoint + 0.8, midpoint, "row_visible_character"
+
+
+def voice_character_evidence(segment: dict, character_name: str, known_clusters: dict[str, str], cfg: dict | None) -> str:
+    settings = foundation_settings(cfg)
+    speaker_face_cluster = coalesce_text(segment.get("speaker_face_cluster", ""))
+    if speaker_face_cluster:
+        mapped = mapped_character_name(speaker_face_cluster, known_clusters)
+        if character_name_matches(mapped, character_name):
+            return "speaker_face_cluster"
+    if bool(segment.get("manual_voice_reference") or segment.get("voice_reference_verified")):
+        return "manual_verified_voice_reference"
+    if bool(settings.get("allow_visible_only_voice_fallback", False)) and character_visible_in_segment(segment, character_name, known_clusters):
+        visible_names = segment_visible_character_names(segment, known_clusters)
+        if len({character_name_key(name) for name in visible_names if character_name_key(name)}) == 1:
+            return "single_visible_character"
+    if not bool(settings.get("voice_reference_require_character_evidence", True)):
+        speaker_name = coalesce_text(segment.get("speaker_name", ""))
+        if character_name_matches(speaker_name, character_name):
+            return "speaker_name"
+    return ""
+
+
 def scene_character_names(row: dict, known_clusters: dict[str, str]) -> set[str]:
     names: set[str] = set()
     for name in row.get("characters_visible", []) or []:
@@ -382,7 +515,12 @@ def scene_character_names(row: dict, known_clusters: dict[str, str]) -> set[str]
 
 
 def collect_character_rows(rows: list[dict], character_name: str, known_clusters: dict[str, str]) -> list[dict]:
-    return [row for row in rows if character_name in scene_character_names(row, known_clusters)]
+    return [
+        row
+        for row in rows
+        if any(character_name_matches(name, character_name) for name in scene_character_names(row, known_clusters))
+        or character_visible_in_row(row, character_name, known_clusters)
+    ]
 
 
 def is_voice_reference_text(text: str) -> bool:
@@ -400,82 +538,71 @@ def is_voice_reference_segment(segment: dict, cfg: dict | None = None) -> bool:
     return voice_segment_reference_eligible(segment, cfg, default_when_unscored=True)
 
 
-def original_voice_candidates(rows: list[dict], character_name: str, cfg: dict | None = None) -> list[dict]:
+def voice_candidate_row_from_segment(
+    row: dict,
+    segment: dict,
+    character_name: str,
+    known_clusters: dict[str, str],
+    cfg: dict | None,
+    index: int,
+) -> tuple[dict | None, str]:
+    speaker_name = coalesce_text(segment.get("speaker_name", ""))
+    evidence = voice_character_evidence(segment, character_name, known_clusters, cfg)
+    if not character_name_matches(speaker_name, character_name) and evidence not in {"single_visible_character", "manual_verified_voice_reference"}:
+        return None, "speaker_name_mismatch"
+    if not evidence:
+        return None, "missing_character_voice_evidence"
+    if not is_voice_reference_segment(segment, cfg):
+        return None, "not_voice_reference_eligible"
+    expected_language = configured_voice_reference_language(cfg)
+    segment_language = normalize_language_code(segment.get("language", ""), row.get("language", ""))
+    if expected_language and segment_language and segment_language != expected_language:
+        return None, f"language_mismatch_{segment_language}_expected_{expected_language}"
+    audio_path = resolve_stored_project_path(segment.get("audio_file", ""))
+    if not audio_path.exists() or not audio_path.is_file():
+        return None, "missing_audio_file"
+    scene_id = coalesce_text(row.get("scene_id", ""))
+    start_seconds = float(segment.get("start", 0.0) or 0.0)
+    end_seconds = float(segment.get("end", start_seconds) or start_seconds)
+    duration_seconds = max(0.0, end_seconds - start_seconds)
+    return (
+        {
+            "episode_id": coalesce_text(row.get("episode_id", "")),
+            "scene_id": scene_id,
+            "segment_id": coalesce_text(segment.get("segment_id", "")) or f"{scene_id}_voice_{index + 1:03d}",
+            "audio_path": audio_path,
+            "duration_seconds": duration_seconds,
+            "language": normalize_language_code(segment.get("language", ""), row.get("language", "")),
+            "text": coalesce_text(segment.get("text", "")),
+            "speech_confidence": float(segment.get("speech_confidence", 1.0) or 1.0),
+            "audio_content_type": coalesce_text(segment.get("audio_content_type", "")),
+            "voice_quality": segment.get("voice_quality", {}) if isinstance(segment.get("voice_quality", {}), dict) else {},
+            "character_evidence": evidence,
+            "speaker_name_source": coalesce_text(segment.get("speaker_name_source", "")),
+            "speaker_face_cluster": coalesce_text(segment.get("speaker_face_cluster", "")),
+        },
+        "",
+    )
+
+
+def original_voice_candidates(
+    rows: list[dict],
+    character_name: str,
+    cfg: dict | None = None,
+    known_clusters: dict[str, str] | None = None,
+) -> list[dict]:
     candidates: list[dict] = []
-    fallback_candidates: list[dict] = []
+    known_clusters = known_clusters or {}
     for row in rows:
         if not isinstance(row, dict):
             continue
-        episode_id = coalesce_text(row.get("episode_id", ""))
-        scene_id = coalesce_text(row.get("scene_id", ""))
         for index, segment in enumerate(row.get("transcript_segments", []) or []):
             if not isinstance(segment, dict):
                 continue
-            speaker_name = coalesce_text(segment.get("speaker_name", ""))
-            if speaker_name.lower() != character_name.lower():
-                continue
-            if not is_voice_reference_segment(segment, cfg):
-                continue
-            audio_path = resolve_stored_project_path(segment.get("audio_file", ""))
-            if not audio_path.exists() or not audio_path.is_file():
-                continue
-            start_seconds = float(segment.get("start", 0.0) or 0.0)
-            end_seconds = float(segment.get("end", start_seconds) or start_seconds)
-            duration_seconds = max(0.0, end_seconds - start_seconds)
-            candidate_row = {
-                "episode_id": episode_id,
-                "scene_id": scene_id,
-                "segment_id": coalesce_text(segment.get("segment_id", "")) or f"{scene_id}_voice_{index + 1:03d}",
-                "audio_path": audio_path,
-                "duration_seconds": duration_seconds,
-                "language": normalize_language_code(segment.get("language", ""), row.get("language", "")),
-                "text": coalesce_text(segment.get("text", "")),
-                "speech_confidence": float(segment.get("speech_confidence", 1.0) or 1.0),
-                "audio_content_type": coalesce_text(segment.get("audio_content_type", "")),
-                "voice_quality": segment.get("voice_quality", {}) if isinstance(segment.get("voice_quality", {}), dict) else {},
-            }
-            candidates.append(candidate_row)
-            visible_names = [coalesce_text(name) for name in segment.get("visible_character_names", []) or [] if has_primary_person_name(name)]
-            unique_visible_names = {name.lower(): name for name in visible_names}
-            if len(unique_visible_names) == 1 and character_name.lower() in unique_visible_names and is_voice_reference_text(candidate_row["text"]):
-                fallback_candidates.append(candidate_row)
-        if candidates:
-            continue
-        for index, segment in enumerate(row.get("transcript_segments", []) or []):
-            if not isinstance(segment, dict):
-                continue
-            visible_names = [coalesce_text(name) for name in segment.get("visible_character_names", []) or [] if has_primary_person_name(name)]
-            unique_visible_names = {name.lower(): name for name in visible_names}
-            if len(unique_visible_names) != 1 or character_name.lower() not in unique_visible_names:
-                continue
-            text = coalesce_text(segment.get("text", ""))
-            if not is_voice_reference_segment(segment, cfg):
-                continue
-            audio_path = resolve_stored_project_path(segment.get("audio_file", ""))
-            if not audio_path.exists() or not audio_path.is_file():
-                continue
-            start_seconds = float(segment.get("start", 0.0) or 0.0)
-            end_seconds = float(segment.get("end", start_seconds) or start_seconds)
-            duration_seconds = max(0.0, end_seconds - start_seconds)
-            fallback_candidates.append(
-                {
-                    "episode_id": episode_id,
-                    "scene_id": scene_id,
-                    "segment_id": coalesce_text(segment.get("segment_id", "")) or f"{scene_id}_voice_{index + 1:03d}",
-                    "audio_path": audio_path,
-                    "duration_seconds": duration_seconds,
-                    "language": normalize_language_code(segment.get("language", ""), row.get("language", "")),
-                    "text": text,
-                    "speech_confidence": float(segment.get("speech_confidence", 1.0) or 1.0),
-                    "audio_content_type": coalesce_text(segment.get("audio_content_type", "")),
-                    "voice_quality": segment.get("voice_quality", {}) if isinstance(segment.get("voice_quality", {}), dict) else {},
-                }
-            )
-    if candidates:
-        selected = candidates
-    else:
-        selected = fallback_candidates
-    selected.sort(
+            candidate_row, _reason = voice_candidate_row_from_segment(row, segment, character_name, known_clusters, cfg, index)
+            if candidate_row is not None:
+                candidates.append(candidate_row)
+    candidates.sort(
         key=lambda row: (
             -float(row.get("speech_confidence", 1.0) or 1.0),
             -float(row.get("duration_seconds", 0.0) or 0.0),
@@ -484,7 +611,7 @@ def original_voice_candidates(rows: list[dict], character_name: str, cfg: dict |
             row.get("segment_id", ""),
         )
     )
-    return selected
+    return candidates
 
 
 def voice_reference_candidates(cfg: dict, character_name: str) -> list[Path]:
@@ -715,8 +842,10 @@ def prepare_character_dataset(
     rows: list[dict],
     cfg: dict,
     force: bool,
+    known_clusters: dict[str, str] | None = None,
 ) -> dict:
     foundation_cfg = cfg.get("foundation_training", {}) if isinstance(cfg.get("foundation_training"), dict) else {}
+    known_clusters = known_clusters or {}
     width = int(foundation_cfg.get("frame_width", 1280))
     height = int(foundation_cfg.get("frame_height", 720))
     max_frames = int(foundation_cfg.get("max_frame_samples_per_character", 48))
@@ -726,6 +855,9 @@ def prepare_character_dataset(
     frames_root = resolve_project_path(cfg["paths"]["foundation_frames"]) / character["slug"]
     video_root = resolve_project_path(cfg["paths"]["foundation_video"]) / character["slug"]
     voice_root = resolve_project_path(cfg["paths"]["foundation_voice"]) / character["slug"]
+    for export_root in (frames_root, video_root, voice_root):
+        if force and export_root.exists() and export_root.is_dir():
+            shutil.rmtree(export_root)
     voice_root.mkdir(parents=True, exist_ok=True)
 
     sorted_rows = sorted(
@@ -739,15 +871,19 @@ def prepare_character_dataset(
 
     frame_samples: list[dict] = []
     video_samples: list[dict] = []
+    sample_diagnostics = defaultdict(int)
     for row_index, row in enumerate(sorted_rows):
         video_file = Path(str(row.get("video_file", "")))
         if not video_file.exists():
             continue
-        segment_rows = row.get("transcript_segments", []) or []
-        midpoint = max(0.0, float(row.get("duration_seconds", 0.0) or 0.0) / 2.0)
-        if segment_rows:
-            first_segment = segment_rows[0]
-            midpoint = max(0.0, (float(first_segment.get("start", 0.0) or 0.0) + float(first_segment.get("end", 0.0) or 0.0)) / 2.0)
+        visual_window = character_visual_window(row, character["name"], known_clusters)
+        if visual_window is None:
+            sample_diagnostics["visual_rows_without_character_evidence"] += 1
+            if bool(foundation_cfg.get("visual_samples_require_character_visible", True)):
+                continue
+            midpoint = max(0.0, float(row.get("duration_seconds", 0.0) or 0.0) / 2.0)
+            visual_window = (max(0.0, midpoint - 0.4), midpoint + 0.8, midpoint, "legacy_row_without_visible_character_evidence")
+        visible_start, visible_end, midpoint, visual_evidence = visual_window
 
         if len(frame_samples) < max_frames:
             frame_path = frames_root / f"{coalesce_text(row.get('episode_id', 'folge'))}_{coalesce_text(row.get('scene_id', str(row_index)))}.png"
@@ -758,12 +894,13 @@ def prepare_character_dataset(
                         "scene_id": row.get("scene_id", ""),
                         "path": str(frame_path),
                         "timestamp_seconds": midpoint,
+                        "character_evidence": visual_evidence,
                     }
                 )
 
         if len(video_samples) < max_clips:
-            start_seconds = midpoint
-            end_seconds = midpoint + min(3.0, max(0.8, float(row.get("duration_seconds", 0.0) or 0.0)))
+            start_seconds = max(0.0, visible_start)
+            end_seconds = max(start_seconds + 0.8, min(visible_end, start_seconds + 3.0))
             clip_path = video_root / f"{coalesce_text(row.get('episode_id', 'folge'))}_{coalesce_text(row.get('scene_id', str(row_index)))}.mp4"
             if export_clip(ffmpeg_path, video_file, start_seconds, end_seconds, clip_path, width, height, force):
                 video_samples.append(
@@ -773,6 +910,7 @@ def prepare_character_dataset(
                         "path": str(clip_path),
                         "start_seconds": start_seconds,
                         "end_seconds": end_seconds,
+                        "character_evidence": visual_evidence,
                     }
                 )
         if len(frame_samples) >= max_frames and len(video_samples) >= max_clips:
@@ -780,7 +918,8 @@ def prepare_character_dataset(
 
     voice_samples: list[dict] = []
     seen_sources: set[str] = set()
-    original_candidates = original_voice_candidates(rows, character["name"], cfg)
+    original_candidates = original_voice_candidates(rows, character["name"], cfg, known_clusters)
+    sample_diagnostics["original_voice_candidates_after_filter"] = len(original_candidates)
     for index, source in enumerate(original_candidates[:max_voice], start=1):
         source_path = Path(str(source.get("audio_path", "")))
         if not source_path.is_file():
@@ -789,6 +928,7 @@ def prepare_character_dataset(
         if not source_path.exists() or source_key in seen_sources:
             continue
         target = voice_root / f"{character['slug']}_{index:03d}{source_path.suffix.lower() or '.wav'}"
+        target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source_path, target)
         voice_samples.append(
             {
@@ -804,6 +944,9 @@ def prepare_character_dataset(
                 "speech_confidence": round(float(source.get("speech_confidence", 1.0) or 1.0), 3),
                 "audio_content_type": coalesce_text(source.get("audio_content_type", "")),
                 "voice_quality": source.get("voice_quality", {}) if isinstance(source.get("voice_quality", {}), dict) else {},
+                "character_evidence": coalesce_text(source.get("character_evidence", "")),
+                "speaker_name_source": coalesce_text(source.get("speaker_name_source", "")),
+                "speaker_face_cluster": coalesce_text(source.get("speaker_face_cluster", "")),
             }
         )
         seen_sources.add(source_key)
@@ -819,6 +962,7 @@ def prepare_character_dataset(
             if not source.exists() or source_key in seen_sources:
                 continue
             target = voice_root / f"{character['slug']}_{next_index:03d}{source.suffix.lower() or '.wav'}"
+            target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(source, target)
             voice_samples.append(
                 {
@@ -833,13 +977,12 @@ def prepare_character_dataset(
             seen_sources.add(source_key)
             next_index += 1
 
-    voice_language_counts = merge_language_counts(
-        {
-            normalize_language_code(sample.get("language", "")): 1
-            for sample in voice_samples
-            if normalize_language_code(sample.get("language", ""))
-        }
-    )
+    voice_language_raw_counts: dict[str, int] = defaultdict(int)
+    for sample in voice_samples:
+        language = normalize_language_code(sample.get("language", ""))
+        if language:
+            voice_language_raw_counts[language] += 1
+    voice_language_counts = merge_language_counts(dict(voice_language_raw_counts))
 
     return {
         "process_version": PROCESS_VERSION,
@@ -854,6 +997,7 @@ def prepare_character_dataset(
         "voice_language_counts": voice_language_counts,
         "dominant_language": dominant_language(voice_language_counts),
         "original_voice_sample_count": sum(1 for sample in voice_samples if sample.get("source_type") == "original_segment"),
+        "sample_diagnostics": dict(sample_diagnostics),
     }
 
 
@@ -985,7 +1129,7 @@ def main() -> None:
                 if not acquired:
                     continue
                 info(f"Bereite Trainingsdaten vor: {character['name']}")
-                manifest = prepare_character_dataset(ffmpeg_path, character, character_rows, cfg, force=args.force)
+                manifest = prepare_character_dataset(ffmpeg_path, character, character_rows, cfg, force=args.force, known_clusters=known_clusters)
                 manifests.append(manifest)
                 write_json(manifest_root / f"{character['slug']}_manifest.json", manifest)
                 reporter.update(

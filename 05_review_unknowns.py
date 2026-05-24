@@ -265,6 +265,29 @@ def known_identity_button_options(char_map: dict, limit: int = 16) -> list[tuple
     return options[: max(0, limit)]
 
 
+def identity_review_evidence_count(char_map: dict, identity_name: str) -> int:
+    final_name = canonical_person_name(identity_name)
+    identity_payload = (char_map.get("identities", {}) or {}).get(final_name, {})
+    sample_count = int(identity_payload.get("sample_count", 0) or 0) if isinstance(identity_payload, dict) else 0
+    detection_count = int(identity_payload.get("detection_count", 0) or 0) if isinstance(identity_payload, dict) else 0
+    if sample_count or detection_count:
+        return max(sample_count, detection_count)
+    return sum(
+        int(payload.get("samples", 0) or 0)
+        for _cluster_id, payload in identity_clusters(char_map, final_name)
+    )
+
+
+def quick_assignment_label(char_map: dict, identity_name: str, cluster_count: int) -> str:
+    evidence_count = identity_review_evidence_count(char_map, identity_name)
+    if cluster_count <= 1 and evidence_count <= 1:
+        return identity_name
+    cluster_label = "cluster" if cluster_count == 1 else "clusters"
+    if evidence_count > 0:
+        return f"{identity_name} ({cluster_count} {cluster_label}, {evidence_count} samples)"
+    return f"{identity_name} ({cluster_count} {cluster_label})"
+
+
 def assign_character_name(char_map: dict, cluster_id: str, assigned_name: str, priority: bool | None = None) -> dict:
     payload = char_map.setdefault("clusters", {}).setdefault(cluster_id, {})
     remove_cluster_aliases(char_map, cluster_id)
@@ -915,7 +938,7 @@ def show_preview_assignment_window(
         quick_frame.pack(padx=12, pady=(0, 8), fill="x")
         columns = 4
         for index, (name, is_priority, cluster_count) in enumerate(quick_assignments):
-            label = name if cluster_count <= 1 else f"{name} ({cluster_count})"
+            label = quick_assignment_label(char_map, name, cluster_count)
             if is_priority:
                 label = f"{label} *"
             button = tk.Button(
@@ -2567,6 +2590,7 @@ def enrich_existing_character_names_from_internet(cfg: dict, char_map: dict, *, 
         new_name = canonical_person_name(str(candidate.get("label", "")))
         changed = rename_identity_everywhere(char_map, name, new_name, candidate)
         if changed:
+            artifact_summary = sync_character_artifacts_for_rename(cfg, name, new_name)
             updates.append(
                 {
                     "old_name": name,
@@ -2575,6 +2599,7 @@ def enrich_existing_character_names_from_internet(cfg: dict, char_map: dict, *, 
                     "confidence": float(candidate.get("confidence", 0.0) or 0.0),
                     "source": candidate.get("source", ""),
                     "url": candidate.get("url", ""),
+                    "artifact_sync": artifact_summary,
                 }
             )
         if max_updates > 0 and len(updates) >= max_updates:
@@ -3345,6 +3370,248 @@ def rename_name_everywhere(char_map: dict, voice_map: dict, old_name: str, new_n
     return {"faces": faces, "speakers": speakers}
 
 
+def character_artifact_slug(value: str) -> str:
+    cleaned = "".join(char.lower() if char.isalnum() else "_" for char in canonical_person_name(str(value)))
+    while "__" in cleaned:
+        cleaned = cleaned.replace("__", "_")
+    return cleaned.strip("_") or "figur"
+
+
+def archive_root_for_character_rename(cfg: dict, old_slug: str, new_slug: str) -> Path:
+    paths = cfg.get("paths", {}) if isinstance(cfg.get("paths"), dict) else {}
+    configured = paths.get("foundation_logs", "training/foundation/logs")
+    return resolve_project_path(configured) / "renamed_character_artifacts" / f"{old_slug}_to_{new_slug}"
+
+
+def rename_token_in_filename(name: str, old_slug: str, new_slug: str) -> str:
+    if name == new_slug or name.startswith(f"{new_slug}_"):
+        return name
+    if old_slug and old_slug in name:
+        return name.replace(old_slug, new_slug)
+    return name
+
+
+def unique_path(path: Path) -> Path:
+    if not path.exists():
+        return path
+    for index in range(1, 10000):
+        candidate = path.with_name(f"{path.stem}_{index:03d}{path.suffix}")
+        if not candidate.exists():
+            return candidate
+    raise RuntimeError(f"Could not find a free target filename for {path}")
+
+
+def collision_merge_path(path: Path, old_slug: str) -> Path:
+    candidate = path.with_name(f"{path.stem}_from_{old_slug}{path.suffix}")
+    return unique_path(candidate)
+
+
+def rewrite_character_artifact_value(value, old_name: str, new_name: str, old_slug: str, new_slug: str):
+    name_keys = {"name", "character", "speaker", "speaker_name", "display_name"}
+    slug_keys = {"slug", "character_slug", "speaker_slug"}
+    if isinstance(value, dict):
+        rewritten = {}
+        for key, item in value.items():
+            key_text = str(key)
+            if key_text in name_keys and canonical_person_name(str(item)) == old_name:
+                rewritten[key] = new_name
+            elif key_text in slug_keys and str(item) == old_slug:
+                rewritten[key] = new_slug
+            else:
+                rewritten[key] = rewrite_character_artifact_value(item, old_name, new_name, old_slug, new_slug)
+        return rewritten
+    if isinstance(value, list):
+        return [rewrite_character_artifact_value(item, old_name, new_name, old_slug, new_slug) for item in value]
+    if isinstance(value, str):
+        text = new_name if canonical_person_name(value) == old_name else value
+        if old_slug and old_slug in text:
+            placeholder = "\u0000new_character_slug\u0000"
+            if new_slug:
+                text = text.replace(new_slug, placeholder)
+            text = text.replace(old_slug, new_slug)
+            text = text.replace(placeholder, new_slug)
+        return text
+    return value
+
+
+def rewrite_character_artifact_json(path: Path, old_name: str, new_name: str, old_slug: str, new_slug: str) -> int:
+    if path.suffix.lower() != ".json" or not path.is_file():
+        return 0
+    payload = read_json(path, None)
+    if payload is None:
+        return 0
+    rewritten = rewrite_character_artifact_value(payload, old_name, new_name, old_slug, new_slug)
+    if rewritten == payload:
+        return 0
+    write_json(path, normalize_portable_project_paths(rewritten))
+    return 1
+
+
+def rewrite_character_artifact_jsons(root: Path, old_name: str, new_name: str, old_slug: str, new_slug: str) -> int:
+    if root.is_file():
+        return rewrite_character_artifact_json(root, old_name, new_name, old_slug, new_slug)
+    if not root.is_dir():
+        return 0
+    rewritten = 0
+    for path in sorted(root.rglob("*.json")):
+        rewritten += rewrite_character_artifact_json(path, old_name, new_name, old_slug, new_slug)
+    return rewritten
+
+
+def normalize_character_artifact_tree_names(root: Path, old_slug: str, new_slug: str) -> int:
+    if not root.is_dir():
+        return 0
+    renamed = 0
+    for path in sorted(root.rglob("*"), key=lambda item: len(item.parts), reverse=True):
+        new_name = rename_token_in_filename(path.name, old_slug, new_slug)
+        if new_name == path.name:
+            continue
+        target = path.with_name(new_name)
+        if target.exists():
+            target = collision_merge_path(target, old_slug)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(path), str(target))
+        renamed += 1
+    return renamed
+
+
+def move_character_artifact_file(
+    source: Path,
+    target: Path,
+    archive_root: Path,
+    old_name: str,
+    new_name: str,
+    old_slug: str,
+    new_slug: str,
+    summary: dict[str, int],
+) -> None:
+    if not source.exists() or not source.is_file():
+        return
+    if source.resolve() == target.resolve():
+        summary["rewritten_json"] += rewrite_character_artifact_json(source, old_name, new_name, old_slug, new_slug)
+        return
+    if target.exists():
+        archive_root.mkdir(parents=True, exist_ok=True)
+        archive_target = unique_path(archive_root / rename_token_in_filename(source.name, old_slug, new_slug))
+        shutil.move(str(source), str(archive_target))
+        summary["archived_collisions"] += 1
+        summary["rewritten_json"] += rewrite_character_artifact_json(archive_target, old_name, new_name, old_slug, new_slug)
+        return
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.move(str(source), str(target))
+    summary["renamed_paths"] += 1
+    summary["rewritten_json"] += rewrite_character_artifact_json(target, old_name, new_name, old_slug, new_slug)
+
+
+def merge_character_artifact_dir(
+    source: Path,
+    target: Path,
+    old_name: str,
+    new_name: str,
+    old_slug: str,
+    new_slug: str,
+    summary: dict[str, int],
+) -> None:
+    if not source.exists() or not source.is_dir():
+        return
+    if source.resolve() == target.resolve():
+        summary["renamed_paths"] += normalize_character_artifact_tree_names(target, old_slug, new_slug)
+        summary["rewritten_json"] += rewrite_character_artifact_jsons(target, old_name, new_name, old_slug, new_slug)
+        return
+    if not target.exists():
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(source), str(target))
+        summary["renamed_paths"] += 1
+        summary["renamed_paths"] += normalize_character_artifact_tree_names(target, old_slug, new_slug)
+        summary["rewritten_json"] += rewrite_character_artifact_jsons(target, old_name, new_name, old_slug, new_slug)
+        return
+    target.mkdir(parents=True, exist_ok=True)
+    for child in sorted(source.iterdir()):
+        child_target = target / rename_token_in_filename(child.name, old_slug, new_slug)
+        if child.is_dir():
+            merge_character_artifact_dir(child, child_target, old_name, new_name, old_slug, new_slug, summary)
+        else:
+            if child_target.exists():
+                child_target = collision_merge_path(child_target, old_slug)
+            child_target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(child), str(child_target))
+            summary["renamed_paths"] += 1
+            summary["rewritten_json"] += rewrite_character_artifact_json(child_target, old_name, new_name, old_slug, new_slug)
+    try:
+        source.rmdir()
+    except OSError:
+        summary["skipped"] += 1
+    else:
+        summary["merged_directories"] += 1
+    summary["renamed_paths"] += normalize_character_artifact_tree_names(target, old_slug, new_slug)
+    summary["rewritten_json"] += rewrite_character_artifact_jsons(target, old_name, new_name, old_slug, new_slug)
+
+
+def sync_character_artifacts_for_rename(cfg: dict, old_name: str, new_name: str) -> dict[str, int]:
+    old_final = canonical_person_name(old_name)
+    new_final = canonical_person_name(new_name)
+    old_slug = character_artifact_slug(old_final)
+    new_slug = character_artifact_slug(new_final)
+    summary = {"renamed_paths": 0, "merged_directories": 0, "archived_collisions": 0, "rewritten_json": 0, "skipped": 0}
+    if not old_final or not new_final or old_slug == new_slug:
+        return summary
+
+    paths = cfg.get("paths", {}) if isinstance(cfg.get("paths"), dict) else {}
+    if not paths:
+        return summary
+    archive_root = archive_root_for_character_rename(cfg, old_slug, new_slug)
+    for key in (
+        "voice_samples",
+        "foundation_frames",
+        "foundation_video",
+        "foundation_voice",
+        "foundation_checkpoints",
+        "foundation_adapters",
+        "foundation_finetunes",
+        "foundation_backend_runs",
+    ):
+        configured = paths.get(key)
+        if not configured:
+            continue
+        root = resolve_project_path(configured)
+        merge_character_artifact_dir(root / old_slug, root / new_slug, old_final, new_final, old_slug, new_slug, summary)
+
+    voice_sample_root = resolve_project_path(paths.get("voice_samples", "characters/voice_samples"))
+    if voice_sample_root.exists():
+        for source in sorted(voice_sample_root.glob(f"{old_slug}*")):
+            if not source.is_file():
+                continue
+            target = voice_sample_root / rename_token_in_filename(source.name, old_slug, new_slug)
+            if target.exists():
+                target = collision_merge_path(target, old_slug)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(source), str(target))
+            summary["renamed_paths"] += 1
+
+    file_specs = (
+        ("voice_models", f"{old_slug}_voice_model.json", f"{new_slug}_voice_model.json"),
+        ("foundation_manifests", f"{old_slug}_manifest.json", f"{new_slug}_manifest.json"),
+    )
+    for key, old_filename, new_filename in file_specs:
+        configured = paths.get(key)
+        if not configured:
+            continue
+        root = resolve_project_path(configured)
+        move_character_artifact_file(
+            root / old_filename,
+            root / new_filename,
+            archive_root / key,
+            old_final,
+            new_final,
+            old_slug,
+            new_slug,
+            summary,
+        )
+        summary["rewritten_json"] += rewrite_character_artifact_json(root / new_filename, old_final, new_final, old_slug, new_slug)
+
+    return summary
+
+
 def open_name_editor_gui(cfg: dict, char_map: dict, voice_map: dict) -> bool:
     if not gui_preview_available():
         warn("Name editor GUI is not available in this session. Use a local desktop session or --rename-face.")
@@ -3426,6 +3693,7 @@ def open_name_editor_gui(cfg: dict, char_map: dict, voice_map: dict) -> bool:
         try:
             summary = rename_name_everywhere(char_map, voice_map, old_name, new_name, priority=priority_var.get())
             changed_linked_files, review_count = persist_updates(cfg, char_map, voice_map)
+            artifact_summary = sync_character_artifacts_for_rename(cfg, old_name, new_name)
         except Exception as exc:
             messagebox.showerror("Save failed", str(exc))
             return
@@ -3437,6 +3705,11 @@ def open_name_editor_gui(cfg: dict, char_map: dict, voice_map: dict) -> bool:
             "Saved",
             f"{old_name} -> {new_name}\n"
             f"Faces: {summary['faces']} | Speakers: {summary['speakers']}\n"
+            "Artifacts: "
+            f"{artifact_summary['renamed_paths']} moved/renamed, "
+            f"{artifact_summary['merged_directories']} merged folder(s), "
+            f"{artifact_summary['archived_collisions']} archived collision(s), "
+            f"{artifact_summary['rewritten_json']} JSON rewrite(s)\n"
             f"Linked files updated: {changed_linked_files}\n"
             f"Open review cases: {review_count}",
         )
@@ -3710,14 +3983,18 @@ def assign_single_face(cfg: dict, char_map: dict, voice_map: dict, cluster_id: s
 
 def rename_face(cfg: dict, char_map: dict, voice_map: dict, reference: str, new_name: str, priority: bool = False) -> None:
     cluster_id = resolve_face_reference(char_map, reference)
+    old_name = canonical_person_name(str(char_map.get("clusters", {}).get(cluster_id, {}).get("name", cluster_id)))
     assign_character_name(char_map, cluster_id, new_name, priority=priority)
     auto_matched = auto_learn_remaining_reviews(cfg, char_map, voice_map)
     changed_linked_files, review_count = persist_updates(cfg, char_map, voice_map)
     final_name = char_map["clusters"][cluster_id]["name"]
+    artifact_summary = sync_character_artifacts_for_rename(cfg, old_name, final_name)
     ok(
         f"{cluster_id} was renamed to {final_name}. "
         f"{changed_linked_files + int(auto_matched.get('linked_files', 0))} linked-segment files synchronized, "
         f"{review_count} open review cases. "
+        f"Artifacts: {artifact_summary['renamed_paths']} moved/renamed, "
+        f"{artifact_summary['archived_collisions']} archived collision(s). "
         f"Auto-learn: {int(auto_matched.get('matched_faces', 0))} face clusters, {int(auto_matched.get('matched_speakers', 0))} speakers."
     )
 

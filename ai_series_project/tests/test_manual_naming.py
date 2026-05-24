@@ -1158,18 +1158,25 @@ class ManualNamingTests(unittest.TestCase):
             root = Path(tmpdir)
             char_map_path = root / "characters" / "maps" / "character_map.json"
             voice_map_path = root / "characters" / "maps" / "voice_map.json"
+            linked_path = root / "data" / "processed" / "linked_segments"
             char_map_path.parent.mkdir(parents=True, exist_ok=True)
             voice_map_path.parent.mkdir(parents=True, exist_ok=True)
+            linked_path.mkdir(parents=True, exist_ok=True)
             char_map_path.write_text(
                 json.dumps(
                     {
                         "clusters": {
-                            "face_001": {"name": "Babe Carano", "priority": True},
-                            "face_002": {"name": "Babe Carano"},
+                            "face_001": {"name": "Babe Carano", "priority": True, "samples": 2, "detection_count": 1},
+                            "face_002": {"name": "Babe Carano", "samples": 3, "detection_count": 2},
                             "face_003": {"name": "statist"},
                         },
                         "identities": {
-                            "Babe Carano": {"priority": True, "face_cluster_count": 2},
+                            "Babe Carano": {
+                                "priority": True,
+                                "face_cluster_count": 2,
+                                "sample_count": 5,
+                                "detection_count": 3,
+                            },
                         },
                     }
                 ),
@@ -1186,10 +1193,21 @@ class ManualNamingTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
+            (linked_path / "Episode01_linked_segments.json").write_text(
+                json.dumps(
+                    [
+                        {"speaker_name": "Babe Carano", "voice_reference_eligible": True},
+                        {"speaker_name": "Babe Carano", "voice_reference_eligible": False},
+                        {"speaker_name": "Kenzie Bell", "voice_reference_eligible": True},
+                    ]
+                ),
+                encoding="utf-8",
+            )
             cfg = {
                 "paths": {
                     "character_map": str(char_map_path),
                     "voice_map": str(voice_map_path),
+                    "linked_segments": str(linked_path),
                 }
             }
 
@@ -1197,10 +1215,17 @@ class ManualNamingTests(unittest.TestCase):
 
         by_name = {row["name"]: row for row in rows}
         self.assertEqual(by_name["Babe Carano"]["face_count"], 2)
+        self.assertEqual(by_name["Babe Carano"]["face_sample_count"], 5)
+        self.assertEqual(by_name["Babe Carano"]["face_detection_count"], 3)
         self.assertEqual(by_name["Babe Carano"]["voice_count"], 1)
+        self.assertEqual(by_name["Babe Carano"]["voice_segment_count"], 2)
+        self.assertEqual(by_name["Babe Carano"]["voice_reference_segment_count"], 1)
         self.assertTrue(by_name["Babe Carano"]["priority"])
         self.assertEqual(by_name["Kenzie Bell"]["voice_count"], 1)
+        self.assertEqual(by_name["Kenzie Bell"]["voice_segment_count"], 1)
         self.assertNotIn("statist", by_name)
+        self.assertIn("face samples 5", STEPREL.known_character_row_label(by_name["Babe Carano"]))
+        self.assertIn("voice segments 2", STEPREL.known_character_row_label(by_name["Babe Carano"]))
 
     def test_relationship_display_helpers_are_stable_for_gui(self) -> None:
         self.assertEqual(STEPREL.slug_from_label("Game Shakers!", "group"), "game_shakers")
@@ -1210,6 +1235,59 @@ class ManualNamingTests(unittest.TestCase):
 
         self.assertIn("Babe <best friends> Kenzie", text)
         self.assertIn("game_shakers", text)
+
+    def test_relationship_remove_helper_deletes_multiple_selected_rows(self) -> None:
+        rows = [
+            {"source": "Babe", "target": "Kenzie", "type": "friends"},
+            {"source": "Babe", "target": "Hudson", "type": "team"},
+            {"source": "Kenzie", "target": "Hudson", "type": "team"},
+        ]
+        payload = {"relationships": rows.copy()}
+
+        removed = STEPREL.remove_relationship_rows_by_indices(payload, rows, [0, 2])
+
+        self.assertEqual(removed, 2)
+        self.assertEqual(payload["relationships"], [rows[1]])
+
+    def test_relationship_payload_repairs_rejected_public_metadata_names(self) -> None:
+        char_map = {
+            "clusters": {
+                "face_hudson": {
+                    "name": "Hudson Gimble",
+                    "internet_name_lookup_rejected": [{"rejected_name": "Hudson & Triple G"}],
+                },
+                "face_bunny": {
+                    "name": "Bunny",
+                    "internet_name_lookup_rejected": [{"rejected_name": "You Bet Your Bunny"}],
+                },
+            }
+        }
+        payload = {
+            "groups": {"game_shakers": {"characters": ["Hudson & Triple G", "You Bet Your Bunny"]}},
+            "relationships": [
+                {"source": "Hudson & Triple G", "target": "You Bet Your Bunny", "type": "friends"},
+            ],
+        }
+
+        repaired, changes = STEPREL.repair_relationship_payload_names(
+            payload,
+            STEPREL.stale_public_name_replacements(char_map),
+        )
+
+        self.assertEqual(repaired["groups"]["game_shakers"]["characters"], ["Hudson Gimble", "Bunny"])
+        self.assertEqual(repaired["relationships"][0]["source"], "Hudson Gimble")
+        self.assertEqual(repaired["relationships"][0]["target"], "Bunny")
+        self.assertEqual(
+            changes,
+            [("Hudson & Triple G", "Hudson Gimble"), ("You Bet Your Bunny", "Bunny")],
+        )
+
+    def test_relationship_parser_accepts_worker_arguments(self) -> None:
+        with mock.patch("sys.argv", ["manage_character_relationships.py", "--list", "--worker-id", "pc2", "--no-shared-workers"]):
+            args = STEPREL.parse_args()
+
+        self.assertEqual(args.worker_id, "pc2")
+        self.assertTrue(args.no_shared_workers)
 
     def test_storyboard_backend_requests_are_written_from_shotlist(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -2012,6 +2090,60 @@ class ManualNamingTests(unittest.TestCase):
         self.assertEqual(options[0], ("Babe", True, 5))
         self.assertEqual(char_map["identities"]["Babe"]["active_cluster_count"], 2)
         self.assertEqual(char_map["identities"]["Babe"]["face_cluster_count"], 5)
+
+    def test_face_scan_limits_raise_old_low_recall_config(self) -> None:
+        limits = STEP05.effective_face_scan_limits(
+            {
+                "character_detection": {
+                    "sample_every_n_frames": 6,
+                    "max_faces_per_frame": 2,
+                    "max_scene_clusters": 6,
+                }
+            }
+        )
+
+        self.assertTrue(limits["high_recall"])
+        self.assertEqual(limits["sample_every"], 4)
+        self.assertEqual(limits["max_faces_per_frame"], 4)
+        self.assertEqual(limits["max_scene_clusters"], 10)
+        self.assertEqual(limits["max_scene_face_detections"], 96)
+
+    def test_face_scan_limits_allow_explicit_balanced_config(self) -> None:
+        limits = STEP05.effective_face_scan_limits(
+            {
+                "character_detection": {
+                    "high_recall_face_scan": False,
+                    "sample_every_n_frames": 6,
+                    "max_faces_per_frame": 2,
+                    "max_scene_clusters": 6,
+                    "max_scene_face_detections": 24,
+                }
+            }
+        )
+
+        self.assertFalse(limits["high_recall"])
+        self.assertEqual(limits["sample_every"], 6)
+        self.assertEqual(limits["max_faces_per_frame"], 2)
+        self.assertEqual(limits["max_scene_clusters"], 6)
+        self.assertEqual(limits["max_scene_face_detections"], 24)
+
+    def test_quick_assignment_label_shows_samples_beside_cluster_count(self) -> None:
+        char_map = {
+            "clusters": {
+                "face_teague": {
+                    "name": "Teague",
+                    "ignored": False,
+                    "auto_named": False,
+                    "samples": 69,
+                }
+            },
+            "aliases": {},
+        }
+
+        STEP08.rebuild_character_map_identities(char_map)
+        label = STEP08.quick_assignment_label(char_map, "Teague", 1)
+
+        self.assertEqual(label, "Teague (1 cluster, 69 samples)")
 
     def test_face_review_candidates_default_limit_zero_returns_all_open_faces(self) -> None:
         char_map = {
@@ -4329,6 +4461,7 @@ class ManualNamingTests(unittest.TestCase):
                         {
                             "segment_id": "seg_001",
                             "speaker_name": "Kenzie",
+                            "speaker_face_cluster": "face_kenzie",
                             "audio_file": "C:/stale/voice.wav",
                             "start": 0.0,
                             "end": 1.0,
@@ -4340,12 +4473,12 @@ class ManualNamingTests(unittest.TestCase):
             ]
 
             with mock.patch.object(STEP13, "resolve_stored_project_path", return_value=wav_path):
-                candidates = STEP13.original_voice_candidates(rows, "Kenzie")
+                candidates = STEP13.original_voice_candidates(rows, "Kenzie", known_clusters={"face_kenzie": "Kenzie"})
 
         self.assertEqual(len(candidates), 1)
         self.assertEqual(Path(candidates[0]["audio_path"]), wav_path)
 
-    def test_foundation_original_voice_candidates_can_fallback_to_single_visible_character(self) -> None:
+    def test_foundation_original_voice_candidates_blocks_visible_only_fallback_by_default(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             wav_path = root / "voice.wav"
@@ -4375,10 +4508,16 @@ class ManualNamingTests(unittest.TestCase):
             ]
 
             with mock.patch.object(STEP13, "resolve_stored_project_path", return_value=wav_path):
-                candidates = STEP13.original_voice_candidates(rows, "Babe")
+                strict_candidates = STEP13.original_voice_candidates(rows, "Babe")
+                fallback_candidates = STEP13.original_voice_candidates(
+                    rows,
+                    "Babe",
+                    {"foundation_training": {"allow_visible_only_voice_fallback": True}},
+                )
 
-        self.assertEqual(len(candidates), 1)
-        self.assertEqual(Path(candidates[0]["audio_path"]), wav_path)
+        self.assertEqual(strict_candidates, [])
+        self.assertEqual(len(fallback_candidates), 1)
+        self.assertEqual(Path(fallback_candidates[0]["audio_path"]), wav_path)
 
     def test_split_scene_resolve_episode_file_accepts_name_and_stem(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

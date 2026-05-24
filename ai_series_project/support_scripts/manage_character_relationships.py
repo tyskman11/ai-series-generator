@@ -12,14 +12,17 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from support_scripts.pipeline_common import (
+    add_shared_worker_arguments,
     canonical_person_name,
     character_relationships_path,
     empty_character_relationships,
     has_manual_person_name,
     headline,
+    info,
     is_background_person_name,
     load_character_relationships,
     load_config,
+    normalize_character_relationships,
     ok,
     read_json,
     relationship_prompt_fragments,
@@ -59,7 +62,93 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--series-input", metavar="INPUT_ID", help="Create or update a named source-series input.")
     parser.add_argument("--default-group", default="", help="Default character group for a series input.")
     parser.add_argument("--episode-glob", action="append", default=[], help="Episode glob for a series input. Can be repeated.")
+    add_shared_worker_arguments(parser)
     return parser.parse_args()
+
+
+def stale_public_name_replacements(char_map: dict) -> dict[str, str]:
+    candidates: dict[str, set[str]] = {}
+    clusters = char_map.get("clusters", {}) if isinstance(char_map, dict) else {}
+    if not isinstance(clusters, dict):
+        return {}
+    for payload in clusters.values():
+        if not isinstance(payload, dict) or bool(payload.get("ignored", False)):
+            continue
+        current_name = canonical_person_name(str(payload.get("name", "")))
+        if not current_name or is_background_person_name(current_name) or not has_manual_person_name(current_name):
+            continue
+        rejected_rows = payload.get("internet_name_lookup_rejected", [])
+        if not isinstance(rejected_rows, list):
+            continue
+        for rejected in rejected_rows:
+            if not isinstance(rejected, dict):
+                continue
+            stale_name = canonical_person_name(str(rejected.get("rejected_name", "")))
+            if not stale_name or stale_name == current_name:
+                continue
+            candidates.setdefault(stale_name.casefold(), set()).add(current_name)
+    return {
+        stale_key: next(iter(current_names))
+        for stale_key, current_names in candidates.items()
+        if len(current_names) == 1
+    }
+
+
+def repair_relationship_payload_names(payload: dict, replacements: dict[str, str]) -> tuple[dict, list[tuple[str, str]]]:
+    repaired = json.loads(json.dumps(payload if isinstance(payload, dict) else empty_character_relationships()))
+    changes: list[tuple[str, str]] = []
+
+    def replace_name(name: object) -> str:
+        original = canonical_person_name(str(name or ""))
+        replacement = replacements.get(original.casefold(), original)
+        if original and replacement and replacement != original:
+            change = (original, replacement)
+            if change not in changes:
+                changes.append(change)
+        return replacement
+
+    for group in (repaired.get("groups", {}) or {}).values():
+        if not isinstance(group, dict):
+            continue
+        group["characters"] = [replace_name(name) for name in group.get("characters", []) or []]
+    for row in repaired.get("relationships", []) or []:
+        if not isinstance(row, dict):
+            continue
+        row["source"] = replace_name(row.get("source", ""))
+        row["target"] = replace_name(row.get("target", ""))
+    return normalize_character_relationships(repaired), changes
+
+
+def repair_relationships_from_character_map(cfg: dict, payload: dict) -> tuple[dict, list[tuple[str, str]]]:
+    paths = cfg.get("paths", {}) if isinstance(cfg.get("paths", {}), dict) else {}
+    char_map = read_json(
+        resolve_project_path(paths.get("character_map", "characters/maps/character_map.json")),
+        {"clusters": {}},
+    )
+    return repair_relationship_payload_names(payload, stale_public_name_replacements(char_map))
+
+
+def linked_voice_evidence_counts(cfg: dict) -> dict[str, dict[str, int]]:
+    paths = cfg.get("paths", {}) if isinstance(cfg.get("paths", {}), dict) else {}
+    linked_root = resolve_project_path(paths.get("linked_segments", "data/processed/linked_segments"))
+    counts: dict[str, dict[str, int]] = {}
+    if not linked_root.exists():
+        return counts
+    for linked_path in sorted(linked_root.glob("*_linked_segments.json")):
+        rows = read_json(linked_path, [])
+        if not isinstance(rows, list):
+            continue
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            final_name = canonical_person_name(str(row.get("speaker_name", "")))
+            if not final_name or is_background_person_name(final_name) or not has_manual_person_name(final_name):
+                continue
+            evidence = counts.setdefault(final_name, {"voice_segment_count": 0, "voice_reference_segment_count": 0})
+            evidence["voice_segment_count"] += 1
+            if bool(row.get("voice_reference_eligible", False)):
+                evidence["voice_reference_segment_count"] += 1
+    return counts
 
 
 def known_character_rows(cfg: dict) -> list[dict]:
@@ -68,16 +157,47 @@ def known_character_rows(cfg: dict) -> list[dict]:
     voice_map = read_json(resolve_project_path(paths.get("voice_map", "characters/maps/voice_map.json")), {"clusters": {}})
     rows_by_name: dict[str, dict] = {}
 
-    def add_row(name: str, priority: bool = False, count: int = 0, source: str = "") -> None:
+    def add_row(
+        name: str,
+        priority: bool = False,
+        count: int = 0,
+        source: str = "",
+        *,
+        sample_count: int = 0,
+        detection_count: int = 0,
+        voice_segment_count: int = 0,
+        voice_reference_segment_count: int = 0,
+    ) -> None:
         final_name = canonical_person_name(name)
         if not final_name or is_background_person_name(final_name) or not has_manual_person_name(final_name):
             return
-        row = rows_by_name.setdefault(final_name, {"name": final_name, "priority": False, "face_count": 0, "voice_count": 0, "sources": set()})
+        row = rows_by_name.setdefault(
+            final_name,
+            {
+                "name": final_name,
+                "priority": False,
+                "face_count": 0,
+                "face_sample_count": 0,
+                "face_detection_count": 0,
+                "voice_count": 0,
+                "voice_segment_count": 0,
+                "voice_reference_segment_count": 0,
+                "sources": set(),
+            },
+        )
         row["priority"] = bool(row["priority"] or priority)
         if source == "face":
             row["face_count"] = max(int(row.get("face_count", 0)), int(count or 0))
+            row["face_sample_count"] = max(int(row.get("face_sample_count", 0)), int(sample_count or 0))
+            row["face_detection_count"] = max(int(row.get("face_detection_count", 0)), int(detection_count or 0))
         elif source == "voice":
             row["voice_count"] = max(int(row.get("voice_count", 0)), int(count or 0))
+        elif source == "voice_segments":
+            row["voice_segment_count"] = max(int(row.get("voice_segment_count", 0)), int(voice_segment_count or 0))
+            row["voice_reference_segment_count"] = max(
+                int(row.get("voice_reference_segment_count", 0)),
+                int(voice_reference_segment_count or 0),
+            )
         if source:
             row["sources"].add(source)
 
@@ -86,11 +206,20 @@ def known_character_rows(cfg: dict) -> list[dict]:
         for identity_name, payload in identities.items():
             payload = payload if isinstance(payload, dict) else {}
             count = int(payload.get("face_cluster_count", 0) or payload.get("cluster_count", 0) or 0)
-            add_row(identity_name, bool(payload.get("priority", False)), count, "face")
+            add_row(
+                identity_name,
+                bool(payload.get("priority", False)),
+                count,
+                "face",
+                sample_count=int(payload.get("sample_count", 0) or 0),
+                detection_count=int(payload.get("detection_count", 0) or 0),
+            )
 
     clusters = char_map.get("clusters", {}) if isinstance(char_map, dict) else {}
     if isinstance(clusters, dict):
         counts: dict[str, int] = {}
+        sample_counts: dict[str, int] = {}
+        detection_counts: dict[str, int] = {}
         priorities: dict[str, bool] = {}
         for _cluster_id, payload in clusters.items():
             if not isinstance(payload, dict) or bool(payload.get("ignored", False)):
@@ -99,9 +228,18 @@ def known_character_rows(cfg: dict) -> list[dict]:
             if not final_name or is_background_person_name(final_name) or not has_manual_person_name(final_name):
                 continue
             counts[final_name] = counts.get(final_name, 0) + 1
+            sample_counts[final_name] = sample_counts.get(final_name, 0) + int(payload.get("samples", 0) or 0)
+            detection_counts[final_name] = detection_counts.get(final_name, 0) + int(payload.get("detection_count", 0) or 0)
             priorities[final_name] = bool(priorities.get(final_name, False) or payload.get("priority", False))
         for name, count in counts.items():
-            add_row(name, priorities.get(name, False), count, "face")
+            add_row(
+                name,
+                priorities.get(name, False),
+                count,
+                "face",
+                sample_count=sample_counts.get(name, 0),
+                detection_count=detection_counts.get(name, 0),
+            )
 
     voice_clusters = voice_map.get("clusters", {}) if isinstance(voice_map, dict) else {}
     if isinstance(voice_clusters, dict):
@@ -115,6 +253,15 @@ def known_character_rows(cfg: dict) -> list[dict]:
             voice_counts[final_name] = voice_counts.get(final_name, 0) + 1
         for name, count in voice_counts.items():
             add_row(name, False, count, "voice")
+    for name, evidence in linked_voice_evidence_counts(cfg).items():
+        add_row(
+            name,
+            False,
+            0,
+            "voice_segments",
+            voice_segment_count=evidence.get("voice_segment_count", 0),
+            voice_reference_segment_count=evidence.get("voice_reference_segment_count", 0),
+        )
 
     rows = []
     for row in rows_by_name.values():
@@ -123,12 +270,36 @@ def known_character_rows(cfg: dict) -> list[dict]:
                 "name": row["name"],
                 "priority": bool(row.get("priority", False)),
                 "face_count": int(row.get("face_count", 0) or 0),
+                "face_sample_count": int(row.get("face_sample_count", 0) or 0),
+                "face_detection_count": int(row.get("face_detection_count", 0) or 0),
                 "voice_count": int(row.get("voice_count", 0) or 0),
+                "voice_segment_count": int(row.get("voice_segment_count", 0) or 0),
+                "voice_reference_segment_count": int(row.get("voice_reference_segment_count", 0) or 0),
                 "sources": sorted(row.get("sources", set())),
             }
         )
     rows.sort(key=lambda item: (0 if item["priority"] else 1, -item["face_count"], -item["voice_count"], item["name"].lower()))
     return rows
+
+
+def known_character_row_label(row: dict) -> str:
+    label = str(row.get("name", "")).strip()
+    details = []
+    if row.get("priority"):
+        details.append("main")
+    if int(row.get("face_count", 0) or 0):
+        details.append(f"face clusters {int(row['face_count'])}")
+    if int(row.get("face_sample_count", 0) or 0):
+        details.append(f"face samples {int(row['face_sample_count'])}")
+    if int(row.get("face_detection_count", 0) or 0):
+        details.append(f"detections {int(row['face_detection_count'])}")
+    if int(row.get("voice_count", 0) or 0):
+        details.append(f"voice clusters {int(row['voice_count'])}")
+    if int(row.get("voice_segment_count", 0) or 0):
+        details.append(f"voice segments {int(row['voice_segment_count'])}")
+    if int(row.get("voice_reference_segment_count", 0) or 0):
+        details.append(f"voice refs {int(row['voice_reference_segment_count'])}")
+    return f"{label} ({', '.join(details)})" if details else label
 
 
 def upsert_relationship(payload: dict, row: dict) -> None:
@@ -216,6 +387,22 @@ def relationship_display_text(row: dict) -> str:
         suffix.append(tone)
     suffix_text = f" ({'; '.join(suffix)})" if suffix else ""
     return f"{source} <{relation_type}> {target}{suffix_text}"
+
+
+def remove_relationship_rows_by_indices(payload: dict, active_rows: list[dict], selected_indices) -> int:
+    remove_ids = {
+        id(active_rows[index])
+        for index in selected_indices
+        if isinstance(index, int) and 0 <= index < len(active_rows)
+    }
+    if not remove_ids:
+        return 0
+    payload["relationships"] = [
+        row
+        for row in payload.get("relationships", [])
+        if id(row) not in remove_ids
+    ]
+    return len(remove_ids)
 
 
 def launch_relationship_gui(cfg: dict, payload: dict) -> dict:
@@ -313,16 +500,7 @@ def launch_relationship_gui(cfg: dict, payload: dict) -> dict:
         for row in visible_rows:
             name = row["name"]
             variable = selected_vars.setdefault(name, tk.BooleanVar(value=False))
-            label = f"{name}"
-            details = []
-            if row.get("priority"):
-                details.append("main")
-            if row.get("face_count"):
-                details.append(f"faces {row['face_count']}")
-            if row.get("voice_count"):
-                details.append(f"voices {row['voice_count']}")
-            if details:
-                label += f" ({', '.join(details)})"
+            label = known_character_row_label(row)
             check = ttk.Checkbutton(check_frame, text=label, variable=variable, command=update_selected_count)
             check.pack(anchor="w", fill="x", pady=2)
 
@@ -376,7 +554,12 @@ def launch_relationship_gui(cfg: dict, payload: dict) -> dict:
     list_box.grid(row=2, column=0, sticky="nsew")
     list_box.columnconfigure(0, weight=1)
     list_box.rowconfigure(0, weight=1)
-    relationship_listbox = tk.Listbox(list_box, height=12)
+    relationship_listbox = tk.Listbox(
+        list_box,
+        height=12,
+        selectmode=tk.MULTIPLE,
+        exportselection=False,
+    )
     relationship_scrollbar = ttk.Scrollbar(list_box, orient="vertical", command=relationship_listbox.yview)
     relationship_listbox.configure(yscrollcommand=relationship_scrollbar.set)
     relationship_listbox.grid(row=0, column=0, sticky="nsew")
@@ -450,9 +633,8 @@ def launch_relationship_gui(cfg: dict, payload: dict) -> dict:
         if not selected_indices:
             messagebox.showwarning("No relationship selected", "Select one or more relationship rows first.")
             return
-        remove_ids = {id(active_relationship_rows[index]) for index in selected_indices if index < len(active_relationship_rows)}
-        payload["relationships"] = [row for row in payload.get("relationships", []) if id(row) not in remove_ids]
-        save_payload(f"Removed {len(remove_ids)} relationship row(s).")
+        removed = remove_relationship_rows_by_indices(payload, active_relationship_rows, selected_indices)
+        save_payload(f"Removed {removed} relationship row(s).")
         refresh_relationship_list()
 
     button_row = ttk.Frame(right)
@@ -481,6 +663,11 @@ def main() -> None:
     path = character_relationships_path(cfg)
     payload = load_character_relationships(cfg) if path.exists() else empty_character_relationships()
     changed = False
+    payload, repaired_names = repair_relationships_from_character_map(cfg, payload)
+    if repaired_names:
+        payload = write_character_relationships(cfg, payload)
+        repaired_text = ", ".join(f"{old} -> {new}" for old, new in repaired_names)
+        info(f"Repaired stale public-metadata relationship name(s): {repaired_text}")
 
     if args.gui:
         launch_relationship_gui(cfg, payload)

@@ -214,6 +214,11 @@ DEFAULT_CONFIG = {
     },
     "character_detection": {
         "sample_every_n_frames": 6,
+        "high_recall_face_scan": True,
+        "high_recall_max_sample_every_n_frames": 4,
+        "high_recall_min_faces_per_frame": 4,
+        "high_recall_min_scene_clusters": 10,
+        "max_scene_face_detections": 96,
         "interactive_assignment": False,
         "embedding_threshold": 0.80,
         "scene_embedding_threshold": 0.76,
@@ -339,6 +344,9 @@ DEFAULT_CONFIG = {
         "max_frame_samples_per_character": 48,
         "max_video_clips_per_character": 18,
         "max_voice_segments_per_character": 48,
+        "visual_samples_require_character_visible": True,
+        "voice_reference_require_character_evidence": True,
+        "allow_visible_only_voice_fallback": False,
         "frame_width": 1280,
         "frame_height": 720,
 "image_base_model": "stabilityai/stable-diffusion-xl-base-1.0",
@@ -4430,6 +4438,30 @@ NON_SPEECH_TEXT_MARKERS = {
 }
 
 
+NON_SPEECH_TEXT_PHRASES = {
+    "altyazi",
+    "altyazı",
+    "subtitles",
+    "subtitle",
+    "untertitel",
+    "subtitulos",
+    "subtítulos",
+    "subtitulado",
+    "captioned by",
+    "closed captions",
+    "thanks for watching",
+    "thank you for watching",
+    "gracias por ver",
+    "gracias por mirar",
+    "danke fürs zuschauen",
+    "danke fuers zuschauen",
+    "like and subscribe",
+    "bitte abonnieren",
+    "subscribe",
+    "abonnieren",
+}
+
+
 def transcription_settings(cfg: dict | None) -> dict:
     if isinstance(cfg, dict) and isinstance(cfg.get("transcription"), dict):
         return cfg["transcription"]
@@ -4442,6 +4474,14 @@ def non_speech_text_reason(text: object) -> str:
         return ""
     if "♪" in cleaned or "♫" in cleaned:
         return "music_symbol"
+    phrase_probe = cleaned.replace("ı", "i")
+    for phrase in NON_SPEECH_TEXT_PHRASES:
+        if phrase in phrase_probe:
+            return "subtitle_or_channel_boilerplate"
+    if re.search(r"\b(?:www\.|https?://|\.com\b|\.net\b|\.org\b)", cleaned):
+        return "url_or_channel_boilerplate"
+    if re.search(r"\b[a-z]\.\s*[a-z]\.?\b", cleaned) and len(tokens_from_text(cleaned)) <= 4:
+        return "subtitle_credit"
     bracketed = bool(re.search(r"[\[(].{0,40}[\])]", cleaned))
     normalized = re.sub(r"[\[\]\(\)\{\}:;,.!?\"'`~*_<>/\\|-]+", " ", cleaned)
     tokens = tokens_from_text(normalized)

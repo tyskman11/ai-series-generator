@@ -192,15 +192,130 @@ class VoiceAssignmentFilteringTests(unittest.TestCase):
                             "speech_confidence": 0.9,
                             "audio_content_type": "speech",
                             "voice_reference_eligible": True,
+                            "speaker_face_cluster": "face_babe",
                         },
                     ],
                 }
             ]
 
-            candidates = STEP09.original_voice_candidates(rows, "Babe", {"transcription": {}})
+            candidates = STEP09.original_voice_candidates(rows, "Babe", {"transcription": {}}, {"face_babe": "Babe"})
 
         self.assertEqual(len(candidates), 1)
         self.assertEqual(candidates[0]["audio_path"], clean)
+        self.assertEqual(candidates[0]["character_evidence"], "speaker_face_cluster")
+
+    def test_foundation_voice_candidates_reject_subtitle_boilerplate_even_when_flagged_speech(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            subtitle = root / "subtitle.wav"
+            write_tiny_wav(subtitle)
+            rows = [
+                {
+                    "episode_id": "e01",
+                    "scene_id": "s01",
+                    "transcript_segments": [
+                        {
+                            "speaker_name": "Babe",
+                            "audio_file": str(subtitle),
+                            "start": 0.0,
+                            "end": 2.0,
+                            "text": "Altyazı M.K.",
+                            "speech_confidence": 0.99,
+                            "audio_content_type": "speech",
+                            "voice_reference_eligible": True,
+                            "speaker_face_cluster": "face_babe",
+                        }
+                    ],
+                }
+            ]
+
+            candidates = STEP09.original_voice_candidates(rows, "Babe", {"transcription": {}}, {"face_babe": "Babe"})
+
+        self.assertEqual(candidates, [])
+
+    def test_foundation_voice_candidates_respect_explicit_project_language(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            german = root / "german.wav"
+            spanish = root / "spanish.wav"
+            write_tiny_wav(german)
+            write_tiny_wav(spanish)
+            rows = [
+                {
+                    "episode_id": "e01",
+                    "scene_id": "s01",
+                    "transcript_segments": [
+                        {
+                            "speaker_name": "Babe",
+                            "audio_file": str(spanish),
+                            "start": 0.0,
+                            "end": 2.0,
+                            "text": "No puedo creerlo.",
+                            "language": "es",
+                            "speech_confidence": 0.99,
+                            "audio_content_type": "speech",
+                            "speaker_face_cluster": "face_babe",
+                        },
+                        {
+                            "speaker_name": "Babe",
+                            "audio_file": str(german),
+                            "start": 2.1,
+                            "end": 4.2,
+                            "text": "Das ist die richtige Stimme.",
+                            "language": "de",
+                            "speech_confidence": 0.99,
+                            "audio_content_type": "speech",
+                            "speaker_face_cluster": "face_babe",
+                        },
+                    ],
+                }
+            ]
+
+            candidates = STEP09.original_voice_candidates(
+                rows,
+                "Babe",
+                {"transcription": {"language": "de"}},
+                {"face_babe": "Babe"},
+            )
+
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(candidates[0]["audio_path"], german)
+
+    def test_foundation_voice_candidates_do_not_use_visible_only_fallback_by_default(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            clean = root / "clean.wav"
+            write_tiny_wav(clean)
+            rows = [
+                {
+                    "episode_id": "e01",
+                    "scene_id": "s01",
+                    "transcript_segments": [
+                        {
+                            "speaker_name": "Double G",
+                            "audio_file": str(clean),
+                            "start": 0.0,
+                            "end": 2.0,
+                            "text": "Ich klinge nicht wie Babe.",
+                            "speech_confidence": 0.95,
+                            "audio_content_type": "speech",
+                            "visible_character_names": ["Babe"],
+                        }
+                    ],
+                }
+            ]
+
+            strict_candidates = STEP09.original_voice_candidates(rows, "Babe", {"transcription": {}}, {})
+            allowed_candidates = STEP09.original_voice_candidates(
+                rows,
+                "Babe",
+                {"transcription": {}, "foundation_training": {"allow_visible_only_voice_fallback": True}},
+                {},
+            )
+
+        self.assertEqual(strict_candidates, [])
+        self.assertEqual(len(allowed_candidates), 1)
+        self.assertEqual(allowed_candidates[0]["character_evidence"], "single_visible_character")
 
     def test_render_reference_segments_skip_ineligible_voice_rows(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
