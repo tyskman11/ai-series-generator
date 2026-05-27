@@ -1723,72 +1723,90 @@ def process_episode_dir(
         combined_file = combined_dir / f"{episode_dir.name}_segments.json"
         cluster_file = scene_cache_dir / "_speaker_clusters.json"
         if not episode_transcription_completed(episode_dir, cfg):
-            finalize_heartbeat = None
-            finalize_acquired = not shared_workers
-            if shared_workers:
+            finalize_attempt = 0
+            while not episode_transcription_completed(episode_dir, cfg):
+                finalize_attempt += 1
+                finalize_heartbeat = None
+                finalize_acquired = not shared_workers
                 finalize_meta = lambda: distributed_worker_metadata(  # noqa: E731
                     {
                         "step": "03_diarize_and_transcribe",
                         "episode_id": episode_dir.name,
                         "phase": "finalize",
+                        "finalize_attempt": finalize_attempt,
                     }
                 )
-                finalize_acquired = (
-                    acquire_distributed_lease(
-                        finalize_lease_root,
-                        "episode_finalize",
-                        worker_id,
-                        lease_ttl_seconds,
-                        meta=finalize_meta(),
+                if shared_workers:
+                    finalize_acquired = (
+                        acquire_distributed_lease(
+                            finalize_lease_root,
+                            "episode_finalize",
+                            worker_id,
+                            lease_ttl_seconds,
+                            meta=finalize_meta(),
+                        )
+                        is not None
                     )
-                    is not None
-                )
-                if finalize_acquired:
-                    finalize_heartbeat = DistributedLeaseHeartbeat(
-                        root=finalize_lease_root,
-                        lease_name="episode_finalize",
-                        owner_id=worker_id,
-                        ttl_seconds=lease_ttl_seconds,
-                        interval_seconds=heartbeat_interval_seconds,
-                        meta_factory=finalize_meta,
-                    )
-                    finalize_heartbeat.start()
-            try:
-                if finalize_acquired and not episode_transcription_completed(episode_dir, cfg):
-                    combined_file, cluster_file, segment_count = finalize_episode_transcription_outputs(
-                        episode_dir,
-                        scenes,
-                        effective_cfg,
-                        scene_cache_dir,
-                        combined_dir,
-                        speaker_backend,
-                    )
-                    contributed = True
-                    mark_step_completed(
-                        "03_diarize_and_transcribe",
-                        autosave_target,
-                        {
-                            "episode_id": episode_dir.name,
-                            "process_version": PROCESS_VERSION,
-                            "scene_count": len(scenes),
-                            "segment_count": segment_count,
-                            "completed_scene_ids": completed_scene_ids,
-                            "combined_file": str(combined_file),
-                            "cluster_file": str(cluster_file),
-                            "backend": speaker_backend,
-                            "detected_language": episode_language,
-                            "worker_id": worker_id,
-                            "shared_workers": shared_workers,
-                        },
-                    )
-                    ok(f"Saved segment transcripts: {segment_count} segments")
-                elif shared_workers:
-                    while not episode_transcription_completed(episode_dir, cfg):
-                        time.sleep(poll_interval_seconds)
-            finally:
-                if finalize_heartbeat is not None:
-                    finalize_heartbeat.stop()
-                    release_distributed_lease(finalize_lease_root, "episode_finalize", worker_id)
+                    if finalize_acquired:
+                        finalize_heartbeat = DistributedLeaseHeartbeat(
+                            root=finalize_lease_root,
+                            lease_name="episode_finalize",
+                            owner_id=worker_id,
+                            ttl_seconds=lease_ttl_seconds,
+                            interval_seconds=heartbeat_interval_seconds,
+                            meta_factory=finalize_meta,
+                        )
+                        finalize_heartbeat.start()
+                try:
+                    if finalize_acquired:
+                        if not episode_transcription_completed(episode_dir, cfg):
+                            combined_file, cluster_file, segment_count = finalize_episode_transcription_outputs(
+                                episode_dir,
+                                scenes,
+                                effective_cfg,
+                                scene_cache_dir,
+                                combined_dir,
+                                speaker_backend,
+                            )
+                            contributed = True
+                            mark_step_completed(
+                                "03_diarize_and_transcribe",
+                                autosave_target,
+                                {
+                                    "episode_id": episode_dir.name,
+                                    "process_version": PROCESS_VERSION,
+                                    "scene_count": len(scenes),
+                                    "segment_count": segment_count,
+                                    "completed_scene_ids": completed_scene_ids,
+                                    "combined_file": str(combined_file),
+                                    "cluster_file": str(cluster_file),
+                                    "backend": speaker_backend,
+                                    "detected_language": episode_language,
+                                    "worker_id": worker_id,
+                                    "shared_workers": shared_workers,
+                                    "finalize_attempt": finalize_attempt,
+                                },
+                            )
+                            ok(f"Saved segment transcripts: {segment_count} segments")
+                        break
+                    if not shared_workers:
+                        break
+                    if live_reporter is not None:
+                        live_reporter.update(
+                            (episode_index - 1) + (len(completed_scene_ids) / max(1, len(scenes))),
+                            current_label="Waiting for episode finalize",
+                            parent_label=episode_dir.name,
+                            extra_label=f"Completed scenes: {len(completed_scene_ids)}/{len(scenes)} | Finalize attempt: {finalize_attempt}",
+                            scope_current=len(completed_scene_ids),
+                            scope_total=len(scenes),
+                            scope_started_at=episode_started_at,
+                            scope_label=f"Episode {episode_index}/{episode_total}",
+                        )
+                    time.sleep(poll_interval_seconds)
+                finally:
+                    if finalize_heartbeat is not None:
+                        finalize_heartbeat.stop()
+                        release_distributed_lease(finalize_lease_root, "episode_finalize", worker_id)
 
         if episode_transcription_completed(episode_dir, cfg) and not completed_step_state(
             "03_diarize_and_transcribe", autosave_target, PROCESS_VERSION
@@ -1841,7 +1859,7 @@ def main() -> None:
         if args.episode:
             info("No matching scene folders found.")
         else:
-            info("No pending episodes found for step 04.")
+            info("No pending episodes found for step 03.")
         return
 
     model_name = cfg["transcription"]["model_name"]

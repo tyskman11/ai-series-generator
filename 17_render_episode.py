@@ -29,6 +29,7 @@ from support_scripts.pipeline_common import (
     distributed_heartbeat_interval_seconds,
     distributed_lease_ttl_seconds,
     distributed_step_runtime_root,
+    distributed_worker_metadata,
     LiveProgressReporter,
     PROJECT_ROOT,
     detect_tool,
@@ -3887,7 +3888,9 @@ def main() -> None:
     lease_heartbeat = None
     try:
         if shared_workers:
-            lease_meta = {"step": "17_render_episode", "episode_id": episode_id, "worker_id": worker_id}
+            lease_meta = distributed_worker_metadata(
+                {"step": "17_render_episode", "episode_id": episode_id, "worker_id": worker_id}
+            )
             acquired = acquire_distributed_lease(
                 lease_root,
                 episode_id,

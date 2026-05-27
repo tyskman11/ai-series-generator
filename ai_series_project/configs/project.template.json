@@ -11,9 +11,9 @@
   },
   "distributed": {
     "enabled": true,
-    "lease_ttl_seconds": 1800,
-    "heartbeat_interval_seconds": 45,
-    "poll_interval_seconds": 10
+    "lease_ttl_seconds": 300,
+    "heartbeat_interval_seconds": 30,
+    "poll_interval_seconds": 5
   },
   "paths": {
     "inbox_episodes": "data/inbox/episodes",

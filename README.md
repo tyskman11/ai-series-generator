@@ -409,7 +409,7 @@ Important areas:
 - `paths.set_bible`: reusable set continuity output written during generation
 - `paths.quality_reports`: JSON/Markdown Realism Reports written by `18_quality_gate.py`
 - `runtime.*`: device, FFmpeg GPU preference, torch index URL
-- `distributed.*`: NAS/shared-worker lease timing
+- `distributed.*`: NAS/shared-worker lease timing; default leases expire after 5 minutes and are refreshed by heartbeats, so aborted PC/NAS workers can be taken over without waiting for the old 30-minute timeout
 - `character_detection.internet_name_lookup`: public metadata lookup in `05_review_unknowns.py` for completing partial character labels; only suggestions with at least `95%` confidence are written
 - `character_detection.high_recall_face_scan`: uses recall floors for frame sampling, faces per frame, and per-scene clusters even when an older local `project.json` still contains the previous low caps
 - `character_detection.high_recall_max_sample_every_n_frames`, `high_recall_min_faces_per_frame`, `high_recall_min_scene_clusters`, and `max_scene_face_detections`: tune the step-04 recall/performance tradeoff; disable `high_recall_face_scan` locally only when the faster old caps are intentional
@@ -605,6 +605,7 @@ python -m py_compile 00_prepare_runtime.py 03_diarize_and_transcribe.py 04_link_
 - release-gate auto-retry now calls `19_regenerate_weak_scenes.py` from the repository root layout correctly after the root/`ai_series_project` split
 - `23_generate_finished_episodes.py` and `24_process_next_episode.py` now call the generation toolkit so optional tools actively feed continuity, voice, pacing, subtitle, review, metadata, and export quality signals into finished-episode generation
 - `03_diarize_and_transcribe.py` now stores Whisper and SpeechBrain model data only inside `ai_series_project/`, refreshes stale language caches with process version `14`, rejects cached scene languages that conflict with an explicit project transcription language, and records speech-confidence/content-type fields used by downstream voice filtering
+- `03_diarize_and_transcribe.py` now retries shared-worker finalization after a missed/stale finalize lease instead of waiting forever, `17_render_episode.py` writes recoverable host/PID metadata for render leases, and shared leases default to a shorter heartbeat-protected timeout for faster recovery after aborted workers
 - source-language handling now defaults to portable `auto` detection in the public template while supporting explicit local language codes for known single-language projects
 - quality-first render now blocks local seed-frame, local motion, system-TTS, and silent fallback paths from being labeled as finished generated episodes
 - forced voice cloning ignores stale per-line audio files and regenerates dialogue through XTTS/voice-clone output instead of reusing old TTS artifacts
