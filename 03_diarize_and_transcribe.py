@@ -67,6 +67,7 @@ from support_scripts.pipeline_common import (
 )
 
 PROCESS_VERSION = 14
+STEP_NAME = "03_diarize_and_transcribe"
 
 
 def parse_args() -> argparse.Namespace:
@@ -77,35 +78,78 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def episode_transcription_completed(episode_dir: Path, cfg: dict) -> bool:
+def completed_transcription_artifact_summary(episode_dir: Path, cfg: dict) -> dict:
     combined_file = resolve_project_path(cfg["paths"]["speaker_transcripts"]) / f"{episode_dir.name}_segments.json"
     cluster_file = resolve_project_path(cfg["paths"]["speaker_segments"]) / episode_dir.name / "_speaker_clusters.json"
     if not combined_file.exists() or not cluster_file.exists():
-        return False
+        return {}
     try:
         rows = resolve_rows(combined_file)
         cluster_payload = resolve_rows(cluster_file)
     except Exception:
-        return False
+        return {}
     if not isinstance(rows, list) or not isinstance(cluster_payload, dict):
-        return False
+        return {}
     if int(cluster_payload.get("process_version", 0) or 0) != PROCESS_VERSION:
-        return False
+        return {}
     if rows and rows[0].get("process_version") != PROCESS_VERSION:
-        return False
+        return {}
     if not rows_match_configured_transcription_language(rows, cfg):
-        return False
+        return {}
     explicit_language = configured_transcription_language(cfg)
     cluster_language = normalize_language_code(cluster_payload.get("detected_language", ""))
     if explicit_language and cluster_language != explicit_language:
+        return {}
+    available_scene_count = len([path for path in episode_dir.glob("scene_*.mp4") if path.is_file()])
+    expected_scene_count = int(cluster_payload.get("scene_count", 0) or 0)
+    if expected_scene_count > 0 and available_scene_count < expected_scene_count:
+        return {}
+    scene_cache_dir = resolve_project_path(cfg["paths"]["speaker_segments"]) / episode_dir.name
+    completed_scene_ids = sorted(completed_scene_cache_ids(scene_cache_dir, cfg))
+    if expected_scene_count > 0 and len(completed_scene_ids) < expected_scene_count:
+        return {}
+    return {
+        "episode_id": episode_dir.name,
+        "process_version": PROCESS_VERSION,
+        "scene_count": expected_scene_count or available_scene_count,
+        "segment_count": len(rows),
+        "completed_scene_ids": completed_scene_ids,
+        "combined_file": str(combined_file),
+        "cluster_file": str(cluster_file),
+        "backend": str(cluster_payload.get("backend", "")),
+        "detected_language": cluster_language,
+        "language_counts": cluster_payload.get("language_counts", {}),
+    }
+
+
+def repair_completed_transcription_autosave(episode_dir: Path, cfg: dict, summary: dict) -> bool:
+    if not summary:
         return False
-    autosave_state = completed_step_state("03_diarize_and_transcribe", episode_dir.name, PROCESS_VERSION)
+    if completed_step_state(STEP_NAME, episode_dir.name, PROCESS_VERSION):
+        return False
+    autosave_state = load_step_autosave(STEP_NAME, episode_dir.name)
+    repair_payload = dict(summary)
+    if isinstance(autosave_state, dict):
+        repair_payload["repaired_from_status"] = coalesce_text(autosave_state.get("status", ""))
+        if autosave_state.get("worker_id"):
+            repair_payload["previous_worker_id"] = autosave_state.get("worker_id")
+    repair_payload["self_healed_autosave"] = True
+    mark_step_completed(STEP_NAME, episode_dir.name, repair_payload)
+    return True
+
+
+def episode_transcription_completed(episode_dir: Path, cfg: dict) -> bool:
+    summary = completed_transcription_artifact_summary(episode_dir, cfg)
+    if not summary:
+        return False
+    autosave_state = completed_step_state(STEP_NAME, episode_dir.name, PROCESS_VERSION)
     if autosave_state:
         expected_scene_count = int(autosave_state.get("scene_count", 0) or 0)
         if expected_scene_count > 0:
             available_scene_count = len([path for path in episode_dir.glob("scene_*.mp4") if path.is_file()])
             if available_scene_count < expected_scene_count:
                 return False
+    repair_completed_transcription_autosave(episode_dir, cfg, summary)
     return True
 
 
@@ -1019,12 +1063,18 @@ def transcribe_scene(model, scene_wav: Path, cfg: dict, use_fp16: bool) -> dict[
         end_sec = max(start_sec + 0.15, float(item.get("end", start_sec + 0.15)))
         if not text and end_sec - start_sec < 0.35:
             continue
+        segment_language = detected_language
+        if not explicit_language:
+            segment_language = detect_language_from_text(
+                text,
+                normalize_language_code(item.get("language", ""), detected_language),
+            )
         segments.append(
             {
                 "start": start_sec,
                 "end": end_sec,
                 "text": text,
-                "language": detect_language_from_text(text, normalize_language_code(item.get("language", ""), detected_language)),
+                "language": segment_language,
             }
         )
     if not segments:
@@ -1539,16 +1589,6 @@ def process_episode_dir(
 ) -> bool:
     autosave_target = episode_dir.name
     if episode_transcription_completed(episode_dir, cfg):
-        mark_step_completed(
-            "03_diarize_and_transcribe",
-            autosave_target,
-            {
-                "episode_id": episode_dir.name,
-                "process_version": PROCESS_VERSION,
-                "combined_file": str(resolve_project_path(cfg["paths"]["speaker_transcripts"]) / f"{episode_dir.name}_segments.json"),
-                "cluster_file": str(resolve_project_path(cfg["paths"]["speaker_segments"]) / episode_dir.name / "_speaker_clusters.json"),
-            },
-        )
         ok(f"Transcription already completed successfully: {episode_dir.name}")
         return False
 

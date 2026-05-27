@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 import tempfile
 import unittest
@@ -26,6 +27,106 @@ STEP03 = load_module("03_diarize_and_transcribe.py", "step03_shared_finalize")
 
 
 class SharedFinalizeTests(unittest.TestCase):
+    def test_forced_transcription_language_locks_segment_language(self) -> None:
+        class FakeModel:
+            def transcribe(self, *_args, **_kwargs):
+                return {
+                    "language": "en",
+                    "text": "Drop that what?",
+                    "segments": [
+                        {
+                            "start": 0.0,
+                            "end": 1.0,
+                            "text": "Drop that what?",
+                            "language": "en",
+                        }
+                    ],
+                }
+
+        cfg = {
+            "transcription": {
+                "task": "transcribe",
+                "language": "de",
+                "merge_gap_seconds": 0.35,
+                "min_segment_seconds": 0.6,
+            }
+        }
+        with mock.patch.object(STEP03, "wav_duration_seconds", return_value=1.0):
+            payload = STEP03.transcribe_scene(FakeModel(), Path("scene_0387.wav"), cfg, use_fp16=False)
+
+        self.assertEqual(payload["detected_language"], "de")
+        self.assertEqual(payload["segments"][0]["language"], "de")
+
+    def test_completed_artifacts_repair_stale_autosave(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            episode_dir = root / "scene_clips" / "Episode01"
+            episode_dir.mkdir(parents=True)
+            (episode_dir / "scene_0001.mp4").write_bytes(b"fake scene")
+            transcript_dir = root / "speaker_transcripts"
+            cache_dir = root / "speaker_segments" / "Episode01"
+            transcript_dir.mkdir(parents=True)
+            cache_dir.mkdir(parents=True)
+
+            rows = [
+                {
+                    "process_version": STEP03.PROCESS_VERSION,
+                    "scene_id": "scene_0001",
+                    "segment_id": "scene_0001_seg_001",
+                    "text": "Hallo zusammen.",
+                    "language": "de",
+                }
+            ]
+            (transcript_dir / "Episode01_segments.json").write_text(json.dumps(rows), encoding="utf-8")
+            (cache_dir / "scene_0001.json").write_text(json.dumps(rows), encoding="utf-8")
+            (cache_dir / "_speaker_clusters.json").write_text(
+                json.dumps(
+                    {
+                        "clusters": [],
+                        "process_version": STEP03.PROCESS_VERSION,
+                        "scene_count": 1,
+                        "segment_count": 1,
+                        "detected_language": "",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            cfg = {
+                "transcription": {"language": "auto"},
+                "paths": {
+                    "speaker_segments": "speaker_segments",
+                    "speaker_transcripts": "speaker_transcripts",
+                },
+            }
+
+            with mock.patch.object(
+                STEP03,
+                "resolve_project_path",
+                side_effect=lambda rel: root / rel,
+            ), mock.patch.object(
+                STEP03,
+                "completed_step_state",
+                return_value={},
+            ), mock.patch.object(
+                STEP03,
+                "load_step_autosave",
+                return_value={"status": "in_progress", "worker_id": "worker-old"},
+            ), mock.patch.object(
+                STEP03,
+                "mark_step_completed",
+            ) as mark_mock:
+                self.assertTrue(STEP03.episode_transcription_completed(episode_dir, cfg))
+
+            mark_mock.assert_called_once()
+            step_name, target_name, payload = mark_mock.call_args.args
+            self.assertEqual(step_name, "03_diarize_and_transcribe")
+            self.assertEqual(target_name, "Episode01")
+            self.assertTrue(payload["self_healed_autosave"])
+            self.assertEqual(payload["repaired_from_status"], "in_progress")
+            self.assertEqual(payload["previous_worker_id"], "worker-old")
+            self.assertEqual(payload["scene_count"], 1)
+            self.assertEqual(payload["segment_count"], 1)
+
     def test_render_direct_lease_uses_recoverable_worker_metadata(self) -> None:
         render_source = (SCRIPT_ROOT / "17_render_episode.py").read_text(encoding="utf-8")
 
