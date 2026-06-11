@@ -6737,13 +6737,36 @@ class ManualNamingTests(unittest.TestCase):
         self.assertTrue(readiness["requires_gpu"])
         self.assertIn("CPU-only", readiness["reason"])
 
+    def test_storyboard_backend_allows_cpu_worker_when_configured(self) -> None:
+        cfg = {
+            "external_backends": {
+                "storyboard_scene_runner": {
+                    "enabled": True,
+                    "requires_gpu": False,
+                    "prefer_gpu": True,
+                    "allow_cpu_execution": True,
+                }
+            }
+        }
+        with mock.patch.object(
+            STEP16BACKEND,
+            "distributed_worker_capabilities",
+            return_value={"has_gpu": False, "source": "runtime_probe"},
+        ):
+            readiness = STEP16BACKEND.storyboard_worker_readiness(cfg)
+
+        self.assertTrue(readiness["ready"])
+        self.assertFalse(readiness["requires_gpu"])
+        self.assertTrue(readiness["allow_cpu_execution"])
+        self.assertTrue(readiness["prefer_gpu"])
+        self.assertEqual(readiness["execution_device"], "cpu")
+
     def test_storyboard_shared_result_collection_does_not_start_backend_again(self) -> None:
         source = Path(STEP16BACKEND.__file__).read_text(encoding="utf-8")
-        collection_block = source.split("if shared_workers and len(rows) < len(backend_inputs):", 1)[1]
-        collection_block = collection_block.split("pending_scene_ids =", 1)[0]
-
-        self.assertIn("existing_scene_backend_row", collection_block)
-        self.assertNotIn("materialize_scene_backend_frame", collection_block)
+        self.assertIn("Waiting for shared CPU/CUDA workers", source)
+        self.assertIn("scene_backend_output_is_current", source)
+        self.assertIn("time.sleep(poll_interval_seconds)", source)
+        self.assertNotIn("pending_external_worker", source.split("def main()", 1)[1])
 
     def test_storyboard_backend_rejects_stale_explicit_language_inputs(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

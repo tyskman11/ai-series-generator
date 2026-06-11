@@ -482,10 +482,12 @@
       "working_directory": ".",
       "environment": {
         "SERIES_STORYBOARD_BACKEND_COMMAND": "\"{python}\" \"tools/quality_backends/local_diffusion_image_backend.py\"",
+        "SERIES_IMAGE_ALLOW_CPU": "1",
         "PYTHONUNBUFFERED": "1"
       },
-      "requires_gpu": true,
-      "allow_cpu_execution": false,
+      "requires_gpu": false,
+      "prefer_gpu": true,
+      "allow_cpu_execution": true,
       "required_commands": [],
       "required_python_modules": [
         "diffusers"
@@ -494,7 +496,7 @@
         "SERIES_STORYBOARD_BACKEND_COMMAND"
       ],
       "shell": false,
-      "timeout_seconds": 1800,
+      "timeout_seconds": 21600,
       "skip_if_outputs_exist": true,
       "success_mode": "any",
       "success_outputs": [
@@ -517,8 +519,12 @@
       ],
       "working_directory": ".",
       "environment": {
-        "SERIES_IMAGE_BACKEND_COMMAND": "\"{python}\" \"tools/quality_backends/local_diffusion_image_backend.py\""
+        "SERIES_IMAGE_BACKEND_COMMAND": "\"{python}\" \"tools/quality_backends/local_diffusion_image_backend.py\"",
+        "SERIES_IMAGE_ALLOW_CPU": "1"
       },
+      "requires_gpu": false,
+      "prefer_gpu": true,
+      "allow_cpu_execution": true,
       "required_commands": [],
       "required_python_modules": [
         "diffusers"
@@ -527,7 +533,7 @@
         "SERIES_IMAGE_BACKEND_COMMAND"
       ],
       "shell": false,
-      "timeout_seconds": 3600,
+      "timeout_seconds": 21600,
       "skip_if_outputs_exist": true,
       "success_mode": "any",
       "success_outputs": [

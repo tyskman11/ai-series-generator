@@ -12,6 +12,7 @@ import argparse
 import os
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageEnhance, ImageFilter, ImageOps
@@ -20,6 +21,7 @@ from support_scripts.pipeline_common import (
     add_shared_worker_arguments,
     detect_tool,
     distributed_item_lease,
+    distributed_poll_interval_seconds,
     distributed_step_runtime_root,
     distributed_worker_capabilities,
     LiveProgressReporter,
@@ -217,6 +219,7 @@ def storyboard_worker_readiness(cfg: dict | None) -> dict:
     capabilities = distributed_worker_capabilities()
     requires_gpu = storyboard_runner_requires_gpu(cfg)
     allow_cpu = bool(runner.get("allow_cpu_execution", False))
+    prefer_gpu = bool(runner.get("prefer_gpu", True))
     has_gpu = bool(capabilities.get("has_gpu", False))
     ready = not requires_gpu or allow_cpu or has_gpu
     reason = ""
@@ -230,7 +233,9 @@ def storyboard_worker_readiness(cfg: dict | None) -> dict:
         "ready": ready,
         "requires_gpu": requires_gpu,
         "allow_cpu_execution": allow_cpu,
+        "prefer_gpu": prefer_gpu,
         "has_gpu": has_gpu,
+        "execution_device": "cuda" if has_gpu else "cpu",
         "capabilities": capabilities,
         "reason": reason,
     }
@@ -503,6 +508,28 @@ def existing_scene_backend_row(assets_root: Path, payload: dict) -> dict:
         source_type="missing",
         backend_mode="missing_storyboard_backend",
     )
+
+
+def scene_backend_output_is_current(
+    assets_root: Path,
+    payload: dict,
+    *,
+    force: bool,
+    run_started_at: float,
+) -> tuple[bool, dict]:
+    row = existing_scene_backend_row(assets_root, payload)
+    if str(row.get("status", "")) != "existing":
+        return False, row
+    if not force:
+        return True, row
+    frame_path = scene_frame_output_path(
+        assets_root,
+        str(payload.get("scene_id", "")).strip() or "scene",
+    )
+    try:
+        return frame_path.stat().st_mtime >= run_started_at, row
+    except OSError:
+        return False, row
 
 
 def ensure_scene_backend_derivatives(
@@ -822,6 +849,13 @@ def main() -> None:
     worker_readiness = storyboard_worker_readiness(cfg)
     if not worker_readiness["ready"]:
         raise RuntimeError(str(worker_readiness["reason"]))
+    if worker_readiness["has_gpu"]:
+        info("Storyboard generation device: CUDA GPU.")
+    else:
+        warn(
+            "Storyboard generation device: CPU. Real SDXL generation is enabled, but each scene can take "
+            "substantially longer than on CUDA. Start step 16 or 24 on a CUDA PC in parallel to share the remaining scenes."
+        )
 
     autosave_target = episode_id
     mark_step_started("16_run_storyboard_backend", autosave_target, {"episode_id": episode_id, "shotlist": str(shotlist_path)})
@@ -832,53 +866,119 @@ def main() -> None:
         parent_label=episode_id,
     )
     scene_lease_root = distributed_step_runtime_root("16_run_storyboard_backend", episode_id) / "scenes"
+    poll_interval_seconds = distributed_poll_interval_seconds(cfg)
+    run_started_at = time.time()
     if shared_workers:
         info(f"Shared NAS workers: enabled ({worker_id})")
     try:
-        rows: list[dict] = []
-        completed_count = 0
-        for index, backend_input_path in enumerate(backend_inputs, start=1):
-            payload = read_json(backend_input_path, {})
-            scene_id = str(payload.get("scene_id", backend_input_path.stem.replace("_backend_input", ""))).strip() or f"scene_{index:04d}"
-            with distributed_item_lease(
-                root=scene_lease_root,
-                lease_name=scene_id,
-                cfg=cfg,
-                worker_id=worker_id,
-                enabled=shared_workers,
-                        meta={"step": "16_run_storyboard_backend", "episode_id": episode_id, "scene_id": scene_id, "worker_id": worker_id},
-            ) as acquired:
-                if not acquired:
-                    continue
-                reporter.update(index - 1, current_label=scene_id, extra_label="Running now: materialize backend scene pack", force=True)
-                row = materialize_scene_backend_frame(assets_root, payload, width, height, fps, crf, ffmpeg, args.force, cfg, backend_input_path)
-                row["backend_input_path"] = str(backend_input_path)
-                rows.append(row)
-                if row.get("status") == "completed":
-                    completed_count += 1
-                reporter.update(index, current_label=scene_id, extra_label=f"Status: {row.get('status', 'unknown')}")
-        if shared_workers and len(rows) < len(backend_inputs):
-            rows = []
-            completed_count = 0
-            for backend_input_path in backend_inputs:
-                payload = read_json(backend_input_path, {})
-                row = existing_scene_backend_row(assets_root, payload)
-                row["backend_input_path"] = str(backend_input_path)
-                rows.append(row)
-                if row.get("status") in {"completed", "existing"}:
-                    completed_count += 1
-
-        pending_scene_ids = [
-            str(row.get("scene_id", ""))
-            for row in rows
-            if str(row.get("status", "")) == "pending_external_worker"
-        ]
-        if pending_scene_ids:
-            raise RuntimeError(
-                f"Storyboard backend is still waiting for {len(pending_scene_ids)} scene(s) from another capable worker: "
-                f"{', '.join(pending_scene_ids[:8])}. Run step 16 on a CUDA worker; no scene was started a second time "
-                "without its distributed lease."
+        input_rows = [
+            (
+                backend_input_path,
+                read_json(backend_input_path, {}),
             )
+            for backend_input_path in backend_inputs
+        ]
+        rows_by_scene: dict[str, dict] = {}
+        while len(rows_by_scene) < len(input_rows):
+            claimed_scene = False
+            for index, (backend_input_path, payload) in enumerate(input_rows, start=1):
+                scene_id = (
+                    str(payload.get("scene_id", backend_input_path.stem.replace("_backend_input", ""))).strip()
+                    or f"scene_{index:04d}"
+                )
+                if scene_id in rows_by_scene:
+                    continue
+                output_current, existing_row = scene_backend_output_is_current(
+                    assets_root,
+                    payload,
+                    force=args.force,
+                    run_started_at=run_started_at,
+                )
+                if output_current:
+                    existing_row["backend_input_path"] = str(backend_input_path)
+                    rows_by_scene[scene_id] = existing_row
+                    continue
+                with distributed_item_lease(
+                    root=scene_lease_root,
+                    lease_name=scene_id,
+                    cfg=cfg,
+                    worker_id=worker_id,
+                    enabled=shared_workers,
+                    meta={
+                        "step": "16_run_storyboard_backend",
+                        "episode_id": episode_id,
+                        "scene_id": scene_id,
+                        "worker_id": worker_id,
+                        "execution_device": worker_readiness["execution_device"],
+                    },
+                ) as acquired:
+                    if not acquired:
+                        continue
+                    output_current, existing_row = scene_backend_output_is_current(
+                        assets_root,
+                        payload,
+                        force=args.force,
+                        run_started_at=run_started_at,
+                    )
+                    if output_current:
+                        row = existing_row
+                    else:
+                        reporter.update(
+                            len(rows_by_scene),
+                            current_label=scene_id,
+                            extra_label=f"Running now on {worker_readiness['execution_device']}: materialize backend scene pack",
+                            force=True,
+                        )
+                        row = materialize_scene_backend_frame(
+                            assets_root,
+                            payload,
+                            width,
+                            height,
+                            fps,
+                            crf,
+                            ffmpeg,
+                            args.force,
+                            cfg,
+                            backend_input_path,
+                        )
+                    row["backend_input_path"] = str(backend_input_path)
+                    row["worker_execution_device"] = worker_readiness["execution_device"]
+                    rows_by_scene[scene_id] = row
+                    claimed_scene = True
+                    reporter.update(
+                        len(rows_by_scene),
+                        current_label=scene_id,
+                        extra_label=f"Status: {row.get('status', 'unknown')} ({worker_readiness['execution_device']})",
+                    )
+                    break
+
+            if len(rows_by_scene) >= len(input_rows):
+                break
+            if claimed_scene:
+                continue
+            if not shared_workers:
+                missing = [
+                    str(payload.get("scene_id", path.stem.replace("_backend_input", "")))
+                    for path, payload in input_rows
+                    if str(payload.get("scene_id", path.stem.replace("_backend_input", ""))) not in rows_by_scene
+                ]
+                raise RuntimeError(f"Storyboard backend could not claim remaining scenes: {', '.join(missing[:8])}.")
+            reporter.update(
+                len(rows_by_scene),
+                current_label="Waiting for shared CPU/CUDA workers",
+                extra_label=f"Completed scenes: {len(rows_by_scene)}/{len(input_rows)}",
+                force=True,
+            )
+            time.sleep(poll_interval_seconds)
+
+        rows = [
+            rows_by_scene[
+                str(payload.get("scene_id", path.stem.replace("_backend_input", ""))).strip()
+                or f"scene_{index:04d}"
+            ]
+            for index, (path, payload) in enumerate(input_rows, start=1)
+        ]
+        completed_count = sum(1 for row in rows if str(row.get("status", "")) in {"completed", "existing"})
 
         completed_scene_video_count = sum(1 for row in rows if str(row.get("clip_status", "")) == "completed")
         manifest_backend_mode = storyboard_backend_manifest_mode(rows)
