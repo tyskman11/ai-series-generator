@@ -14,10 +14,42 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from support_scripts import pipeline_common
 from support_scripts.pipeline_common import acquire_distributed_lease, schedule_worker_task
 
 
 class DistributedLeaseTests(unittest.TestCase):
+    def test_worker_capabilities_ignore_snapshot_from_other_runtime(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            project_root = Path(tmpdir)
+            snapshot_path = project_root / "generation" / "quality_reports" / "readiness" / "worker_capabilities.json"
+            snapshot_path.parent.mkdir(parents=True)
+            snapshot_path.write_text(
+                json.dumps(
+                    {
+                        "runtime_tag": "windows_x86_64_64bit",
+                        "hostname": "gpu-pc",
+                        "has_gpu": True,
+                        "gpu_memory_mb": 24576,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with mock.patch.object(pipeline_common, "PROJECT_ROOT", project_root), mock.patch.object(
+                pipeline_common,
+                "runtime_environment_tag",
+                return_value="linux_x86_64_64bit",
+            ), mock.patch.object(
+                pipeline_common,
+                "nvidia_gpu_available",
+                return_value=False,
+            ):
+                capabilities = pipeline_common.distributed_worker_capabilities()
+
+        self.assertEqual(capabilities["source"], "runtime_probe")
+        self.assertFalse(capabilities["has_gpu"])
+        self.assertEqual(capabilities["ignored_snapshot_runtime_tag"], "windows_x86_64_64bit")
+
     def test_distributed_lease_allows_takeover_when_same_host_owner_pid_is_gone(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             lease_root = Path(tmpdir)
@@ -93,5 +125,4 @@ class DistributedLeaseTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
 

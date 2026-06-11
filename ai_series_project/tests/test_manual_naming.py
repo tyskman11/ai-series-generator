@@ -2623,6 +2623,57 @@ class ManualNamingTests(unittest.TestCase):
         self.assertIn("# Episode 06:", markdown)
         self.assertIn("auto-detected source language", package["scenes"][0]["generation_plan"]["positive_prompt"])
 
+    def test_episode_generation_explicit_transcription_language_overrides_stale_model_language(self) -> None:
+        model = {
+            "characters": [
+                {"name": "Babe Carano", "scene_count": 10, "line_count": 20, "priority": True},
+                {"name": "Kenzie Bell", "scene_count": 9, "line_count": 18, "priority": True},
+            ],
+            "speakers": {"Babe Carano": 12, "Kenzie Bell": 11},
+            "keywords": ["dzięki", "oglądanie", "jest", "canal", "plan", "chaos"],
+            "language_counts": {"es": 14, "pl": 8},
+            "dominant_language": "es",
+            "dataset_files": ["demo.json"],
+            "scene_count": 10,
+            "speaker_samples": {
+                "Babe Carano": ["Dzięki za oglądanie.", "Wir testen zuerst den Plan."],
+                "Kenzie Bell": ["No no.", "Das prüfen wir noch einmal."],
+            },
+            "behavior_model": {
+                "speaking_style": {
+                    "Babe Carano": {
+                        "typical_phrases": ["dzięki"],
+                        "recurring_reactions": ["dzięki za oglądanie"],
+                    },
+                    "Kenzie Bell": {
+                        "typical_phrases": ["no no"],
+                        "recurring_reactions": ["Das stimmt so nicht"],
+                    },
+                }
+            },
+        }
+        cfg = {
+            "transcription": {"language": "de"},
+            "generation": {
+                "seed": 42,
+                "default_scene_count": 2,
+                "prefer_original_dialogue_remix": False,
+            },
+        }
+
+        package, markdown = STEP07.generate_episode_package(model, cfg, episode_index=2)
+
+        self.assertEqual(package["series_language"], "de")
+        self.assertEqual(package["episode_label"], "Folge 02")
+        self.assertNotIn("dzięki", package["keywords"])
+        self.assertNotIn("oglądanie", package["keywords"])
+        self.assertNotIn("jest", package["keywords"])
+        self.assertNotIn("canal", package["keywords"])
+        serialized = json.dumps(package, ensure_ascii=False).lower()
+        self.assertNotIn("dzięki", serialized)
+        self.assertNotIn("no no", serialized)
+        self.assertIn("# Folge 02:", markdown)
+
     def test_episode_generation_uses_detected_spanish_language(self) -> None:
         model = {
             "characters": [
@@ -6664,6 +6715,56 @@ class ManualNamingTests(unittest.TestCase):
                         {"storyboard_backend": {"allow_local_frame_fallback": False}},
                         assets_root / "scene_0001_backend_input.json",
                     )
+
+    def test_storyboard_backend_rejects_cpu_worker_for_local_sdxl(self) -> None:
+        cfg = {
+            "external_backends": {
+                "storyboard_scene_runner": {
+                    "enabled": True,
+                    "requires_gpu": True,
+                    "allow_cpu_execution": False,
+                }
+            }
+        }
+        with mock.patch.object(
+            STEP16BACKEND,
+            "distributed_worker_capabilities",
+            return_value={"has_gpu": False, "source": "runtime_probe"},
+        ):
+            readiness = STEP16BACKEND.storyboard_worker_readiness(cfg)
+
+        self.assertFalse(readiness["ready"])
+        self.assertTrue(readiness["requires_gpu"])
+        self.assertIn("CPU-only", readiness["reason"])
+
+    def test_storyboard_shared_result_collection_does_not_start_backend_again(self) -> None:
+        source = Path(STEP16BACKEND.__file__).read_text(encoding="utf-8")
+        collection_block = source.split("if shared_workers and len(rows) < len(backend_inputs):", 1)[1]
+        collection_block = collection_block.split("pending_scene_ids =", 1)[0]
+
+        self.assertIn("existing_scene_backend_row", collection_block)
+        self.assertNotIn("materialize_scene_backend_frame", collection_block)
+
+    def test_storyboard_backend_rejects_stale_explicit_language_inputs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            backend_input = Path(tmpdir) / "scene_0001_backend_input.json"
+            backend_input.write_text(
+                json.dumps(
+                    {
+                        "scene_id": "scene_0001",
+                        "quality_targets": {"series_language": "es"},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            stale = STEP16BACKEND.stale_storyboard_language_inputs(
+                [backend_input],
+                {"transcription": {"language": "de"}},
+            )
+
+        self.assertEqual(len(stale), 1)
+        self.assertEqual(stale[0]["payload_language"], "es")
+        self.assertEqual(stale[0]["expected_language"], "de")
 
     def test_render_quality_first_rejects_local_motion_and_missing_voice_clone(self) -> None:
         cfg = {

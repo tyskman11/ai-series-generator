@@ -560,6 +560,8 @@ DEFAULT_CONFIG = {
             "command_template": [],
             "working_directory": "",
             "environment": {},
+            "requires_gpu": False,
+            "allow_cpu_execution": False,
             "shell": False,
             "timeout_seconds": 0,
             "skip_if_outputs_exist": True,
@@ -936,6 +938,7 @@ LANGUAGE_TEXT_MARKERS = {
     },
     "es": {
         "ahora",
+        "canal",
         "con",
         "de",
         "el",
@@ -944,6 +947,7 @@ LANGUAGE_TEXT_MARKERS = {
         "eso",
         "esta",
         "este",
+        "gracias",
         "la",
         "las",
         "los",
@@ -952,7 +956,9 @@ LANGUAGE_TEXT_MARKERS = {
         "para",
         "pero",
         "que",
+        "suscríbete",
         "una",
+        "ver",
         "y",
         "yo",
     },
@@ -1028,8 +1034,10 @@ LANGUAGE_TEXT_MARKERS = {
         "bez",
         "co",
         "dla",
+        "dzięki",
         "jest",
         "nie",
+        "oglądanie",
         "oraz",
         "po",
         "się",
@@ -1039,6 +1047,7 @@ LANGUAGE_TEXT_MARKERS = {
         "z",
         "ze",
         "że",
+        "znowu",
     },
 }
 
@@ -1205,7 +1214,18 @@ def distributed_worker_metadata(extra: dict[str, Any] | None = None) -> dict[str
 def distributed_worker_capabilities() -> dict[str, Any]:
     snapshot_path = PROJECT_ROOT / "generation" / "quality_reports" / "readiness" / "worker_capabilities.json"
     snapshot = read_json(snapshot_path, {}) if snapshot_path.exists() else {}
-    if isinstance(snapshot, dict) and snapshot:
+    snapshot_runtime_tag = coalesce_text(snapshot.get("runtime_tag", "")) if isinstance(snapshot, dict) else ""
+    snapshot_hostname = (
+        distributed_hostname_token(snapshot.get("hostname", ""))
+        if isinstance(snapshot, dict) and snapshot.get("hostname")
+        else ""
+    )
+    snapshot_matches_worker = (
+        bool(snapshot)
+        and snapshot_runtime_tag == runtime_environment_tag()
+        and (not snapshot_hostname or snapshot_hostname == distributed_hostname_token())
+    )
+    if isinstance(snapshot, dict) and snapshot_matches_worker:
         gpu_memory = int(snapshot.get("gpu_memory_mb", 0) or 0)
         return {
             "source": "production_diagnostics",
@@ -1225,6 +1245,8 @@ def distributed_worker_capabilities() -> dict[str, Any]:
     return {
         "source": "runtime_probe",
         "snapshot_path": str(snapshot_path),
+        "ignored_snapshot_runtime_tag": snapshot_runtime_tag,
+        "ignored_snapshot_hostname": snapshot_hostname,
         "has_gpu": nvidia_gpu_available(),
         "available_memory_mb": 0,
         "ready_backend_runners": [],
@@ -1693,7 +1715,10 @@ def run_external_backend_runner(
         output_text = completed.stdout or ""
         result["returncode"] = int(completed.returncode)
     except subprocess.TimeoutExpired as exc:
-        output_text = (exc.stdout or "") if isinstance(exc.stdout, str) else ""
+        if isinstance(exc.stdout, bytes):
+            output_text = exc.stdout.decode("utf-8", errors="replace")
+        else:
+            output_text = (exc.stdout or "") if isinstance(exc.stdout, str) else ""
         result["returncode"] = -1
         result["status"] = "timeout"
         result["error"] = f"Runner exceeded the timeout of {timeout_seconds} seconds."

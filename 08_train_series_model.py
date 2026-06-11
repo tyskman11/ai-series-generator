@@ -26,6 +26,7 @@ from support_scripts.pipeline_common import (
     distributed_item_lease,
     distributed_step_runtime_root,
     dominant_language,
+    detect_language_from_text,
     error,
     extract_keywords,
     has_primary_person_name,
@@ -33,6 +34,7 @@ from support_scripts.pipeline_common import (
     headline,
     info,
     keyword_token_allowed,
+    language_text_marker_score,
     character_groups_for_names,
     load_character_relationships,
     load_character_continuity_memory,
@@ -65,6 +67,55 @@ TITLE_PREFIXES = [
     "Verwechslung um",
     "Das große",
 ]
+
+
+def configured_series_language(cfg: dict) -> str:
+    for section_name in ("generation", "transcription"):
+        section = cfg.get(section_name, {}) if isinstance(cfg.get(section_name, {}), dict) else {}
+        language = normalize_language_code(section.get("language", ""))
+        if language not in {"", "auto", "detect"}:
+            return language
+    return ""
+
+
+def generation_keywords_for_language(model: dict, language: str, limit: int = 20) -> list[str]:
+    candidates = clean_generation_keywords(model.get("keywords", []), limit=max(limit * 3, limit))
+    normalized_language = normalize_language_code(language)
+    if normalized_language:
+        candidates = [keyword for keyword in candidates if text_matches_generation_language(keyword, normalized_language)]
+    if candidates:
+        return candidates[:limit]
+    return ["idee", "chaos", "plan", "showdown"] if language_family(normalized_language) == "de" else [
+        "idea",
+        "chaos",
+        "plan",
+        "showdown",
+    ]
+
+
+GENERATION_LANGUAGE_CANDIDATES = ("de", "en", "es", "fr", "it", "pt", "nl", "tr", "pl")
+
+
+def text_matches_generation_language(text: object, language: str) -> bool:
+    normalized_language = normalize_language_code(language)
+    content = coalesce_text(text)
+    if not normalized_language or not content:
+        return True
+    detected = normalize_language_code(detect_language_from_text(content))
+    if detected and detected != normalized_language:
+        return False
+    target_score = language_text_marker_score(content, normalized_language)
+    strongest_other_score = max(
+        (
+            language_text_marker_score(content, candidate)
+            for candidate in GENERATION_LANGUAGE_CANDIDATES
+            if candidate != normalized_language
+        ),
+        default=0,
+    )
+    return strongest_other_score <= target_score
+
+
 TITLE_SUFFIXES = [
     "Spiel",
     "Geheimnis",
@@ -825,8 +876,7 @@ def build_series_model(dataset_files: list, cfg: dict, char_map: dict) -> dict:
     average_scene_duration = sum(scene_durations) / max(1, len(scene_durations))
     average_segment_duration = sum(segment_durations) / max(1, len(segment_durations))
 
-    generation_cfg = cfg.get("generation", {}) if isinstance(cfg.get("generation", {}), dict) else {}
-    configured_language = normalize_language_code(generation_cfg.get("language", ""))
+    configured_language = configured_series_language(cfg)
     return {
         "trained_at": time.strftime("%Y-%m-%d %H:%M:%S"),
         "dataset_files": [str(path) for path in dataset_files],
@@ -846,7 +896,7 @@ def build_series_model(dataset_files: list, cfg: dict, char_map: dict) -> dict:
         "character_relationships": relationship_payload,
         "series_inputs": relationship_payload.get("series_inputs", {}),
         "language_counts": dict(language_counter),
-        "dominant_language": dominant_language(dict(language_counter), configured_language),
+        "dominant_language": configured_language or dominant_language(dict(language_counter), ""),
         "speaker_samples": {speaker: samples[:20] for speaker, samples in speaker_samples.items()},
         "speaker_line_library": {speaker: rows[:160] for speaker, rows in speaker_line_library.items()},
         "character_reference_library": character_reference_library,
@@ -880,6 +930,7 @@ def choose_speaker_sample(
     speaker_samples: dict[str, list[str]],
     used_lines: set[str],
     rng: random.Random,
+    language: str = "",
 ) -> str:
     template_tokens = set(tokens_from_text(template_line))
     keyword_token = keyword.lower().strip()
@@ -888,6 +939,8 @@ def choose_speaker_sample(
         candidate = clean_callback(raw_line)
         normalized = candidate.lower()
         if not candidate or normalized in used_lines:
+            continue
+        if not text_matches_generation_language(candidate, language):
             continue
         sample_tokens = set(tokens_from_text(candidate))
         if len(sample_tokens) < 2:
@@ -913,6 +966,7 @@ def choose_original_line_entry(
     used_segment_ids: set[str],
     rng: random.Random,
     preferred_terms: list[str] | None = None,
+    language: str = "",
 ) -> dict | None:
     keyword_token = keyword.lower().strip()
     preferred_tokens = {token.lower() for token in (preferred_terms or []) if token}
@@ -921,6 +975,12 @@ def choose_original_line_entry(
         segment_id = str(entry.get("segment_id", "")).strip()
         text = coalesce_text(entry.get("text", ""))
         if not segment_id or segment_id in used_segment_ids or not text:
+            continue
+        entry_language = normalize_language_code(entry.get("language", ""))
+        expected_language = normalize_language_code(language)
+        if expected_language and entry_language and entry_language != expected_language:
+            continue
+        if not text_matches_generation_language(text, expected_language):
             continue
         text_tokens_set = {token.lower() for token in tokens_from_text(text)}
         if len(text_tokens_set) < 2:
@@ -985,10 +1045,10 @@ def behavior_guided_line(
     writer_room_plan: dict,
     language: str,
 ) -> str:
-    phrases = [coalesce_text(value) for value in style.get("typical_phrases", []) if coalesce_text(value)] if isinstance(style.get("typical_phrases", []), list) else []
-    reactions = [coalesce_text(value) for value in style.get("recurring_reactions", []) if coalesce_text(value)] if isinstance(style.get("recurring_reactions", []), list) else []
-    starts = [coalesce_text(value) for value in style.get("typical_sentence_starts", []) if coalesce_text(value)] if isinstance(style.get("typical_sentence_starts", []), list) else []
-    endings = [coalesce_text(value) for value in style.get("typical_sentence_endings", []) if coalesce_text(value)] if isinstance(style.get("typical_sentence_endings", []), list) else []
+    phrases = [coalesce_text(value) for value in style.get("typical_phrases", []) if coalesce_text(value) and text_matches_generation_language(value, language)] if isinstance(style.get("typical_phrases", []), list) else []
+    reactions = [coalesce_text(value) for value in style.get("recurring_reactions", []) if coalesce_text(value) and text_matches_generation_language(value, language)] if isinstance(style.get("recurring_reactions", []), list) else []
+    starts = [coalesce_text(value) for value in style.get("typical_sentence_starts", []) if coalesce_text(value) and text_matches_generation_language(value, language)] if isinstance(style.get("typical_sentence_starts", []), list) else []
+    endings = [coalesce_text(value) for value in style.get("typical_sentence_endings", []) if coalesce_text(value) and text_matches_generation_language(value, language)] if isinstance(style.get("typical_sentence_endings", []), list) else []
     callback = phrases[0] if phrases else (reactions[0] if reactions else "")
     opening = starts[0].capitalize() if starts else ""
     ending = endings[0] if endings else ""
@@ -1197,6 +1257,7 @@ def build_dialogue(
         clean_callback(line)
         for speaker in (speaker_a, speaker_b)
         for line in speaker_samples.get(speaker, [])
+        if text_matches_generation_language(line, language)
     ]
     callback_candidates = [line for line in callback_candidates if len(line.split()) >= 3]
     callback = f"{speaker_a}: {rng.choice(callback_candidates)}" if callback_candidates else ""
@@ -1256,6 +1317,7 @@ def build_dialogue(
                     used_segment_ids,
                     rng,
                     preferred_terms=preferred_line_terms,
+                    language=language,
                 )
                 if original_entry and not original_line_semantically_fits(
                     coalesce_text(original_entry.get("text", "")),
@@ -1286,12 +1348,22 @@ def build_dialogue(
                     }
                 )
                 continue
-            sample_line = choose_speaker_sample(speaker, line_text, keyword, speaker_samples, used_samples, rng)
+            sample_line = choose_speaker_sample(
+                speaker,
+                line_text,
+                keyword,
+                speaker_samples,
+                used_samples,
+                rng,
+                language=language,
+            )
             if not sample_line:
                 available_samples = [
                     clean_callback(raw_line)
                     for raw_line in speaker_samples.get(speaker, [])
-                    if clean_callback(raw_line) and clean_callback(raw_line).lower() not in used_samples
+                    if clean_callback(raw_line)
+                    and clean_callback(raw_line).lower() not in used_samples
+                    and text_matches_generation_language(raw_line, language)
                 ]
                 if available_samples:
                     sample_line = available_samples[0]
@@ -1972,8 +2044,16 @@ def build_behavior_scene_fields(
     for character, style in zip(scene_characters, styles):
         words = style.get("average_words_per_line", "")
         energy = style.get("energy_label", "medium")
-        phrases = style.get("typical_phrases", []) if isinstance(style.get("typical_phrases"), list) else []
-        reactions = style.get("recurring_reactions", []) if isinstance(style.get("recurring_reactions"), list) else []
+        phrases = [
+            value
+            for value in (style.get("typical_phrases", []) if isinstance(style.get("typical_phrases"), list) else [])
+            if text_matches_generation_language(value, language)
+        ]
+        reactions = [
+            value
+            for value in (style.get("recurring_reactions", []) if isinstance(style.get("recurring_reactions"), list) else [])
+            if text_matches_generation_language(value, language)
+        ]
         if words:
             behavior_constraints.append(f"{character}: keep lines near {words} words with {energy} energy")
         if phrases:
@@ -2543,7 +2623,18 @@ def generate_episode_package(model: dict, cfg: dict, episode_index: int = 1) -> 
     generation_cfg = cfg.get("generation", {})
     rng_seed = int(generation_cfg.get("seed", 42)) + len(model.get("dataset_files", [])) + (episode_index * 101)
     rng = random.Random(rng_seed)
-    keywords = clean_generation_keywords(model.get("keywords", []), limit=20) or ["idee", "chaos", "plan", "showdown"]
+    configured_language = configured_series_language(cfg)
+    series_language = configured_language or dominant_language(
+        model.get("language_counts", {}),
+        model.get("dominant_language", ""),
+    )
+    model_language = normalize_language_code(
+        dominant_language(model.get("language_counts", {}), model.get("dominant_language", ""))
+    )
+    keyword_model = model
+    if configured_language and model_language and model_language != configured_language:
+        keyword_model = {**model, "keywords": []}
+    keywords = generation_keywords_for_language(keyword_model, series_language, limit=20)
     if len(keywords) > 1:
         keyword_offset = episode_index % len(keywords)
         keywords = keywords[keyword_offset:] + keywords[:keyword_offset]
@@ -2552,7 +2643,6 @@ def generate_episode_package(model: dict, cfg: dict, episode_index: int = 1) -> 
     continuity_memory = load_character_continuity_memory(PROJECT_ROOT)
     style_constraints = derive_prompt_constraints_from_bible(PROJECT_ROOT, {})
     quality_mode = coalesce_text(generation_cfg.get("quality_mode", "")) or "series_consistency"
-    series_language = dominant_language(model.get("language_counts", {}), model.get("dominant_language", "") or generation_cfg.get("language", ""))
     package_language = series_language or "auto"
     style_descriptor = (
         coalesce_text(generation_cfg.get("style_descriptor", ""))

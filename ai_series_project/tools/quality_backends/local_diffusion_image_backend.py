@@ -20,6 +20,40 @@ def clean_text(value: object) -> str:
     return str(value or "").strip()
 
 
+def compact_visual_prompt(context: dict[str, Any], scene_package: dict[str, Any], original_prompt: str) -> str:
+    characters = [
+        clean_text(value)
+        for value in scene_package.get("characters", [])
+        if clean_text(value)
+    ] if isinstance(scene_package.get("characters", []), list) else []
+    camera = scene_package.get("camera_plan", {}) if isinstance(scene_package.get("camera_plan", {}), dict) else {}
+    visible_count = len(characters)
+    subject = (
+        f"{visible_count} people clearly visible, characters {', '.join(characters[:3])}"
+        if visible_count
+        else "people clearly visible with expressive faces"
+    )
+    parts = [
+        "live-action TV sitcom frame",
+        "source-series visual style",
+        clean_text(camera.get("shot_type", "") or camera.get("camera", "")),
+        clean_text(camera.get("composition", "") or camera.get("focus", "")),
+        clean_text(camera.get("camera_move", "") or camera.get("movement", "")),
+        clean_text(camera.get("lens_hint", "") or camera.get("lens", "")),
+        subject,
+        clean_text(camera.get("pose_hint", "")),
+        clean_text(scene_package.get("title", "")),
+        "visible faces",
+        "consistent wardrobe and set",
+        "production lighting",
+    ]
+    compact = ", ".join(part for part in parts if part)
+    if visible_count:
+        return compact
+    original_parts = [part.strip() for part in original_prompt.split(",") if part.strip()]
+    return ", ".join([*original_parts[:4], compact])
+
+
 def resolve_model_dir() -> Path:
     configured = clean_text(os.environ.get("SERIES_IMAGE_MODEL_DIR", ""))
     candidate = Path(configured) if configured else DEFAULT_IMAGE_MODEL_DIR
@@ -51,6 +85,7 @@ def prompt_from_context(context: dict[str, Any], scene_package: dict[str, Any]) 
         positive = ", ".join(part for part in prompt_parts if part)
     if not positive:
         positive = "faithful original TV episode still, cinematic scene, coherent characters, production lighting"
+    positive = compact_visual_prompt(context, scene_package, positive)
     if not negative:
         negative = (
             "cropped faces, distorted hands, unreadable text, watermark, duplicate characters, "
@@ -84,12 +119,24 @@ def generate_image(prompt: str, negative_prompt: str, output_path: Path, seed: i
 
     model_dir = resolve_model_dir()
     cuda_ready = bool(torch.cuda.is_available())
+    allow_cpu = clean_text(os.environ.get("SERIES_IMAGE_ALLOW_CPU", "")).lower() in {"1", "true", "yes", "on"}
+    if not cuda_ready and not allow_cpu:
+        raise RuntimeError(
+            "The local SDXL backend requires a CUDA GPU. This worker is CPU-only, so it must not claim "
+            "shot-image tasks. Run step 16 on a CUDA worker, or explicitly set SERIES_IMAGE_ALLOW_CPU=1 "
+            "for a very slow diagnostic CPU render."
+        )
     dtype = torch.float16 if cuda_ready else torch.float32
     device = "cuda" if cuda_ready else "cpu"
     width, height = target_size()
     steps = int(float(os.environ.get("SERIES_IMAGE_INFERENCE_STEPS", "28") or "28"))
     guidance = float(os.environ.get("SERIES_IMAGE_GUIDANCE_SCALE", "6.5") or "6.5")
+    print(
+        f"[INFO] SDXL backend: device={device}, size={width}x{height}, steps={steps}, model={model_dir}",
+        flush=True,
+    )
 
+    print("[INFO] Loading local SDXL pipeline ...", flush=True)
     pipeline = StableDiffusionXLPipeline.from_pretrained(
         str(model_dir),
         local_files_only=True,
@@ -98,8 +145,21 @@ def generate_image(prompt: str, negative_prompt: str, output_path: Path, seed: i
     )
     if hasattr(pipeline, "enable_attention_slicing"):
         pipeline.enable_attention_slicing()
-    pipeline = pipeline.to(device)
+    if hasattr(pipeline, "enable_vae_slicing"):
+        pipeline.enable_vae_slicing()
+    if hasattr(pipeline, "enable_vae_tiling"):
+        pipeline.enable_vae_tiling()
+    if cuda_ready:
+        gpu_memory_gb = float(torch.cuda.get_device_properties(0).total_memory) / float(1024**3)
+        if gpu_memory_gb < 10.0 and hasattr(pipeline, "enable_model_cpu_offload"):
+            print(f"[INFO] Enabling model CPU offload for {gpu_memory_gb:.1f} GB GPU memory.", flush=True)
+            pipeline.enable_model_cpu_offload()
+        else:
+            pipeline = pipeline.to(device)
+    else:
+        pipeline = pipeline.to(device)
     generator = torch.Generator(device=device).manual_seed(seed)
+    print(f"[INFO] Generating image: {output_path}", flush=True)
     result = pipeline(
         prompt=prompt,
         negative_prompt=negative_prompt,
@@ -112,6 +172,7 @@ def generate_image(prompt: str, negative_prompt: str, output_path: Path, seed: i
     image = result.images[0]
     ensure_parent(str(output_path))
     image.save(output_path)
+    print(f"[OK] Saved generated image: {output_path}", flush=True)
 
 
 def output_paths(context: dict[str, Any]) -> list[Path]:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import shutil
+import socket
 import wave
 from collections import Counter, defaultdict
 from datetime import datetime
@@ -342,6 +343,7 @@ def build_worker_capability_snapshot(cfg: dict[str, Any], backend_report: dict[s
     ]
     return {
         "created_at": utc_now_iso(),
+        "hostname": socket.gethostname(),
         "runtime_tag": runtime_environment_tag(),
         "python": str(runtime_python()),
         "has_gpu": bool(gpu.get("available", False)),

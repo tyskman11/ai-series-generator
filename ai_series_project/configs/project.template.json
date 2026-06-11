@@ -481,8 +481,11 @@
       ],
       "working_directory": ".",
       "environment": {
-        "SERIES_STORYBOARD_BACKEND_COMMAND": "\"{python}\" \"tools/quality_backends/local_diffusion_image_backend.py\""
+        "SERIES_STORYBOARD_BACKEND_COMMAND": "\"{python}\" \"tools/quality_backends/local_diffusion_image_backend.py\"",
+        "PYTHONUNBUFFERED": "1"
       },
+      "requires_gpu": true,
+      "allow_cpu_execution": false,
       "required_commands": [],
       "required_python_modules": [
         "diffusers"

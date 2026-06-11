@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -12,9 +13,12 @@ PROJECT_DIR = Path(__file__).resolve().parents[1]
 SCRIPT_ROOT = PROJECT_DIR.parent
 if str(PROJECT_DIR) not in sys.path:
     sys.path.insert(0, str(PROJECT_DIR))
+QUALITY_BACKEND_DIR = PROJECT_DIR / "tools" / "quality_backends"
+if str(QUALITY_BACKEND_DIR) not in sys.path:
+    sys.path.insert(0, str(QUALITY_BACKEND_DIR))
 
 from support_scripts import pipeline_common
-from tools.quality_backends import backend_common
+from tools.quality_backends import backend_common, local_diffusion_image_backend
 
 MODULE_PATH = PROJECT_DIR / "support_scripts/configure_quality_backends.py"
 SPEC = importlib.util.spec_from_file_location("step58_quality_backends", MODULE_PATH)
@@ -136,6 +140,63 @@ class QualityFirstModeTests(unittest.TestCase):
             or resolved[1].endswith("tools/quality_backends/project_local_image_backend.py")
         )
         self.assertTrue(Path(resolved[1]).is_absolute())
+
+    def test_delegated_backend_runs_directly_from_unc_working_directory(self) -> None:
+        command = '"python" "tools/quality_backends/local_diffusion_image_backend.py"'
+        unc_cwd = r"\\server\share\series\scene_0001"
+        with patch.dict(os.environ, {"SERIES_STORYBOARD_BACKEND_COMMAND": command}, clear=False), patch.object(
+            backend_common,
+            "write_context_file",
+            return_value=Path(tempfile.gettempdir()) / "storyboard_context.json",
+        ), patch.object(
+            backend_common.subprocess,
+            "run",
+            return_value=subprocess.CompletedProcess([], 0),
+        ) as run_mock:
+            returncode = backend_common.run_delegated_backend(
+                env_var_name="SERIES_STORYBOARD_BACKEND_COMMAND",
+                context_payload={"scene_id": "scene_0001"},
+                context_prefix="storyboard",
+                cwd=unc_cwd,
+            )
+
+        self.assertEqual(returncode, 0)
+        command_parts = run_mock.call_args.args[0]
+        self.assertIsInstance(command_parts, list)
+        self.assertEqual(command_parts[0], sys.executable)
+        self.assertTrue(command_parts[1].endswith("local_diffusion_image_backend.py"))
+        self.assertEqual(run_mock.call_args.kwargs["cwd"], unc_cwd)
+        self.assertFalse(run_mock.call_args.kwargs["shell"])
+
+    def test_short_foreign_language_markers_are_rejected_for_german_generation(self) -> None:
+        self.assertGreater(pipeline_common.language_text_marker_score("gracias", "es"), 0)
+        self.assertGreater(pipeline_common.language_text_marker_score("znowu", "pl"), 0)
+        self.assertGreater(pipeline_common.language_text_marker_score("dzięki za oglądanie", "pl"), 0)
+
+    def test_local_sdxl_prompt_prioritizes_visible_characters_and_camera(self) -> None:
+        prompt, _ = local_diffusion_image_backend.prompt_from_context(
+            {
+                "positive_prompt": (
+                    "long story prompt, behavior constraints, dialogue style, callbacks, "
+                    "relationship details, unrelated prose"
+                )
+            },
+            {
+                "characters": ["Kenzie Bell", "Hudson Gimble"],
+                "title": "Komplikation: Plan",
+                "camera_plan": {
+                    "shot_type": "medium two-shot",
+                    "composition": "balanced conversational framing",
+                    "pose_hint": "animated disagreement",
+                },
+            },
+        )
+
+        self.assertIn("2 people clearly visible", prompt)
+        self.assertIn("Kenzie Bell, Hudson Gimble", prompt)
+        self.assertIn("medium two-shot", prompt)
+        self.assertNotIn("dialogue style", prompt)
+        self.assertLess(len(prompt.split()), 77)
 
     def test_find_project_local_ffmpeg_prefers_platform_binary_from_runtime(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+import socket
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -51,6 +52,7 @@ class ProductionDiagnosticsTests(unittest.TestCase):
         )
 
         self.assertTrue(snapshot["has_gpu"])
+        self.assertEqual(snapshot["hostname"], socket.gethostname())
         self.assertEqual(snapshot["gpu_memory_mb"], 16384)
         self.assertIn("shot_video", snapshot["ready_backend_runners"])
         self.assertNotIn("missing_lipsync", snapshot["ready_backend_runners"])

@@ -57,7 +57,12 @@ def configured_backends() -> dict:
                 "{alternate_root}",
             ],
             "working_directory": ".",
-            "environment": {"SERIES_STORYBOARD_BACKEND_COMMAND": storyboard_backend_command},
+            "environment": {
+                "SERIES_STORYBOARD_BACKEND_COMMAND": storyboard_backend_command,
+                "PYTHONUNBUFFERED": "1",
+            },
+            "requires_gpu": True,
+            "allow_cpu_execution": False,
             "required_commands": [],
             "required_python_modules": ["diffusers"],
             "required_environment_variables": ["SERIES_STORYBOARD_BACKEND_COMMAND"],

@@ -61,14 +61,17 @@ def write_context_file(prefix: str, payload: dict[str, Any]) -> Path:
         return Path(handle.name)
 
 
-def command_shell_flag() -> bool:
-    return os.name == "nt"
+def strip_matching_quotes(value: str) -> str:
+    text = str(value or "").strip()
+    if len(text) >= 2 and text[0] == text[-1] and text[0] in {'"', "'"}:
+        return text[1:-1]
+    return text
 
 
 def resolve_delegated_command_parts(parts: list[str]) -> list[str]:
     resolved: list[str] = []
     for index, raw_part in enumerate(parts):
-        part = str(raw_part or "").strip()
+        part = strip_matching_quotes(str(raw_part or ""))
         if not part:
             continue
         if index == 0 and part.lower() in {"python", "python3", "py"}:
@@ -110,25 +113,18 @@ def run_delegated_backend(
         env[env_key] = str(value)
 
     working_directory = cwd.strip() or str(Path.cwd())
-    if command_shell_flag():
-        shell_parts = resolve_delegated_command_parts(shlex.split(command_text, posix=False))
-        rendered_command = subprocess.list2cmdline(shell_parts) if shell_parts else command_text
-        completed = subprocess.run(
-            rendered_command,
-            shell=True,
-            cwd=working_directory,
-            env=env,
-            check=False,
-        )
-    else:
-        command_parts = resolve_delegated_command_parts(shlex.split(command_text))
-        completed = subprocess.run(
-            command_parts,
-            shell=False,
-            cwd=working_directory,
-            env=env,
-            check=False,
-        )
+    command_parts = resolve_delegated_command_parts(
+        shlex.split(command_text, posix=os.name != "nt")
+    )
+    if not command_parts:
+        raise RuntimeError(f"Backend command in {env_var_name} is empty after parsing.")
+    completed = subprocess.run(
+        command_parts,
+        shell=False,
+        cwd=working_directory,
+        env=env,
+        check=False,
+    )
     return int(completed.returncode)
 
 

@@ -21,6 +21,7 @@ from support_scripts.pipeline_common import (
     detect_tool,
     distributed_item_lease,
     distributed_step_runtime_root,
+    distributed_worker_capabilities,
     LiveProgressReporter,
     error,
     headline,
@@ -30,6 +31,7 @@ from support_scripts.pipeline_common import (
     mark_step_completed,
     mark_step_failed,
     mark_step_started,
+    normalize_language_code,
     ok,
     read_json,
     rerun_in_runtime,
@@ -187,6 +189,81 @@ def storyboard_backend_settings(cfg: dict | None) -> dict:
         return {}
     settings = cfg.get("storyboard_backend", {})
     return settings if isinstance(settings, dict) else {}
+
+
+def storyboard_runner_settings(cfg: dict | None) -> dict:
+    if not isinstance(cfg, dict):
+        return {}
+    external_backends = cfg.get("external_backends", {})
+    if not isinstance(external_backends, dict):
+        return {}
+    runner = external_backends.get("storyboard_scene_runner", {})
+    return runner if isinstance(runner, dict) else {}
+
+
+def storyboard_runner_requires_gpu(cfg: dict | None) -> bool:
+    runner = storyboard_runner_settings(cfg)
+    if "requires_gpu" in runner:
+        return bool(runner.get("requires_gpu"))
+    environment = runner.get("environment", {}) if isinstance(runner.get("environment", {}), dict) else {}
+    command_parts = runner.get("command_template", runner.get("command", []))
+    command_text = " ".join(str(part) for part in command_parts) if isinstance(command_parts, list) else str(command_parts or "")
+    delegated_command = str(environment.get("SERIES_STORYBOARD_BACKEND_COMMAND", "") or "")
+    return "local_diffusion_image_backend.py" in f"{command_text} {delegated_command}"
+
+
+def storyboard_worker_readiness(cfg: dict | None) -> dict:
+    runner = storyboard_runner_settings(cfg)
+    capabilities = distributed_worker_capabilities()
+    requires_gpu = storyboard_runner_requires_gpu(cfg)
+    allow_cpu = bool(runner.get("allow_cpu_execution", False))
+    has_gpu = bool(capabilities.get("has_gpu", False))
+    ready = not requires_gpu or allow_cpu or has_gpu
+    reason = ""
+    if not ready:
+        reason = (
+            "The configured storyboard runner uses the local SDXL backend and requires CUDA, but this worker "
+            "is CPU-only. Run step 16 on a CUDA-capable PC that shares this project. "
+            "The CPU/NAS worker will not claim the scene or wait for a fake frame."
+        )
+    return {
+        "ready": ready,
+        "requires_gpu": requires_gpu,
+        "allow_cpu_execution": allow_cpu,
+        "has_gpu": has_gpu,
+        "capabilities": capabilities,
+        "reason": reason,
+    }
+
+
+def explicit_project_transcription_language(cfg: dict | None) -> str:
+    if not isinstance(cfg, dict):
+        return ""
+    transcription = cfg.get("transcription", {})
+    transcription = transcription if isinstance(transcription, dict) else {}
+    language = normalize_language_code(transcription.get("language", ""))
+    return "" if language in {"", "auto", "detect"} else language
+
+
+def stale_storyboard_language_inputs(backend_inputs: list[Path], cfg: dict | None) -> list[dict]:
+    explicit_language = explicit_project_transcription_language(cfg)
+    if not explicit_language:
+        return []
+    stale: list[dict] = []
+    for backend_input in backend_inputs:
+        payload = read_json(backend_input, {})
+        quality_targets = payload.get("quality_targets", {}) if isinstance(payload.get("quality_targets", {}), dict) else {}
+        payload_language = normalize_language_code(quality_targets.get("series_language", ""))
+        if payload_language and payload_language != explicit_language:
+            stale.append(
+                {
+                    "scene_id": str(payload.get("scene_id", backend_input.stem.replace("_backend_input", ""))),
+                    "payload_language": payload_language,
+                    "expected_language": explicit_language,
+                    "path": str(backend_input),
+                }
+            )
+    return stale
 
 
 def allow_local_frame_fallback(cfg: dict | None) -> bool:
@@ -389,6 +466,45 @@ def scene_backend_row(
     return row
 
 
+def existing_scene_backend_row(assets_root: Path, payload: dict) -> dict:
+    scene_id = str(payload.get("scene_id", "")).strip() or "scene"
+    scene_root = scene_output_root(assets_root, scene_id)
+    frame_path = scene_frame_output_path(assets_root, scene_id)
+    preview_path = scene_preview_output_path(assets_root, scene_id)
+    poster_path = scene_poster_output_path(assets_root, scene_id)
+    clip_path = scene_clip_output_path(assets_root, scene_id)
+    alternates_root = scene_alternates_root(assets_root, scene_id)
+    manifest_path = scene_root / "backend_frame_manifest.json"
+    manifest = read_json(manifest_path, {}) if manifest_path.exists() else {}
+    if backend_output_ready(frame_path) and backend_manifest_is_external_generated(manifest):
+        return scene_backend_row(
+            scene_id=scene_id,
+            frame_path=frame_path,
+            preview_path=preview_path,
+            poster_path=poster_path,
+            clip_path=clip_path,
+            alternates_root=alternates_root,
+            manifest_path=manifest_path,
+            status="existing",
+            source_type=str(manifest.get("source_type", "configured_external_runner")),
+            backend_mode=str(manifest.get("backend_mode", "configured_external_storyboard_runner")),
+            clip_status=str(manifest.get("clip_status", "")),
+            external_runner=manifest.get("external_runner") if isinstance(manifest.get("external_runner"), dict) else None,
+        )
+    return scene_backend_row(
+        scene_id=scene_id,
+        frame_path=frame_path,
+        preview_path=preview_path,
+        poster_path=poster_path,
+        clip_path=clip_path,
+        alternates_root=alternates_root,
+        manifest_path=manifest_path,
+        status="pending_external_worker",
+        source_type="missing",
+        backend_mode="missing_storyboard_backend",
+    )
+
+
 def ensure_scene_backend_derivatives(
     frame_path: Path,
     preview_path: Path,
@@ -549,9 +665,14 @@ def materialize_scene_backend_frame(
 
     if not allow_local_frame_fallback(cfg):
         runner_status = str(external_runner.get("status", "") or "not_configured") if isinstance(external_runner, dict) else "not_configured"
+        runner_error = str(external_runner.get("error", "") or "").strip() if isinstance(external_runner, dict) else ""
+        runner_log = str(external_runner.get("log_path", "") or "").strip() if isinstance(external_runner, dict) else ""
+        runner_detail = f" {runner_error}" if runner_error else ""
+        log_detail = f" Backend log: {runner_log}." if runner_log else ""
         raise RuntimeError(
             f"{scene_id} did not produce a generated storyboard frame at {frame_path}. "
-            f"External runner status: {runner_status}. Local seed-frame/color-grade fallback is disabled, "
+            f"External runner status: {runner_status}.{runner_detail}{log_detail} "
+            "Local seed-frame/color-grade fallback is disabled, "
             "so the pipeline will not fake generated frames. Configure external_backends.storyboard_scene_runner "
             "and rerun 16_run_storyboard_backend.py --force."
         )
@@ -686,6 +807,22 @@ def main() -> None:
         backend_inputs = filtered_inputs
         info(f"Scene-selective mode: processing {len(backend_inputs)} of {total_backend_inputs} available scene payloads.")
 
+    stale_language_inputs = stale_storyboard_language_inputs(backend_inputs, cfg)
+    if stale_language_inputs:
+        first = stale_language_inputs[0]
+        raise RuntimeError(
+            f"Storyboard inputs are stale: {len(stale_language_inputs)} scene(s) use language "
+            f"'{first['payload_language']}', while project transcription.language is "
+            f"'{first['expected_language']}'. First stale scene: {first['scene_id']} ({first['path']}). "
+            f"Regenerate the episode before rendering: run 14_generate_episode.py --episode-id {episode_id}, "
+            f"then 15_generate_storyboard_assets.py --episode-id {episode_id} --force, and finally rerun "
+            f"16_run_storyboard_backend.py --episode-id {episode_id} --force."
+        )
+
+    worker_readiness = storyboard_worker_readiness(cfg)
+    if not worker_readiness["ready"]:
+        raise RuntimeError(str(worker_readiness["reason"]))
+
     autosave_target = episode_id
     mark_step_started("16_run_storyboard_backend", autosave_target, {"episode_id": episode_id, "shotlist": str(shotlist_path)})
     reporter = LiveProgressReporter(
@@ -725,11 +862,23 @@ def main() -> None:
             completed_count = 0
             for backend_input_path in backend_inputs:
                 payload = read_json(backend_input_path, {})
-                row = materialize_scene_backend_frame(assets_root, payload, width, height, fps, crf, ffmpeg, False, cfg, backend_input_path)
+                row = existing_scene_backend_row(assets_root, payload)
                 row["backend_input_path"] = str(backend_input_path)
                 rows.append(row)
-                if row.get("status") == "completed":
+                if row.get("status") in {"completed", "existing"}:
                     completed_count += 1
+
+        pending_scene_ids = [
+            str(row.get("scene_id", ""))
+            for row in rows
+            if str(row.get("status", "")) == "pending_external_worker"
+        ]
+        if pending_scene_ids:
+            raise RuntimeError(
+                f"Storyboard backend is still waiting for {len(pending_scene_ids)} scene(s) from another capable worker: "
+                f"{', '.join(pending_scene_ids[:8])}. Run step 16 on a CUDA worker; no scene was started a second time "
+                "without its distributed lease."
+            )
 
         completed_scene_video_count = sum(1 for row in rows if str(row.get("clip_status", "")) == "completed")
         manifest_backend_mode = storyboard_backend_manifest_mode(rows)
