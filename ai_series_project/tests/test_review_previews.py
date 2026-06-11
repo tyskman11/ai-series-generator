@@ -9,6 +9,7 @@ if str(PROJECT_DIR) not in sys.path:
     sys.path.insert(0, str(PROJECT_DIR))
 
 import importlib.util
+import inspect
 import os
 import tempfile
 import unittest
@@ -32,6 +33,13 @@ STEP06 = load_module("05_review_unknowns.py", "step06_review_previews")
 
 
 class ReviewPreviewTests(unittest.TestCase):
+    def test_preview_assignment_window_receives_character_map(self) -> None:
+        signature = inspect.signature(STEP06.show_preview_assignment_window)
+        review_source = inspect.getsource(STEP06.interactive_face_review)
+
+        self.assertIn("char_map", signature.parameters)
+        self.assertIn("char_map=char_map", review_source)
+
     def test_preview_files_rebase_stored_preview_dir(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             preview_dir = Path(tmpdir)

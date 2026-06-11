@@ -2177,6 +2177,11 @@ class ManualNamingTests(unittest.TestCase):
         self.assertEqual(STEP08.session_case_budget_remaining(20, 20), 0)
         self.assertEqual(STEP08.session_case_budget_remaining(0, 999), 0)
 
+    def test_session_case_display_remaining_shows_open_cases_for_unlimited_review(self) -> None:
+        self.assertEqual(STEP08.session_case_display_remaining(0, 999, 11), 11)
+        self.assertEqual(STEP08.session_case_display_remaining(20, 3, 11), 11)
+        self.assertEqual(STEP08.session_case_display_remaining(5, 3, 11), 2)
+
     def test_session_face_review_candidates_do_not_refill_to_original_limit(self) -> None:
         char_map = {
             "clusters": {

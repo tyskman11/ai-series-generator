@@ -814,6 +814,7 @@ def get_preview_tk_root(tk_module):
 def show_preview_assignment_window(
     image_path: Path,
     title: str,
+    char_map: dict,
     status_text: str = "",
     initial_priority: bool = False,
     quick_assignments: list[tuple[str, bool, int]] | None = None,
@@ -3793,6 +3794,15 @@ def session_case_budget_remaining(limit: int, handled_count: int) -> int:
     return max(0, int(limit) - max(0, int(handled_count)))
 
 
+def session_case_display_remaining(limit: int, handled_count: int, total_open_count: int) -> int:
+    if limit <= 0:
+        return max(0, int(total_open_count))
+    return min(
+        session_case_budget_remaining(limit, handled_count),
+        max(0, int(total_open_count)),
+    )
+
+
 def session_face_review_candidates(
     char_map: dict,
     include_named: bool,
@@ -3850,8 +3860,8 @@ def interactive_face_review(cfg: dict, char_map: dict, voice_map: dict, include_
         if not candidates:
             break
         cluster_id, payload = candidates[0]
-        session_remaining_count = session_case_budget_remaining(limit, handled_count)
         total_open_count = len(face_review_candidates(char_map, include_named, 0, set()))
+        session_remaining_count = session_case_display_remaining(limit, handled_count, total_open_count)
         role_hint = suggested_face_role(payload)
         action_hint = suggested_face_action_hint(payload)
         answer = ""
@@ -3889,6 +3899,7 @@ def interactive_face_review(cfg: dict, char_map: dict, voice_map: dict, include_
                     preview_result = show_preview_assignment_window(
                         preview_window_image,
                         f"{cluster_id} Preview | Session: {session_remaining_count} | Open: {total_open_count}",
+                        char_map=char_map,
                         status_text=(
                             f"Remaining in this session including current case: {session_remaining_count} | "
                             f"Total actually still open: {total_open_count} | "
@@ -3959,7 +3970,8 @@ def interactive_face_review(cfg: dict, char_map: dict, voice_map: dict, include_
             break
 
     if changed:
-        remaining_session_count = session_case_budget_remaining(limit, handled_count)
+        total_open_count = len(face_review_candidates(char_map, include_named, 0, set()))
+        remaining_session_count = session_case_display_remaining(limit, handled_count, total_open_count)
         ok(f"{changed} face clusters updated. Still open in this session: {remaining_session_count}.")
     else:
         info("No changes were made.")
