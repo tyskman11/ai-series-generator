@@ -344,11 +344,18 @@
     "default_season_id": "season_01",
     "require_in_finished_episode_mode": true,
     "lock_after_first_use": true,
+    "auto_generate_if_missing": true,
+    "generated_duration_seconds": 12.0,
+    "max_generated_intro_characters": 4,
+    "generated_prompt": "",
     "profiles": {
       "season_01": {
         "source_video": "assets/season_intros/season_01/intro.mp4",
         "start_seconds": 0.0,
-        "duration_seconds": 0.0
+        "duration_seconds": 0.0,
+        "generated_duration_seconds": 12.0,
+        "title": "",
+        "prompt": ""
       }
     }
   },

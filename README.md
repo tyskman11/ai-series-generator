@@ -384,15 +384,24 @@ This is stricter and substantially more stable than text-only SDXL, but a single
 
 ### Fixed Season Intro
 
-Finished Episode Mode expects one approved intro per season. The default season is `season_01` and its source path is:
+Finished Episode Mode expects one reusable intro per season. The default season is `season_01` and its optional approved source path is:
 
 ```text
 ai_series_project/assets/season_intros/season_01/intro.mp4
 ```
 
-On the first render, `17_render_episode.py` normalizes that file once and stores the canonical version under `ai_series_project/generation/season_assets/<season_id>/intro/`. Its SHA-256 hash is locked in `intro_manifest.json`. Later episodes reuse that exact file; an unexpected modification blocks the Finished Episode Gate.
+On the first render, `17_render_episode.py` follows this order:
 
-To add another season, set `generation.default_season_id` and add a matching `season_intro.profiles.<season_id>` entry. Set `start_seconds` and `duration_seconds` when the configured source video contains more than the intro. Only use source material for which you have the necessary rights.
+1. If the configured source video exists, normalize and use it.
+2. Otherwise, when `season_intro.auto_generate_if_missing` is enabled, create a real three-shot visual intro with the configured finished-episode image and video backends.
+3. Reject disabled, failed, fallback, placeholder, or output-less runners.
+4. Normalize the generated result and store the canonical version under `ai_series_project/generation/season_assets/<season_id>/intro/`.
+
+The SHA-256 hash is locked in `intro_manifest.json`. Later episodes reuse that exact file; an unexpected modification blocks the Finished Episode Gate. Automatically generated intros also store the image/video runner statuses and backend manifests. The gate rejects a generated intro when this evidence is missing or reports a fallback.
+
+The generated shot plan uses a world-establishing shot, a canonical cast shot when reviewed identity references are available, and a reusable closing identity plate. If no safe character references exist, the intro deliberately remains environment/prop-based rather than inventing inconsistent people.
+
+To add another season, set `generation.default_season_id` and add a matching `season_intro.profiles.<season_id>` entry. Set `start_seconds` and `duration_seconds` when the configured source video contains more than the intro. For generation, use `title`, `prompt`, and `generated_duration_seconds` to control the season identity. Only use source and identity material for which you have the necessary rights.
 
 The Finished Episode Gate is written into the quality gate report:
 
@@ -454,9 +463,14 @@ Important areas:
 - `generation.show_profile.*`: reusable public style, camera, continuity, subtitle, and export-disclosure defaults that are copied into scene-generation prompts without absolute paths
 - `generation.default_season_id`: season key written into episode blueprints and render packages, defaulting to `season_01`
 - `foundation_training.identity_adapter_model`: project-local Hugging Face identity-conditioning model, defaulting to `h94/IP-Adapter`
-- `season_intro.enabled`: requires the fixed per-season intro path during Finished Episode rendering
+- `season_intro.enabled`: enables the fixed per-season intro in Finished Episode rendering
+- `season_intro.auto_generate_if_missing`: generates the first canonical intro through the real image/video backends when no approved source exists
+- `season_intro.generated_duration_seconds`: default generated intro duration; profiles can override it
+- `season_intro.max_generated_intro_characters`: maximum reviewed, identity-conditioned cast members in the generated cast shot
+- `season_intro.generated_prompt`: optional global visual direction for generated intros
 - `season_intro.lock_after_first_use`: protects the canonical normalized intro with a stored SHA-256 hash
-- `season_intro.profiles.<season_id>.source_video`, `start_seconds`, and `duration_seconds`: select the approved intro source and optional extraction range
+- `season_intro.profiles.<season_id>.source_video`, `start_seconds`, and `duration_seconds`: select an approved intro source and optional extraction range
+- `season_intro.profiles.<season_id>.title`, `prompt`, and `generated_duration_seconds`: customize automatic generation for one season
 - `SERIES_IMAGE_IDENTITY_SCALE`: optional local IP-Adapter strength override; the default is `0.82`
 - `SERIES_IMAGE_REQUIRE_IDENTITY_REFERENCES` and `SERIES_IMAGE_REQUIRE_IDENTITY_ADAPTER`: remain enabled for the quality runners so text-only identity generation cannot silently pass
 - `transcription.language`: keep `auto` for new or mixed-language series; set it to a language code such as `de` for a known monolingual source project so wrong Auto-Detection caches are rejected and rebuilt
@@ -615,7 +629,8 @@ python -m py_compile 00_prepare_runtime.py 03_diarize_and_transcribe.py 04_link_
 - SDXL plus one shared IP-Adapter reference board improves identity stability but does not fully solve multi-person regional identity binding, difficult profiles, occlusion, extreme expressions, hands crossing faces, or long-range video identity drift
 - the quality gate verifies reference and conditioning evidence from manifests; it does not yet run an independent face-embedding comparison against every generated frame
 - canonical outfit, hairstyle, age-group, and visual-presentation labels are only as complete as the reviewed character metadata; the image references remain the authoritative identity anchor when these text fields are empty
-- the season intro must be supplied as an approved project-local video before strict rendering; the pipeline intentionally does not invent or silently substitute an intro
+- automatic season-intro generation requires functioning real image and video backends; it blocks instead of creating a still-image/slideshow substitute
+- the automatic intro currently generates the visual sequence only; use an approved source intro when a fixed theme song or separately mastered music cue is required
 - project-local lip-sync is still weaker than a full dedicated production lip-sync stack
 - project-local XTTS voice cloning still depends on clean speaker mapping and real reference segments; speakers with zero linked eligible speech data still cannot clone correctly
 - existing bad voice maps or voice models created before the speech gate should be regenerated by rerunning `03` through `10` for the affected episodes/characters

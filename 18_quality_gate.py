@@ -415,7 +415,26 @@ def season_intro_status(package_payload: dict[str, Any], cfg: dict[str, Any] | N
     canonical_video = intro.get("canonical_video", "")
     expected_hash = str(intro.get("canonical_sha256", "") or "").strip()
     actual_hash = artifact_sha256(canonical_video)
-    ready = bool(artifact_path_exists(canonical_video) and expected_hash and actual_hash == expected_hash)
+    source_origin = str(intro.get("source_origin", "") or "").strip()
+    backend_statuses = intro.get("backend_runner_statuses", {}) if isinstance(intro.get("backend_runner_statuses", {}), dict) else {}
+    backend_manifests = intro.get("backend_manifests", {}) if isinstance(intro.get("backend_manifests", {}), dict) else {}
+    generated_backend_ready = True
+    missing_backend_evidence: list[str] = []
+    if source_origin == "backend_generated":
+        for runner_name in ("finished_episode_image_runner", "finished_episode_video_runner"):
+            if str(backend_statuses.get(runner_name, "") or "").strip() not in {"completed", "existing_outputs"}:
+                missing_backend_evidence.append(f"{runner_name} status")
+            if not artifact_path_exists(backend_manifests.get(runner_name, "")):
+                missing_backend_evidence.append(f"{runner_name} manifest")
+        if bool(intro.get("fallback_used", False)):
+            missing_backend_evidence.append("fallback backend used")
+        generated_backend_ready = not missing_backend_evidence
+    ready = bool(
+        artifact_path_exists(canonical_video)
+        and expected_hash
+        and actual_hash == expected_hash
+        and generated_backend_ready
+    )
     return {
         "required": required,
         "ready": ready,
@@ -423,6 +442,11 @@ def season_intro_status(package_payload: dict[str, Any], cfg: dict[str, Any] | N
         "canonical_video": str(canonical_video or "").strip(),
         "expected_hash": expected_hash,
         "actual_hash": actual_hash,
+        "source_origin": source_origin,
+        "generation_mode": str(intro.get("generation_mode", "") or "").strip(),
+        "backend_integrity_ready": generated_backend_ready,
+        "missing_backend_evidence": missing_backend_evidence,
+        "fallback_used": bool(intro.get("fallback_used", False)),
         "status": str(intro.get("status", "") or ("ready" if ready else "missing")).strip(),
     }
 

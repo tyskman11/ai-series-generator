@@ -1585,7 +1585,9 @@ def build_shot_packages(episode_package_root: Path, scene_id: str, shot_plan: li
                     "primary_frame": str(shot_root / "primary_frame.png"),
                     "video_clip": str(shot_root / f"{shot_slug}_video.mp4"),
                     "lipsync_clip": str(shot_root / f"{shot_slug}_lipsync.mp4"),
-                    "manifest": str(shot_root / f"{shot_slug}_manifest.json"),
+                    "manifest": str(shot_root / f"{shot_slug}_image_manifest.json"),
+                    "image_manifest": str(shot_root / f"{shot_slug}_image_manifest.json"),
+                    "video_manifest": str(shot_root / f"{shot_slug}_video_manifest.json"),
                 },
                 "backend_metadata_required": True,
             }
@@ -4041,6 +4043,290 @@ def normalize_season_intro_clip(
         )
 
 
+def season_intro_series_title(shotlist: dict, profile: dict) -> str:
+    profile_title = clean_text(profile.get("title", ""))
+    if profile_title:
+        return profile_title
+    groups = shotlist.get("active_character_groups", [])
+    if isinstance(groups, dict):
+        groups = [groups]
+    if isinstance(groups, list):
+        for group in groups:
+            if not isinstance(group, dict):
+                continue
+            title = clean_text(group.get("label", "")) or clean_text(group.get("id", ""))
+            if title:
+                return title
+    show_profile = shotlist.get("show_profile", {}) if isinstance(shotlist.get("show_profile", {}), dict) else {}
+    return (
+        clean_text(show_profile.get("display_name", ""))
+        or clean_text(show_profile.get("title", ""))
+        or "Series"
+    )
+
+
+def season_intro_character_continuity(shotlist: dict, limit: int = 4) -> dict[str, dict]:
+    focus_names = clean_text_list(shotlist.get("focus_characters", []))
+    scenes = shotlist.get("scenes", []) if isinstance(shotlist.get("scenes", []), list) else []
+    continuity_by_name: dict[str, dict] = {}
+    for scene in scenes:
+        if not isinstance(scene, dict):
+            continue
+        continuity = (
+            scene.get("character_continuity_lock", {})
+            if isinstance(scene.get("character_continuity_lock", {}), dict)
+            else {}
+        )
+        for raw_name, raw_profile in continuity.items():
+            name = clean_text(raw_name)
+            if not name or not isinstance(raw_profile, dict):
+                continue
+            references: list[str] = []
+            for raw_path in clean_text_list(raw_profile.get("reference_images", [])):
+                candidate = resolve_stored_project_path(raw_path)
+                if candidate is not None and candidate.is_file():
+                    references.append(str(candidate))
+            if not references:
+                continue
+            existing = continuity_by_name.get(name, {})
+            merged_references = list(
+                dict.fromkeys([*clean_text_list(existing.get("reference_images", [])), *references])
+            )
+            continuity_by_name[name] = {
+                **raw_profile,
+                "identity_required": True,
+                "outfit_lock": True,
+                "hair_lock": True,
+                "reference_images": merged_references[:8],
+            }
+    ordered_names = [*focus_names, *continuity_by_name.keys()]
+    selected: dict[str, dict] = {}
+    for name in ordered_names:
+        if name in continuity_by_name and name not in selected:
+            selected[name] = continuity_by_name[name]
+        if len(selected) >= max(1, limit):
+            break
+    return selected
+
+
+def build_generated_season_intro_package(
+    cfg: dict,
+    shotlist: dict,
+    season_id: str,
+    profile: dict,
+    canonical_root: Path,
+) -> dict[str, object]:
+    intro_cfg = cfg.get("season_intro", {}) if isinstance(cfg.get("season_intro", {}), dict) else {}
+    generated_root = canonical_root / "generated"
+    scene_id = "season_intro"
+    episode_id = f"{season_id}_intro"
+    title = season_intro_series_title(shotlist, profile)
+    total_duration = max(
+        6.0,
+        min(30.0, safe_float(profile.get("generated_duration_seconds", intro_cfg.get("generated_duration_seconds", 12.0)), 12.0)),
+    )
+    continuity = season_intro_character_continuity(
+        shotlist,
+        limit=max(1, int(intro_cfg.get("max_generated_intro_characters", 4) or 4)),
+    )
+    cast = list(continuity)
+    base_prompt = clean_text(profile.get("prompt", "")) or clean_text(intro_cfg.get("generated_prompt", ""))
+    if not base_prompt:
+        base_prompt = (
+            f"original polished television series opening sequence for {title}, broadcast-quality cinematography, "
+            "energetic visual rhythm, coherent recurring sets and color palette, premium studio lighting, "
+            "clean faces and stable identities, no readable generated text, no watermark"
+        )
+    shot_specs = [
+        {
+            "shot_id": f"{scene_id}_shot_001",
+            "shot_type": "dynamic establishing montage",
+            "duration_seconds": round(total_duration * 0.30, 3),
+            "camera_angle": "wide eye-level",
+            "camera_movement": "smooth forward crane",
+            "characters_visible": [],
+            "purpose": "establish the recurring series world and signature visual motif",
+        },
+        {
+            "shot_id": f"{scene_id}_shot_002",
+            "shot_type": "hero ensemble shot" if cast else "kinetic prop montage",
+            "duration_seconds": round(total_duration * 0.45, 3),
+            "camera_angle": "medium-wide eye-level",
+            "camera_movement": "controlled lateral tracking",
+            "characters_visible": cast,
+            "purpose": (
+                "introduce the canonical main cast with stable identity and wardrobe"
+                if cast
+                else "show signature props and environments without inventing unreferenced people"
+            ),
+        },
+        {
+            "shot_id": f"{scene_id}_shot_003",
+            "shot_type": "signature closing image",
+            "duration_seconds": round(total_duration * 0.25, 3),
+            "camera_angle": "symmetrical front view",
+            "camera_movement": "slow push-in",
+            "characters_visible": [],
+            "purpose": "finish on a reusable season identity plate with clear central composition",
+        },
+    ]
+    shot_packages = build_shot_packages(generated_root, scene_id, shot_specs)
+    reference_slots = [
+        {
+            "slot": f"intro_character_{index:02d}",
+            "type": "character",
+            "name": name,
+            "context_images": clean_text_list(character.get("reference_images", [])),
+            "portrait_images": clean_text_list(character.get("reference_images", [])),
+            "priority": True,
+        }
+        for index, (name, character) in enumerate(continuity.items(), start=1)
+    ]
+    image_root = generated_root / "images" / scene_id
+    video_root = generated_root / "videos" / scene_id
+    prompt_preview_path = generated_root / "manifests" / "intro_backend_prompts.txt"
+    scene_package_path = generated_root / "scenes" / "season_intro_production.json"
+    raw_video_path = video_root / "season_intro_generated.mp4"
+    scene_package = {
+        "episode_id": episode_id,
+        "scene_id": scene_id,
+        "title": f"{title} - {season_id} Intro",
+        "summary": "Reusable generated opening sequence for the season.",
+        "duration_seconds": total_duration,
+        "characters": cast,
+        "character_continuity_lock": continuity,
+        "reference_slots": reference_slots,
+        "shot_plan": shot_specs,
+        "shot_packages": shot_packages,
+        "image_generation": {
+            "required": True,
+            "mode": "generated_season_intro_keyframes",
+            "prompt": base_prompt,
+            "negative_prompt": (
+                "placeholder, slideshow, still-frame pan, distorted face, merged people, wrong gender, "
+                "identity drift, duplicate person, malformed anatomy, unreadable text, watermark"
+            ),
+            "reference_slots": reference_slots,
+            "character_continuity_lock": continuity,
+            "shot_plan": shot_specs,
+            "shot_packages": shot_packages,
+            "target_outputs": {
+                "primary_frame": str(image_root / "frame_0001.png"),
+                "alternate_frame_dir": str(image_root / "alternates"),
+                "layered_storyboard_frame": str(image_root / "storyboard_frame.png"),
+                "backend_manifest": str(generated_root / "manifests" / "finished_episode_image_runner.json"),
+            },
+        },
+        "video_generation": {
+            "required": True,
+            "mode": "generated_season_intro_video",
+            "prompt": f"{base_prompt}, real continuous motion, deliberate opening-title pacing",
+            "shot_plan": shot_specs,
+            "shot_packages": shot_packages,
+            "character_continuity_lock": continuity,
+            "target_outputs": {
+                "scene_video": str(raw_video_path),
+                "preview_frame": str(video_root / "preview.jpg"),
+                "poster_frame": str(video_root / "poster.png"),
+                "backend_manifest": str(generated_root / "manifests" / "finished_episode_video_runner.json"),
+            },
+        },
+        "voice_clone": {"required": False, "lines": [], "target_outputs": {}},
+        "lip_sync": {"required": False, "target_outputs": {}},
+        "mastering": {"required": False, "target_outputs": {}},
+    }
+    return {
+        "generated_root": generated_root,
+        "scene_package": scene_package,
+        "scene_package_path": scene_package_path,
+        "prompt_preview_path": prompt_preview_path,
+        "raw_video_path": raw_video_path,
+        "cast": cast,
+        "title": title,
+    }
+
+
+def generate_season_intro_video(
+    cfg: dict,
+    shotlist: dict,
+    season_id: str,
+    profile: dict,
+    canonical_root: Path,
+) -> dict[str, object]:
+    package = build_generated_season_intro_package(cfg, shotlist, season_id, profile, canonical_root)
+    scene_package = package["scene_package"]
+    scene_package_path = package["scene_package_path"]
+    prompt_preview_path = package["prompt_preview_path"]
+    generated_root = package["generated_root"]
+    raw_video_path = package["raw_video_path"]
+    assert isinstance(scene_package, dict)
+    assert isinstance(scene_package_path, Path)
+    assert isinstance(prompt_preview_path, Path)
+    assert isinstance(generated_root, Path)
+    assert isinstance(raw_video_path, Path)
+    write_json(scene_package_path, scene_package)
+    write_text(
+        prompt_preview_path,
+        f"IMAGE\n{scene_package['image_generation']['prompt']}\n\n"
+        f"VIDEO\n{scene_package['video_generation']['prompt']}\n",
+    )
+    context = build_scene_runner_context(
+        scene_package,
+        scene_package_path,
+        scene_package_path,
+        prompt_preview_path,
+        generated_root,
+    )
+    runner_results: dict[str, dict] = {}
+    backend_manifests: dict[str, str] = {}
+    for runner_name, section_name, expected_path in (
+        ("finished_episode_image_runner", "image_generation", Path(context["primary_frame"])),
+        ("finished_episode_video_runner", "video_generation", raw_video_path),
+    ):
+        info(f"Generating missing {season_id} intro via {runner_name} ...")
+        result = run_external_backend_runner(
+            cfg,
+            runner_name,
+            context=context,
+            force=True,
+            fallback_cwd=scene_package_path.parent,
+            log_dir=resolve_project_path("logs") / "external_backends" / runner_name / episode_id_for_intro(season_id),
+            raise_on_failure=True,
+        )
+        status = clean_text(result.get("status", ""))
+        if status not in {"completed", "existing_outputs"} or not render_output_ready(expected_path):
+            raise RuntimeError(
+                f"Could not generate the {season_id} intro: {runner_name} returned '{status}' "
+                f"without a valid output at {expected_path}."
+            )
+        if backend_runner_fallback_used(result):
+            raise RuntimeError(
+                f"Could not generate the {season_id} intro: {runner_name} used a fallback backend. "
+                "Finished season intros require real image/video generation."
+            )
+        runner_results[runner_name] = result
+        backend_manifests[runner_name] = write_backend_task_manifest(
+            package_root=generated_root,
+            scene_package=scene_package,
+            scene_package_path=scene_package_path,
+            runner_name=runner_name,
+            section_name=section_name,
+            runner_result=result,
+        )
+    scene_package["backend_manifests"] = backend_manifests
+    write_json(scene_package_path, scene_package)
+    return {
+        **package,
+        "runner_results": runner_results,
+        "backend_manifests": backend_manifests,
+        "fallback_used": False,
+    }
+
+
+def episode_id_for_intro(season_id: str) -> str:
+    return f"{season_id}_intro"
+
+
 def materialize_season_intro(
     cfg: dict,
     shotlist: dict,
@@ -4080,11 +4366,19 @@ def materialize_season_intro(
             "duration_seconds": media_duration_seconds(ffmpeg, canonical_path),
             "manifest": str(manifest_path),
         }
+    generated_intro: dict[str, object] = {}
+    source_origin = "configured_source"
+    if not source_path.is_file() and bool(intro_cfg.get("auto_generate_if_missing", True)):
+        generated_intro = generate_season_intro_video(cfg, shotlist, season_id, profile, canonical_root)
+        generated_source = generated_intro.get("raw_video_path")
+        source_path = generated_source if isinstance(generated_source, Path) else Path(str(generated_source or ""))
+        source_origin = "backend_generated"
     if not source_path.is_file():
         if bool(intro_cfg.get("require_in_finished_episode_mode", True)) and strict_original_episode_outputs_required(cfg):
             raise RuntimeError(
                 f"Fixed season intro is required for {season_id}, but no source video exists at {source_path}. "
-                f"Place the approved intro there or set season_intro.profiles.{season_id}.source_video."
+                f"Place the approved intro there, set season_intro.profiles.{season_id}.source_video, "
+                "or enable season_intro.auto_generate_if_missing with working image/video backends."
             )
         return {
             "enabled": True,
@@ -4108,7 +4402,9 @@ def materialize_season_intro(
     payload = {
         "enabled": True,
         "season_id": season_id,
-        "status": "locked_new",
+        "status": "locked_new_generated" if source_origin == "backend_generated" else "locked_new",
+        "source_origin": source_origin,
+        "generation_mode": "real_backend_multi_shot_intro" if source_origin == "backend_generated" else "approved_source_video",
         "source_video": str(source_path),
         "source_sha256": file_sha256(source_path),
         "canonical_video": str(canonical_path),
@@ -4118,6 +4414,20 @@ def materialize_season_intro(
         "created_at": utc_now_iso(),
         "manifest": str(manifest_path),
     }
+    if generated_intro:
+        payload["generation_package"] = str(generated_intro.get("scene_package_path", ""))
+        payload["generated_cast"] = generated_intro.get("cast", [])
+        payload["backend_manifests"] = generated_intro.get("backend_manifests", {})
+        payload["backend_runner_statuses"] = {
+            name: clean_text(result.get("status", ""))
+            for name, result in (
+                generated_intro.get("runner_results", {}).items()
+                if isinstance(generated_intro.get("runner_results", {}), dict)
+                else []
+            )
+            if isinstance(result, dict)
+        }
+        payload["fallback_used"] = bool(generated_intro.get("fallback_used", False))
     write_json(manifest_path, payload)
     return payload
 

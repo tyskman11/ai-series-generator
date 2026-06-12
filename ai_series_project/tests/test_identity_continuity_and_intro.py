@@ -28,6 +28,7 @@ def load_module(path: Path, module_name: str):
 
 
 STEP08 = load_module(SCRIPT_ROOT / "08_train_series_model.py", "step08_identity_continuity_test")
+STEP17 = load_module(SCRIPT_ROOT / "17_render_episode.py", "step17_identity_continuity_test")
 STEP18 = load_module(SCRIPT_ROOT / "18_quality_gate.py", "step18_identity_continuity_test")
 IMAGE_BACKEND = load_module(
     BACKEND_DIR / "local_diffusion_image_backend.py",
@@ -166,6 +167,87 @@ class IdentityContinuityAndIntroTests(unittest.TestCase):
         self.assertTrue(
             pipeline_common.DEFAULT_CONFIG["season_intro"]["require_in_finished_episode_mode"]
         )
+        self.assertTrue(pipeline_common.DEFAULT_CONFIG["season_intro"]["auto_generate_if_missing"])
+
+    def test_generated_intro_package_uses_real_multi_shot_outputs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            package = STEP17.build_generated_season_intro_package(
+                {"season_intro": {"generated_duration_seconds": 12.0}},
+                {
+                    "active_character_groups": [{"label": "Test Series"}],
+                    "focus_characters": ["Babe"],
+                    "scenes": [],
+                },
+                "season_01",
+                {},
+                Path(tmpdir),
+            )
+
+        scene_package = package["scene_package"]
+        self.assertEqual(scene_package["video_generation"]["mode"], "generated_season_intro_video")
+        self.assertEqual(len(scene_package["shot_packages"]), 3)
+        self.assertEqual(scene_package["shot_packages"][0]["characters_visible"], [])
+        self.assertIn("image_manifest", scene_package["shot_packages"][0]["target_outputs"])
+        self.assertIn("video_manifest", scene_package["shot_packages"][0]["target_outputs"])
+        prompt = IMAGE_BACKEND.shot_prompt("opening sequence", scene_package["shot_packages"][0])
+        self.assertIn("no people visible", prompt)
+
+    def test_people_free_intro_prompt_does_not_request_faces(self) -> None:
+        prompt = IMAGE_BACKEND.compact_visual_prompt(
+            {},
+            {
+                "characters": [],
+                "image_generation": {"mode": "generated_season_intro_keyframes"},
+            },
+            "polished opening sequence",
+        )
+
+        self.assertIn("no people visible", prompt)
+        self.assertNotIn("visible faces", prompt)
+
+    def test_generated_intro_gate_requires_runner_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            intro = root / "intro.mp4"
+            image_manifest = root / "image.json"
+            video_manifest = root / "video.json"
+            intro.write_bytes(b"generated-intro")
+            image_manifest.write_text("{}", encoding="utf-8")
+            video_manifest.write_text("{}", encoding="utf-8")
+            expected_hash = hashlib.sha256(intro.read_bytes()).hexdigest()
+            package = {
+                "season_intro": {
+                    "season_id": "season_01",
+                    "source_origin": "backend_generated",
+                    "canonical_video": str(intro),
+                    "canonical_sha256": expected_hash,
+                    "backend_runner_statuses": {
+                        "finished_episode_image_runner": "completed",
+                        "finished_episode_video_runner": "completed",
+                    },
+                    "backend_manifests": {
+                        "finished_episode_image_runner": str(image_manifest),
+                        "finished_episode_video_runner": str(video_manifest),
+                    },
+                    "fallback_used": False,
+                }
+            }
+            cfg = {
+                "season_intro": {
+                    "enabled": True,
+                    "default_season_id": "season_01",
+                    "require_in_finished_episode_mode": True,
+                }
+            }
+
+            ready = STEP18.season_intro_status(package, cfg)
+            package["season_intro"]["fallback_used"] = True
+            blocked = STEP18.season_intro_status(package, cfg)
+
+        self.assertTrue(ready["ready"])
+        self.assertTrue(ready["backend_integrity_ready"])
+        self.assertFalse(blocked["ready"])
+        self.assertIn("fallback backend used", blocked["missing_backend_evidence"])
 
 
 if __name__ == "__main__":

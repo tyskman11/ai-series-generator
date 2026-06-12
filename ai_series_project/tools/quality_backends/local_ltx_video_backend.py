@@ -212,7 +212,7 @@ def shot_scene_package(scene_package: dict[str, Any], shot: dict[str, Any]) -> d
 
 def write_shot_manifest(shot: dict[str, Any], output_path: Path) -> None:
     outputs = shot.get("target_outputs", {}) if isinstance(shot.get("target_outputs", {}), dict) else {}
-    manifest_text = clean_text(outputs.get("manifest", ""))
+    manifest_text = clean_text(outputs.get("video_manifest", "")) or clean_text(outputs.get("manifest", ""))
     if not manifest_text:
         return
     manifest_path = Path(manifest_text)

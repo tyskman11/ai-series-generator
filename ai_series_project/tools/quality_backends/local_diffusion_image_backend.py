@@ -95,9 +95,20 @@ def character_identity_descriptors(scene_package: dict[str, Any], names: list[st
 def compact_visual_prompt(context: dict[str, Any], scene_package: dict[str, Any], original_prompt: str) -> str:
     characters = scene_character_names(scene_package)
     camera = scene_package.get("camera_plan", {}) if isinstance(scene_package.get("camera_plan", {}), dict) else {}
+    image_generation = (
+        scene_package.get("image_generation", {})
+        if isinstance(scene_package.get("image_generation", {}), dict)
+        else {}
+    )
+    people_free_intro = (
+        clean_text(image_generation.get("mode", "")) == "generated_season_intro_keyframes"
+        and not characters
+    )
     subject = (
         f"canonical cast identities available for {', '.join(characters[:3])}"
         if characters
+        else "empty recurring set and signature props, no people visible"
+        if people_free_intro
         else "people clearly visible with expressive faces"
     )
     parts = [
@@ -110,9 +121,11 @@ def compact_visual_prompt(context: dict[str, Any], scene_package: dict[str, Any]
         subject,
         clean_text(camera.get("pose_hint", "")),
         clean_text(scene_package.get("title", "")),
-        "visible faces",
-        "exact same facial identity, age, gender presentation, hairstyle, body proportions and wardrobe in every shot",
-        "natural undistorted symmetrical faces and eyes",
+        "visible faces" if not people_free_intro else "",
+        "exact same facial identity, age, gender presentation, hairstyle, body proportions and wardrobe in every shot"
+        if not people_free_intro
+        else "",
+        "natural undistorted symmetrical faces and eyes" if not people_free_intro else "",
         "consistent wardrobe and set geography",
         "production lighting",
         *character_identity_descriptors(scene_package, characters),
@@ -395,6 +408,7 @@ def write_alternate_image(context: dict[str, Any], source: Path) -> None:
 
 def shot_prompt(prompt: str, shot: dict[str, Any]) -> str:
     visible_characters = clean_text_list(shot.get("characters_visible", []))
+    explicit_people_free = isinstance(shot.get("characters_visible"), list) and not visible_characters
     parts = [
         prompt,
         clean_text(shot.get("shot_type", "")),
@@ -403,6 +417,8 @@ def shot_prompt(prompt: str, shot: dict[str, Any]) -> str:
         clean_text(shot.get("purpose", "")),
         f"exactly {len(visible_characters)} visible named characters: {', '.join(visible_characters)}; preserve each supplied identity separately"
         if visible_characters
+        else "no people visible, environment and props only"
+        if explicit_people_free
         else "",
     ]
     return ", ".join(part for part in parts if part)
@@ -481,7 +497,7 @@ def shot_manifest(
     pipeline_meta: dict[str, Any],
 ) -> None:
     outputs = shot.get("target_outputs", {}) if isinstance(shot.get("target_outputs", {}), dict) else {}
-    manifest_text = clean_text(outputs.get("manifest", ""))
+    manifest_text = clean_text(outputs.get("image_manifest", "")) or clean_text(outputs.get("manifest", ""))
     if not manifest_text:
         return
     manifest_path = Path(manifest_text)
@@ -532,7 +548,12 @@ def generate_shot_images(context: dict[str, Any], scene_package: dict[str, Any],
     for shot in shot_packages(scene_package):
         outputs = shot.get("target_outputs", {}) if isinstance(shot.get("target_outputs", {}), dict) else {}
         output_path = Path(clean_text(outputs.get("primary_frame", "")))
-        visible_characters = clean_text_list(shot.get("characters_visible", [])) or scene_character_names(scene_package)
+        visible_value = shot.get("characters_visible")
+        visible_characters = (
+            clean_text_list(visible_value)
+            if isinstance(visible_value, list)
+            else scene_character_names(scene_package)
+        )
         references_by_character = reference_images_by_character(scene_package, visible_characters)
         require_identity_references(visible_characters, references_by_character)
         reference_paths = reference_image_paths(scene_package, visible_characters)

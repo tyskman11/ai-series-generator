@@ -439,11 +439,18 @@ DEFAULT_CONFIG = {
         "default_season_id": "season_01",
         "require_in_finished_episode_mode": True,
         "lock_after_first_use": True,
+        "auto_generate_if_missing": True,
+        "generated_duration_seconds": 12.0,
+        "max_generated_intro_characters": 4,
+        "generated_prompt": "",
         "profiles": {
             "season_01": {
                 "source_video": "assets/season_intros/season_01/intro.mp4",
                 "start_seconds": 0.0,
                 "duration_seconds": 0.0,
+                "generated_duration_seconds": 12.0,
+                "title": "",
+                "prompt": "",
             }
         },
     },
