@@ -4252,6 +4252,10 @@ def generate_season_intro_video(
     season_id: str,
     profile: dict,
     canonical_root: Path,
+    *,
+    reporter: LiveProgressReporter | None = None,
+    overall_base: float = 0.0,
+    overall_span: float = 0.9,
 ) -> dict[str, object]:
     package = build_generated_season_intro_package(cfg, shotlist, season_id, profile, canonical_root)
     scene_package = package["scene_package"]
@@ -4277,22 +4281,63 @@ def generate_season_intro_video(
         prompt_preview_path,
         generated_root,
     )
-    runner_results: dict[str, dict] = {}
-    backend_manifests: dict[str, str] = {}
-    for runner_name, section_name, expected_path in (
+    runner_specs = [
         ("finished_episode_image_runner", "image_generation", Path(context["primary_frame"])),
         ("finished_episode_video_runner", "video_generation", raw_video_path),
-    ):
+    ]
+    runner_targets = {
+        runner_name: backend_progress_targets(scene_package, runner_name)
+        for runner_name, _section_name, _expected_path in runner_specs
+    }
+    runner_unit_totals = {
+        runner_name: max(1, len(targets))
+        for runner_name, targets in runner_targets.items()
+    }
+    total_units = max(1, sum(runner_unit_totals.values()))
+    completed_units = 0
+    completed_runner_units: dict[str, int] = {}
+    runner_results: dict[str, dict] = {}
+    backend_manifests: dict[str, str] = {}
+    for runner_name, section_name, expected_path in runner_specs:
         info(f"Generating missing {season_id} intro via {runner_name} ...")
-        result = run_external_backend_runner(
-            cfg,
-            runner_name,
-            context=context,
-            force=True,
-            fallback_cwd=scene_package_path.parent,
-            log_dir=resolve_project_path("logs") / "external_backends" / runner_name / episode_id_for_intro(season_id),
-            raise_on_failure=True,
+        targets = runner_targets.get(runner_name, [])
+        for target in targets:
+            remove_stale_generated_output(target.get("path", ""))
+        remove_stale_generated_output(expected_path)
+        monitor = (
+            BackendLiveProgressMonitor(
+                reporter=reporter,
+                runner_name=runner_name,
+                scene_id=f"{season_id} intro",
+                targets=targets,
+                overall_base=overall_base,
+                overall_span=overall_span,
+                completed_units_before=completed_units,
+                total_units=total_units,
+                history_targets=targets,
+                completed_runner_units_before=completed_runner_units.get(runner_name, 0),
+                completed_runner_units=completed_runner_units,
+                runner_unit_totals=runner_unit_totals,
+                runner_history=runner_targets,
+            )
+            if reporter is not None
+            else None
         )
+        if monitor is not None:
+            monitor.start()
+        try:
+            result = run_external_backend_runner(
+                cfg,
+                runner_name,
+                context=context,
+                force=True,
+                fallback_cwd=scene_package_path.parent,
+                log_dir=resolve_project_path("logs") / "external_backends" / runner_name / episode_id_for_intro(season_id),
+                raise_on_failure=True,
+            )
+        finally:
+            if monitor is not None:
+                monitor.stop()
         status = clean_text(result.get("status", ""))
         if status not in {"completed", "existing_outputs"} or not render_output_ready(expected_path):
             raise RuntimeError(
@@ -4305,6 +4350,9 @@ def generate_season_intro_video(
                 "Finished season intros require real image/video generation."
             )
         runner_results[runner_name] = result
+        runner_units = max(1, len(targets))
+        completed_units += runner_units
+        completed_runner_units[runner_name] = completed_runner_units.get(runner_name, 0) + runner_units
         backend_manifests[runner_name] = write_backend_task_manifest(
             package_root=generated_root,
             scene_package=scene_package,
@@ -4335,6 +4383,9 @@ def materialize_season_intro(
     fps: int,
     width: int,
     height: int,
+    reporter: LiveProgressReporter | None = None,
+    overall_base: float = 0.0,
+    overall_span: float = 1.0,
 ) -> dict[str, object]:
     intro_cfg = cfg.get("season_intro", {}) if isinstance(cfg.get("season_intro", {}), dict) else {}
     season_id = season_id_for_episode(cfg, shotlist)
@@ -4369,7 +4420,16 @@ def materialize_season_intro(
     generated_intro: dict[str, object] = {}
     source_origin = "configured_source"
     if not source_path.is_file() and bool(intro_cfg.get("auto_generate_if_missing", True)):
-        generated_intro = generate_season_intro_video(cfg, shotlist, season_id, profile, canonical_root)
+        generated_intro = generate_season_intro_video(
+            cfg,
+            shotlist,
+            season_id,
+            profile,
+            canonical_root,
+            reporter=reporter,
+            overall_base=overall_base,
+            overall_span=overall_span * 0.9,
+        )
         generated_source = generated_intro.get("raw_video_path")
         source_path = generated_source if isinstance(generated_source, Path) else Path(str(generated_source or ""))
         source_origin = "backend_generated"
@@ -4389,6 +4449,19 @@ def materialize_season_intro(
         }
     start_seconds = max(0.0, safe_float(profile.get("start_seconds", 0.0), 0.0))
     duration_seconds = max(0.0, safe_float(profile.get("duration_seconds", 0.0), 0.0))
+    if reporter is not None:
+        reporter.update(
+            overall_base + (overall_span * 0.9 if generated_intro else overall_span * 0.1),
+            current_label=f"{season_id} intro / normalization",
+            extra_label="Season intro: normalize and lock the canonical video",
+            force=True,
+            scope_current=0,
+            scope_total=1,
+            scope_started_at=time.time(),
+            scope_label="Intro encode",
+            scope_eta_seconds=60.0,
+            overall_eta_seconds=60.0,
+        )
     normalize_season_intro_clip(
         ffmpeg,
         source_path,
@@ -4679,10 +4752,11 @@ def main() -> None:
         info(f"Shared NAS workers: enabled ({worker_id})")
     reporter = LiveProgressReporter(
         script_name="17_render_episode.py",
-        total=len(scenes) + 3,
+        total=len(scenes) + 4,
         phase_label="Render Episode",
         parent_label=episode_id,
     )
+    render_progress_offset = 1
     lease_root = distributed_step_runtime_root("17_render_episode", "episodes")
     lease_heartbeat = None
     try:
@@ -4752,21 +4826,37 @@ def main() -> None:
             fps=fps,
             width=width,
             height=height,
+            reporter=reporter,
+            overall_base=0.0,
+            overall_span=float(render_progress_offset),
         )
         season_intro_path = resolve_stored_project_path(season_intro_meta.get("canonical_video", ""))
         if render_output_ready(season_intro_path):
             reporter.update(
-                0,
+                render_progress_offset,
                 current_label=f"{season_intro_meta.get('season_id', 'season')} Intro",
-                extra_label="Running now: reuse the locked canonical season intro",
+                extra_label=(
+                    "Season intro generated, normalized, and locked"
+                    if season_intro_meta.get("source_origin") == "backend_generated"
+                    else "Reusing the locked canonical season intro"
+                ),
                 force=True,
+                scope_current=1,
+                scope_total=1,
+                scope_label="Intro",
+                scope_eta_seconds=0.0,
             )
             opening_clip_paths.append(season_intro_path)
             final_clip_paths.append(season_intro_path)
             timeline_cursor += max(0.0, safe_float(season_intro_meta.get("duration_seconds", 0.0), 0.0))
 
         if include_title_cards and title_card_seconds > 0.0:
-            reporter.update(0, current_label="Title Card", extra_label="Running now: render opening title card", force=True)
+            reporter.update(
+                render_progress_offset,
+                current_label="Title Card",
+                extra_label="Running now: render opening title card",
+                force=True,
+            )
             title_path = temp_frame_root / "0000_title.png"
             title_image = title_card(
                 width,
@@ -4785,7 +4875,12 @@ def main() -> None:
 
         for index, scene in enumerate(scenes, start=1):
             scene_id = str(scene.get("scene_id", "")).strip() or f"scene_{index:04d}"
-            reporter.update(index - 1, current_label=scene_id, extra_label="Running now: compose storyboard render frame", force=True)
+            reporter.update(
+                render_progress_offset + index - 1,
+                current_label=scene_id,
+                extra_label="Running now: compose storyboard render frame",
+                force=True,
+            )
             scene_base_image, scene_meta = build_scene_frame(scene, index - 1, cfg, episode_id, assets_root, width, height)
             scene_image = compose_scene_card_from_base(scene, index - 1, scene_base_image, scene_meta, width, height)
             frame_path = temp_frame_root / f"{index:04d}_{scene_id}.png"
@@ -4869,7 +4964,7 @@ def main() -> None:
                 }
             )
             reporter.update(
-                index,
+                render_progress_offset + index,
                 current_label=scene_id,
                 extra_label=(
                     f"Frame source: {scene_meta.get('asset_source_type', 'placeholder')} | "
@@ -4880,7 +4975,12 @@ def main() -> None:
 
         if closing_card_seconds > 0.0:
             closing_index = len(entries) + 1
-            reporter.update(len(scenes), current_label="Closing Card", extra_label="Running now: render closing card", force=True)
+            reporter.update(
+                render_progress_offset + len(scenes),
+                current_label="Closing Card",
+                extra_label="Running now: render closing card",
+                force=True,
+            )
             closing_path = temp_frame_root / f"{closing_index:04d}_closing.png"
             closing_image = closing_card(width, height, str(shotlist.get("display_title", episode_id)), len(scenes))
             closing_image.save(closing_path, quality=95)
@@ -4891,11 +4991,20 @@ def main() -> None:
             final_clip_paths.append(closing_clip_path)
             timeline_cursor += closing_card_seconds
 
-        reporter.update(len(scenes) + 1, current_label="Concat List", extra_label="Running now: assemble FFmpeg concat list")
+        reporter.update(
+            render_progress_offset + len(scenes) + 1,
+            current_label="Concat List",
+            extra_label="Running now: assemble FFmpeg concat list",
+        )
         build_concat_file(entries, concat_path)
         build_clip_concat_file(final_clip_paths, clip_concat_path)
 
-        reporter.update(len(scenes) + 2, current_label="Draft Render", extra_label="Running now: encode draft and final video", force=True)
+        reporter.update(
+            render_progress_offset + len(scenes) + 2,
+            current_label="Draft Render",
+            extra_label="Running now: encode draft and final video",
+            force=True,
+        )
         encode_video(ffmpeg, concat_path, draft_path, fps, min(width, 960), min(height, 540), crf=28)
 
         write_realtime_preview(
@@ -5032,7 +5141,7 @@ def main() -> None:
             prompt_preview_path_resolved,
             force=args.force,
             reporter=reporter,
-            overall_base=len(scenes) + 2,
+            overall_base=render_progress_offset + len(scenes) + 2,
             overall_span=0.85,
         )
         production_package_payload = refresh_episode_production_package(
@@ -5094,7 +5203,7 @@ def main() -> None:
             production_package_payload,
             force=args.force,
             reporter=reporter,
-            overall_base=len(scenes) + 2.85,
+            overall_base=render_progress_offset + len(scenes) + 2.85,
             overall_span=0.15,
         )
         master_runner_ready = (

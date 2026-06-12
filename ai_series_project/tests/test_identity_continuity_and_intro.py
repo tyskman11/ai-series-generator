@@ -7,6 +7,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 PROJECT_DIR = Path(__file__).resolve().parents[1]
@@ -248,6 +249,68 @@ class IdentityContinuityAndIntroTests(unittest.TestCase):
         self.assertTrue(ready["backend_integrity_ready"])
         self.assertFalse(blocked["ready"])
         self.assertIn("fallback backend used", blocked["missing_backend_evidence"])
+
+    def test_generated_intro_runners_publish_live_progress(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            package = STEP17.build_generated_season_intro_package(
+                {"season_intro": {"generated_duration_seconds": 12.0}},
+                {"active_character_groups": [{"label": "Test Series"}], "scenes": []},
+                "season_01",
+                {},
+                root,
+            )
+
+            def fake_runner(_cfg, runner_name, *, context, **_kwargs):
+                output = (
+                    Path(context["primary_frame"])
+                    if runner_name == "finished_episode_image_runner"
+                    else Path(context["scene_video"])
+                )
+                output.parent.mkdir(parents=True, exist_ok=True)
+                output.write_bytes(b"generated")
+                return {
+                    "runner_name": runner_name,
+                    "status": "completed",
+                    "command": ["real_backend"],
+                    "command_text": "real_backend",
+                    "produced_outputs": [str(output)],
+                }
+
+            reporter = mock.Mock()
+            with mock.patch.object(
+                STEP17,
+                "build_generated_season_intro_package",
+                return_value=package,
+            ), mock.patch.object(
+                STEP17,
+                "run_external_backend_runner",
+                side_effect=fake_runner,
+            ), mock.patch.object(
+                STEP17,
+                "write_backend_task_manifest",
+                side_effect=lambda **kwargs: str(
+                    root / f"{kwargs['runner_name']}.json"
+                ),
+            ):
+                STEP17.generate_season_intro_video(
+                    {},
+                    {},
+                    "season_01",
+                    {},
+                    root,
+                    reporter=reporter,
+                )
+
+        self.assertGreaterEqual(reporter.update.call_count, 4)
+        labels = [
+            str(call.kwargs.get("current_label", ""))
+            for call in reporter.update.call_args_list
+        ]
+        self.assertTrue(any("season_01 intro" in label for label in labels))
+        self.assertTrue(
+            all(call.kwargs.get("scope_eta_seconds") is not None for call in reporter.update.call_args_list)
+        )
 
 
 if __name__ == "__main__":

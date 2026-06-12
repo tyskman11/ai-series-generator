@@ -401,6 +401,8 @@ The SHA-256 hash is locked in `intro_manifest.json`. Later episodes reuse that e
 
 The generated shot plan uses a world-establishing shot, a canonical cast shot when reviewed identity references are available, and a reusable closing identity plate. If no safe character references exist, the intro deliberately remains environment/prop-based rather than inventing inconsistent people.
 
+During the first automatic generation, step 17 keeps its normal terminal live dashboard active. It shows the current intro shot, image/video backend phase, completed and remaining shot outputs, elapsed time, per-unit estimate, current ETA, and overall ETA. Intro normalization is shown as a separate encode phase, so a long CPU or NAS render no longer appears frozen.
+
 To add another season, set `generation.default_season_id` and add a matching `season_intro.profiles.<season_id>` entry. Set `start_seconds` and `duration_seconds` when the configured source video contains more than the intro. For generation, use `title`, `prompt`, and `generated_duration_seconds` to control the season identity. Only use source and identity material for which you have the necessary rights.
 
 The Finished Episode Gate is written into the quality gate report:
