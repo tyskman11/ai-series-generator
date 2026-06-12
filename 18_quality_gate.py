@@ -174,6 +174,86 @@ def build_auto_retry_command(
     return command
 
 
+def quality_gate_retry_args(
+    episode_id: str,
+    args: argparse.Namespace | None = None,
+    *,
+    strict: bool = False,
+) -> list[str]:
+    gate_args = ["--episode-id", episode_id, "--no-auto-retry"]
+    if args is not None and args.min_quality is not None:
+        gate_args.extend(["--min-quality", str(float(args.min_quality))])
+    if args is not None and args.max_weak_scenes is not None:
+        gate_args.extend(["--max-weak-scenes", str(int(args.max_weak_scenes))])
+    if args is not None and args.max_regeneration_batch is not None:
+        gate_args.extend(["--max-regeneration-batch", str(int(args.max_regeneration_batch))])
+    if args is not None and args.max_regeneration_retries is not None:
+        gate_args.extend(["--max-regeneration-retries", str(int(args.max_regeneration_retries))])
+    if strict:
+        gate_args.append("--strict")
+    return gate_args
+
+
+def build_missing_package_recovery_commands(
+    episode_id: str,
+    args: argparse.Namespace | None = None,
+    *,
+    strict: bool = False,
+) -> list[list[str]]:
+    return [
+        [
+            str(runtime_python()),
+            str(WORKSPACE_ROOT / "17_render_episode.py"),
+            "--episode-id",
+            episode_id,
+            "--force",
+        ],
+        [
+            str(runtime_python()),
+            str(WORKSPACE_ROOT / "18_quality_gate.py"),
+            *quality_gate_retry_args(episode_id, args, strict=strict),
+        ],
+    ]
+
+
+def recover_missing_production_package(
+    cfg: dict[str, Any],
+    episode_id: str,
+    args: argparse.Namespace | None = None,
+    *,
+    strict: bool = False,
+) -> tuple[dict[str, Any], dict[str, Any], Path, dict[str, Any]]:
+    info(
+        "Auto-retry prerequisite recovery: the production package is missing. "
+        "Running 17_render_episode.py before scene regeneration."
+    )
+    commands = build_missing_package_recovery_commands(
+        episode_id,
+        args,
+        strict=strict,
+    )
+    for index, command in enumerate(commands):
+        result = subprocess.run(command, cwd=str(WORKSPACE_ROOT), text=True)
+        allowed_codes = {0, 1} if index == len(commands) - 1 else {0}
+        if result.returncode not in allowed_codes:
+            raise SystemExit(result.returncode)
+    refreshed = reload_quality_gate_report(cfg, episode_id)
+    refreshed_artifacts = refreshed[1]
+    if not artifact_path_exists(refreshed_artifacts.get("production_package", "")):
+        raise RuntimeError(
+            f"17_render_episode.py completed without creating a production package for {episode_id}. "
+            "Inspect the render/backend error above before retrying the quality gate."
+        )
+    return refreshed
+
+
+def production_package_recovery_needed(artifacts: dict[str, Any]) -> bool:
+    if artifact_path_exists(artifacts.get("production_package", "")):
+        return False
+    readiness = str(artifacts.get("production_readiness", "") or "").strip()
+    return readiness == "storyboard_only" or artifact_path_exists(artifacts.get("shotlist", ""))
+
+
 def reload_quality_gate_report(cfg: dict[str, Any], episode_id: str) -> tuple[dict[str, Any], dict[str, Any], Path, dict[str, Any]]:
     refreshed_cfg = load_config()
     refreshed_artifacts = resolve_episode_artifacts(refreshed_cfg, episode_id)
@@ -1239,7 +1319,7 @@ def quality_gate_report_path(artifacts: dict[str, Any]) -> Path:
     package_path = stored_path_if_present(artifacts.get("production_package", ""))
     if package_path and package_path.exists() and package_path.is_file():
         return package_path.parent / f"{artifacts.get('episode_id', 'episode')}_quality_gate.json"
-    return Path(f"{artifacts.get('episode_id', 'episode')}_quality_gate.json")
+    return resolve_project_path("generation/quality_reports") / f"{artifacts.get('episode_id', 'episode')}_quality_gate.json"
 
 
 def persist_quality_gate_result(artifacts: dict[str, Any], report_path: Path, report: dict[str, Any]) -> None:
@@ -1391,6 +1471,30 @@ def main() -> None:
         retry_forever = retry_until_pass_enabled(effective_cfg)
         cycle_limit = max_auto_retry_cycles(effective_cfg)
         current_queue = regeneration_queue
+        if production_package_recovery_needed(artifacts):
+            (
+                _recovered_cfg,
+                recovered_artifacts,
+                recovered_report_path,
+                recovered_report,
+            ) = recover_missing_production_package(
+                effective_cfg,
+                episode_id,
+                args,
+                strict=strict_warnings_enabled(effective_cfg, args),
+            )
+            print(f"Prerequisite recovery report: {recovered_report_path}")
+            print(
+                "Prerequisite recovery release gate: "
+                f"{'PASS' if report_release_gate_passed(recovered_report) else 'FAIL'}"
+            )
+            if args.print_json:
+                print(json.dumps(recovered_report, indent=2, ensure_ascii=False))
+            if report_release_gate_passed(recovered_report):
+                ok("QUALITY GATE PASSED AFTER PREREQUISITE RECOVERY")
+                return
+            artifacts = recovered_artifacts
+            current_queue = report_regeneration_queue(recovered_report)
         cycle = 0
         while retry_forever or cycle == 0:
             if regeneration_queue_has_blocked_scope(current_queue):

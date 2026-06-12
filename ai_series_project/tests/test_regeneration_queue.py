@@ -52,8 +52,9 @@ class RegenerationQueueTests(unittest.TestCase):
 
         self.assertIsNone(STEP52.stored_path_if_present(""))
         self.assertIsNone(STEP53.stored_path_if_present(""))
-        self.assertEqual(STEP52.quality_gate_report_path(artifacts), Path("episode_001_quality_gate.json"))
-        self.assertEqual(STEP53.quality_gate_report_path(artifacts), Path("episode_001_quality_gate.json"))
+        expected_report = PROJECT_DIR / "generation" / "quality_reports" / "episode_001_quality_gate.json"
+        self.assertEqual(STEP52.quality_gate_report_path(artifacts), expected_report)
+        self.assertEqual(STEP53.quality_gate_report_path(artifacts), expected_report)
         self.assertFalse(STEP52.artifact_path_exists(""))
         self.assertEqual(STEP52.load_scene_quality_rows({}), [])
         STEP52.persist_quality_gate_result({}, Path("missing_quality_gate.json"), {"release_gate": {"passed": False}})
@@ -252,6 +253,90 @@ class RegenerationQueueTests(unittest.TestCase):
         self.assertIn("--update-bible", command)
         self.assertTrue(str(command[1]).endswith("19_regenerate_weak_scenes.py"))
         self.assertEqual(Path(command[1]).parent, STEP52.WORKSPACE_ROOT)
+
+    def test_missing_package_recovery_runs_render_before_quality_gate(self) -> None:
+        args = argparse.Namespace(
+            min_quality=0.9,
+            max_weak_scenes=2,
+            max_regeneration_batch=8,
+            max_regeneration_retries=3,
+        )
+
+        commands = STEP52.build_missing_package_recovery_commands(
+            "folge_02",
+            args,
+            strict=True,
+        )
+
+        self.assertTrue(str(commands[0][1]).endswith("17_render_episode.py"))
+        self.assertEqual(commands[0][2:], ["--episode-id", "folge_02", "--force"])
+        self.assertTrue(str(commands[1][1]).endswith("18_quality_gate.py"))
+        self.assertIn("--no-auto-retry", commands[1])
+        self.assertIn("--min-quality", commands[1])
+        self.assertIn("0.9", commands[1])
+        self.assertIn("--strict", commands[1])
+
+    def test_missing_package_recovery_accepts_failed_refreshed_gate_with_created_package(self) -> None:
+        args = argparse.Namespace(
+            min_quality=None,
+            max_weak_scenes=None,
+            max_regeneration_batch=None,
+            max_regeneration_retries=None,
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            package_path = Path(tmpdir) / "folge_02_production_package.json"
+            package_path.write_text("{}", encoding="utf-8")
+            refreshed = (
+                {},
+                {"episode_id": "folge_02", "production_package": str(package_path)},
+                Path(tmpdir) / "folge_02_quality_gate.json",
+                {"release_gate": {"passed": False}},
+            )
+            with mock.patch.object(
+                STEP52.subprocess,
+                "run",
+                side_effect=[mock.Mock(returncode=0), mock.Mock(returncode=1)],
+            ) as run_mock, mock.patch.object(
+                STEP52,
+                "reload_quality_gate_report",
+                return_value=refreshed,
+            ), mock.patch.object(
+                STEP52,
+                "info",
+            ):
+                result = STEP52.recover_missing_production_package(
+                    {},
+                    "folge_02",
+                    args,
+                    strict=False,
+                )
+
+        self.assertEqual(result, refreshed)
+        self.assertEqual(run_mock.call_count, 2)
+
+    def test_production_package_recovery_requires_storyboard_state(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            shotlist = Path(tmpdir) / "folge_02.json"
+            shotlist.write_text("{}", encoding="utf-8")
+
+            self.assertTrue(
+                STEP52.production_package_recovery_needed(
+                    {
+                        "production_readiness": "storyboard_only",
+                        "shotlist": str(shotlist),
+                        "production_package": "",
+                    }
+                )
+            )
+            self.assertFalse(
+                STEP52.production_package_recovery_needed(
+                    {
+                        "production_readiness": "",
+                        "shotlist": "",
+                        "production_package": "",
+                    }
+                )
+            )
 
     def test_regenerate_main_refreshes_gate_when_overrides_are_passed(self) -> None:
         args = argparse.Namespace(

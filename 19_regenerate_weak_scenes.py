@@ -25,6 +25,7 @@ from support_scripts.pipeline_common import (
     ok,
     read_json,
     rerun_in_runtime,
+    resolve_project_path,
     resolve_stored_project_path,
     runtime_python,
     stored_path_if_present,
@@ -110,7 +111,7 @@ def quality_gate_report_path(artifacts: dict[str, Any]) -> Path:
     package_path = stored_path_if_present(artifacts.get("production_package", ""))
     if package_path and package_path.exists() and package_path.is_file():
         return package_path.parent / f"{episode_id}_quality_gate.json"
-    return Path(f"{episode_id}_quality_gate.json")
+    return resolve_project_path("generation/quality_reports") / f"{episode_id}_quality_gate.json"
 
 
 def run_script(script_name: str, args: list[str], *, allow_failure: bool = False) -> subprocess.CompletedProcess[str]:
@@ -728,7 +729,12 @@ def main() -> None:
     episode_id = clean_text(artifacts.get("episode_id", "")) or clean_text(args.episode_id) or "episode"
     production_package_path = stored_path_if_present(artifacts.get("production_package", ""))
     if not production_package_path or not production_package_path.exists() or not production_package_path.is_file():
-        raise RuntimeError(f"Production package is missing: {production_package_path}")
+        raise RuntimeError(
+            f"Production package is missing for {episode_id}. "
+            f"19_regenerate_weak_scenes.py can only repair an existing package. "
+            f"Run 17_render_episode.py --episode-id {episode_id} --force first. "
+            "The automatic retry in 18_quality_gate.py performs this prerequisite recovery automatically."
+        )
 
     max_regeneration_retries = effective_retry_limit(cfg, args.max_regeneration_retries)
     refresh_quality_gate = bool(args.refresh_quality_gate or quality_gate_override_requested(args))
