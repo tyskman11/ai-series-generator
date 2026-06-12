@@ -35,6 +35,10 @@ IMAGE_BACKEND = load_module(
     BACKEND_DIR / "local_diffusion_image_backend.py",
     "local_diffusion_image_backend_test",
 )
+VIDEO_BACKEND = load_module(
+    BACKEND_DIR / "local_ltx_video_backend.py",
+    "local_ltx_video_backend_test",
+)
 
 
 class IdentityContinuityAndIntroTests(unittest.TestCase):
@@ -261,7 +265,10 @@ class IdentityContinuityAndIntroTests(unittest.TestCase):
                 root,
             )
 
-            def fake_runner(_cfg, runner_name, *, context, **_kwargs):
+            runner_configs = {}
+
+            def fake_runner(runner_cfg, runner_name, *, context, **_kwargs):
+                runner_configs[runner_name] = runner_cfg
                 output = (
                     Path(context["primary_frame"])
                     if runner_name == "finished_episode_image_runner"
@@ -311,6 +318,110 @@ class IdentityContinuityAndIntroTests(unittest.TestCase):
         self.assertTrue(
             all(call.kwargs.get("scope_eta_seconds") is not None for call in reporter.update.call_args_list)
         )
+        image_runner = runner_configs["finished_episode_image_runner"]["external_backends"]["finished_episode_image_runner"]
+        video_runner = runner_configs["finished_episode_video_runner"]["external_backends"]["finished_episode_video_runner"]
+        self.assertEqual(image_runner["timeout_seconds"], 43200)
+        self.assertEqual(video_runner["timeout_seconds"], 86400)
+        self.assertEqual(image_runner["environment"]["SERIES_IMAGE_RESUME_SHOTS"], "1")
+        self.assertEqual(video_runner["environment"]["SERIES_VIDEO_RESUME_SHOTS"], "1")
+
+    def test_ltx_intro_resume_keeps_completed_shot(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            completed_clip = root / "shot_001.mp4"
+            completed_manifest = root / "shot_001.json"
+            pending_clip = root / "shot_002.mp4"
+            pending_manifest = root / "shot_002.json"
+            completed_clip.write_bytes(b"video")
+            completed_manifest.write_text("{}", encoding="utf-8")
+            scene_package = {
+                "shot_packages": [
+                    {
+                        "shot_id": "shot_001",
+                        "target_outputs": {
+                            "primary_frame": str(root / "shot_001.png"),
+                            "video_clip": str(completed_clip),
+                            "video_manifest": str(completed_manifest),
+                        },
+                    },
+                    {
+                        "shot_id": "shot_002",
+                        "target_outputs": {
+                            "primary_frame": str(root / "shot_002.png"),
+                            "video_clip": str(pending_clip),
+                            "video_manifest": str(pending_manifest),
+                        },
+                    },
+                ]
+            }
+
+            def fake_generate(_context, _package, output):
+                output.write_bytes(b"new-video")
+
+            with mock.patch.dict("os.environ", {"SERIES_VIDEO_RESUME_SHOTS": "1"}), mock.patch.object(
+                VIDEO_BACKEND,
+                "generate_ltx_video",
+                side_effect=fake_generate,
+            ) as generate_mock, mock.patch.object(
+                VIDEO_BACKEND,
+                "write_shot_manifest",
+            ), mock.patch.object(
+                VIDEO_BACKEND,
+                "concat_video_clips",
+            ) as concat_mock:
+                result = VIDEO_BACKEND.generate_ltx_shots({}, scene_package, root / "scene.mp4")
+
+        self.assertTrue(result)
+        self.assertEqual(generate_mock.call_count, 1)
+        self.assertEqual(generate_mock.call_args.args[2], pending_clip)
+        self.assertEqual(concat_mock.call_args.args[0], [completed_clip, pending_clip])
+
+    def test_sdxl_intro_resume_keeps_completed_shot(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            completed_frame = root / "shot_001.png"
+            completed_manifest = root / "shot_001.json"
+            pending_frame = root / "shot_002.png"
+            completed_frame.write_bytes(b"image")
+            completed_manifest.write_text("{}", encoding="utf-8")
+            scene_package = {
+                "characters": [],
+                "shot_packages": [
+                    {
+                        "shot_id": "shot_001",
+                        "characters_visible": [],
+                        "target_outputs": {
+                            "primary_frame": str(completed_frame),
+                            "image_manifest": str(completed_manifest),
+                        },
+                    },
+                    {
+                        "shot_id": "shot_002",
+                        "characters_visible": [],
+                        "target_outputs": {
+                            "primary_frame": str(pending_frame),
+                            "image_manifest": str(root / "shot_002.json"),
+                        },
+                    },
+                ],
+            }
+
+            def fake_generate(_prompt, _negative, output, _seed, **_kwargs):
+                output.write_bytes(b"new-image")
+                return {}
+
+            with mock.patch.dict("os.environ", {"SERIES_IMAGE_RESUME_SHOTS": "1"}), mock.patch.object(
+                IMAGE_BACKEND,
+                "generate_image",
+                side_effect=fake_generate,
+            ) as generate_mock, mock.patch.object(
+                IMAGE_BACKEND,
+                "shot_manifest",
+            ):
+                paths = IMAGE_BACKEND.generate_shot_images({}, scene_package, "prompt", "negative")
+
+        self.assertEqual(paths, [completed_frame, pending_frame])
+        self.assertEqual(generate_mock.call_count, 1)
 
 
 if __name__ == "__main__":

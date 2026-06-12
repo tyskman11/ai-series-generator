@@ -545,9 +545,23 @@ def shot_packages(scene_package: dict[str, Any]) -> list[dict[str, Any]]:
 def generate_shot_images(context: dict[str, Any], scene_package: dict[str, Any], prompt: str, negative_prompt: str) -> list[Path]:
     paths: list[Path] = []
     shared_seed = deterministic_seed(context, scene_package)
+    resume_existing = truthy_env("SERIES_IMAGE_RESUME_SHOTS", False)
     for shot in shot_packages(scene_package):
         outputs = shot.get("target_outputs", {}) if isinstance(shot.get("target_outputs", {}), dict) else {}
         output_path = Path(clean_text(outputs.get("primary_frame", "")))
+        manifest_text = clean_text(outputs.get("image_manifest", "")) or clean_text(outputs.get("manifest", ""))
+        manifest_path = Path(manifest_text) if manifest_text else Path()
+        if (
+            resume_existing
+            and output_path.is_file()
+            and output_path.stat().st_size > 0
+            and manifest_text
+            and manifest_path.is_file()
+            and manifest_path.stat().st_size > 0
+        ):
+            print(f"[INFO] Resuming image package: keeping completed shot {shot.get('shot_id', output_path.stem)}", flush=True)
+            paths.append(output_path)
+            continue
         visible_value = shot.get("characters_visible")
         visible_characters = (
             clean_text_list(visible_value)

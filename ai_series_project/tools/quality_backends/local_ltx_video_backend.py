@@ -31,6 +31,13 @@ def clean_text(value: object) -> str:
     return str(value or "").strip()
 
 
+def truthy_env(name: str, default: bool = False) -> bool:
+    value = clean_text(os.environ.get(name, ""))
+    if not value:
+        return default
+    return value.lower() in {"1", "true", "yes", "on"}
+
+
 def resolve_model_dir() -> Path:
     configured = clean_text(os.environ.get("SERIES_VIDEO_MODEL_DIR", ""))
     candidate = Path(configured) if configured else DEFAULT_VIDEO_MODEL_DIR
@@ -278,11 +285,25 @@ def concat_video_clips(clips: list[Path], output_path: Path) -> None:
 
 def generate_ltx_shots(context: dict[str, Any], scene_package: dict[str, Any], scene_output: Path) -> bool:
     clips: list[Path] = []
+    resume_existing = truthy_env("SERIES_VIDEO_RESUME_SHOTS")
     for shot in shot_packages(scene_package):
         outputs = shot.get("target_outputs", {}) if isinstance(shot.get("target_outputs", {}), dict) else {}
         clip = Path(clean_text(outputs.get("video_clip", "")))
-        generate_ltx_video(shot_context(context, shot), shot_scene_package(scene_package, shot), clip)
-        write_shot_manifest(shot, clip)
+        manifest_text = clean_text(outputs.get("video_manifest", "")) or clean_text(outputs.get("manifest", ""))
+        manifest_path = Path(manifest_text) if manifest_text else Path()
+        completed_shot = (
+            resume_existing
+            and clip.is_file()
+            and clip.stat().st_size > 0
+            and manifest_text
+            and manifest_path.is_file()
+            and manifest_path.stat().st_size > 0
+        )
+        if completed_shot:
+            print(f"[INFO] Resuming video package: keeping completed shot {shot.get('shot_id', clip.stem)}", flush=True)
+        else:
+            generate_ltx_video(shot_context(context, shot), shot_scene_package(scene_package, shot), clip)
+            write_shot_manifest(shot, clip)
         clips.append(clip)
     if not clips:
         return False

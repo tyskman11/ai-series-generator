@@ -443,6 +443,8 @@ DEFAULT_CONFIG = {
         "generated_duration_seconds": 12.0,
         "max_generated_intro_characters": 4,
         "generated_prompt": "",
+        "image_timeout_seconds": 43200,
+        "video_timeout_seconds": 86400,
         "profiles": {
             "season_01": {
                 "source_video": "assets/season_intros/season_01/intro.mp4",
@@ -451,6 +453,8 @@ DEFAULT_CONFIG = {
                 "generated_duration_seconds": 12.0,
                 "title": "",
                 "prompt": "",
+                "image_timeout_seconds": 43200,
+                "video_timeout_seconds": 86400,
             }
         },
     },
