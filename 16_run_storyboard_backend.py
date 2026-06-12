@@ -39,6 +39,7 @@ from support_scripts.pipeline_common import (
     rerun_in_runtime,
     run_external_backend_runner,
     resolve_project_path,
+    resolve_stored_project_path,
     shared_worker_id_for_args,
     shared_workers_enabled_for_args,
     warn,
@@ -72,8 +73,8 @@ def candidate_image_paths(assets_root: Path, scene_id: str, payload: dict) -> li
     candidates = [
         assets_root / f"{scene_id}.png",
         assets_root / f"{scene_id}.jpg",
-        Path(str(source_hints.get("reference_image", ""))),
-        Path(str(source_hints.get("continuity_asset", ""))),
+        resolve_stored_project_path(source_hints.get("reference_image", "")),
+        resolve_stored_project_path(source_hints.get("continuity_asset", "")),
     ]
     generation_plan = payload.get("reference_slots", []) if isinstance(payload.get("reference_slots"), list) else []
     for slot in generation_plan:
@@ -84,7 +85,7 @@ def candidate_image_paths(assets_root: Path, scene_id: str, payload: dict) -> li
             if not isinstance(values, list):
                 continue
             for value in values:
-                candidates.append(Path(str(value)))
+                candidates.append(resolve_stored_project_path(value))
     unique: list[Path] = []
     seen: set[str] = set()
     for candidate in candidates:

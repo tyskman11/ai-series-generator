@@ -192,8 +192,9 @@ class QualityFirstModeTests(unittest.TestCase):
             },
         )
 
-        self.assertIn("2 people clearly visible", prompt)
+        self.assertIn("canonical cast identities available", prompt)
         self.assertIn("Kenzie Bell, Hudson Gimble", prompt)
+        self.assertIn("exact same facial identity", prompt)
         self.assertIn("medium two-shot", prompt)
         self.assertNotIn("dialogue style", prompt)
         self.assertLess(len(prompt.split()), 77)

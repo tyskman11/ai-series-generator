@@ -2029,6 +2029,9 @@ def build_episode_production_package_payload(
         "render_mode": clean_text(manifest.get("render_mode", "")),
         "display_title": clean_text(shotlist.get("display_title", episode_id)),
         "episode_title": clean_text(shotlist.get("episode_title", "")),
+        "season_id": clean_text(shotlist.get("season_id", ""))
+        or clean_text((shotlist.get("episode_blueprint", {}) if isinstance(shotlist.get("episode_blueprint", {}), dict) else {}).get("season_id", "")),
+        "season_intro": manifest.get("season_intro", {}) if isinstance(manifest.get("season_intro", {}), dict) else {},
         "source_shotlist": clean_text(manifest.get("shotlist_path", "")),
         "source_storyboard_request_dir": clean_text(shotlist.get("storyboard_request_dir", "")),
         "source_render_manifest": clean_text(manifest.get("render_manifest_path", "")),
@@ -3966,6 +3969,159 @@ def normalize_scene_video_clip(
         raise RuntimeError(f"Could not normalize generated scene clip {input_path.name}: {(result.stdout or '').strip()[-600:]}")
 
 
+def media_duration_seconds(ffmpeg: Path, media_path: Path) -> float:
+    result = run_media_command([str(ffmpeg), "-hide_banner", "-i", str(media_path)])
+    match = re.search(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)", result.stdout or "")
+    if not match:
+        return 0.0
+    hours, minutes, seconds = match.groups()
+    return int(hours) * 3600.0 + int(minutes) * 60.0 + float(seconds)
+
+
+def season_id_for_episode(cfg: dict, shotlist: dict) -> str:
+    blueprint = shotlist.get("episode_blueprint", {}) if isinstance(shotlist.get("episode_blueprint", {}), dict) else {}
+    intro_cfg = cfg.get("season_intro", {}) if isinstance(cfg.get("season_intro", {}), dict) else {}
+    generation_cfg = cfg.get("generation", {}) if isinstance(cfg.get("generation", {}), dict) else {}
+    return (
+        clean_text(shotlist.get("season_id", ""))
+        or clean_text(blueprint.get("season_id", ""))
+        or clean_text(intro_cfg.get("default_season_id", ""))
+        or clean_text(generation_cfg.get("default_season_id", ""))
+        or "season_01"
+    )
+
+
+def normalize_season_intro_clip(
+    ffmpeg: Path,
+    source_path: Path,
+    output_path: Path,
+    *,
+    start_seconds: float,
+    duration_seconds: float,
+    fps: int,
+    width: int,
+    height: int,
+) -> None:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    command: list[object] = [str(ffmpeg), "-hide_banner", "-y"]
+    if start_seconds > 0.0:
+        command.extend(["-ss", f"{start_seconds:.3f}"])
+    command.extend(["-i", str(source_path)])
+    if duration_seconds > 0.0:
+        command.extend(["-t", f"{duration_seconds:.3f}"])
+    command.extend(
+        [
+            "-vf",
+            f"fps={fps},scale={width}:{height}:force_original_aspect_ratio=decrease,"
+            f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:black,format=yuv420p",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "medium",
+            "-crf",
+            "18",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "192k",
+            "-ar",
+            "48000",
+            "-ac",
+            "2",
+            "-movflags",
+            "+faststart",
+            str(output_path),
+        ]
+    )
+    result = run_media_command(command)
+    if result.returncode != 0 or not render_output_ready(output_path):
+        raise RuntimeError(
+            f"Could not materialize the fixed season intro from {source_path}: "
+            f"{(result.stdout or '').strip()[-800:]}"
+        )
+
+
+def materialize_season_intro(
+    cfg: dict,
+    shotlist: dict,
+    ffmpeg: Path,
+    *,
+    fps: int,
+    width: int,
+    height: int,
+) -> dict[str, object]:
+    intro_cfg = cfg.get("season_intro", {}) if isinstance(cfg.get("season_intro", {}), dict) else {}
+    season_id = season_id_for_episode(cfg, shotlist)
+    if not bool(intro_cfg.get("enabled", False)):
+        return {"enabled": False, "season_id": season_id, "status": "disabled"}
+    profiles = intro_cfg.get("profiles", {}) if isinstance(intro_cfg.get("profiles", {}), dict) else {}
+    profile = profiles.get(season_id, {}) if isinstance(profiles.get(season_id, {}), dict) else {}
+    source_path = resolve_stored_project_path(profile.get("source_video", ""))
+    canonical_root = resolve_project_path(f"generation/season_assets/{season_id}/intro")
+    canonical_path = canonical_root / "intro.mp4"
+    manifest_path = canonical_root / "intro_manifest.json"
+    lock_after_first_use = bool(intro_cfg.get("lock_after_first_use", True))
+    existing_manifest = read_json(manifest_path, {}) if manifest_path.exists() else {}
+    if render_output_ready(canonical_path):
+        current_hash = file_sha256(canonical_path)
+        expected_hash = clean_text(existing_manifest.get("canonical_sha256", ""))
+        if lock_after_first_use and expected_hash and current_hash != expected_hash:
+            raise RuntimeError(
+                f"The locked intro for {season_id} changed unexpectedly: {canonical_path}. "
+                "Restore the original file or deliberately remove its manifest before replacing the season intro."
+            )
+        return {
+            **existing_manifest,
+            "enabled": True,
+            "season_id": season_id,
+            "status": "locked_existing",
+            "canonical_video": str(canonical_path),
+            "canonical_sha256": current_hash,
+            "duration_seconds": media_duration_seconds(ffmpeg, canonical_path),
+            "manifest": str(manifest_path),
+        }
+    if not source_path.is_file():
+        if bool(intro_cfg.get("require_in_finished_episode_mode", True)) and strict_original_episode_outputs_required(cfg):
+            raise RuntimeError(
+                f"Fixed season intro is required for {season_id}, but no source video exists at {source_path}. "
+                f"Place the approved intro there or set season_intro.profiles.{season_id}.source_video."
+            )
+        return {
+            "enabled": True,
+            "season_id": season_id,
+            "status": "missing_optional",
+            "canonical_video": "",
+            "manifest": str(manifest_path),
+        }
+    start_seconds = max(0.0, safe_float(profile.get("start_seconds", 0.0), 0.0))
+    duration_seconds = max(0.0, safe_float(profile.get("duration_seconds", 0.0), 0.0))
+    normalize_season_intro_clip(
+        ffmpeg,
+        source_path,
+        canonical_path,
+        start_seconds=start_seconds,
+        duration_seconds=duration_seconds,
+        fps=fps,
+        width=width,
+        height=height,
+    )
+    payload = {
+        "enabled": True,
+        "season_id": season_id,
+        "status": "locked_new",
+        "source_video": str(source_path),
+        "source_sha256": file_sha256(source_path),
+        "canonical_video": str(canonical_path),
+        "canonical_sha256": file_sha256(canonical_path),
+        "duration_seconds": media_duration_seconds(ffmpeg, canonical_path),
+        "lock_after_first_use": lock_after_first_use,
+        "created_at": utc_now_iso(),
+        "manifest": str(manifest_path),
+    }
+    write_json(manifest_path, payload)
+    return payload
+
+
 def materialize_scene_motion_video(
     ffmpeg: Path,
     package_root: Path,
@@ -4279,6 +4435,25 @@ def main() -> None:
         audio_render_error = ""
         full_generated_episode_master_meta: dict[str, object] = {}
         package_root = episode_production_package_root(cfg, episode_id)
+        season_intro_meta = materialize_season_intro(
+            cfg,
+            shotlist,
+            ffmpeg,
+            fps=fps,
+            width=width,
+            height=height,
+        )
+        season_intro_path = resolve_stored_project_path(season_intro_meta.get("canonical_video", ""))
+        if render_output_ready(season_intro_path):
+            reporter.update(
+                0,
+                current_label=f"{season_intro_meta.get('season_id', 'season')} Intro",
+                extra_label="Running now: reuse the locked canonical season intro",
+                force=True,
+            )
+            opening_clip_paths.append(season_intro_path)
+            final_clip_paths.append(season_intro_path)
+            timeline_cursor += max(0.0, safe_float(season_intro_meta.get("duration_seconds", 0.0), 0.0))
 
         if include_title_cards and title_card_seconds > 0.0:
             reporter.update(0, current_label="Title Card", extra_label="Running now: render opening title card", force=True)
@@ -4521,6 +4696,8 @@ def main() -> None:
             "width": width,
             "height": height,
             "include_title_cards": include_title_cards,
+            "season_id": season_id_for_episode(cfg, shotlist),
+            "season_intro": season_intro_meta,
             "generated_scene_video_count": generated_scene_video_count,
             "scene_master_clip_count": len(scene_master_outputs),
             "full_generated_episode": str(full_generated_episode_path),

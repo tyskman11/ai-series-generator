@@ -8,29 +8,96 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from PIL import Image
+from PIL import Image, ImageOps
 
-from backend_common import PROJECT_DIR, copy_if_needed, ensure_parent, load_backend_context, load_json, print_runtime_error
+from backend_common import (
+    PROJECT_DIR,
+    copy_if_needed,
+    ensure_parent,
+    load_backend_context,
+    load_json,
+    print_runtime_error,
+    resolve_stored_project_path,
+)
 
 
 DEFAULT_IMAGE_MODEL_DIR = PROJECT_DIR / "tools" / "quality_models" / "image" / "stabilityai__stable-diffusion-xl-base-1.0"
+DEFAULT_IDENTITY_ADAPTER_DIR = PROJECT_DIR / "tools" / "quality_models" / "image" / "h94__IP-Adapter"
+IDENTITY_ADAPTER_WEIGHT = "ip-adapter-plus-face_sdxl_vit-h.safetensors"
+_PIPELINE: Any = None
+_PIPELINE_META: dict[str, Any] = {}
 
 
 def clean_text(value: object) -> str:
     return str(value or "").strip()
 
 
+def truthy_env(name: str, default: bool) -> bool:
+    value = clean_text(os.environ.get(name, ""))
+    if not value:
+        return default
+    return value.lower() in {"1", "true", "yes", "on"}
+
+
+def clean_text_list(value: object) -> list[str]:
+    return [clean_text(item) for item in value if clean_text(item)] if isinstance(value, list) else []
+
+
+def scene_character_names(scene_package: dict[str, Any]) -> list[str]:
+    return clean_text_list(scene_package.get("characters", []))
+
+
+def identity_lock(scene_package: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    value = scene_package.get("character_continuity_lock", {})
+    if not isinstance(value, dict) or not value:
+        image_generation = scene_package.get("image_generation", {}) if isinstance(scene_package.get("image_generation", {}), dict) else {}
+        value = image_generation.get("character_continuity_lock", {})
+    return {
+        clean_text(name): dict(payload)
+        for name, payload in value.items()
+        if clean_text(name) and isinstance(payload, dict)
+    } if isinstance(value, dict) else {}
+
+
+def reference_slots(scene_package: dict[str, Any]) -> list[dict[str, Any]]:
+    candidates = [
+        scene_package.get("reference_slots", []),
+        (scene_package.get("storyboard", {}) if isinstance(scene_package.get("storyboard", {}), dict) else {}).get("reference_slots", []),
+        (scene_package.get("image_generation", {}) if isinstance(scene_package.get("image_generation", {}), dict) else {}).get("reference_slots", []),
+    ]
+    for value in candidates:
+        if isinstance(value, list) and value:
+            return [dict(item) for item in value if isinstance(item, dict)]
+    return []
+
+
+def character_identity_descriptors(scene_package: dict[str, Any], names: list[str]) -> list[str]:
+    locks = identity_lock(scene_package)
+    descriptors: list[str] = []
+    for name in names:
+        row = locks.get(name, {})
+        details = [
+            clean_text(row.get("gender_presentation", "")),
+            clean_text(row.get("age_group", "")),
+            clean_text(row.get("canonical_hairstyle", "")),
+            clean_text(row.get("canonical_outfit", "")),
+            clean_text(row.get("canonical_body_shape", "")),
+        ]
+        useful = [
+            detail
+            for detail in details
+            if detail and not detail.lower().startswith(("match reviewed", "preserve source"))
+        ]
+        descriptors.append(f"{name}: {', '.join(useful)}" if useful else f"{name}: exact identity from supplied face references")
+    return descriptors
+
+
 def compact_visual_prompt(context: dict[str, Any], scene_package: dict[str, Any], original_prompt: str) -> str:
-    characters = [
-        clean_text(value)
-        for value in scene_package.get("characters", [])
-        if clean_text(value)
-    ] if isinstance(scene_package.get("characters", []), list) else []
+    characters = scene_character_names(scene_package)
     camera = scene_package.get("camera_plan", {}) if isinstance(scene_package.get("camera_plan", {}), dict) else {}
-    visible_count = len(characters)
     subject = (
-        f"{visible_count} people clearly visible, characters {', '.join(characters[:3])}"
-        if visible_count
+        f"canonical cast identities available for {', '.join(characters[:3])}"
+        if characters
         else "people clearly visible with expressive faces"
     )
     parts = [
@@ -44,11 +111,14 @@ def compact_visual_prompt(context: dict[str, Any], scene_package: dict[str, Any]
         clean_text(camera.get("pose_hint", "")),
         clean_text(scene_package.get("title", "")),
         "visible faces",
-        "consistent wardrobe and set",
+        "exact same facial identity, age, gender presentation, hairstyle, body proportions and wardrobe in every shot",
+        "natural undistorted symmetrical faces and eyes",
+        "consistent wardrobe and set geography",
         "production lighting",
+        *character_identity_descriptors(scene_package, characters),
     ]
     compact = ", ".join(part for part in parts if part)
-    if visible_count:
+    if characters:
         return compact
     original_parts = [part.strip() for part in original_prompt.split(",") if part.strip()]
     return ", ".join([*original_parts[:4], compact])
@@ -88,14 +158,26 @@ def prompt_from_context(context: dict[str, Any], scene_package: dict[str, Any]) 
     positive = compact_visual_prompt(context, scene_package, positive)
     if not negative:
         negative = (
-            "cropped faces, distorted hands, unreadable text, watermark, duplicate characters, "
-            "low quality, blurry, unfinished, blue placeholder frame"
+            "cropped faces, deformed face, warped face, melted face, asymmetrical eyes, crossed eyes, "
+            "wrong person, identity drift, face swap, gender swap, age swap, wrong hairstyle, wrong body proportions, "
+            "merged people, duplicate characters, extra people, missing people, distorted hands, unreadable text, "
+            "watermark, low quality, blurry, unfinished, blue placeholder frame"
         )
     return positive, negative
 
 
-def deterministic_seed(context: dict[str, Any]) -> int:
-    raw = "|".join(clean_text(context.get(key, "")) for key in ("episode_id", "scene_id", "shot_id", "scene_title", "runner_kind"))
+def deterministic_seed(context: dict[str, Any], scene_package: dict[str, Any] | None = None) -> int:
+    scene_package = scene_package if isinstance(scene_package, dict) else {}
+    characters = sorted(scene_character_names(scene_package))
+    raw = "|".join(
+        [
+            clean_text(context.get("episode_id", "")),
+            clean_text(context.get("scene_id", "")),
+            clean_text(context.get("scene_title", "")),
+            clean_text(context.get("runner_kind", "")),
+            ",".join(characters),
+        ]
+    )
     digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()
     return int(digest[:8], 16)
 
@@ -108,7 +190,30 @@ def target_size() -> tuple[int, int]:
     return width, height
 
 
-def generate_image(prompt: str, negative_prompt: str, output_path: Path, seed: int) -> None:
+def resolve_identity_adapter_dir() -> Path:
+    configured = clean_text(os.environ.get("SERIES_IMAGE_IDENTITY_ADAPTER_DIR", ""))
+    candidate = Path(configured) if configured else DEFAULT_IDENTITY_ADAPTER_DIR
+    if not candidate.is_absolute():
+        candidate = PROJECT_DIR / candidate
+    return candidate.resolve(strict=False)
+
+
+def identity_adapter_ready(adapter_dir: Path) -> bool:
+    return (
+        (adapter_dir / "sdxl_models" / IDENTITY_ADAPTER_WEIGHT).is_file()
+        and (adapter_dir / "models" / "image_encoder" / "config.json").is_file()
+    )
+
+
+def load_pipeline(require_identity_adapter: bool) -> tuple[Any, dict[str, Any]]:
+    global _PIPELINE, _PIPELINE_META
+    if _PIPELINE is not None:
+        if require_identity_adapter and not bool(_PIPELINE_META.get("identity_adapter_loaded", False)):
+            raise RuntimeError(
+                "Canonical face references are present, but the SDXL identity adapter is not loaded. "
+                "Run 00_prepare_runtime.py without --skip-downloads."
+            )
+        return _PIPELINE, dict(_PIPELINE_META)
     try:
         import torch
         from diffusers import StableDiffusionXLPipeline
@@ -129,8 +234,8 @@ def generate_image(prompt: str, negative_prompt: str, output_path: Path, seed: i
     dtype = torch.float16 if cuda_ready else torch.float32
     device = "cuda" if cuda_ready else "cpu"
     width, height = target_size()
-    steps = int(float(os.environ.get("SERIES_IMAGE_INFERENCE_STEPS", "28") or "28"))
-    guidance = float(os.environ.get("SERIES_IMAGE_GUIDANCE_SCALE", "6.5") or "6.5")
+    steps = int(float(os.environ.get("SERIES_IMAGE_INFERENCE_STEPS", "36") or "36"))
+    guidance = float(os.environ.get("SERIES_IMAGE_GUIDANCE_SCALE", "6.0") or "6.0")
     print(
         f"[INFO] SDXL backend: device={device}, size={width}x{height}, steps={steps}, model={model_dir}",
         flush=True,
@@ -149,6 +254,35 @@ def generate_image(prompt: str, negative_prompt: str, output_path: Path, seed: i
         pipeline.enable_vae_slicing()
     if hasattr(pipeline, "enable_vae_tiling"):
         pipeline.enable_vae_tiling()
+    adapter_dir = resolve_identity_adapter_dir()
+    adapter_loaded = False
+    if identity_adapter_ready(adapter_dir):
+        try:
+            pipeline.load_ip_adapter(
+                str(adapter_dir),
+                subfolder="sdxl_models",
+                weight_name=IDENTITY_ADAPTER_WEIGHT,
+                image_encoder_folder="models/image_encoder",
+                local_files_only=True,
+            )
+            if hasattr(pipeline, "set_ip_adapter_scale"):
+                pipeline.set_ip_adapter_scale(
+                    float(os.environ.get("SERIES_IMAGE_IDENTITY_SCALE", "0.82") or "0.82")
+                )
+            adapter_loaded = True
+            print(f"[OK] Canonical face identity adapter loaded: {adapter_dir}", flush=True)
+        except Exception as exc:
+            if require_identity_adapter:
+                raise RuntimeError(
+                    f"Could not load the project-local SDXL identity adapter from {adapter_dir}: {exc}"
+                ) from exc
+            print(f"[WARN] SDXL identity adapter unavailable: {exc}", flush=True)
+    elif require_identity_adapter:
+        raise RuntimeError(
+            "The project-local SDXL identity adapter is incomplete. Run 00_prepare_runtime.py without "
+            f"--skip-downloads. Expected {adapter_dir / 'sdxl_models' / IDENTITY_ADAPTER_WEIGHT} and "
+            f"{adapter_dir / 'models' / 'image_encoder' / 'config.json'}."
+        )
     if cuda_ready:
         gpu_memory_gb = float(torch.cuda.get_device_properties(0).total_memory) / float(1024**3)
         if gpu_memory_gb < 10.0 and hasattr(pipeline, "enable_model_cpu_offload"):
@@ -158,21 +292,79 @@ def generate_image(prompt: str, negative_prompt: str, output_path: Path, seed: i
             pipeline = pipeline.to(device)
     else:
         pipeline = pipeline.to(device)
+    _PIPELINE = pipeline
+    _PIPELINE_META = {
+        "device": device,
+        "width": width,
+        "height": height,
+        "steps": steps,
+        "guidance": guidance,
+        "model_dir": str(model_dir),
+        "identity_adapter_dir": str(adapter_dir),
+        "identity_adapter_loaded": adapter_loaded,
+    }
+    return pipeline, dict(_PIPELINE_META)
+
+
+def build_identity_reference_board(reference_paths: list[Path]) -> Image.Image | None:
+    usable: list[Image.Image] = []
+    for path in reference_paths[:4]:
+        try:
+            with Image.open(path) as source:
+                usable.append(ImageOps.fit(source.convert("RGB"), (256, 256), method=Image.Resampling.LANCZOS))
+        except Exception:
+            continue
+    if not usable:
+        return None
+    board = Image.new("RGB", (512, 512), (127, 127, 127))
+    positions = [(0, 0), (256, 0), (0, 256), (256, 256)]
+    for image, position in zip(usable, positions):
+        board.paste(image, position)
+    if len(usable) == 1:
+        board.paste(usable[0], (256, 0))
+        board.paste(usable[0], (0, 256))
+        board.paste(usable[0], (256, 256))
+    return board
+
+
+def generate_image(
+    prompt: str,
+    negative_prompt: str,
+    output_path: Path,
+    seed: int,
+    *,
+    identity_reference: Image.Image | None = None,
+) -> dict[str, Any]:
+    require_identity = identity_reference is not None and truthy_env("SERIES_IMAGE_REQUIRE_IDENTITY_ADAPTER", True)
+    pipeline, pipeline_meta = load_pipeline(require_identity)
+    import torch
+
+    device = clean_text(pipeline_meta.get("device", "")) or "cpu"
+    width = int(pipeline_meta.get("width", 1024) or 1024)
+    height = int(pipeline_meta.get("height", 576) or 576)
+    steps = int(pipeline_meta.get("steps", 36) or 36)
+    guidance = float(pipeline_meta.get("guidance", 6.0) or 6.0)
     generator = torch.Generator(device=device).manual_seed(seed)
     print(f"[INFO] Generating image: {output_path}", flush=True)
+    arguments: dict[str, Any] = {
+        "prompt": prompt,
+        "negative_prompt": negative_prompt,
+        "width": width,
+        "height": height,
+        "num_inference_steps": steps,
+        "guidance_scale": guidance,
+        "generator": generator,
+    }
+    if identity_reference is not None:
+        arguments["ip_adapter_image"] = identity_reference
     result = pipeline(
-        prompt=prompt,
-        negative_prompt=negative_prompt,
-        width=width,
-        height=height,
-        num_inference_steps=steps,
-        guidance_scale=guidance,
-        generator=generator,
+        **arguments,
     )
     image = result.images[0]
     ensure_parent(str(output_path))
     image.save(output_path)
     print(f"[OK] Saved generated image: {output_path}", flush=True)
+    return pipeline_meta
 
 
 def output_paths(context: dict[str, Any]) -> list[Path]:
@@ -202,20 +394,92 @@ def write_alternate_image(context: dict[str, Any], source: Path) -> None:
 
 
 def shot_prompt(prompt: str, shot: dict[str, Any]) -> str:
+    visible_characters = clean_text_list(shot.get("characters_visible", []))
     parts = [
         prompt,
         clean_text(shot.get("shot_type", "")),
         clean_text(shot.get("camera_angle", "")),
         clean_text(shot.get("camera_movement", "")),
         clean_text(shot.get("purpose", "")),
-        f"visible characters {', '.join(shot.get('characters_visible', []))}"
-        if isinstance(shot.get("characters_visible", []), list) and shot.get("characters_visible", [])
+        f"exactly {len(visible_characters)} visible named characters: {', '.join(visible_characters)}; preserve each supplied identity separately"
+        if visible_characters
         else "",
     ]
     return ", ".join(part for part in parts if part)
 
 
-def shot_manifest(shot: dict[str, Any], output_path: Path, prompt: str, seed: int) -> None:
+def reference_images_by_character(scene_package: dict[str, Any], names: list[str]) -> dict[str, list[Path]]:
+    locks = identity_lock(scene_package)
+    slots = reference_slots(scene_package)
+    slot_index = {
+        clean_text(slot.get("name", "")): slot
+        for slot in slots
+        if clean_text(slot.get("name", "")) and clean_text(slot.get("type", "")) == "character"
+    }
+    results: dict[str, list[Path]] = {}
+
+    def append(target: list[Path], seen: set[str], value: object) -> None:
+        candidate = resolve_stored_project_path(value)
+        if not candidate.is_file():
+            return
+        key = str(candidate.resolve(strict=False)).lower()
+        if key not in seen:
+            seen.add(key)
+            target.append(candidate)
+
+    for name in names:
+        lock = locks.get(name, {})
+        slot = slot_index.get(name, {})
+        portrait_values = clean_text_list(slot.get("portrait_images", []))
+        context_values = clean_text_list(slot.get("context_images", []))
+        lock_values = clean_text_list(lock.get("reference_images", []))
+        character_paths: list[Path] = []
+        seen: set[str] = set()
+        for value in [*portrait_values[:2], *lock_values[:2], *context_values[:1]]:
+            append(character_paths, seen, value)
+        results[name] = character_paths
+    return results
+
+
+def reference_image_paths(scene_package: dict[str, Any], names: list[str]) -> list[Path]:
+    references = reference_images_by_character(scene_package, names)
+    results: list[Path] = []
+    max_references = 4
+    depth = 0
+    while len(results) < max_references:
+        appended = False
+        for name in names:
+            candidates = references.get(name, [])
+            if depth < len(candidates):
+                results.append(candidates[depth])
+                appended = True
+                if len(results) >= max_references:
+                    break
+        if not appended:
+            break
+        depth += 1
+    return results
+
+
+def require_identity_references(names: list[str], references: dict[str, list[Path]]) -> None:
+    missing = [name for name in names if not references.get(name)]
+    if missing and truthy_env("SERIES_IMAGE_REQUIRE_IDENTITY_REFERENCES", True):
+        raise RuntimeError(
+            "No canonical face reference images were resolved for "
+            f"{', '.join(missing)}. Rerun 08_train_series_model.py and 14_generate_episode.py before generating frames."
+        )
+
+
+def shot_manifest(
+    shot: dict[str, Any],
+    output_path: Path,
+    prompt: str,
+    seed: int,
+    reference_paths: list[Path],
+    reference_characters: list[str],
+    missing_characters: list[str],
+    pipeline_meta: dict[str, Any],
+) -> None:
     outputs = shot.get("target_outputs", {}) if isinstance(shot.get("target_outputs", {}), dict) else {}
     manifest_text = clean_text(outputs.get("manifest", ""))
     if not manifest_text:
@@ -229,12 +493,25 @@ def shot_manifest(shot: dict[str, Any], output_path: Path, prompt: str, seed: in
         "shot_id": clean_text(shot.get("shot_id", "")),
         "task_type": "image",
         "backend": "local_diffusion_image_backend",
-        "inputs": {"prompt": prompt, "seed": seed},
+        "inputs": {
+            "prompt": prompt,
+            "seed": seed,
+            "identity_reference_images": [str(path) for path in reference_paths],
+            "identity_seed_scope": "episode_scene_character_set",
+        },
         "outputs": {"primary_frame": str(output_path)},
         "output_hashes": {str(output_path): digest} if digest else {},
         "status": "success" if digest else "failed",
         "fallback_used": False,
         "placeholder_used": False,
+        "identity_conditioning": {
+            "mode": "sdxl_ip_adapter_plus_face",
+            "adapter_loaded": bool(pipeline_meta.get("identity_adapter_loaded", False)),
+            "adapter_dir": clean_text(pipeline_meta.get("identity_adapter_dir", "")),
+            "reference_count": len(reference_paths),
+            "characters_conditioned": reference_characters,
+            "missing_characters": missing_characters,
+        },
         "finished_at": datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
     }
     manifest_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -251,14 +528,35 @@ def shot_packages(scene_package: dict[str, Any]) -> list[dict[str, Any]]:
 
 def generate_shot_images(context: dict[str, Any], scene_package: dict[str, Any], prompt: str, negative_prompt: str) -> list[Path]:
     paths: list[Path] = []
+    shared_seed = deterministic_seed(context, scene_package)
     for shot in shot_packages(scene_package):
         outputs = shot.get("target_outputs", {}) if isinstance(shot.get("target_outputs", {}), dict) else {}
         output_path = Path(clean_text(outputs.get("primary_frame", "")))
-        shot_context = {**context, "shot_id": clean_text(shot.get("shot_id", ""))}
-        seed = deterministic_seed(shot_context)
+        visible_characters = clean_text_list(shot.get("characters_visible", [])) or scene_character_names(scene_package)
+        references_by_character = reference_images_by_character(scene_package, visible_characters)
+        require_identity_references(visible_characters, references_by_character)
+        reference_paths = reference_image_paths(scene_package, visible_characters)
+        conditioned_characters = [name for name in visible_characters if references_by_character.get(name)]
+        missing_characters = [name for name in visible_characters if not references_by_character.get(name)]
+        identity_reference = build_identity_reference_board(reference_paths)
         rendered_prompt = shot_prompt(prompt, shot)
-        generate_image(rendered_prompt, negative_prompt, output_path, seed)
-        shot_manifest(shot, output_path, rendered_prompt, seed)
+        pipeline_meta = generate_image(
+            rendered_prompt,
+            negative_prompt,
+            output_path,
+            shared_seed,
+            identity_reference=identity_reference,
+        )
+        shot_manifest(
+            shot,
+            output_path,
+            rendered_prompt,
+            shared_seed,
+            reference_paths,
+            conditioned_characters,
+            missing_characters,
+            pipeline_meta,
+        )
         paths.append(output_path)
     return paths
 
@@ -276,7 +574,17 @@ def main() -> int:
     if generated_shots:
         copy_if_needed(generated_shots[0], primary_output)
     else:
-        generate_image(prompt, negative_prompt, primary_output, deterministic_seed(context))
+        names = scene_character_names(scene_package)
+        references_by_character = reference_images_by_character(scene_package, names)
+        reference_paths = reference_image_paths(scene_package, names)
+        require_identity_references(names, references_by_character)
+        generate_image(
+            prompt,
+            negative_prompt,
+            primary_output,
+            deterministic_seed(context, scene_package),
+            identity_reference=build_identity_reference_board(reference_paths),
+        )
 
     for extra_path in paths[1:]:
         copy_if_needed(primary_output, extra_path)

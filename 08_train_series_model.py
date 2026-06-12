@@ -666,20 +666,72 @@ def append_unique_line_entry(target: dict[str, list[dict]], key: str, entry: dic
     target.setdefault(key, []).append(entry)
 
 
+def resolve_character_preview_dir(preview_dir: str) -> Path:
+    candidate = Path(coalesce_text(preview_dir))
+    if not candidate.is_absolute():
+        candidate = resolve_project_path(candidate.as_posix())
+    return candidate.resolve(strict=False)
+
+
+def portable_project_asset_path(path: Path) -> str:
+    resolved = path.resolve(strict=False)
+    try:
+        return resolved.relative_to(PROJECT_ROOT.resolve(strict=False)).as_posix()
+    except ValueError:
+        return str(resolved)
+
+
 def collect_preview_assets(preview_dir: str, patterns: list[str], limit: int = 3) -> list[str]:
-    root = Path(preview_dir)
+    root = resolve_character_preview_dir(preview_dir)
     if not root.exists():
         return []
     results: list[str] = []
     for pattern in patterns:
         for candidate in sorted(root.glob(pattern)):
-            if candidate.exists():
-                resolved = str(candidate.resolve())
+            if candidate.is_file():
+                resolved = portable_project_asset_path(candidate)
                 if resolved not in results:
                     results.append(resolved)
                 if len(results) >= limit:
                     return results
     return results
+
+
+def trusted_identity_preview_dirs(cluster_id: str, payload: dict, limit: int = 10) -> list[str]:
+    values: list[str] = []
+
+    def append(value: object) -> None:
+        text = coalesce_text(value)
+        if text and text not in values:
+            values.append(text)
+
+    primary_cluster = coalesce_text(payload.get("identity_primary_cluster", "")) or cluster_id
+    identity_ids = [
+        primary_cluster,
+        cluster_id,
+        *(
+            payload.get("identity_cluster_ids", [])
+            if isinstance(payload.get("identity_cluster_ids", []), list)
+            else []
+        ),
+    ]
+    for identity_id in identity_ids:
+        normalized = coalesce_text(identity_id)
+        if normalized:
+            append(f"characters/previews/{normalized}")
+        if len(values) >= limit:
+            break
+    append(payload.get("preview_dir", ""))
+    return values[:limit]
+
+
+def append_reference_assets(target: list[str], preview_dirs: list[str], patterns: list[str], limit: int) -> None:
+    for preview_dir in preview_dirs:
+        for image_path in collect_preview_assets(preview_dir, patterns, limit=2):
+            if image_path not in target:
+                target.append(image_path)
+            if len(target) >= limit:
+                return
 
 
 def build_character_reference_library(char_map: dict) -> dict[str, dict]:
@@ -690,7 +742,6 @@ def build_character_reference_library(char_map: dict) -> dict[str, dict]:
         name = display_person_name(str(payload.get("name", "")), cluster_id)
         if not name:
             continue
-        preview_dir = str(payload.get("preview_dir", "") or "")
         entry = library.setdefault(
             name,
             {
@@ -698,16 +749,52 @@ def build_character_reference_library(char_map: dict) -> dict[str, dict]:
                 "portrait_images": [],
                 "priority": False,
                 "background_role": False,
+                "identity_cluster_ids": [],
+                "identity_primary_cluster": "",
+                "gender_presentation": "",
+                "age_group": "",
+                "canonical_outfit": "",
+                "canonical_hairstyle": "",
+                "canonical_body_shape": "",
             },
         )
         entry["priority"] = entry["priority"] or bool(payload.get("priority", False))
         entry["background_role"] = entry["background_role"] or background_character(name)
-        for image_path in collect_preview_assets(preview_dir, ["*_context.jpg", "*_speaker_frame_*.jpg", "*.jpg"], limit=4):
-            if image_path not in entry["context_images"]:
-                entry["context_images"].append(image_path)
-        for image_path in collect_preview_assets(preview_dir, ["*_crop.jpg", "*.jpg"], limit=4):
-            if image_path not in entry["portrait_images"]:
-                entry["portrait_images"].append(image_path)
+        identity_ids = payload.get("identity_cluster_ids", []) if isinstance(payload.get("identity_cluster_ids", []), list) else []
+        for identity_id in [cluster_id, *identity_ids]:
+            identity_text = coalesce_text(identity_id)
+            if identity_text and identity_text not in entry["identity_cluster_ids"]:
+                entry["identity_cluster_ids"].append(identity_text)
+        entry["identity_primary_cluster"] = (
+            coalesce_text(entry.get("identity_primary_cluster", ""))
+            or coalesce_text(payload.get("identity_primary_cluster", ""))
+            or cluster_id
+        )
+        for field in (
+            "gender_presentation",
+            "age_group",
+            "canonical_outfit",
+            "canonical_hairstyle",
+            "canonical_body_shape",
+        ):
+            if not coalesce_text(entry.get(field, "")):
+                entry[field] = coalesce_text(payload.get(field, ""))
+        preview_dirs = trusted_identity_preview_dirs(cluster_id, payload)
+        append_reference_assets(
+            entry["context_images"],
+            preview_dirs,
+            ["*_context.jpg", "*_speaker_frame_*.jpg", "*.jpg"],
+            limit=8,
+        )
+        append_reference_assets(
+            entry["portrait_images"],
+            preview_dirs,
+            ["*_crop.jpg", "*_montage.jpg", "*.jpg"],
+            limit=8,
+        )
+    for entry in library.values():
+        entry["identity_cluster_ids"] = entry.get("identity_cluster_ids", [])[:24]
+        entry["reference_ready"] = bool(entry.get("portrait_images") or entry.get("context_images"))
     return library
 
 
@@ -1515,6 +1602,7 @@ def build_episode_blueprint(
     target_runtime_seconds: int,
     scene_count: int,
     language: str,
+    season_id: str,
 ) -> dict:
     primary = focus_characters[0] if focus_characters else "the lead character"
     secondary = focus_characters[1] if len(focus_characters) > 1 else primary
@@ -1547,6 +1635,7 @@ def build_episode_blueprint(
     theme = "teamwork under pressure" if family != "de" else "Teamwork unter Druck"
     return {
         "schema_version": 1,
+        "season_id": season_id,
         "logline": logline,
         "theme": theme,
         "target_runtime_seconds": int(target_runtime_seconds),
@@ -1640,14 +1729,26 @@ def build_character_continuity_lock(scene_characters: list[str], model: dict) ->
         ]
         locks[character] = {
             "identity_required": True,
+            "identity_reference_required": True,
             "outfit_lock": True,
             "hair_lock": True,
             "voice_lock": True,
             "canonical_outfit": coalesce_text(references.get("canonical_outfit", "")) or "match reviewed source references",
             "canonical_hairstyle": coalesce_text(references.get("canonical_hairstyle", "")) or "match reviewed source references",
             "canonical_body_shape": coalesce_text(references.get("canonical_body_shape", "")) or "preserve source proportions",
+            "gender_presentation": coalesce_text(references.get("gender_presentation", "")),
+            "age_group": coalesce_text(references.get("age_group", "")),
+            "identity_primary_cluster": coalesce_text(references.get("identity_primary_cluster", "")),
+            "identity_cluster_ids": list((references.get("identity_cluster_ids", []) or [])[:12]),
             "allowed_variations": ["minor pose and expression changes"],
-            "forbidden_variations": ["wrong face", "wrong hairstyle", "unmotivated outfit change", "extra duplicate character"],
+            "forbidden_variations": [
+                "wrong face",
+                "gender or age swap",
+                "wrong hairstyle",
+                "unmotivated outfit change",
+                "extra duplicate character",
+                "merged or deformed face",
+            ],
             "reference_images": reference_images,
             "reference_audio": [],
         }
@@ -2472,6 +2573,10 @@ def build_scene_generation_plan(
                 "name": character,
                 "context_images": list((reference_row.get("context_images", []) or [])[:2]),
                 "portrait_images": list((reference_row.get("portrait_images", []) or [])[:2]),
+                "identity_primary_cluster": coalesce_text(reference_row.get("identity_primary_cluster", "")),
+                "identity_cluster_ids": list((reference_row.get("identity_cluster_ids", []) or [])[:12]),
+                "gender_presentation": coalesce_text(reference_row.get("gender_presentation", "")),
+                "age_group": coalesce_text(reference_row.get("age_group", "")),
                 "priority": bool(reference_row.get("priority", False)),
             }
         )
@@ -2621,6 +2726,7 @@ def build_scene_generation_plan(
 
 def generate_episode_package(model: dict, cfg: dict, episode_index: int = 1) -> tuple[dict, str]:
     generation_cfg = cfg.get("generation", {})
+    season_id = coalesce_text(generation_cfg.get("default_season_id", "")) or "season_01"
     rng_seed = int(generation_cfg.get("seed", 42)) + len(model.get("dataset_files", [])) + (episode_index * 101)
     rng = random.Random(rng_seed)
     configured_language = configured_series_language(cfg)
@@ -2680,6 +2786,7 @@ def generate_episode_package(model: dict, cfg: dict, episode_index: int = 1) -> 
         target_runtime_seconds=target_runtime_seconds,
         scene_count=scene_count,
         language=series_language,
+        season_id=season_id,
     )
     set_bible = build_set_bible(focus_characters, keywords, style_descriptor)
     scene_function_index = {
@@ -2893,6 +3000,7 @@ def generate_episode_package(model: dict, cfg: dict, episode_index: int = 1) -> 
     edit_decision_list = build_episode_edit_decision_list(scenes)
     audio_mix_plan = build_audio_mix_plan(f"episode_{episode_index:03d}", scenes, cfg)
     return {
+        "season_id": season_id,
         "episode_title": episode_title,
         "episode_label": episode_label,
         "display_title": display_title,
@@ -2954,6 +3062,10 @@ def main() -> None:
         model_path = resolve_project_path(cfg["paths"]["series_model"])
         model_path.parent.mkdir(parents=True, exist_ok=True)
         write_json(model_path, model)
+        write_json(
+            model_path.parent / "character_reference_library.json",
+            model.get("character_reference_library", {}),
+        )
         mark_step_completed(
             "08_train_series_model",
             "global",

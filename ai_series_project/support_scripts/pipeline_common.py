@@ -301,6 +301,7 @@ DEFAULT_CONFIG = {
         "language": "auto",
         "active_series_input": "",
         "active_character_group": "",
+        "default_season_id": "season_01",
         "style_descriptor": "source-series faithful TV episode frame",
         "show_profile": {
             "profile_id": "default",
@@ -349,7 +350,8 @@ DEFAULT_CONFIG = {
         "allow_visible_only_voice_fallback": False,
         "frame_width": 1280,
         "frame_height": 720,
-"image_base_model": "stabilityai/stable-diffusion-xl-base-1.0",
+        "image_base_model": "stabilityai/stable-diffusion-xl-base-1.0",
+        "identity_adapter_model": "h94/IP-Adapter",
         "video_base_model": "Lightricks/LTX-Video",
         "voice_base_model": "openbmb/VoxCPM2",
         "use_local_character_voice_models": True,
@@ -431,6 +433,19 @@ DEFAULT_CONFIG = {
         "preferred_order": ["musetalk", "latentsync", "wav2lip"],
         "allow_fallback": False,
         "min_sync_score": 0.75,
+    },
+    "season_intro": {
+        "enabled": True,
+        "default_season_id": "season_01",
+        "require_in_finished_episode_mode": True,
+        "lock_after_first_use": True,
+        "profiles": {
+            "season_01": {
+                "source_video": "assets/season_intros/season_01/intro.mp4",
+                "start_seconds": 0.0,
+                "duration_seconds": 0.0,
+            }
+        },
     },
     "finished_episode_mode": {
         "enabled": True,
@@ -520,6 +535,20 @@ DEFAULT_CONFIG = {
                 "required_patterns": [
                     "model_index.json",
                     "*.safetensors",
+                ],
+            },
+            {
+                "name": "image_identity_adapter",
+                "kind": "huggingface",
+                "repo_id": "h94/IP-Adapter",
+                "target_dir": "tools/quality_models/image/h94__IP-Adapter",
+                "allow_patterns": [
+                    "models/image_encoder/**",
+                    "sdxl_models/ip-adapter-plus-face_sdxl_vit-h.safetensors",
+                ],
+                "required_files": [
+                    "models/image_encoder/config.json",
+                    "sdxl_models/ip-adapter-plus-face_sdxl_vit-h.safetensors",
                 ],
             },
             {

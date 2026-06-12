@@ -9,7 +9,13 @@ import wave
 from datetime import datetime
 from pathlib import Path
 
-from backend_common import ensure_parent, find_project_local_ffmpeg, load_json, print_runtime_error
+from backend_common import (
+    ensure_parent,
+    find_project_local_ffmpeg,
+    load_json,
+    print_runtime_error,
+    resolve_stored_project_path,
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -39,6 +45,12 @@ def collect_scene_master_clips(package_payload: dict) -> list[Path]:
                 clips.append(candidate)
                 break
     return clips
+
+
+def season_intro_video(package_payload: dict) -> Path | None:
+    intro = package_payload.get("season_intro", {}) if isinstance(package_payload.get("season_intro", {}), dict) else {}
+    candidate = resolve_stored_project_path(intro.get("canonical_video", ""))
+    return candidate if render_output_ready(candidate) else None
 
 
 def shot_clip_index(package_payload: dict) -> dict[str, Path]:
@@ -155,7 +167,15 @@ def materialize_audio_mastering(package_payload: dict, ffmpeg: str) -> tuple[Pat
     final_mix_text = str(outputs.get("final_mix", "") or "").strip()
     dialogue_stem = Path(dialogue_stem_text) if dialogue_stem_text else Path()
     final_mix = Path(final_mix_text) if final_mix_text else Path()
-    dialogue_ready = bool(dialogue_stem_text) and concat_audio_files(ffmpeg, scene_mixes, dialogue_stem)
+    audio_sources = list(scene_mixes)
+    intro_video = season_intro_video(package_payload)
+    intro_audio_ready = False
+    if intro_video is not None and final_mix_text:
+        intro_audio = final_mix.with_name(f"{final_mix.stem}_season_intro.wav")
+        intro_audio_ready = ffmpeg_audio_to_wav(ffmpeg, intro_video, intro_audio, target_lufs)
+        if intro_audio_ready:
+            audio_sources.insert(0, intro_audio)
+    dialogue_ready = bool(dialogue_stem_text) and concat_audio_files(ffmpeg, audio_sources, dialogue_stem)
     final_ready = dialogue_ready and bool(final_mix_text) and ffmpeg_audio_to_wav(ffmpeg, dialogue_stem, final_mix, target_lufs)
     metrics = {
         "created_at": datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
@@ -169,6 +189,7 @@ def materialize_audio_mastering(package_payload: dict, ffmpeg: str) -> tuple[Pat
                 "inputs": {
                     "scene_count": len(scenes),
                     "scene_mix_count": len(scene_mixes),
+                    "season_intro_audio_included": intro_audio_ready,
                     "final_mix_duration_seconds": round(wav_duration_seconds(final_mix), 4) if final_ready else 0.0,
                 },
                 "tool": "master_runner.audio_mastering",
@@ -192,6 +213,9 @@ def main() -> int:
         raise RuntimeError(f"Could not load production package: {args.package_path}")
 
     scene_clips = collect_edit_decision_clips(package_payload) or collect_scene_master_clips(package_payload)
+    intro_video = season_intro_video(package_payload)
+    if intro_video is not None:
+        scene_clips.insert(0, intro_video)
     if not scene_clips:
         raise RuntimeError("No scene master clips, lip-sync videos, or generated scene videos are available for mastering.")
 
@@ -215,7 +239,7 @@ def main() -> int:
             str(concat_path),
         ]
         if final_audio_mix is not None and render_output_ready(final_audio_mix):
-            command.extend(["-i", str(final_audio_mix)])
+            command.extend(["-i", str(final_audio_mix), "-map", "0:v:0", "-map", "1:a:0"])
         command.extend([
             "-c:v",
             "libx264",

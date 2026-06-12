@@ -188,6 +188,13 @@ def main() -> None:
             reporter.finish(current_label="Series Model", extra_label="Stopped: model is empty")
             info("The series model is empty. Run 08_train_series_model.py first.")
             return
+        compact_reference_library = read_json(model_path.parent / "character_reference_library.json", {})
+        if isinstance(compact_reference_library, dict) and compact_reference_library:
+            model["character_reference_library"] = compact_reference_library
+            info(
+                "Canonical character reference library loaded "
+                f"({len(compact_reference_library)} character profile(s))."
+            )
         behavior_model = STEP08.load_behavior_model(cfg)
         if behavior_model:
             model["behavior_model"] = behavior_model

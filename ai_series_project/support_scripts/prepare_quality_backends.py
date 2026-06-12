@@ -177,6 +177,24 @@ def default_quality_backend_asset_targets(cfg: dict[str, Any]) -> list[dict[str,
                 "required_patterns": required_patterns,
             }
         )
+    identity_adapter_model = coalesce_text(foundation_cfg.get("identity_adapter_model", ""))
+    if identity_adapter_model:
+        targets.append(
+            {
+                "name": "image_identity_adapter",
+                "kind": "huggingface",
+                "repo_id": identity_adapter_model,
+                "target_dir": f"tools/quality_models/image/{identity_adapter_model.replace('/', '__')}",
+                "allow_patterns": [
+                    "models/image_encoder/**",
+                    "sdxl_models/ip-adapter-plus-face_sdxl_vit-h.safetensors",
+                ],
+                "required_files": [
+                    "models/image_encoder/config.json",
+                    "sdxl_models/ip-adapter-plus-face_sdxl_vit-h.safetensors",
+                ],
+            }
+        )
     xtts_model_name = coalesce_text(clone_cfg.get("xtts_model_name", ""))
     if xtts_model_name:
         targets.append(
@@ -205,9 +223,22 @@ def default_quality_backend_asset_targets(cfg: dict[str, Any]) -> list[dict[str,
 def quality_backend_asset_targets(cfg: dict[str, Any]) -> list[dict[str, Any]]:
     assets_cfg = cfg.get("quality_backend_assets", {}) if isinstance(cfg.get("quality_backend_assets"), dict) else {}
     configured = assets_cfg.get("targets", [])
-    if isinstance(configured, list) and configured:
-        return [dict(item) for item in configured if isinstance(item, dict)]
-    return default_quality_backend_asset_targets(cfg)
+    defaults = default_quality_backend_asset_targets(cfg)
+    if not isinstance(configured, list) or not configured:
+        return defaults
+    merged: dict[str, dict[str, Any]] = {}
+    order: list[str] = []
+    for item in [*defaults, *configured]:
+        if not isinstance(item, dict):
+            continue
+        key = coalesce_text(item.get("name", "")) or coalesce_text(item.get("target_dir", ""))
+        if not key:
+            continue
+        if key not in merged:
+            order.append(key)
+            merged[key] = {}
+        merged[key].update(dict(item))
+    return [merged[key] for key in order]
 
 
 def asset_target_dir(target: dict[str, Any]) -> Path:
@@ -487,13 +518,20 @@ def ensure_hf_target(target: dict[str, Any], remote_revision: str, token: str, a
         download_dir.mkdir(parents=True, exist_ok=True)
         staged_from_local_temp = True
     with hf_download_environment():
-        snapshot_path = snapshot_download(
-            repo_id=target["repo_id"],
-            local_dir=str(download_dir),
-            token=token or None,
-            revision=remote_revision or None,
-            max_workers=1,
-        )
+        download_kwargs: dict[str, Any] = {
+            "repo_id": target["repo_id"],
+            "local_dir": str(download_dir),
+            "token": token or None,
+            "revision": remote_revision or None,
+            "max_workers": 1,
+        }
+        allow_patterns = target.get("allow_patterns", [])
+        ignore_patterns = target.get("ignore_patterns", [])
+        if isinstance(allow_patterns, list) and allow_patterns:
+            download_kwargs["allow_patterns"] = [str(value) for value in allow_patterns if str(value).strip()]
+        if isinstance(ignore_patterns, list) and ignore_patterns:
+            download_kwargs["ignore_patterns"] = [str(value) for value in ignore_patterns if str(value).strip()]
+        snapshot_path = snapshot_download(**download_kwargs)
     if staged_from_local_temp:
         if target_dir.exists():
             shutil.rmtree(target_dir)

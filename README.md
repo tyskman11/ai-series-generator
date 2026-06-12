@@ -74,6 +74,10 @@ The project is intentionally strict about the difference between an intermediate
 - generation now creates a finished-episode blueprint with act structure, A/B story, callbacks, scene functions, set continuity, shot plans, dialogue-line acting metadata, audio-mix plans, and an edit decision list
 - render packages now carry per-shot package targets, character continuity locks, set context, scene audio-mix targets, and standard backend manifest paths
 - the local SDXL and LTX quality backends now execute shot packages, write per-shot manifests, and assemble scene video from generated shot clips instead of treating the shot plan as metadata only
+- character frame generation now resolves reviewed preview assets portably, builds a compact canonical reference library, and conditions SDXL with the project-local IP-Adapter Plus Face model instead of relying on names alone
+- multi-character shots now reserve reference-board coverage for every visible figure before adding extra samples; shot manifests record exactly which named identities were conditioned
+- the Finished Episode Gate now rejects missing canonical face references and shots rendered without identity conditioning, so distorted or identity-drifting frames cannot count as finished output
+- every generated episode carries a `season_id`; rendering materializes one approved, hash-locked intro per season and reuses the identical canonical intro in later episodes
 - the master runner now follows shot/EDL clip order, writes dialogue-stem/final-mix targets, records audio-mix metrics, and muxes the final mix into the episode master when available
 - the local Wav2Lip runner now writes measured sync metric payloads when duration evidence is available; the quality gate prefers backend metrics over unavailable placeholders
 - `00_prepare_runtime.py`, `05_review_unknowns.py --reference-audit`, and quality reports now write reference-quality dashboards, backend-readiness reports, and worker-capability snapshots under `ai_series_project/generation/quality_reports/readiness/`
@@ -362,6 +366,33 @@ Finished Episode Mode adds these structures to generated packages:
 - `audio_mix_plan`: dialogue, ambience, music, SFX, final mix stems, LUFS target, and scene mix targets
 - `edit_decision_list`: shot order, start/end timing, audio layers, and cut type for final assembly
 - backend manifests: every real image/video/voice/lip-sync/master output gets a machine-readable manifest with command, inputs, outputs, hashes, status, and fallback/placeholder/stale flags
+- `season_intro`: the canonical intro video, season ID, duration, manifest, and SHA-256 lock used by rendering, mastering, quality checks, and export
+
+### Character Identity Conditioning
+
+`08_train_series_model.py` builds `ai_series_project/generation/model/character_reference_library.json` from reviewed face clusters. Primary identity clusters are preferred, paths remain portable, and each scene receives a `character_continuity_lock` with canonical image references.
+
+`00_prepare_runtime.py` downloads only the required IP-Adapter Plus Face files into `ai_series_project/tools/quality_models/image/h94__IP-Adapter`. The local SDXL runner then:
+
+- requires at least one real reviewed reference for every visible named character
+- gives each visible character a separate reference position before adding secondary samples
+- keeps one deterministic scene/cast seed across the scene's shots
+- uses strong negative constraints against identity drift, face merging, age/gender swaps, malformed faces, duplicate people, and unplanned wardrobe changes
+- writes `characters_conditioned`, missing characters, adapter status, and reference files into every shot manifest
+
+This is stricter and substantially more stable than text-only SDXL, but a single shared IP-Adapter reference board is not perfect regional identity control. Complex crowded shots can still need character-specific LoRAs, InstantID/PhotoMaker-style regional conditioning, or a dedicated ComfyUI workflow.
+
+### Fixed Season Intro
+
+Finished Episode Mode expects one approved intro per season. The default season is `season_01` and its source path is:
+
+```text
+ai_series_project/assets/season_intros/season_01/intro.mp4
+```
+
+On the first render, `17_render_episode.py` normalizes that file once and stores the canonical version under `ai_series_project/generation/season_assets/<season_id>/intro/`. Its SHA-256 hash is locked in `intro_manifest.json`. Later episodes reuse that exact file; an unexpected modification blocks the Finished Episode Gate.
+
+To add another season, set `generation.default_season_id` and add a matching `season_intro.profiles.<season_id>` entry. Set `start_seconds` and `duration_seconds` when the configured source video contains more than the intro. Only use source material for which you have the necessary rights.
 
 The Finished Episode Gate is written into the quality gate report:
 
@@ -421,6 +452,13 @@ Important areas:
 - `character_detection.speaker_face_cluster_vote_weight` and `speaker_face_link_*`: tune how strongly direct face/speaker evidence can auto-name speaker clusters
 - `generation_toolkit.*`: automatic use of optional analysis, continuity, pacing, subtitle, metadata, review, and export helper tools during episode generation
 - `generation.show_profile.*`: reusable public style, camera, continuity, subtitle, and export-disclosure defaults that are copied into scene-generation prompts without absolute paths
+- `generation.default_season_id`: season key written into episode blueprints and render packages, defaulting to `season_01`
+- `foundation_training.identity_adapter_model`: project-local Hugging Face identity-conditioning model, defaulting to `h94/IP-Adapter`
+- `season_intro.enabled`: requires the fixed per-season intro path during Finished Episode rendering
+- `season_intro.lock_after_first_use`: protects the canonical normalized intro with a stored SHA-256 hash
+- `season_intro.profiles.<season_id>.source_video`, `start_seconds`, and `duration_seconds`: select the approved intro source and optional extraction range
+- `SERIES_IMAGE_IDENTITY_SCALE`: optional local IP-Adapter strength override; the default is `0.82`
+- `SERIES_IMAGE_REQUIRE_IDENTITY_REFERENCES` and `SERIES_IMAGE_REQUIRE_IDENTITY_ADAPTER`: remain enabled for the quality runners so text-only identity generation cannot silently pass
 - `transcription.language`: keep `auto` for new or mixed-language series; set it to a language code such as `de` for a known monolingual source project so wrong Auto-Detection caches are rejected and rebuilt
 - `transcription.auto_language_forced_probe`: enabled by default so language detection compares candidate transcriptions instead of trusting one Whisper hint
 - `transcription.speaker_cluster_min_speech_confidence`, `voice_reference_min_speech_confidence`, `voice_reference_min_duration_seconds`, `voice_reference_max_duration_seconds`, and `voice_reference_min_words`: control how strict the speech gate is before audio may become a speaker cluster or clone reference
@@ -574,6 +612,10 @@ python -m py_compile 00_prepare_runtime.py 03_diarize_and_transcribe.py 04_link_
 ## Known Limitations
 
 - project-local fallback image/video generation still does not equal strong dedicated TV-quality generation backends
+- SDXL plus one shared IP-Adapter reference board improves identity stability but does not fully solve multi-person regional identity binding, difficult profiles, occlusion, extreme expressions, hands crossing faces, or long-range video identity drift
+- the quality gate verifies reference and conditioning evidence from manifests; it does not yet run an independent face-embedding comparison against every generated frame
+- canonical outfit, hairstyle, age-group, and visual-presentation labels are only as complete as the reviewed character metadata; the image references remain the authoritative identity anchor when these text fields are empty
+- the season intro must be supplied as an approved project-local video before strict rendering; the pipeline intentionally does not invent or silently substitute an intro
 - project-local lip-sync is still weaker than a full dedicated production lip-sync stack
 - project-local XTTS voice cloning still depends on clean speaker mapping and real reference segments; speakers with zero linked eligible speech data still cannot clone correctly
 - existing bad voice maps or voice models created before the speech gate should be regenerated by rerunning `03` through `10` for the affected episodes/characters
@@ -623,6 +665,8 @@ python -m py_compile 00_prepare_runtime.py 03_diarize_and_transcribe.py 04_link_
 - behavior-model schema version `2`, writer-room scene plans, richer delivery metadata, lip-sync backend priority resolution, and scope-aware weak-scene regeneration are now part of the main generation path
 - Finished Episode Mode now adds episode blueprints, set bible, character continuity locks, multi-shot plans, EDL, audio mix planning, backend manifests, Finished Episode Gate, Realism Reports, export-type separation, and blocked-scope retry handling
 - local SDXL and LTX runners now execute shot packages, write shot manifests, and let scene video be assembled from generated shot clips instead of relying only on scene-level placeholders
+- reviewed face previews now feed a portable canonical reference library, local SDXL uses project-downloaded IP-Adapter identity conditioning, and the quality gate blocks missing or partial named-character conditioning
+- fixed per-season intros are normalized once, hash-locked, prepended to video and audio mastering, included in exports, and required by the Finished Episode Gate
 - the master runner now prefers complete EDL shot coverage, builds dialogue/final-mix stems, writes audio-mix metrics, and adds the final audio mix to the master export path when available
 - the voice runner now writes line-delivery/reference diagnostics and respects line pauses; the Wav2Lip runner can write measured sync metric payloads for the quality gate
 - reference-quality dashboards, backend-readiness reports, worker-capability snapshots, capability-ranked task scheduling, and `05_review_unknowns.py --reference-audit` are available before long training/render runs

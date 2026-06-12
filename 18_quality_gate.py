@@ -9,6 +9,7 @@ if str(PROJECT_DIR) not in sys.path:
     sys.path.insert(0, str(PROJECT_DIR))
 
 import argparse
+import hashlib
 import json
 import subprocess
 from datetime import datetime, timezone
@@ -347,6 +348,85 @@ def artifact_path_exists(path_value: object) -> bool:
     return candidate.exists() and candidate.is_file()
 
 
+def artifact_sha256(path_value: object) -> str:
+    candidate = stored_path_if_present(path_value)
+    if not candidate or not candidate.is_file():
+        return ""
+    digest = hashlib.sha256()
+    with candidate.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def scene_identity_status(scene: dict[str, Any]) -> dict[str, Any]:
+    characters = [
+        str(value or "").strip()
+        for value in scene.get("characters", [])
+        if str(value or "").strip()
+    ] if isinstance(scene.get("characters", []), list) else []
+    locks = scene.get("character_continuity_lock", {}) if isinstance(scene.get("character_continuity_lock", {}), dict) else {}
+    missing_characters: list[str] = []
+    for character in characters:
+        lock = locks.get(character, {}) if isinstance(locks.get(character, {}), dict) else {}
+        references = lock.get("reference_images", []) if isinstance(lock.get("reference_images", []), list) else []
+        if not any(artifact_path_exists(path) for path in references):
+            missing_characters.append(character)
+
+    expected_conditioned_shots = 0
+    conditioned_shots = 0
+    for shot in scene.get("shot_packages", []) if isinstance(scene.get("shot_packages", []), list) else []:
+        if not isinstance(shot, dict):
+            continue
+        visible = shot.get("characters_visible", []) if isinstance(shot.get("characters_visible", []), list) else []
+        if not visible:
+            continue
+        expected_conditioned_shots += 1
+        outputs = shot.get("target_outputs", {}) if isinstance(shot.get("target_outputs", {}), dict) else {}
+        manifest_path = stored_path_if_present(outputs.get("manifest", ""))
+        manifest = read_json(manifest_path, {}) if manifest_path and manifest_path.is_file() else {}
+        identity = manifest.get("identity_conditioning", {}) if isinstance(manifest.get("identity_conditioning", {}), dict) else {}
+        conditioned_characters = {
+            str(value or "").strip()
+            for value in identity.get("characters_conditioned", [])
+            if str(value or "").strip()
+        } if isinstance(identity.get("characters_conditioned", []), list) else set()
+        covered = (
+            set(str(value or "").strip() for value in visible if str(value or "").strip()).issubset(conditioned_characters)
+            if conditioned_characters
+            else int(identity.get("reference_count", 0) or 0) >= len(visible)
+        )
+        if bool(identity.get("adapter_loaded", False)) and covered:
+            conditioned_shots += 1
+    return {
+        "characters": characters,
+        "missing_characters": missing_characters,
+        "reference_ready": not missing_characters,
+        "expected_conditioned_shots": expected_conditioned_shots,
+        "conditioned_shots": conditioned_shots,
+        "identity_conditioned": expected_conditioned_shots == 0 or conditioned_shots == expected_conditioned_shots,
+    }
+
+
+def season_intro_status(package_payload: dict[str, Any], cfg: dict[str, Any] | None) -> dict[str, Any]:
+    intro_cfg = cfg.get("season_intro", {}) if isinstance(cfg, dict) and isinstance(cfg.get("season_intro", {}), dict) else {}
+    required = bool(intro_cfg.get("enabled", False) and intro_cfg.get("require_in_finished_episode_mode", True))
+    intro = package_payload.get("season_intro", {}) if isinstance(package_payload.get("season_intro", {}), dict) else {}
+    canonical_video = intro.get("canonical_video", "")
+    expected_hash = str(intro.get("canonical_sha256", "") or "").strip()
+    actual_hash = artifact_sha256(canonical_video)
+    ready = bool(artifact_path_exists(canonical_video) and expected_hash and actual_hash == expected_hash)
+    return {
+        "required": required,
+        "ready": ready,
+        "season_id": str(intro.get("season_id", "") or intro_cfg.get("default_season_id", "") or "").strip(),
+        "canonical_video": str(canonical_video or "").strip(),
+        "expected_hash": expected_hash,
+        "actual_hash": actual_hash,
+        "status": str(intro.get("status", "") or ("ready" if ready else "missing")).strip(),
+    }
+
+
 def load_production_package(artifacts: dict[str, Any]) -> dict[str, Any]:
     package_path = stored_path_if_present(artifacts.get("production_package", ""))
     if not package_path or not package_path.exists() or not package_path.is_file():
@@ -643,7 +723,9 @@ def scene_realism_row(
     missing_reference_data: int,
     missing_voice_output: bool,
     missing_lipsync_output: bool,
+    identity_status: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    identity_status = identity_status if isinstance(identity_status, dict) else scene_identity_status(scene)
     scene_id = str(scene.get("scene_id", "") or "scene").strip()
     voice_lines = scene_voice_lines(scene)
     texts = scene_dialogue_texts(scene)
@@ -676,6 +758,13 @@ def scene_realism_row(
     set_consistency_score = 1.0 if has_set_context else 0.28
     audio_mix_score = 1.0 if has_audio_mix else 0.2
     backend_integrity_score = clamp_score(backend_integrity.get("score", 0.0), 0.0)
+    identity_consistency_score = (
+        1.0
+        if bool(identity_status.get("reference_ready", False)) and bool(identity_status.get("identity_conditioned", False))
+        else 0.45
+        if bool(identity_status.get("reference_ready", False))
+        else 0.08
+    )
     realism_score = max(
         0.0,
         min(
@@ -694,7 +783,9 @@ def scene_realism_row(
                 + audio_mix_score * 0.06
                 + backend_integrity_score * 0.1
             )
-            - template_penalty,
+            - template_penalty
+            - (0.16 if not bool(identity_status.get("reference_ready", False)) else 0.0)
+            - (0.12 if not bool(identity_status.get("identity_conditioned", False)) else 0.0),
         ),
     )
     failed_reasons: list[str] = []
@@ -712,6 +803,8 @@ def scene_realism_row(
         "repair_set_context": False,
         "rerun_audio_mix": False,
         "repair_backend_manifests": False,
+        "collect_character_face_references": False,
+        "rerun_identity_conditioned_images": False,
     }
     if template_ratio > 0.45:
         failed_reasons.append("dialogue too template-heavy")
@@ -762,7 +855,14 @@ def scene_realism_row(
     if backend_integrity.get("stale"):
         failed_reasons.append("backend manifest reports stale output")
         hints["repair_backend_manifests"] = True
-    if hints["collect_missing_references"]:
+    if not bool(identity_status.get("reference_ready", False)):
+        missing_names = ", ".join(identity_status.get("missing_characters", []) or [])
+        failed_reasons.append(f"canonical face references missing{f' for {missing_names}' if missing_names else ''}")
+        hints["collect_character_face_references"] = True
+    if not bool(identity_status.get("identity_conditioned", False)):
+        failed_reasons.append("shot images were not generated with canonical identity conditioning")
+        hints["rerun_identity_conditioned_images"] = True
+    if hints["collect_missing_references"] or hints["collect_character_face_references"]:
         scope = "blocked_missing_references"
     elif backend_integrity.get("missing"):
         scope = "blocked_missing_backend"
@@ -800,7 +900,9 @@ def scene_realism_row(
             "set_consistency_score": round(set_consistency_score, 4),
             "audio_mix_score": round(audio_mix_score, 4),
             "backend_integrity_score": round(backend_integrity_score, 4),
+            "identity_consistency_score": round(identity_consistency_score, 4),
         },
+        "identity_status": identity_status,
         "backend_integrity": backend_integrity,
         "failed_reasons": failed_reasons,
         "regeneration_hints": hints,
@@ -831,6 +933,8 @@ def scene_content_quality_checks(package_payload: dict[str, Any], cfg: dict[str,
         "missing_lipsync_output_scene_count": 0,
         "missing_reference_data_line_count": 0,
         "template_heavy_scene_count": 0,
+        "missing_character_reference_scene_count": 0,
+        "missing_identity_conditioning_scene_count": 0,
     }
     total_lines = 0
     total_template_lines = 0
@@ -873,6 +977,7 @@ def scene_content_quality_checks(package_payload: dict[str, Any], cfg: dict[str,
         current_outputs = scene.get("current_generated_outputs", {}) if isinstance(scene.get("current_generated_outputs", {}), dict) else {}
         has_real_motion_video = real_video_source_type(current_outputs.get("video_source_type", ""))
         backend_integrity = scene_backend_integrity(scene)
+        identity_status = scene_identity_status(scene)
         if not has_behavior:
             counters["missing_behavior_scene_count"] += 1
         if not has_conflict_or_purpose:
@@ -897,6 +1002,10 @@ def scene_content_quality_checks(package_payload: dict[str, Any], cfg: dict[str,
             counters["placeholder_backend_manifest_scene_count"] += 1
         if backend_integrity.get("stale"):
             counters["stale_backend_manifest_scene_count"] += 1
+        if not bool(identity_status.get("reference_ready", False)):
+            counters["missing_character_reference_scene_count"] += 1
+        if not bool(identity_status.get("identity_conditioned", False)):
+            counters["missing_identity_conditioning_scene_count"] += 1
 
         dialogue_sources = scene.get("dialogue_sources", []) if isinstance(scene.get("dialogue_sources", []), list) else []
         dialogue_texts = scene_dialogue_texts(scene)
@@ -959,6 +1068,7 @@ def scene_content_quality_checks(package_payload: dict[str, Any], cfg: dict[str,
             missing_reference_data=scene_missing_reference_data,
             missing_voice_output=missing_voice_output,
             missing_lipsync_output=missing_lipsync_output,
+            identity_status=identity_status,
         )
         realism_rows.append(realism_row)
         rows.append(
@@ -973,6 +1083,7 @@ def scene_content_quality_checks(package_payload: dict[str, Any], cfg: dict[str,
                 "has_audio_mix": has_audio_mix,
                 "has_real_motion_video": has_real_motion_video,
                 "backend_integrity": backend_integrity,
+                "identity_status": identity_status,
                 "generic_template_line_ratio": template_ratio,
                 "voice_line_count": len(voice_lines),
                 "lipsync_backend": str(lip_sync.get("selected_backend", "") or "").strip(),
@@ -1014,6 +1125,14 @@ def scene_content_quality_checks(package_payload: dict[str, Any], cfg: dict[str,
         warnings.append(f"{counters['missing_lipsync_output_scene_count']} scene(s) are missing lip-sync output video.")
     if counters["template_heavy_scene_count"]:
         warnings.append(f"{counters['template_heavy_scene_count']} scene(s) are still too template-heavy.")
+    if counters["missing_character_reference_scene_count"]:
+        warnings.append(
+            f"{counters['missing_character_reference_scene_count']} scene(s) are missing canonical character face references."
+        )
+    if counters["missing_identity_conditioning_scene_count"]:
+        warnings.append(
+            f"{counters['missing_identity_conditioning_scene_count']} scene(s) were not fully rendered with identity conditioning."
+        )
     weak_realism = [row for row in realism_rows if safe_float(row.get("realism_score", 1.0), 1.0) < 0.72]
     if weak_realism:
         warnings.append(f"{len(weak_realism)} scene(s) have weak realism scores below 72%.")
@@ -1053,8 +1172,13 @@ def scene_content_quality_checks(package_payload: dict[str, Any], cfg: dict[str,
         technical_metric(
             "identity_consistency_score",
             "measured",
-            1.0 - safe_ratio(counters["missing_set_context_scene_count"], max(1, len(rows))),
-            "continuity metadata coverage heuristic",
+            1.0
+            - safe_ratio(
+                counters["missing_character_reference_scene_count"]
+                + counters["missing_identity_conditioning_scene_count"],
+                max(1, len(rows) * 2),
+            ),
+            "canonical-reference and identity-conditioned shot coverage",
         ),
         technical_metric(
             "shot_continuity_score",
@@ -1082,6 +1206,7 @@ def scene_content_quality_checks(package_payload: dict[str, Any], cfg: dict[str,
         ),
     ]
     technical_metrics = prefer_backend_metrics(technical_metrics, backend_technical_metrics(package_payload))
+    intro_status = season_intro_status(package_payload, cfg)
     return {
         "scene_count": len(rows),
         "scene_rows": rows,
@@ -1090,6 +1215,7 @@ def scene_content_quality_checks(package_payload: dict[str, Any], cfg: dict[str,
         "warnings": warnings,
         **counters,
         "generic_template_line_ratio": safe_ratio(total_template_lines, total_lines),
+        "season_intro": intro_status,
         "finished_episode_mode_enabled": bool(finished_cfg.get("enabled", False)),
         "technical_metrics": technical_metrics,
     }
@@ -1173,8 +1299,22 @@ def build_finished_episode_gate(
             blockers.append("one or more scenes are missing set continuity context")
         if int(content_checks.get("missing_scene_function_count", 0) or 0):
             blockers.append("one or more scenes have no episode-arc function")
+        if int(content_checks.get("missing_character_reference_scene_count", 0) or 0):
+            blockers.append("one or more scenes are missing canonical character face references")
+        if int(content_checks.get("missing_identity_conditioning_scene_count", 0) or 0):
+            blockers.append("one or more scenes were not rendered with canonical identity conditioning")
         if any("shot plans" in blocker or "set continuity" in blocker or "episode-arc" in blocker for blocker in blockers):
             required_actions.append("Regenerate story metadata so every scene has a function, set, shot plan, and continuity lock.")
+        if any("character face references" in blocker or "identity conditioning" in blocker for blocker in blockers):
+            required_actions.append(
+                "Rerun steps 08, 14, and the image backend so every character uses reviewed face references and the SDXL identity adapter."
+            )
+    intro_status = content_checks.get("season_intro", {}) if isinstance(content_checks.get("season_intro", {}), dict) else {}
+    if bool(intro_status.get("required", False)) and not bool(intro_status.get("ready", False)):
+        blockers.append("the configured fixed season intro is missing or its locked hash changed")
+        required_actions.append(
+            "Provide the approved season intro source and rerun rendering so the canonical locked intro can be reused."
+        )
     if bool(mode.get("require_backend_manifests", True)) and int(content_checks.get("missing_backend_manifest_scene_count", 0) or 0):
         blockers.append("required backend manifests are missing")
         required_actions.append("Rerun backend tasks so every real output has a machine-readable manifest.")

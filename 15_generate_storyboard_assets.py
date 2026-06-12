@@ -135,7 +135,7 @@ def best_reference_image(scene_request: dict) -> Path | None:
             values = slot.get(key, [])
             if isinstance(values, list):
                 for value in values:
-                    candidate = Path(str(value))
+                    candidate = resolve_stored_project_path(value)
                     if candidate.exists():
                         return candidate
     return None
