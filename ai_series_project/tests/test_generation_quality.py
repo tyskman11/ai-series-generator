@@ -9,6 +9,7 @@ if str(PROJECT_DIR) not in sys.path:
     sys.path.insert(0, str(PROJECT_DIR))
 
 import importlib.util
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -33,6 +34,83 @@ STEP15 = load_module("17_render_episode.py", "step15_generation_quality")
 
 
 class GenerationQualityTests(unittest.TestCase):
+    def test_backend_progress_tracks_generated_shot_outputs(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            first_frame = root / "shot_001.png"
+            second_frame = root / "shot_002.png"
+            first_frame.write_bytes(b"generated-frame")
+            scene_package = {
+                "shot_packages": [
+                    {
+                        "shot_id": "scene_0001_shot_001",
+                        "target_outputs": {"primary_frame": str(first_frame)},
+                    },
+                    {
+                        "shot_id": "scene_0001_shot_002",
+                        "target_outputs": {"primary_frame": str(second_frame)},
+                    },
+                ]
+            }
+
+            targets = STEP15.backend_progress_targets(
+                scene_package,
+                "finished_episode_image_runner",
+            )
+            snapshot = STEP15.backend_progress_snapshot(targets)
+
+        self.assertEqual(snapshot["completed"], 1)
+        self.assertEqual(snapshot["total"], 2)
+        self.assertEqual(snapshot["current_label"], "scene_0001_shot_002")
+
+    def test_backend_live_progress_includes_stats_and_eta_before_first_output(self) -> None:
+        reporter = mock.Mock()
+        monitor = STEP15.BackendLiveProgressMonitor(
+            reporter=reporter,
+            runner_name="finished_episode_image_runner",
+            scene_id="scene_0001",
+            targets=[
+                {"label": "scene_0001_shot_001", "path": Path("missing-shot-001.png")},
+                {"label": "scene_0001_shot_002", "path": Path("missing-shot-002.png")},
+            ],
+            overall_base=31.0,
+            overall_span=0.85,
+            completed_units_before=0,
+            total_units=2,
+        )
+
+        monitor._publish()
+
+        update = reporter.update.call_args
+        self.assertIn("Image generation: 0/2 ready, 2 remaining", update.kwargs["extra_label"])
+        self.assertIn("elapsed", update.kwargs["extra_label"])
+        self.assertEqual(update.kwargs["scope_eta_seconds"], 600.0)
+        self.assertEqual(update.kwargs["overall_eta_seconds"], 600.0)
+
+    def test_live_progress_reporter_accepts_explicit_eta_overrides(self) -> None:
+        reporter = pipeline_common.LiveProgressReporter(
+            script_name="17_render_episode.py",
+            total=32,
+            phase_label="Render Episode",
+            parent_label="folge_02",
+        )
+
+        rendered = "\n".join(
+            reporter._render_lines(
+                31,
+                current_label="scene_0001 / shot_001",
+                scope_current=0,
+                scope_total=8,
+                scope_label="Backend",
+                scope_eta_seconds=600,
+                overall_eta_seconds=1200,
+            )
+        )
+
+        self.assertIn("Current ETA", rendered)
+        self.assertIn("Overall ETA", rendered)
+        self.assertNotIn("calculating", rendered)
+
     def test_safe_duration_seconds_expands_dialogue_heavy_scene(self) -> None:
         duration = STEP15.safe_duration_seconds(
             {

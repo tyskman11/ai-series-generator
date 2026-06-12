@@ -17,8 +17,11 @@ import shutil
 import subprocess
 import tempfile
 import textwrap
+import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
+from statistics import median
 
 from PIL import Image, ImageColor, ImageDraw, ImageEnhance, ImageFilter, ImageFont, ImageOps
 
@@ -2362,6 +2365,276 @@ def scene_package_target_paths(scene_package: dict) -> dict[str, str]:
     }
 
 
+BACKEND_PROGRESS_LABELS = {
+    "finished_episode_image_runner": "Image generation",
+    "finished_episode_video_runner": "Video generation",
+    "finished_episode_voice_runner": "Voice cloning",
+    "finished_episode_lipsync_runner": "Lip sync",
+    "finished_episode_master_runner": "Episode master",
+}
+
+BACKEND_DEFAULT_UNIT_SECONDS = {
+    "finished_episode_image_runner": 300.0,
+    "finished_episode_video_runner": 600.0,
+    "finished_episode_voice_runner": 45.0,
+    "finished_episode_lipsync_runner": 300.0,
+    "finished_episode_master_runner": 300.0,
+}
+
+
+def backend_progress_targets(scene_package: dict, runner_name: str) -> list[dict[str, object]]:
+    shot_packages = scene_package.get("shot_packages", []) if isinstance(scene_package.get("shot_packages", []), list) else []
+    target_rows: list[dict[str, object]] = []
+    seen_paths: set[str] = set()
+
+    def append_target(label: str, raw_path: object) -> None:
+        path_text = clean_text(raw_path)
+        if not path_text:
+            return
+        path = resolve_stored_project_path(path_text)
+        if path is None:
+            return
+        normalized = os.path.normcase(os.path.normpath(str(path)))
+        if normalized in seen_paths:
+            return
+        seen_paths.add(normalized)
+        target_rows.append({"label": clean_text(label) or path.name, "path": path})
+
+    if runner_name in {"finished_episode_image_runner", "finished_episode_video_runner"}:
+        target_key = "primary_frame" if runner_name == "finished_episode_image_runner" else "video_clip"
+        for index, shot in enumerate(shot_packages, start=1):
+            if not isinstance(shot, dict):
+                continue
+            outputs = shot.get("target_outputs", {}) if isinstance(shot.get("target_outputs", {}), dict) else {}
+            append_target(clean_text(shot.get("shot_id", "")) or f"shot_{index:03d}", outputs.get(target_key, ""))
+
+    if runner_name == "finished_episode_voice_runner":
+        voice_clone = scene_package.get("voice_clone", {}) if isinstance(scene_package.get("voice_clone", {}), dict) else {}
+        voice_lines = voice_clone.get("lines", []) if isinstance(voice_clone.get("lines", []), list) else []
+        for index, line in enumerate(voice_lines, start=1):
+            if not isinstance(line, dict):
+                continue
+            speaker = clean_text(line.get("speaker_name", "")) or clean_text(line.get("speaker", ""))
+            append_target(f"line_{index:03d} {speaker}".strip(), line.get("target_output_audio", ""))
+
+    if not target_rows:
+        target_paths = scene_package_target_paths(scene_package)
+        fallback_keys = {
+            "finished_episode_image_runner": ("primary_frame", "layered_storyboard_frame"),
+            "finished_episode_video_runner": ("scene_video",),
+            "finished_episode_voice_runner": ("scene_dialogue_audio",),
+            "finished_episode_lipsync_runner": ("lipsync_video",),
+        }
+        for target_key in fallback_keys.get(runner_name, ()):
+            append_target(target_key, target_paths.get(target_key, ""))
+    return target_rows
+
+
+def backend_progress_snapshot(targets: list[dict[str, object]]) -> dict[str, object]:
+    ready_rows: list[tuple[float, str]] = []
+    pending_labels: list[str] = []
+    for row in targets:
+        path = row.get("path")
+        label = clean_text(row.get("label", ""))
+        if isinstance(path, Path) and render_output_ready(path):
+            try:
+                ready_rows.append((path.stat().st_mtime, label))
+            except OSError:
+                ready_rows.append((0.0, label))
+        else:
+            pending_labels.append(label)
+    ready_rows.sort(key=lambda item: item[0])
+    return {
+        "completed": len(ready_rows),
+        "total": max(1, len(targets)),
+        "latest_label": ready_rows[-1][1] if ready_rows else "",
+        "current_label": pending_labels[0] if pending_labels else (ready_rows[-1][1] if ready_rows else ""),
+        "ready_timestamps": [timestamp for timestamp, _label in ready_rows if timestamp > 0.0],
+    }
+
+
+def estimate_backend_unit_seconds(
+    targets: list[dict[str, object]],
+    *,
+    started_at: float,
+    initial_completed: int,
+    history_targets: list[dict[str, object]] | None = None,
+) -> float | None:
+    snapshot = backend_progress_snapshot(targets)
+    history_snapshot = backend_progress_snapshot(history_targets or targets)
+    timestamps = (
+        history_snapshot.get("ready_timestamps", [])
+        if isinstance(history_snapshot.get("ready_timestamps", []), list)
+        else []
+    )
+    intervals = [
+        later - earlier
+        for earlier, later in zip(timestamps, timestamps[1:])
+        if 1.0 <= (later - earlier) <= 21600.0
+    ]
+    completed_since_start = max(0, int(snapshot.get("completed", 0) or 0) - max(0, initial_completed))
+    elapsed = max(0.0, time.time() - started_at)
+    if completed_since_start > 0 and elapsed >= 1.0:
+        intervals.append(elapsed / completed_since_start)
+    if not intervals:
+        return None
+    return max(1.0, float(median(intervals)))
+
+
+class BackendLiveProgressMonitor:
+    def __init__(
+        self,
+        *,
+        reporter: LiveProgressReporter,
+        runner_name: str,
+        scene_id: str,
+        targets: list[dict[str, object]],
+        overall_base: float,
+        overall_span: float,
+        completed_units_before: int,
+        total_units: int,
+        history_targets: list[dict[str, object]] | None = None,
+        completed_runner_units_before: int = 0,
+        completed_runner_units: dict[str, int] | None = None,
+        runner_unit_totals: dict[str, int] | None = None,
+        runner_history: dict[str, list[dict[str, object]]] | None = None,
+        interval_seconds: float = 5.0,
+    ) -> None:
+        self.reporter = reporter
+        self.runner_name = runner_name
+        self.scene_id = scene_id
+        self.targets = targets
+        self.overall_base = float(overall_base)
+        self.overall_span = max(0.0, float(overall_span))
+        self.completed_units_before = max(0, int(completed_units_before))
+        self.total_units = max(1, int(total_units))
+        self.history_targets = history_targets or targets
+        self.completed_runner_units_before = max(0, int(completed_runner_units_before))
+        self.completed_runner_units = dict(completed_runner_units or {})
+        self.runner_unit_totals = runner_unit_totals or {runner_name: max(1, len(targets))}
+        self.runner_history = runner_history or {runner_name: self.history_targets}
+        self.interval_seconds = max(1.0, float(interval_seconds))
+        self.started_at = time.time()
+        self.initial_completed = int(backend_progress_snapshot(targets).get("completed", 0) or 0)
+        self._stop_event = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def _publish(self) -> None:
+        snapshot = backend_progress_snapshot(self.targets)
+        completed = int(snapshot.get("completed", 0) or 0)
+        task_total = max(1, int(snapshot.get("total", 1) or 1))
+        remaining = max(0, task_total - completed)
+        unit_seconds = estimate_backend_unit_seconds(
+            self.targets,
+            started_at=self.started_at,
+            initial_completed=self.initial_completed,
+            history_targets=self.history_targets,
+        )
+        estimate_is_default = unit_seconds is None
+        if unit_seconds is None:
+            unit_seconds = BACKEND_DEFAULT_UNIT_SECONDS.get(self.runner_name, 300.0)
+        task_eta_seconds = unit_seconds * remaining if unit_seconds is not None else None
+        overall_completed_units = min(self.total_units, self.completed_units_before + completed)
+        overall_fraction = overall_completed_units / self.total_units
+        overall_current = self.overall_base + (self.overall_span * overall_fraction)
+        overall_eta_seconds = 0.0
+        for candidate_runner, candidate_total in self.runner_unit_totals.items():
+            candidate_completed = max(0, int(self.completed_runner_units.get(candidate_runner, 0)))
+            if candidate_runner == self.runner_name:
+                candidate_completed = max(candidate_completed, self.completed_runner_units_before) + completed
+            candidate_remaining = max(0, int(candidate_total) - candidate_completed)
+            candidate_targets = self.runner_history.get(candidate_runner, [])
+            if candidate_runner == self.runner_name:
+                candidate_estimate = unit_seconds
+            else:
+                candidate_estimate = estimate_backend_unit_seconds(
+                    candidate_targets,
+                    started_at=self.started_at,
+                    initial_completed=int(backend_progress_snapshot(candidate_targets).get("completed", 0) or 0),
+                    history_targets=candidate_targets,
+                )
+            if candidate_estimate is None:
+                candidate_estimate = BACKEND_DEFAULT_UNIT_SECONDS.get(candidate_runner, 300.0)
+            overall_eta_seconds += candidate_estimate * candidate_remaining
+        stage_label = BACKEND_PROGRESS_LABELS.get(self.runner_name, self.runner_name)
+        active_label = clean_text(snapshot.get("current_label", "")) or self.scene_id
+        elapsed_text = format_duration_seconds(time.time() - self.started_at)
+        average_text = f"{'~' if estimate_is_default else ''}{format_duration_seconds(unit_seconds)}"
+        self.reporter.update(
+            overall_current,
+            current_label=f"{self.scene_id} / {active_label}",
+            extra_label=(
+                f"{stage_label}: {completed}/{task_total} ready, {remaining} remaining | "
+                f"elapsed {elapsed_text} | avg/unit {average_text}"
+            ),
+            force=True,
+            scope_current=completed,
+            scope_total=task_total,
+            scope_started_at=self.started_at,
+            scope_label="Backend",
+            scope_eta_seconds=task_eta_seconds,
+            overall_eta_seconds=overall_eta_seconds,
+        )
+
+    def _run(self) -> None:
+        while not self._stop_event.wait(self.interval_seconds):
+            self._publish()
+
+    def start(self) -> None:
+        self._publish()
+        self._thread = threading.Thread(
+            target=self._run,
+            name=f"render-progress-{self.scene_id}-{self.runner_name}",
+            daemon=True,
+        )
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop_event.set()
+        if self._thread is not None:
+            self._thread.join(timeout=self.interval_seconds + 1.0)
+        self._publish()
+
+
+def format_duration_seconds(seconds: float | int | None) -> str:
+    total_seconds = max(0, int(round(float(seconds or 0.0))))
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes, secs = divmod(remainder, 60)
+    return f"{hours:02d}:{minutes:02d}:{secs:02d}"
+
+
+def episode_backend_progress_plan(
+    package_payload: dict,
+) -> tuple[int, dict[str, list[dict[str, object]]], dict[str, int]]:
+    total_units = 0
+    history: dict[str, list[dict[str, object]]] = {}
+    runner_unit_totals: dict[str, int] = {}
+    scene_package_paths = package_payload.get("scene_package_paths", []) if isinstance(package_payload.get("scene_package_paths", []), list) else []
+    runner_specs = [
+        ("finished_episode_image_runner", "image_generation"),
+        ("finished_episode_video_runner", "video_generation"),
+        ("finished_episode_voice_runner", "voice_clone"),
+        ("finished_episode_lipsync_runner", "lip_sync"),
+    ]
+    for scene_package_path_raw in scene_package_paths:
+        scene_package_path = resolve_stored_project_path(scene_package_path_raw)
+        if scene_package_path is None or not scene_package_path.exists():
+            continue
+        scene_package = read_json(scene_package_path, {})
+        if not isinstance(scene_package, dict):
+            continue
+        for runner_name, section_name in runner_specs:
+            section_payload = scene_package.get(section_name, {}) if isinstance(scene_package.get(section_name, {}), dict) else {}
+            if not bool(section_payload.get("required", False)):
+                continue
+            targets = backend_progress_targets(scene_package, runner_name)
+            unit_count = max(1, len(targets))
+            total_units += unit_count
+            runner_unit_totals[runner_name] = runner_unit_totals.get(runner_name, 0) + unit_count
+            history.setdefault(runner_name, []).extend(targets)
+    return max(1, total_units), history, runner_unit_totals
+
+
 def refresh_scene_package_outputs(scene_package: dict, package_root: Path) -> dict:
     refreshed = dict(scene_package)
     scene_id = clean_text(refreshed.get("scene_id", "")) or "scene"
@@ -2597,6 +2870,9 @@ def run_finished_episode_scene_runners(
     prompt_preview_path: Path,
     *,
     force: bool,
+    reporter: LiveProgressReporter | None = None,
+    overall_base: float = 0.0,
+    overall_span: float = 1.0,
 ) -> dict[str, object]:
     package_payload = read_json(package_path, {})
     if not isinstance(package_payload, dict):
@@ -2611,6 +2887,9 @@ def run_finished_episode_scene_runners(
         ("finished_episode_voice_runner", "voice_clone"),
         ("finished_episode_lipsync_runner", "lip_sync"),
     ]
+    total_progress_units, runner_history, runner_unit_totals = episode_backend_progress_plan(package_payload)
+    completed_progress_units = 0
+    completed_runner_units: dict[str, int] = {}
     for scene_package_path_raw in scene_package_paths:
         scene_package_path = resolve_stored_project_path(scene_package_path_raw)
         if scene_package_path is None or not scene_package_path.exists():
@@ -2628,8 +2907,30 @@ def run_finished_episode_scene_runners(
                 continue
             if force:
                 remove_stale_scene_runner_outputs(section_name, context)
-            runner_rows.append(
-                run_external_backend_runner(
+            progress_targets = backend_progress_targets(scene_package, runner_name)
+            progress_monitor = (
+                BackendLiveProgressMonitor(
+                    reporter=reporter,
+                    runner_name=runner_name,
+                    scene_id=clean_text(scene_package.get("scene_id", "")) or scene_package_path.stem,
+                    targets=progress_targets,
+                    overall_base=overall_base,
+                    overall_span=overall_span,
+                    completed_units_before=completed_progress_units,
+                    total_units=total_progress_units,
+                    history_targets=runner_history.get(runner_name, progress_targets),
+                    completed_runner_units_before=completed_runner_units.get(runner_name, 0),
+                    completed_runner_units=completed_runner_units,
+                    runner_unit_totals=runner_unit_totals,
+                    runner_history=runner_history,
+                )
+                if reporter is not None
+                else None
+            )
+            if progress_monitor is not None:
+                progress_monitor.start()
+            try:
+                runner_result = run_external_backend_runner(
                     cfg,
                     runner_name,
                     context=context,
@@ -2637,7 +2938,13 @@ def run_finished_episode_scene_runners(
                     fallback_cwd=scene_package_path.parent,
                     log_dir=resolve_project_path("logs") / "external_backends" / runner_name / clean_text(scene_package.get("episode_id", "")) / clean_text(scene_package.get("scene_id", "")),
                 )
-            )
+            finally:
+                if progress_monitor is not None:
+                    progress_monitor.stop()
+            runner_rows.append(runner_result)
+            progress_unit_count = max(1, len(progress_targets))
+            completed_progress_units += progress_unit_count
+            completed_runner_units[runner_name] = completed_runner_units.get(runner_name, 0) + progress_unit_count
             manifest_path = write_backend_task_manifest(
                 package_root=package_root,
                 scene_package=scene_package,
@@ -2683,6 +2990,9 @@ def run_finished_episode_master_runner(
     package_payload: dict,
     *,
     force: bool,
+    reporter: LiveProgressReporter | None = None,
+    overall_base: float = 0.0,
+    overall_span: float = 1.0,
 ) -> dict[str, object]:
     package_path_text = clean_text(package_payload.get("package_path", ""))
     if not package_path_text:
@@ -2695,24 +3005,47 @@ def run_finished_episode_master_runner(
     target_master_outputs = package_payload.get("target_master_outputs", {}) if isinstance(package_payload.get("target_master_outputs", {}), dict) else {}
     if force:
         remove_stale_generated_output(target_master_outputs.get("final_master_episode", ""))
-    result = run_external_backend_runner(
-        cfg,
-        "finished_episode_master_runner",
-        context={
-            "episode_id": clean_text(package_payload.get("episode_id", "")),
-            "package_path": package_path,
-            "package_root": package_root,
-            "prompt_preview_path": prompt_preview_path or "",
-            "final_master_episode": clean_text(target_master_outputs.get("final_master_episode", "")),
-            "video_root": clean_text(target_master_outputs.get("video_root", "")),
-            "audio_root": clean_text(target_master_outputs.get("audio_root", "")),
-            "lipsync_root": clean_text(target_master_outputs.get("lipsync_root", "")),
-            "scene_master_root": clean_text(target_master_outputs.get("scene_master_root", "")),
-        },
-        force=force,
-        fallback_cwd=package_root,
-        log_dir=resolve_project_path("logs") / "external_backends" / "finished_episode_master_runner" / clean_text(package_payload.get("episode_id", "")),
+    master_target_text = clean_text(target_master_outputs.get("final_master_episode", ""))
+    master_target = resolve_stored_project_path(master_target_text) if master_target_text else None
+    progress_targets = [{"label": "final_master_episode", "path": master_target}] if master_target is not None else []
+    progress_monitor = (
+        BackendLiveProgressMonitor(
+            reporter=reporter,
+            runner_name="finished_episode_master_runner",
+            scene_id=clean_text(package_payload.get("episode_id", "")) or "episode",
+            targets=progress_targets,
+            overall_base=overall_base,
+            overall_span=overall_span,
+            completed_units_before=0,
+            total_units=1,
+        )
+        if reporter is not None
+        else None
     )
+    if progress_monitor is not None:
+        progress_monitor.start()
+    try:
+        result = run_external_backend_runner(
+            cfg,
+            "finished_episode_master_runner",
+            context={
+                "episode_id": clean_text(package_payload.get("episode_id", "")),
+                "package_path": package_path,
+                "package_root": package_root,
+                "prompt_preview_path": prompt_preview_path or "",
+                "final_master_episode": master_target_text,
+                "video_root": clean_text(target_master_outputs.get("video_root", "")),
+                "audio_root": clean_text(target_master_outputs.get("audio_root", "")),
+                "lipsync_root": clean_text(target_master_outputs.get("lipsync_root", "")),
+                "scene_master_root": clean_text(target_master_outputs.get("scene_master_root", "")),
+            },
+            force=force,
+            fallback_cwd=package_root,
+            log_dir=resolve_project_path("logs") / "external_backends" / "finished_episode_master_runner" / clean_text(package_payload.get("episode_id", "")),
+        )
+    finally:
+        if progress_monitor is not None:
+            progress_monitor.stop()
     summary_path = package_path.parent / f"{package_path.stem}_master_runner.json"
     manifest_root = package_root / "manifests" / "master"
     manifest_root.mkdir(parents=True, exist_ok=True)
@@ -4211,6 +4544,9 @@ def main() -> None:
             production_package_path_resolved,
             prompt_preview_path_resolved,
             force=args.force,
+            reporter=reporter,
+            overall_base=len(scenes) + 2,
+            overall_span=0.85,
         )
         production_package_payload = refresh_episode_production_package(
             production_package_path_resolved,
@@ -4270,6 +4606,9 @@ def main() -> None:
             cfg,
             production_package_payload,
             force=args.force,
+            reporter=reporter,
+            overall_base=len(scenes) + 2.85,
+            overall_span=0.15,
         )
         master_runner_ready = (
             str(master_runner_result.get("status", "")).strip() in {"completed", "existing_outputs"}

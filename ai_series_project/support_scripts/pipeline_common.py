@@ -3119,6 +3119,7 @@ class LiveProgressReporter:
         self.last_print_at = 0.0
         self.last_rendered_lines = 0
         self.inline_enabled = os.environ.get("SERIES_DISABLE_INLINE_PROGRESS", "").strip().lower() not in {"1", "true", "yes"}
+        self._render_lock = threading.Lock()
 
     def _render_lines(
         self,
@@ -3131,9 +3132,14 @@ class LiveProgressReporter:
         scope_total: float | int | None = None,
         scope_started_at: float | None = None,
         scope_label: str = "",
+        scope_eta_seconds: float | int | None = None,
+        overall_eta_seconds: float | int | None = None,
     ) -> list[str]:
         current_value = max(0.0, min(float(current or 0.0), float(self.total)))
         overall_remaining_seconds, overall_eta_timestamp = _progress_eta(self.started_at, current_value, float(self.total))
+        if overall_eta_seconds is not None:
+            overall_remaining_seconds = max(0.0, float(overall_eta_seconds or 0.0))
+            overall_eta_timestamp = time.time() + overall_remaining_seconds
         percent = int((100 * current_value) / float(self.total))
         active_parent = coalesce_text(parent_label) if parent_label is not None else self.parent_label
         width = 116
@@ -3157,6 +3163,9 @@ class LiveProgressReporter:
             scope_current_value = max(0.0, min(float(scope_current or 0.0), scope_total_value))
             scope_percent = int((100 * scope_current_value) / scope_total_value)
             scope_remaining_seconds, scope_eta_timestamp = _progress_eta(scope_started_at or self.started_at, scope_current_value, scope_total_value)
+            if scope_eta_seconds is not None:
+                scope_remaining_seconds = max(0.0, float(scope_eta_seconds or 0.0))
+                scope_eta_timestamp = time.time() + scope_remaining_seconds
             active_scope_label = coalesce_text(scope_label) or "Current"
             lines.append(
                 line(
@@ -3234,24 +3243,29 @@ class LiveProgressReporter:
         scope_total: float | int | None = None,
         scope_started_at: float | None = None,
         scope_label: str = "",
+        scope_eta_seconds: float | int | None = None,
+        overall_eta_seconds: float | int | None = None,
     ) -> None:
-        now = time.time()
-        if not force and current < self.total and self.last_print_at and (now - self.last_print_at) < 0.15:
-            return
-        self.last_print_at = now
-        self._emit(
-            self._render_lines(
-                current,
-                current_label=current_label,
-                parent_label=parent_label,
-                extra_label=extra_label,
-                scope_current=scope_current,
-                scope_total=scope_total,
-                scope_started_at=scope_started_at,
-                scope_label=scope_label,
-            ),
-            final=False,
-        )
+        with self._render_lock:
+            now = time.time()
+            if not force and current < self.total and self.last_print_at and (now - self.last_print_at) < 0.15:
+                return
+            self.last_print_at = now
+            self._emit(
+                self._render_lines(
+                    current,
+                    current_label=current_label,
+                    parent_label=parent_label,
+                    extra_label=extra_label,
+                    scope_current=scope_current,
+                    scope_total=scope_total,
+                    scope_started_at=scope_started_at,
+                    scope_label=scope_label,
+                    scope_eta_seconds=scope_eta_seconds,
+                    overall_eta_seconds=overall_eta_seconds,
+                ),
+                final=False,
+            )
 
     def finish(
         self,
@@ -3263,21 +3277,26 @@ class LiveProgressReporter:
         scope_total: float | int | None = None,
         scope_started_at: float | None = None,
         scope_label: str = "",
+        scope_eta_seconds: float | int | None = None,
+        overall_eta_seconds: float | int | None = None,
     ) -> None:
-        self.last_print_at = time.time()
-        self._emit(
-            self._render_lines(
-                self.total,
-                current_label=current_label,
-                parent_label=parent_label,
-                extra_label=extra_label,
-                scope_current=scope_current,
-                scope_total=scope_total,
-                scope_started_at=scope_started_at,
-                scope_label=scope_label,
-            ),
-            final=True,
-        )
+        with self._render_lock:
+            self.last_print_at = time.time()
+            self._emit(
+                self._render_lines(
+                    self.total,
+                    current_label=current_label,
+                    parent_label=parent_label,
+                    extra_label=extra_label,
+                    scope_current=scope_current,
+                    scope_total=scope_total,
+                    scope_started_at=scope_started_at,
+                    scope_label=scope_label,
+                    scope_eta_seconds=scope_eta_seconds,
+                    overall_eta_seconds=overall_eta_seconds,
+                ),
+                final=True,
+            )
 
 
 def registry_path() -> Path:
