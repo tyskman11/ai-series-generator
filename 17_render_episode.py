@@ -4299,7 +4299,6 @@ def generate_season_intro_video(
     completed_runner_units: dict[str, int] = {}
     runner_results: dict[str, dict] = {}
     backend_manifests: dict[str, str] = {}
-    intro_cfg = cfg.get("season_intro", {}) if isinstance(cfg.get("season_intro", {}), dict) else {}
     for runner_name, section_name, expected_path in runner_specs:
         info(f"Generating missing {season_id} intro via {runner_name} ...")
         targets = runner_targets.get(runner_name, [])
@@ -4315,21 +4314,9 @@ def generate_season_intro_video(
             if isinstance(external_cfg.get(runner_name, {}), dict)
             else {}
         )
-        timeout_key = (
-            "image_timeout_seconds"
-            if runner_name == "finished_episode_image_runner"
-            else "video_timeout_seconds"
-        )
-        default_timeout = 43200 if runner_name == "finished_episode_image_runner" else 86400
-        runner_settings["timeout_seconds"] = max(
-            0,
-            int(
-                safe_float(
-                    profile.get(timeout_key, intro_cfg.get(timeout_key, default_timeout)),
-                    float(default_timeout),
-                )
-            ),
-        )
+        # Intro generation can be extremely slow on CPU. A zero timeout means
+        # subprocess.run waits until completion or an explicit user/backend abort.
+        runner_settings["timeout_seconds"] = 0
         environment = (
             runner_settings.setdefault("environment", {})
             if isinstance(runner_settings.get("environment", {}), dict)

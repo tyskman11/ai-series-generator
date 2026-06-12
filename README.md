@@ -403,7 +403,7 @@ The generated shot plan uses a world-establishing shot, a canonical cast shot wh
 
 During the first automatic generation, step 17 keeps its normal terminal live dashboard active. It shows the current intro shot, image/video backend phase, completed and remaining shot outputs, elapsed time, per-unit estimate, current ETA, and overall ETA. Intro normalization is shown as a separate encode phase, so a long CPU or NAS render no longer appears frozen.
 
-Automatic intro generation is resumable. A completed shot is reused only when both its media file and backend manifest are present; an interrupted run continues with the first incomplete shot instead of deleting hours of valid work. Intro image and video runners have separate defaults of 12 and 24 hours because CPU generation can be substantially slower than CUDA generation.
+Automatic intro generation is resumable. A completed shot is reused only when both its media file and backend manifest are present; an interrupted run continues with the first incomplete shot instead of deleting hours of valid work. Intro image and video runners have no time limit because CPU generation can be substantially slower than CUDA generation. They stop only after completion, an explicit user interruption, or a real backend/process failure.
 
 To add another season, set `generation.default_season_id` and add a matching `season_intro.profiles.<season_id>` entry. Set `start_seconds` and `duration_seconds` when the configured source video contains more than the intro. For generation, use `title`, `prompt`, and `generated_duration_seconds` to control the season identity. Only use source and identity material for which you have the necessary rights.
 
@@ -472,7 +472,6 @@ Important areas:
 - `season_intro.generated_duration_seconds`: default generated intro duration; profiles can override it
 - `season_intro.max_generated_intro_characters`: maximum reviewed, identity-conditioned cast members in the generated cast shot
 - `season_intro.generated_prompt`: optional global visual direction for generated intros
-- `season_intro.image_timeout_seconds` and `season_intro.video_timeout_seconds`: dedicated intro runner limits, defaulting to 43,200 and 86,400 seconds
 - `season_intro.lock_after_first_use`: protects the canonical normalized intro with a stored SHA-256 hash
 - `season_intro.profiles.<season_id>.source_video`, `start_seconds`, and `duration_seconds`: select an approved intro source and optional extraction range
 - `season_intro.profiles.<season_id>.title`, `prompt`, and `generated_duration_seconds`: customize automatic generation for one season

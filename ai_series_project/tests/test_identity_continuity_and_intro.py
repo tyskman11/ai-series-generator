@@ -320,8 +320,8 @@ class IdentityContinuityAndIntroTests(unittest.TestCase):
         )
         image_runner = runner_configs["finished_episode_image_runner"]["external_backends"]["finished_episode_image_runner"]
         video_runner = runner_configs["finished_episode_video_runner"]["external_backends"]["finished_episode_video_runner"]
-        self.assertEqual(image_runner["timeout_seconds"], 43200)
-        self.assertEqual(video_runner["timeout_seconds"], 86400)
+        self.assertEqual(image_runner["timeout_seconds"], 0)
+        self.assertEqual(video_runner["timeout_seconds"], 0)
         self.assertEqual(image_runner["environment"]["SERIES_IMAGE_RESUME_SHOTS"], "1")
         self.assertEqual(video_runner["environment"]["SERIES_VIDEO_RESUME_SHOTS"], "1")
 
