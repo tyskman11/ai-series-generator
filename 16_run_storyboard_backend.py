@@ -272,6 +272,110 @@ def stale_storyboard_language_inputs(backend_inputs: list[Path], cfg: dict | Non
     return stale
 
 
+def hydrate_backend_identity_slots(
+    payload: dict,
+    reference_library: dict,
+) -> tuple[dict, bool, list[str]]:
+    characters = [
+        str(name or "").strip()
+        for name in payload.get("characters", [])
+        if str(name or "").strip()
+    ] if isinstance(payload.get("characters", []), list) else []
+    slots = payload.get("reference_slots", []) if isinstance(payload.get("reference_slots", []), list) else []
+    character_slots = {
+        str(slot.get("name", "") or "").strip().lower(): dict(slot)
+        for slot in slots
+        if isinstance(slot, dict)
+        and str(slot.get("type", "") or "").strip() == "character"
+        and str(slot.get("name", "") or "").strip()
+    }
+    library_by_name = {
+        str(name or "").strip().lower(): dict(row)
+        for name, row in reference_library.items()
+        if str(name or "").strip() and isinstance(row, dict)
+    } if isinstance(reference_library, dict) else {}
+    hydrated_slots: list[dict] = []
+    missing: list[str] = []
+    changed = False
+
+    for index, character in enumerate(characters, start=1):
+        key = character.lower()
+        slot = character_slots.get(key, {})
+        reference_row = library_by_name.get(key, {})
+        hydrated = dict(slot)
+        hydrated.update(
+            {
+                "slot": str(slot.get("slot", "") or "").strip() or f"subject_{index}",
+                "type": "character",
+                "name": character,
+                "context_images": list(slot.get("context_images", []) or reference_row.get("context_images", []) or [])[:2],
+                "portrait_images": list(slot.get("portrait_images", []) or reference_row.get("portrait_images", []) or [])[:2],
+                "identity_primary_cluster": str(
+                    slot.get("identity_primary_cluster", "")
+                    or reference_row.get("identity_primary_cluster", "")
+                    or ""
+                ).strip(),
+                "identity_cluster_ids": list(
+                    slot.get("identity_cluster_ids", [])
+                    or reference_row.get("identity_cluster_ids", [])
+                    or []
+                )[:12],
+                "gender_presentation": str(
+                    slot.get("gender_presentation", "")
+                    or reference_row.get("gender_presentation", "")
+                    or ""
+                ).strip(),
+                "age_group": str(
+                    slot.get("age_group", "")
+                    or reference_row.get("age_group", "")
+                    or ""
+                ).strip(),
+                "priority": bool(slot.get("priority", False) or reference_row.get("priority", False)),
+            }
+        )
+        if not hydrated["context_images"] and not hydrated["portrait_images"]:
+            missing.append(character)
+        if hydrated != slot:
+            changed = True
+        hydrated_slots.append(hydrated)
+
+    non_character_slots = [
+        dict(slot)
+        for slot in slots
+        if isinstance(slot, dict) and str(slot.get("type", "") or "").strip() != "character"
+    ]
+    normalized_slots = [*hydrated_slots, *non_character_slots]
+    if normalized_slots != slots:
+        payload["reference_slots"] = normalized_slots
+        changed = True
+    quality_targets = payload.get("quality_targets", {}) if isinstance(payload.get("quality_targets", {}), dict) else {}
+    required_slot_count = max(1, len(characters))
+    if int(quality_targets.get("minimum_reference_slots", 0) or 0) < required_slot_count:
+        quality_targets["minimum_reference_slots"] = required_slot_count
+        payload["quality_targets"] = quality_targets
+        changed = True
+    return payload, changed, missing
+
+
+def repair_backend_identity_inputs(backend_inputs: list[Path], cfg: dict) -> tuple[int, list[str]]:
+    paths_cfg = cfg.get("paths", {}) if isinstance(cfg.get("paths", {}), dict) else {}
+    model_path = resolve_project_path(paths_cfg.get("series_model", "generation/model/series_model.json"))
+    library_path = model_path.parent / "character_reference_library.json"
+    reference_library = read_json(library_path, {}) if library_path.exists() else {}
+    repaired_count = 0
+    unresolved: list[str] = []
+    for backend_input in backend_inputs:
+        payload = read_json(backend_input, {})
+        payload, changed, missing = hydrate_backend_identity_slots(payload, reference_library)
+        if changed:
+            write_json(backend_input, payload)
+            repaired_count += 1
+        for character in missing:
+            if character not in unresolved:
+                unresolved.append(character)
+    return repaired_count, unresolved
+
+
 def allow_local_frame_fallback(cfg: dict | None) -> bool:
     settings = storyboard_backend_settings(cfg)
     return bool(settings.get("allow_local_frame_fallback", False))
@@ -702,7 +806,8 @@ def materialize_scene_backend_frame(
             f"External runner status: {runner_status}.{runner_detail}{log_detail} "
             "Local seed-frame/color-grade fallback is disabled, "
             "so the pipeline will not fake generated frames. Configure external_backends.storyboard_scene_runner "
-            "and rerun 16_run_storyboard_backend.py --force."
+            "and rerun 16_run_storyboard_backend.py without --force to resume completed scenes. "
+            "Use --force only when completed generated scenes must also be rebuilt."
         )
 
     source_path = first_existing_path(candidate_image_paths(assets_root, scene_id, payload))
@@ -819,6 +924,17 @@ def main() -> None:
     if not backend_inputs:
         info("No storyboard backend input payloads found. Run 15_generate_storyboard_assets.py first.")
         return
+    repaired_identity_inputs, unresolved_identity_characters = repair_backend_identity_inputs(backend_inputs, cfg)
+    if repaired_identity_inputs:
+        info(
+            f"Repaired canonical identity slots in {repaired_identity_inputs} existing storyboard input file(s)."
+        )
+    if unresolved_identity_characters:
+        warn(
+            "Canonical identity references are still missing for: "
+            f"{', '.join(unresolved_identity_characters)}. These scenes remain blocked until the characters "
+            "have reviewed face references."
+        )
 
     total_backend_inputs = len(backend_inputs)
     requested_scene_ids = set(args.scene_ids) if args.scene_ids else None

@@ -1083,6 +1083,85 @@ class ManualNamingTests(unittest.TestCase):
             self.assertEqual(second_plan["continuity"]["previous_scene_id"], package["scenes"][0]["scene_id"])
         self.assertIn("Shot Plan:", markdown)
 
+    def test_scene_generation_plan_includes_identity_slot_for_every_visible_character(self) -> None:
+        characters = ["Babe", "Kenzie", "Hudson"]
+        model = {
+            "character_reference_library": {
+                name: {
+                    "context_images": [f"characters/{name.lower()}_context.jpg"],
+                    "portrait_images": [f"characters/{name.lower()}_portrait.jpg"],
+                    "identity_primary_cluster": f"face_{index:03d}",
+                }
+                for index, name in enumerate(characters, start=1)
+            },
+            "scene_library": [],
+        }
+
+        plan = STEP07.build_scene_generation_plan(
+            "scene_0001",
+            0,
+            "Cold Open",
+            "plan",
+            characters,
+            "Three-character scene",
+            model,
+            set(),
+            "",
+        )
+
+        character_slots = [
+            slot for slot in plan["reference_slots"] if slot.get("type") == "character"
+        ]
+        self.assertEqual([slot["name"] for slot in character_slots], characters)
+        self.assertIn("Babe, Kenzie, Hudson", plan["positive_prompt"])
+        self.assertEqual(plan["quality_targets"]["minimum_reference_slots"], 3)
+
+    def test_storyboard_backend_repairs_missing_character_identity_slot(self) -> None:
+        payload = {
+            "characters": ["Kenzie Bell", "Hudson Gimble", "Babe Carano"],
+            "reference_slots": [
+                {
+                    "slot": "subject_1",
+                    "type": "character",
+                    "name": "Kenzie Bell",
+                    "portrait_images": ["characters/kenzie.jpg"],
+                },
+                {
+                    "slot": "scene_reference",
+                    "type": "environment",
+                    "scene_id": "scene_0100",
+                },
+            ],
+            "quality_targets": {"minimum_reference_slots": 2},
+        }
+        library = {
+            "Hudson Gimble": {
+                "portrait_images": ["characters/hudson.jpg"],
+                "identity_primary_cluster": "face_hudson",
+            },
+            "Babe Carano": {
+                "portrait_images": ["characters/babe.jpg"],
+                "identity_primary_cluster": "face_babe",
+            },
+        }
+
+        repaired, changed, missing = STEP16BACKEND.hydrate_backend_identity_slots(
+            payload,
+            library,
+        )
+
+        character_slots = [
+            slot for slot in repaired["reference_slots"] if slot.get("type") == "character"
+        ]
+        self.assertTrue(changed)
+        self.assertEqual(missing, [])
+        self.assertEqual(
+            [slot["name"] for slot in character_slots],
+            ["Kenzie Bell", "Hudson Gimble", "Babe Carano"],
+        )
+        self.assertEqual(character_slots[2]["portrait_images"], ["characters/babe.jpg"])
+        self.assertEqual(repaired["quality_targets"]["minimum_reference_slots"], 3)
+
     def test_episode_generation_uses_manual_character_groups_and_relationships(self) -> None:
         model = {
             "characters": [

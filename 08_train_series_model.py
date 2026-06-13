@@ -2566,7 +2566,7 @@ def build_scene_generation_plan(
     camera_plan["movement"] = camera_plan.get("camera_move", "")
     camera_plan["lens"] = camera_plan.get("lens_hint", "")
     reference_slots: list[dict] = []
-    for slot_index, character in enumerate(scene_characters[:2], start=1):
+    for slot_index, character in enumerate(scene_characters, start=1):
         reference_row = reference_library.get(character, {}) if isinstance(reference_library, dict) else {}
         reference_slots.append(
             {
@@ -2623,7 +2623,7 @@ def build_scene_generation_plan(
         f"{style_descriptor}, match original episode lighting, lensing, set design and color palette, "
         f"{camera_plan['shot_type']}, {camera_plan['composition']}, "
         f"{camera_plan['camera_move']}, {camera_plan['lens_hint']}, "
-        f"characters {', '.join(scene_characters[:2])}, keyword {keyword}, beat {beat}, "
+        f"characters {', '.join(scene_characters)}, keyword {keyword}, beat {beat}, "
         f"{camera_plan['pose_hint']}, keep identity, wardrobe and environment continuity, "
         f"dialogue language {prompt_language}, 16:9 frame, clean readable TV staging"
     )
@@ -2662,7 +2662,7 @@ def build_scene_generation_plan(
     if style_negative:
         negative_prompt += f", avoid {style_negative}"
     batch_prompt_line = (
-        f"{beat} | {', '.join(scene_characters[:2])} | {keyword} | {camera_plan['shot_type']} | "
+        f"{beat} | {', '.join(scene_characters)} | {keyword} | {camera_plan['shot_type']} | "
         f"{camera_plan['composition']} | match original episode style | continuity from {previous_scene_id or 'none'}"
     )
     if style_guidance.get("camera"):

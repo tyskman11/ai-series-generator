@@ -687,6 +687,7 @@ python -m py_compile 00_prepare_runtime.py 03_diarize_and_transcribe.py 04_link_
 - local SDXL and LTX runners now execute shot packages, write shot manifests, and let scene video be assembled from generated shot clips instead of relying only on scene-level placeholders
 - reviewed face previews now feed a portable canonical reference library, local SDXL uses project-downloaded IP-Adapter identity conditioning, and the quality gate blocks missing or partial named-character conditioning
 - SDXL now loads the IP-Adapter before applying memory optimizations; compatible VAE slicing/tiling remains enabled while incompatible attention-processor replacement is avoided, fixing CPU/Linux failures with current Diffusers releases
+- scene generation now creates a canonical identity slot for every visible named character instead of silently limiting conditioning to two people; step `16` also repairs older storyboard inputs from `character_reference_library.json` before dispatching a backend
 - fixed per-season intros are normalized once, hash-locked, prepended to video and audio mastering, included in exports, and required by the Finished Episode Gate
 - render live progress once again derives ETA from completed backend output timestamps, while first-output estimates remain visible during long CPU generations
 - the master runner now prefers complete EDL shot coverage, builds dialogue/final-mix stems, writes audio-mix metrics, and adds the final audio mix to the master export path when available
