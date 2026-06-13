@@ -4350,6 +4350,41 @@ class ManualNamingTests(unittest.TestCase):
 
         self.assertEqual(labels, ["07_build_dataset.py", "10_train_foundation_models.py"])
 
+    def test_stale_series_model_invalidates_training_and_downstream_resume_steps(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            model_path = Path(tmpdir) / "series_model.json"
+            model_path.write_text('{"schema_version": 1}', encoding="utf-8")
+            state = STEP23.default_state()
+            state["global_steps_completed"] = [
+                "07_build_dataset.py",
+                "08_train_series_model.py",
+                "08b_analyze_behavior_model.py",
+                "14_generate_episode.py",
+                "17_render_episode.py",
+            ]
+            state["latest_generated_episode"] = {"episode_id": "folge_02"}
+            state["global_step_outputs"] = {
+                "14_generate_episode.py": {"episode_id": "folge_02"},
+                "17_render_episode.py": {"episode_id": "folge_02"},
+            }
+            step_rows = [
+                ("07_build_dataset.py", "Dataset", []),
+                ("08_train_series_model.py", "Model", []),
+                ("08b_analyze_behavior_model.py", "Behavior", []),
+                ("14_generate_episode.py", "Generate", []),
+                ("17_render_episode.py", "Render", []),
+            ]
+            cfg = {"paths": {"series_model": "generation/model/series_model.json"}}
+
+            with mock.patch.object(STEP23, "resolve_project_path", return_value=model_path):
+                completed, reason = STEP23.invalidate_stale_global_steps(cfg, state, step_rows)
+
+        self.assertIn("schema is 1", reason)
+        self.assertEqual(completed, {"07_build_dataset.py"})
+        self.assertEqual(state["global_steps_completed"], ["07_build_dataset.py"])
+        self.assertEqual(state["global_step_outputs"], {})
+        self.assertEqual(state["latest_generated_episode"], {})
+
     def test_record_global_generated_episode_outputs_tracks_latest_finished_episode(self) -> None:
         state = STEP23.default_state()
         outputs = {

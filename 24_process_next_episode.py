@@ -53,6 +53,7 @@ from support_scripts.generation_toolkit import run_generation_toolkit_phase
 AUTOSAVE_VERSION = 1
 AUTOSAVE_KEEP_COUNT = 2
 DEFAULT_SOURCE_EPISODE_LIMIT = 0
+SERIES_MODEL_SCHEMA_VERSION = 2
 SETUP_STEP = "00_prepare_runtime.py"
 EPISODE_STEPS = [
     "01_import_episode.py",
@@ -806,6 +807,52 @@ def completed_global_step_labels(planned_steps: list[dict[str, object]], complet
     return labels
 
 
+def invalidate_stale_global_steps(
+    cfg: dict,
+    state: dict,
+    step_rows: list[tuple[str, str, list[str]]],
+) -> tuple[set[str], str]:
+    completed = set(state.get("global_steps_completed", []) or [])
+    if "08_train_series_model.py" not in completed:
+        return completed, ""
+
+    model_path = resolve_project_path(cfg["paths"]["series_model"])
+    model = read_json(model_path, {}) if model_path.exists() else {}
+    reason = ""
+    if not model_path.exists():
+        reason = "the trained series model is missing"
+    elif int(model.get("schema_version", 0) or 0) < SERIES_MODEL_SCHEMA_VERSION:
+        reason = (
+            f"the series model schema is {int(model.get('schema_version', 0) or 0)} "
+            f"but schema {SERIES_MODEL_SCHEMA_VERSION} is required"
+        )
+    else:
+        training_script = WORKSPACE_ROOT / "08_train_series_model.py"
+        try:
+            if training_script.stat().st_mtime > model_path.stat().st_mtime:
+                reason = "08_train_series_model.py is newer than the trained series model"
+        except OSError:
+            pass
+
+    if not reason:
+        return completed, ""
+
+    planned_names = [row[0] for row in step_rows]
+    restart_index = planned_names.index("08_train_series_model.py")
+    invalidated = set(planned_names[restart_index:])
+    completed.difference_update(invalidated)
+    state["global_steps_completed"] = [
+        name for name in state.get("global_steps_completed", []) or [] if name not in invalidated
+    ]
+    outputs = state.get("global_step_outputs", {})
+    if isinstance(outputs, dict):
+        state["global_step_outputs"] = {
+            name: payload for name, payload in outputs.items() if name not in invalidated
+        }
+    state["latest_generated_episode"] = {}
+    return completed, reason
+
+
 def global_step_title(script_name: str) -> str:
     titles = {
         "06_manage_character_relationships.py": "Manage Character Groups And Relationships",
@@ -1038,7 +1085,12 @@ def main() -> None:
         step_rows = global_step_rows(cfg, skip_downloads=bool(args.skip_downloads))
         state["global_planned_steps"] = serialize_global_step_rows(step_rows)
         steps_to_run = [row[0] for row in step_rows]
-        completed_global_steps = set(state.get("global_steps_completed", []) or [])
+        completed_global_steps, stale_global_reason = invalidate_stale_global_steps(cfg, state, step_rows)
+        if stale_global_reason:
+            warn(
+                "Global pipeline resume invalidated from 08_train_series_model.py onward because "
+                f"{stale_global_reason}. Training, generation, storyboard, and render will be rebuilt."
+            )
         state["global_completed_step_labels"] = completed_global_step_labels(state["global_planned_steps"], completed_global_steps)
         save_autosave(cfg, state, "global_phase_started", inbox_dir)
         global_reporter = LiveProgressReporter(

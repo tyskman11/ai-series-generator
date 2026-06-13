@@ -327,7 +327,7 @@ The project is configured for quality-first finished-episode generation:
 - the old `project_local_*` still-frame/mux scripts are treated as diagnostics and are rejected by the quality-first guard
 - the XTTS voice runner now clones from character reference audio and does not use system TTS in quality-first mode
 - `cloning.force_voice_cloning` is enabled by default, so quality-first dialogue lines must be synthesized as cloned speech instead of copied from original episode audio
-- XTTS still needs `xtts_license_accepted = true` in the local `configs/project.json` and usable character reference audio
+- XTTS still needs explicit local license acceptance and usable character reference audio. After reviewing the applicable XTTS/Coqui model license, record acceptance with `python 00_prepare_runtime.py --accept-xtts-license`. The setting is stored only in the ignored local `configs/project.json`.
 - voice references are accepted only when they pass the speech/content gate; `[music]`, applause/laughter, silence, ambience, low-confidence noise, and explicitly ineligible rows are excluded from speaker clustering, voice maps, foundation voice packs, render reference segments, and the project-local XTTS reference list
 - render-time dialogue planning now falls back directly to `characters/voice_models/<character>_voice_model.json` when `voice_map` is stale or missing a named speaker entry
 - delegated quality-backend runners now resolve project-local backend scripts from the project root even when scene packages run from nested working directories
@@ -495,6 +495,7 @@ Important areas:
 - `foundation_training.*`, `adapter_training.*`, `fine_tune_training.*`, `backend_fine_tune.*`
 - `external_backends.*`: runner templates and project-local backend commands
 - `external_backends.*.environment`: set real generation commands for storyboard/image/video/lip-sync; fallback scripts such as `project_local_video_backend.py` are blocked by default in quality-first mode
+- `external_backends.*.timeout_seconds`: configured quality backends use `0`, meaning no generation time limit; interrupted image/video shot batches resume completed shots through `SERIES_IMAGE_RESUME_SHOTS=1` and `SERIES_VIDEO_RESUME_SHOTS=1`
 - `release_mode.*`: quality gate thresholds and retry behavior, including `retry_until_pass`, `max_auto_retry_cycles`, and full-rerender retries when no weak-scene queue remains
 - `release_mode.max_regeneration_cost_per_cycle`: per-cycle weak-scene regeneration cost budget; low-cost and blocked diagnostics remain visible while expensive work can be deferred
 - `quality_backend_assets.*`: project-local backend tool/model targets
@@ -685,7 +686,9 @@ python -m py_compile 00_prepare_runtime.py 03_diarize_and_transcribe.py 04_link_
 - Finished Episode Mode now adds episode blueprints, set bible, character continuity locks, multi-shot plans, EDL, audio mix planning, backend manifests, Finished Episode Gate, Realism Reports, export-type separation, and blocked-scope retry handling
 - local SDXL and LTX runners now execute shot packages, write shot manifests, and let scene video be assembled from generated shot clips instead of relying only on scene-level placeholders
 - reviewed face previews now feed a portable canonical reference library, local SDXL uses project-downloaded IP-Adapter identity conditioning, and the quality gate blocks missing or partial named-character conditioning
+- SDXL now loads the IP-Adapter before applying memory optimizations; compatible VAE slicing/tiling remains enabled while incompatible attention-processor replacement is avoided, fixing CPU/Linux failures with current Diffusers releases
 - fixed per-season intros are normalized once, hash-locked, prepended to video and audio mastering, included in exports, and required by the Finished Episode Gate
+- render live progress once again derives ETA from completed backend output timestamps, while first-output estimates remain visible during long CPU generations
 - the master runner now prefers complete EDL shot coverage, builds dialogue/final-mix stems, writes audio-mix metrics, and adds the final audio mix to the master export path when available
 - the voice runner now writes line-delivery/reference diagnostics and respects line pauses; the Wav2Lip runner can write measured sync metric payloads for the quality gate
 - reference-quality dashboards, backend-readiness reports, worker-capability snapshots, capability-ranked task scheduling, and `05_review_unknowns.py --reference-audit` are available before long training/render runs

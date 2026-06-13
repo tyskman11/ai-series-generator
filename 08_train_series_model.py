@@ -58,6 +58,7 @@ from support_scripts.pipeline_common import (
 )
 
 GENERIC_FOCUS_CHARACTERS = ["Hauptfigur A", "Hauptfigur B", "Hauptfigur C"]
+SERIES_MODEL_SCHEMA_VERSION = 2
 TITLE_PREFIXES = [
     "Das",
     "Der",
@@ -965,6 +966,7 @@ def build_series_model(dataset_files: list, cfg: dict, char_map: dict) -> dict:
 
     configured_language = configured_series_language(cfg)
     return {
+        "schema_version": SERIES_MODEL_SCHEMA_VERSION,
         "trained_at": time.strftime("%Y-%m-%d %H:%M:%S"),
         "dataset_files": [str(path) for path in dataset_files],
         "scene_count": len(scene_library),

@@ -9,7 +9,9 @@ if str(PROJECT_DIR) not in sys.path:
     sys.path.insert(0, str(PROJECT_DIR))
 
 import importlib.util
+import os
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -86,6 +88,29 @@ class GenerationQualityTests(unittest.TestCase):
         self.assertIn("elapsed", update.kwargs["extra_label"])
         self.assertEqual(update.kwargs["scope_eta_seconds"], 600.0)
         self.assertEqual(update.kwargs["overall_eta_seconds"], 600.0)
+
+    def test_backend_unit_estimate_uses_completed_output_timestamps(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            first_frame = root / "shot_001.png"
+            second_frame = root / "shot_002.png"
+            first_frame.write_bytes(b"generated-frame-1")
+            second_frame.write_bytes(b"generated-frame-2")
+            now = time.time()
+            os.utime(first_frame, (now - 42.0, now - 42.0))
+            os.utime(second_frame, (now - 30.0, now - 30.0))
+            targets = [
+                {"label": "shot_001", "path": first_frame},
+                {"label": "shot_002", "path": second_frame},
+            ]
+
+            estimate = STEP15.estimate_backend_unit_seconds(
+                targets,
+                started_at=now - 60.0,
+                initial_completed=2,
+            )
+
+        self.assertEqual(estimate, 12.0)
 
     def test_live_progress_reporter_accepts_explicit_eta_overrides(self) -> None:
         reporter = pipeline_common.LiveProgressReporter(

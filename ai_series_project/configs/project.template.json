@@ -534,7 +534,7 @@
         "SERIES_STORYBOARD_BACKEND_COMMAND"
       ],
       "shell": false,
-      "timeout_seconds": 21600,
+      "timeout_seconds": 0,
       "skip_if_outputs_exist": true,
       "success_mode": "any",
       "success_outputs": [
@@ -560,7 +560,8 @@
         "SERIES_IMAGE_BACKEND_COMMAND": "\"{python}\" \"tools/quality_backends/local_diffusion_image_backend.py\"",
         "SERIES_IMAGE_ALLOW_CPU": "1",
         "SERIES_IMAGE_REQUIRE_IDENTITY_REFERENCES": "1",
-        "SERIES_IMAGE_REQUIRE_IDENTITY_ADAPTER": "1"
+        "SERIES_IMAGE_REQUIRE_IDENTITY_ADAPTER": "1",
+        "SERIES_IMAGE_RESUME_SHOTS": "1"
       },
       "requires_gpu": false,
       "prefer_gpu": true,
@@ -573,7 +574,7 @@
         "SERIES_IMAGE_BACKEND_COMMAND"
       ],
       "shell": false,
-      "timeout_seconds": 21600,
+      "timeout_seconds": 0,
       "skip_if_outputs_exist": true,
       "success_mode": "any",
       "success_outputs": [
@@ -598,7 +599,8 @@
       ],
       "working_directory": ".",
       "environment": {
-        "SERIES_VIDEO_BACKEND_COMMAND": "\"{python}\" \"tools/quality_backends/local_ltx_video_backend.py\""
+        "SERIES_VIDEO_BACKEND_COMMAND": "\"{python}\" \"tools/quality_backends/local_ltx_video_backend.py\"",
+        "SERIES_VIDEO_RESUME_SHOTS": "1"
       },
       "required_commands": [],
       "required_python_modules": [
@@ -608,7 +610,7 @@
         "SERIES_VIDEO_BACKEND_COMMAND"
       ],
       "shell": false,
-      "timeout_seconds": 7200,
+      "timeout_seconds": 0,
       "skip_if_outputs_exist": true,
       "success_mode": "any",
       "success_outputs": [
@@ -637,7 +639,7 @@
         "SERIES_VOICE_BACKEND_COMMAND"
       ],
       "shell": false,
-      "timeout_seconds": 3600,
+      "timeout_seconds": 0,
       "skip_if_outputs_exist": true,
       "success_mode": "any",
       "success_outputs": [
@@ -669,7 +671,7 @@
         "SERIES_LIPSYNC_BACKEND_COMMAND"
       ],
       "shell": false,
-      "timeout_seconds": 7200,
+      "timeout_seconds": 0,
       "skip_if_outputs_exist": true,
       "success_mode": "any",
       "success_outputs": [
@@ -691,7 +693,7 @@
       "required_commands": [],
       "required_environment_variables": [],
       "shell": false,
-      "timeout_seconds": 3600,
+      "timeout_seconds": 0,
       "skip_if_outputs_exist": true,
       "success_mode": "any",
       "success_outputs": [

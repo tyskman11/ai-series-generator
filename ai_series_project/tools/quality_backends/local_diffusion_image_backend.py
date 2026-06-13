@@ -218,6 +218,25 @@ def identity_adapter_ready(adapter_dir: Path) -> bool:
     )
 
 
+def enable_pipeline_memory_optimizations(pipeline: Any, *, identity_adapter_loaded: bool) -> None:
+    # Attention slicing replaces attention processors in some diffusers releases.
+    # Preserve the IP-Adapter processors once identity conditioning is active.
+    if not identity_adapter_loaded and hasattr(pipeline, "enable_attention_slicing"):
+        pipeline.enable_attention_slicing()
+    elif identity_adapter_loaded:
+        print("[INFO] Preserving IP-Adapter attention processors; attention slicing is disabled.", flush=True)
+
+    vae = getattr(pipeline, "vae", None)
+    if vae is not None and hasattr(vae, "enable_slicing"):
+        vae.enable_slicing()
+    elif hasattr(pipeline, "enable_vae_slicing"):
+        pipeline.enable_vae_slicing()
+    if vae is not None and hasattr(vae, "enable_tiling"):
+        vae.enable_tiling()
+    elif hasattr(pipeline, "enable_vae_tiling"):
+        pipeline.enable_vae_tiling()
+
+
 def load_pipeline(require_identity_adapter: bool) -> tuple[Any, dict[str, Any]]:
     global _PIPELINE, _PIPELINE_META
     if _PIPELINE is not None:
@@ -261,12 +280,6 @@ def load_pipeline(require_identity_adapter: bool) -> tuple[Any, dict[str, Any]]:
         torch_dtype=dtype,
         use_safetensors=True,
     )
-    if hasattr(pipeline, "enable_attention_slicing"):
-        pipeline.enable_attention_slicing()
-    if hasattr(pipeline, "enable_vae_slicing"):
-        pipeline.enable_vae_slicing()
-    if hasattr(pipeline, "enable_vae_tiling"):
-        pipeline.enable_vae_tiling()
     adapter_dir = resolve_identity_adapter_dir()
     adapter_loaded = False
     if identity_adapter_ready(adapter_dir):
@@ -296,6 +309,10 @@ def load_pipeline(require_identity_adapter: bool) -> tuple[Any, dict[str, Any]]:
             f"--skip-downloads. Expected {adapter_dir / 'sdxl_models' / IDENTITY_ADAPTER_WEIGHT} and "
             f"{adapter_dir / 'models' / 'image_encoder' / 'config.json'}."
         )
+    enable_pipeline_memory_optimizations(
+        pipeline,
+        identity_adapter_loaded=adapter_loaded,
+    )
     if cuda_ready:
         gpu_memory_gb = float(torch.cuda.get_device_properties(0).total_memory) / float(1024**3)
         if gpu_memory_gb < 10.0 and hasattr(pipeline, "enable_model_cpu_offload"):

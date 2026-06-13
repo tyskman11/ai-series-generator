@@ -19,6 +19,7 @@ import stat
 from pathlib import Path
 
 from support_scripts.pipeline_common import (
+    CONFIG_PATH,
     HOST_RUNTIME_ROOT,
     SCRIPT_DIR,
     add_shared_worker_arguments,
@@ -53,6 +54,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--skip-downloads",
         action="store_true",
         help="Skip backend/model downloads and only validate the current local setup state.",
+    )
+    parser.add_argument(
+        "--accept-xtts-license",
+        action="store_true",
+        help=(
+            "Record explicit acceptance of the XTTS/Coqui model license in the local project config. "
+            "Use only after reviewing and accepting the applicable model license."
+        ),
     )
     add_shared_worker_arguments(parser)
     parsed_args, _unknown_args = parser.parse_known_args(argv)
@@ -444,6 +453,14 @@ def main() -> None:
     args = parse_args()
     headline("Prepare Runtime")
     cfg = ensure_project_structure(write_config_file=True)
+    if args.accept_xtts_license:
+        cloning_cfg = cfg.setdefault("cloning", {})
+        if not isinstance(cloning_cfg, dict):
+            cloning_cfg = {}
+            cfg["cloning"] = cloning_cfg
+        cloning_cfg["xtts_license_accepted"] = True
+        write_json(CONFIG_PATH, cfg)
+        ok("XTTS license acceptance recorded in the local project configuration.")
     worker_id = shared_worker_id_for_args(args)
     shared_workers = shared_workers_enabled_for_args(cfg, args)
     mark_step_started("00_prepare_runtime", "global")

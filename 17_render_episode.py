@@ -2487,6 +2487,73 @@ def estimate_backend_unit_seconds(
     return max(1.0, float(median(intervals)))
 
 
+def strict_render_preflight_gaps(cfg: dict, shotlist: dict) -> list[str]:
+    if not strict_original_episode_outputs_required(cfg):
+        return []
+    gaps: list[str] = []
+    cloning_cfg = cfg.get("cloning", {}) if isinstance(cfg.get("cloning", {}), dict) else {}
+    voice_engine = clean_text(cloning_cfg.get("voice_clone_engine", "")).lower()
+    if (
+        bool(cloning_cfg.get("force_voice_cloning", True))
+        and voice_engine == "xtts"
+        and not bool(cloning_cfg.get("xtts_license_accepted", False))
+    ):
+        gaps.append(
+            "XTTS license acceptance is missing. Review the XTTS/Coqui model license, then run "
+            "00_prepare_runtime.py --accept-xtts-license."
+        )
+
+    missing_characters: list[str] = []
+    scenes = shotlist.get("scenes", []) if isinstance(shotlist.get("scenes", []), list) else []
+    for scene in scenes:
+        if not isinstance(scene, dict):
+            continue
+        locks = (
+            scene.get("character_continuity_lock", {})
+            if isinstance(scene.get("character_continuity_lock", {}), dict)
+            else {}
+        )
+        generation_plan = scene.get("generation_plan", {}) if isinstance(scene.get("generation_plan", {}), dict) else {}
+        slots = (
+            generation_plan.get("reference_slots", [])
+            if isinstance(generation_plan.get("reference_slots", []), list)
+            else []
+        )
+        slot_by_name = {
+            clean_text(slot.get("name", "")): slot
+            for slot in slots
+            if isinstance(slot, dict) and clean_text(slot.get("type", "")) == "character"
+        }
+        for character in clean_text_list(scene.get("characters", [])):
+            lock = locks.get(character, {}) if isinstance(locks.get(character, {}), dict) else {}
+            slot = slot_by_name.get(character, {}) if isinstance(slot_by_name.get(character, {}), dict) else {}
+            candidates = [
+                *clean_text_list(lock.get("reference_images", [])),
+                *clean_text_list(slot.get("portrait_images", [])),
+                *clean_text_list(slot.get("context_images", [])),
+            ]
+            if not any(render_output_ready(resolve_stored_project_path(path)) for path in candidates):
+                if character not in missing_characters:
+                    missing_characters.append(character)
+    if missing_characters:
+        gaps.append(
+            "canonical face references are missing for "
+            f"{', '.join(missing_characters)}. Rerun 24_process_next_episode.py; it will now rebuild "
+            "the stale series model and all dependent generation steps from step 08 onward."
+        )
+    return gaps
+
+
+def ensure_strict_render_preflight(cfg: dict, shotlist: dict, *, context_label: str) -> None:
+    gaps = strict_render_preflight_gaps(cfg, shotlist)
+    if not gaps:
+        return
+    raise RuntimeError(
+        f"{context_label} cannot start quality-first backend generation yet:\n"
+        + "\n".join(f"- {gap}" for gap in gaps)
+    )
+
+
 class BackendLiveProgressMonitor:
     def __init__(
         self,
@@ -4736,6 +4803,7 @@ def main() -> None:
     render_cfg = cfg.get("render", {}) if isinstance(cfg.get("render"), dict) else {}
     cloning_cfg = cfg.get("cloning", {}) if isinstance(cfg.get("cloning"), dict) else {}
     strict_outputs_required = strict_original_episode_outputs_required(cfg)
+    ensure_strict_render_preflight(cfg, shotlist, context_label=f"{episode_id} render")
     render_cfg.setdefault(
         "prefer_detected_character_language",
         bool(cloning_cfg.get("prefer_detected_character_language", True)),

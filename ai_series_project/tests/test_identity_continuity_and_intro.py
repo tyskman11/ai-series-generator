@@ -42,6 +42,112 @@ VIDEO_BACKEND = load_module(
 
 
 class IdentityContinuityAndIntroTests(unittest.TestCase):
+    def test_image_backend_preserves_identity_adapter_attention_processors(self) -> None:
+        class FakeVae:
+            def __init__(self) -> None:
+                self.slicing_enabled = False
+                self.tiling_enabled = False
+
+            def enable_slicing(self) -> None:
+                self.slicing_enabled = True
+
+            def enable_tiling(self) -> None:
+                self.tiling_enabled = True
+
+        class FakePipeline:
+            def __init__(self) -> None:
+                self.vae = FakeVae()
+                self.attention_slicing_enabled = False
+
+            def enable_attention_slicing(self) -> None:
+                self.attention_slicing_enabled = True
+
+        pipeline = FakePipeline()
+
+        IMAGE_BACKEND.enable_pipeline_memory_optimizations(
+            pipeline,
+            identity_adapter_loaded=True,
+        )
+
+        self.assertFalse(pipeline.attention_slicing_enabled)
+        self.assertTrue(pipeline.vae.slicing_enabled)
+        self.assertTrue(pipeline.vae.tiling_enabled)
+
+    def test_image_backend_uses_attention_slicing_without_identity_adapter(self) -> None:
+        pipeline = mock.Mock()
+        pipeline.vae = None
+
+        IMAGE_BACKEND.enable_pipeline_memory_optimizations(
+            pipeline,
+            identity_adapter_loaded=False,
+        )
+
+        pipeline.enable_attention_slicing.assert_called_once_with()
+        pipeline.enable_vae_slicing.assert_called_once_with()
+        pipeline.enable_vae_tiling.assert_called_once_with()
+
+    def test_strict_render_preflight_reports_xtts_license_and_missing_identity_references(self) -> None:
+        cfg = {
+            "release_mode": {"force_finished_episode_generation": True},
+            "cloning": {
+                "force_voice_cloning": True,
+                "voice_clone_engine": "xtts",
+                "xtts_license_accepted": False,
+            },
+        }
+        shotlist = {
+            "scenes": [
+                {
+                    "characters": ["Kenzie Bell"],
+                    "character_continuity_lock": {
+                        "Kenzie Bell": {"reference_images": []},
+                    },
+                    "generation_plan": {
+                        "reference_slots": [
+                            {
+                                "type": "character",
+                                "name": "Kenzie Bell",
+                                "portrait_images": [],
+                                "context_images": [],
+                            }
+                        ]
+                    },
+                }
+            ]
+        }
+
+        gaps = STEP17.strict_render_preflight_gaps(cfg, shotlist)
+
+        self.assertTrue(any("--accept-xtts-license" in gap for gap in gaps))
+        self.assertTrue(any("Kenzie Bell" in gap for gap in gaps))
+
+    def test_strict_render_preflight_accepts_existing_identity_reference(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            reference = Path(tmpdir) / "kenzie.jpg"
+            reference.write_bytes(b"reference")
+            cfg = {
+                "release_mode": {"force_finished_episode_generation": True},
+                "cloning": {
+                    "force_voice_cloning": True,
+                    "voice_clone_engine": "xtts",
+                    "xtts_license_accepted": True,
+                },
+            }
+            shotlist = {
+                "scenes": [
+                    {
+                        "characters": ["Kenzie Bell"],
+                        "character_continuity_lock": {
+                            "Kenzie Bell": {"reference_images": [str(reference)]},
+                        },
+                    }
+                ]
+            }
+
+            gaps = STEP17.strict_render_preflight_gaps(cfg, shotlist)
+
+        self.assertEqual(gaps, [])
+
     def test_primary_identity_preview_is_preferred(self) -> None:
         directories = STEP08.trusted_identity_preview_dirs(
             "face_secondary",
