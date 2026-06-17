@@ -513,6 +513,7 @@ Important areas:
 - `release_mode.*`: quality gate thresholds and retry behavior, including `retry_until_pass`, `max_auto_retry_cycles`, and full-rerender retries when no weak-scene queue remains
 - `release_mode.max_regeneration_cost_per_cycle`: per-cycle weak-scene regeneration cost budget; low-cost and blocked diagnostics remain visible while expensive work can be deferred
 - `quality_backend_assets.*`: project-local backend tool/model targets
+- `quality_backend_assets.huggingface_download_retries` and `quality_backend_assets.huggingface_download_retry_delay_seconds`: retry policy for very large Hugging Face downloads. Interrupted HTTP streams keep their `.incomplete` files so rerunning `00_prepare_runtime.py` or `59_prepare_quality_backends.py` resumes instead of starting from zero.
 
 ### Source Language Detection
 
@@ -669,6 +670,7 @@ python -m py_compile 00_prepare_runtime.py 03_diarize_and_transcribe.py 04_link_
 - CPU-only storyboard generation uses the same real local image backend and is not a fallback, but Qwen-Image/SDXL can take much longer per scene; running step `16` or `24` simultaneously on a CUDA PC lets both workers divide the remaining scene leases
 - higher-recall face scanning keeps strict face validation but can take longer and can expose more unknown clusters for manual review when crowded or low-quality source shots contain many candidate faces
 - setup intentionally avoids login-only Hugging Face models; if a configured model is gated/private, `59_prepare_quality_backends.py` stops with a clear error instead of asking for `HF_TOKEN`
+- very large public Hugging Face downloads can still be interrupted by the remote server or network; the setup retries resumable failures automatically and keeps partial `.incomplete` files for the next run
 
 ## Finished
 
@@ -704,6 +706,7 @@ python -m py_compile 00_prepare_runtime.py 03_diarize_and_transcribe.py 04_link_
 - Finished Episode Mode now adds episode blueprints, set bible, character continuity locks, multi-shot plans, EDL, audio mix planning, backend manifests, Finished Episode Gate, Realism Reports, export-type separation, and blocked-scope retry handling
 - local Qwen/SDXL and LTX runners now execute shot packages, write shot manifests, and let scene video be assembled from generated shot clips instead of relying only on scene-level placeholders
 - the local image runner now defaults to `Qwen/Qwen-Image` for general image generation, records model family/class in shot manifests, and automatically uses the project-local SDXL IP-Adapter model for identity-conditioned shots
+- Hugging Face backend downloads now retry interrupted HTTP streams with resume-friendly `.incomplete` files instead of treating a single `RemoteProtocolError` as a permanent setup failure
 - the local LTX runner now defaults to `Lightricks/LTX-Video-0.9.8-13B-distilled`, records the active model/profile in shot manifests, supports Diffusers `DiffusionPipeline` loading for the newer model format, and uses richer source-series identity/set/behavior prompts plus negative prompt support when the loaded pipeline accepts it
 - reviewed face previews now feed a portable canonical reference library, local SDXL uses project-downloaded IP-Adapter identity conditioning, and the quality gate blocks missing or partial named-character conditioning
 - SDXL now loads the IP-Adapter before applying memory optimizations; compatible VAE slicing/tiling remains enabled while incompatible attention-processor replacement is avoided, fixing CPU/Linux failures with current Diffusers releases

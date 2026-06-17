@@ -349,6 +349,45 @@ class QualityBackendAssetTests(unittest.TestCase):
         self.assertNotIn("HF_HUB_DISABLE_XET", STEP59.os.environ)
         self.assertNotIn("HF_XET_HIGH_PERFORMANCE", STEP59.os.environ)
 
+    def test_hf_snapshot_download_retries_interrupted_streams(self) -> None:
+        calls = {"count": 0}
+
+        def fake_snapshot_download(**kwargs):
+            calls["count"] += 1
+            if calls["count"] == 1:
+                raise RuntimeError("RemoteProtocolError: peer closed connection without sending complete message body")
+            return "/tmp/snapshot"
+
+        target = {
+            "repo_id": "Qwen/Qwen-Image",
+            "download_retries": 2,
+            "download_retry_delay_seconds": 0,
+        }
+
+        with mock.patch.object(STEP59.time, "sleep") as sleep_mock:
+            result = STEP59.run_hf_snapshot_download_with_retries(fake_snapshot_download, {"repo_id": "Qwen/Qwen-Image"}, target)
+
+        self.assertEqual(result, "/tmp/snapshot")
+        self.assertEqual(calls["count"], 2)
+        sleep_mock.assert_not_called()
+
+    def test_hf_snapshot_download_does_not_retry_non_network_errors(self) -> None:
+        calls = {"count": 0}
+
+        def fake_snapshot_download(**kwargs):
+            calls["count"] += 1
+            raise ValueError("missing required file")
+
+        target = {
+            "repo_id": "Qwen/Qwen-Image",
+            "download_retries": 4,
+            "download_retry_delay_seconds": 0,
+        }
+
+        with self.assertRaisesRegex(RuntimeError, "failed after 1 attempt"):
+            STEP59.run_hf_snapshot_download_with_retries(fake_snapshot_download, {"repo_id": "Qwen/Qwen-Image"}, target)
+        self.assertEqual(calls["count"], 1)
+
     def test_ensure_git_target_falls_back_to_archive_when_checkout_is_corrupt(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             target_dir = Path(temp_dir) / "comfyui"

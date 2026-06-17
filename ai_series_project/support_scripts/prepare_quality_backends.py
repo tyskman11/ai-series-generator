@@ -67,6 +67,22 @@ SDXL_REQUIRED_FILES = [
 LTX23_REQUIRED_FILES = [
     "ltx-2.3-22b-distilled-1.1.safetensors",
 ]
+RETRYABLE_HF_DOWNLOAD_ERROR_MARKERS = (
+    "RemoteProtocolError",
+    "ReadError",
+    "ReadTimeout",
+    "ConnectError",
+    "ConnectTimeout",
+    "ConnectionResetError",
+    "ProtocolError",
+    "ChunkedEncodingError",
+    "IncompleteRead",
+    "peer closed connection",
+    "incomplete message body",
+    "connection broken",
+    "connection aborted",
+    "timed out",
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -555,6 +571,63 @@ def load_hf_snapshot_download() -> Any:
     return snapshot_download
 
 
+def is_retryable_hf_download_error(exc: BaseException) -> bool:
+    text = f"{type(exc).__name__}: {exc}"
+    return any(marker.lower() in text.lower() for marker in RETRYABLE_HF_DOWNLOAD_ERROR_MARKERS)
+
+
+def hf_download_retry_count(target: dict[str, Any]) -> int:
+    raw = coalesce_text(str(target.get("download_retries", ""))) or coalesce_text(
+        os.environ.get("SERIES_HF_DOWNLOAD_RETRIES", "8")
+    )
+    try:
+        return max(1, int(float(raw)))
+    except ValueError:
+        return 8
+
+
+def hf_download_retry_delay_seconds(target: dict[str, Any]) -> float:
+    raw = coalesce_text(str(target.get("download_retry_delay_seconds", ""))) or coalesce_text(
+        os.environ.get("SERIES_HF_DOWNLOAD_RETRY_DELAY_SECONDS", "20")
+    )
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        return 20.0
+
+
+def run_hf_snapshot_download_with_retries(
+    snapshot_download: Any,
+    download_kwargs: dict[str, Any],
+    target: dict[str, Any],
+) -> str:
+    attempts = hf_download_retry_count(target)
+    base_delay = hf_download_retry_delay_seconds(target)
+    repo_id = coalesce_text(target.get("repo_id", "huggingface model"))
+    last_exc: BaseException | None = None
+    attempted = 0
+    for attempt in range(1, attempts + 1):
+        attempted = attempt
+        try:
+            return str(snapshot_download(**download_kwargs))
+        except Exception as exc:
+            last_exc = exc
+            if not is_retryable_hf_download_error(exc) or attempt >= attempts:
+                break
+            delay = min(base_delay * attempt, 300.0)
+            warn(
+                f"Hugging Face download for {repo_id} was interrupted on attempt {attempt}/{attempts}: {exc}. "
+                f"Retrying in {delay:.0f}s and keeping partial files so the next attempt can resume."
+            )
+            if delay:
+                time.sleep(delay)
+    raise RuntimeError(
+        f"Hugging Face download for {repo_id} failed after {attempted} attempt(s). "
+        "The partial .incomplete files were kept so rerunning 00_prepare_runtime.py or "
+        "59_prepare_quality_backends.py can resume the download."
+    ) from last_exc
+
+
 def ensure_hf_target(target: dict[str, Any], remote_revision: str, token: str, action: str) -> dict[str, Any]:
     snapshot_download = load_hf_snapshot_download()
 
@@ -582,7 +655,7 @@ def ensure_hf_target(target: dict[str, Any], remote_revision: str, token: str, a
             download_kwargs["allow_patterns"] = [str(value) for value in allow_patterns if str(value).strip()]
         if isinstance(ignore_patterns, list) and ignore_patterns:
             download_kwargs["ignore_patterns"] = [str(value) for value in ignore_patterns if str(value).strip()]
-        snapshot_path = snapshot_download(**download_kwargs)
+        snapshot_path = run_hf_snapshot_download_with_retries(snapshot_download, download_kwargs, target)
     if staged_from_local_temp:
         if target_dir.exists():
             shutil.rmtree(target_dir)
@@ -647,7 +720,14 @@ def prepare_quality_backend_assets(cfg: dict[str, Any], *, force: bool, skip_dow
     results: list[dict[str, Any]] = []
 
     for target in quality_backend_asset_targets(cfg):
+        target = dict(target)
         kind = coalesce_text(target.get("kind", ""))
+        if kind == "huggingface":
+            target.setdefault("download_retries", assets_cfg.get("huggingface_download_retries", 8))
+            target.setdefault(
+                "download_retry_delay_seconds",
+                assets_cfg.get("huggingface_download_retry_delay_seconds", 20),
+            )
         state = local_asset_state(target)
         remote_revision = ""
 

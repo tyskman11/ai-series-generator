@@ -511,6 +511,8 @@ DEFAULT_CONFIG = {
     "quality_backend_assets": {
         "check_for_updates": True,
         "huggingface_token_env": "HF_TOKEN",
+        "huggingface_download_retries": 8,
+        "huggingface_download_retry_delay_seconds": 20,
         "summary_path": "tools/quality_backends/quality_backend_assets.json",
         "targets": [
             {
