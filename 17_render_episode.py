@@ -82,16 +82,16 @@ DEFAULT_LTX_VIDEO_ENVIRONMENT = {
     "SERIES_VIDEO_QUALITY_PRESET": "source_series_high",
 }
 DEFAULT_IMAGE_ENVIRONMENT = {
-    "SERIES_IMAGE_MODEL_ID": "black-forest-labs/FLUX.2-dev",
-    "SERIES_IMAGE_MODEL_DIR": "tools/quality_models/image/black-forest-labs__FLUX.2-dev",
+    "SERIES_IMAGE_MODEL_ID": "Qwen/Qwen-Image",
+    "SERIES_IMAGE_MODEL_DIR": "tools/quality_models/image/Qwen__Qwen-Image",
     "SERIES_IMAGE_IDENTITY_MODEL_ID": "stabilityai/stable-diffusion-xl-base-1.0",
     "SERIES_IMAGE_IDENTITY_MODEL_DIR": "tools/quality_models/image/stabilityai__stable-diffusion-xl-base-1.0",
     "SERIES_IMAGE_ALLOW_CPU": "1",
     "SERIES_IMAGE_WIDTH": "1216",
     "SERIES_IMAGE_HEIGHT": "704",
-    "SERIES_IMAGE_INFERENCE_STEPS": "28",
-    "SERIES_IMAGE_GUIDANCE_SCALE": "3.5",
-    "SERIES_IMAGE_QUALITY_PRESET": "flux2_source_series",
+    "SERIES_IMAGE_INFERENCE_STEPS": "50",
+    "SERIES_IMAGE_GUIDANCE_SCALE": "4.0",
+    "SERIES_IMAGE_QUALITY_PRESET": "qwen_image_source_series",
     "SERIES_IMAGE_REQUIRE_IDENTITY_REFERENCES": "1",
     "SERIES_IMAGE_REQUIRE_IDENTITY_ADAPTER": "1",
 }

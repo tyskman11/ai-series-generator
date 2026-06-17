@@ -70,13 +70,13 @@ The project is intentionally strict about the difference between an intermediate
 - `18_quality_gate.py` now produces per-scene Realism scores and regeneration hints for missing behavior context, template-heavy dialogue, missing voice metadata, missing voice-clone output, missing lip-sync output, and missing character reference data
 - `19_regenerate_weak_scenes.py` now reads those hints and chooses a narrower retry plan for story/dialogue, voice/lip-sync, or scene-render problems instead of always treating every weak scene the same way
 - `18_quality_gate.py` keeps running regeneration/rerender cycles until the gate passes or the configured retry-cycle limit is reached
-- final output quality now depends on the real local backend stack being ready: FLUX.2/diffusers for general frames, SDXL/IP-Adapter for current identity-conditioned shots, LTX/diffusers for runnable local video, XTTS for cloned dialogue, and Wav2Lip for lip-sync
-- `00_prepare_runtime.py` now prepares the newest configured image/video model targets: `black-forest-labs/FLUX.2-dev` for image generation and `Lightricks/LTX-2.3` for video research/backends, while the built-in video runner keeps `Lightricks/LTX-Video-0.9.8-13B-distilled` as the newest Diffusers-compatible local execution model
+- final output quality now depends on the real local backend stack being ready: Qwen-Image/diffusers for public no-login general frames, SDXL/IP-Adapter for current identity-conditioned shots, LTX/diffusers for runnable local video, XTTS for cloned dialogue, and Wav2Lip for lip-sync
+- `00_prepare_runtime.py` now prepares the newest configured public/no-login image/video model targets: `Qwen/Qwen-Image` for image generation and `Lightricks/LTX-2.3` for video research/backends, while the built-in video runner keeps `Lightricks/LTX-Video-0.9.8-13B-distilled` as the newest Diffusers-compatible local execution model
 - generation now creates a finished-episode blueprint with act structure, A/B story, callbacks, scene functions, set continuity, shot plans, dialogue-line acting metadata, audio-mix plans, and an edit decision list
 - render packages now carry per-shot package targets, character continuity locks, set context, scene audio-mix targets, and standard backend manifest paths
-- the local FLUX/SDXL image backend and LTX video backend now execute shot packages, write per-shot manifests, and assemble scene video from generated shot clips instead of treating the shot plan as metadata only
+- the local Qwen/SDXL image backend and LTX video backend now execute shot packages, write per-shot manifests, and assemble scene video from generated shot clips instead of treating the shot plan as metadata only
 - the LTX runner now builds prompts from visible characters, continuity locks, set context, writer-room plans, behavior constraints, dialogue acting beats, and strong negative prompts against identity drift, gender swaps, blue-filter placeholders, and slideshow output
-- character frame generation now resolves reviewed preview assets portably, builds a compact canonical reference library, uses FLUX.2 for general non-identity images, and routes identity-critical shots through the project-local SDXL IP-Adapter Plus Face workflow instead of relying on names alone
+- character frame generation now resolves reviewed preview assets portably, builds a compact canonical reference library, uses Qwen-Image for general non-identity images, and routes identity-critical shots through the project-local SDXL IP-Adapter Plus Face workflow instead of relying on names alone
 - multi-character shots now reserve reference-board coverage for every visible figure before adding extra samples; shot manifests record exactly which named identities were conditioned
 - the Finished Episode Gate now rejects missing canonical face references and shots rendered without identity conditioning, so distorted or identity-drifting frames cannot count as finished output
 - every generated episode carries a `season_id`; rendering materializes one approved, hash-locked intro per season and reuses the identical canonical intro in later episodes
@@ -325,8 +325,8 @@ The project is configured for quality-first finished-episode generation:
 - system TTS fallback disabled in the quality-first path
 - lip-sync expected
 - external backend runner hooks configured through portable project-local wrappers
-- `00_prepare_runtime.py` writes real local backend commands for FLUX.2/SDXL image generation, LTX video generation, XTTS voice cloning, and Wav2Lip lip-sync
-- the configured image runner uses `black-forest-labs/FLUX.2-dev` at `1216x704` for general generation and switches to the SDXL IP-Adapter identity model only when canonical face references must be applied
+- `00_prepare_runtime.py` writes real local backend commands for Qwen-Image/SDXL image generation, LTX video generation, XTTS voice cloning, and Wav2Lip lip-sync
+- the configured image runner uses `Qwen/Qwen-Image` at `1216x704` for general generation and switches to the SDXL IP-Adapter identity model only when canonical face references must be applied
 - the configured video stack downloads/prepares `Lightricks/LTX-2.3` as the newest video model target, while the built-in local Diffusers runner uses `Lightricks/LTX-Video-0.9.8-13B-distilled` at `1216x704`/`30fps`, writes model/prompt/runtime metadata into shot manifests, and only falls back to the legacy `Lightricks/LTX-Video` directory when the new Diffusers model is not present
 - the old `project_local_*` still-frame/mux scripts are treated as diagnostics and are rejected by the quality-first guard
 - the XTTS voice runner now clones from character reference audio and does not use system TTS in quality-first mode
@@ -470,7 +470,7 @@ Important areas:
 - `generation_toolkit.*`: automatic use of optional analysis, continuity, pacing, subtitle, metadata, review, and export helper tools during episode generation
 - `generation.show_profile.*`: reusable public style, camera, continuity, subtitle, and export-disclosure defaults that are copied into scene-generation prompts without absolute paths
 - `generation.default_season_id`: season key written into episode blueprints and render packages, defaulting to `season_01`
-- `foundation_training.image_base_model`: project-local Hugging Face image model, defaulting to `black-forest-labs/FLUX.2-dev`
+- `foundation_training.image_base_model`: project-local public Hugging Face image model, defaulting to `Qwen/Qwen-Image`; gated/private models are rejected by setup because the project should not require login
 - `foundation_training.image_identity_fallback_model`: SDXL model used only for the current IP-Adapter face-conditioning workflow, defaulting to `stabilityai/stable-diffusion-xl-base-1.0`
 - `foundation_training.identity_adapter_model`: project-local Hugging Face identity-conditioning model, defaulting to `h94/IP-Adapter`
 - `foundation_training.video_base_model`: newest project-local Hugging Face video checkpoint target, defaulting to `Lightricks/LTX-2.3`
@@ -484,9 +484,9 @@ Important areas:
 - `season_intro.profiles.<season_id>.source_video`, `start_seconds`, and `duration_seconds`: select an approved intro source and optional extraction range
 - `season_intro.profiles.<season_id>.title`, `prompt`, and `generated_duration_seconds`: customize automatic generation for one season
 - `SERIES_IMAGE_IDENTITY_SCALE`: optional local IP-Adapter strength override; the default is `0.82`
-- `SERIES_IMAGE_MODEL_ID` and `SERIES_IMAGE_MODEL_DIR`: active local image model for general generation, defaulting to `black-forest-labs/FLUX.2-dev` under `ai_series_project/tools/quality_models/image/`
+- `SERIES_IMAGE_MODEL_ID` and `SERIES_IMAGE_MODEL_DIR`: active local image model for general generation, defaulting to `Qwen/Qwen-Image` under `ai_series_project/tools/quality_models/image/`
 - `SERIES_IMAGE_IDENTITY_MODEL_ID` and `SERIES_IMAGE_IDENTITY_MODEL_DIR`: SDXL identity-conditioning model used when the shot has canonical face references and `SERIES_IMAGE_REQUIRE_IDENTITY_ADAPTER=1`
-- `SERIES_IMAGE_WIDTH`, `SERIES_IMAGE_HEIGHT`, `SERIES_IMAGE_INFERENCE_STEPS`, and `SERIES_IMAGE_GUIDANCE_SCALE`: local image generation quality knobs; the template defaults are `1216x704`, `28` steps, and `3.5` guidance for FLUX.2
+- `SERIES_IMAGE_WIDTH`, `SERIES_IMAGE_HEIGHT`, `SERIES_IMAGE_INFERENCE_STEPS`, and `SERIES_IMAGE_GUIDANCE_SCALE`: local image generation quality knobs; the template defaults are `1216x704`, `50` steps, and `4.0` guidance/true-CFG for Qwen-Image
 - `SERIES_IMAGE_REQUIRE_IDENTITY_REFERENCES` and `SERIES_IMAGE_REQUIRE_IDENTITY_ADAPTER`: remain enabled for the quality runners so text-only identity generation cannot silently pass
 - `transcription.language`: keep `auto` for new or mixed-language series; set it to a language code such as `de` for a known monolingual source project so wrong Auto-Detection caches are rejected and rebuilt
 - `transcription.auto_language_forced_probe`: enabled by default so language detection compares candidate transcriptions instead of trusting one Whisper hint
@@ -645,8 +645,8 @@ python -m py_compile 00_prepare_runtime.py 03_diarize_and_transcribe.py 04_link_
 ## Known Limitations
 
 - project-local image/video generation still does not equal strong dedicated TV-quality generation backends without good source references, model-specific workflows, and successful backend manifests
-- `black-forest-labs/FLUX.2-dev` is the default image model target and can be loaded through Diffusers, but it is very large. CPU/NAS runs can be extremely slow and may need local GPU/offload tuning.
-- identity-conditioned character shots currently use the SDXL IP-Adapter face workflow because the project does not yet implement a native FLUX.2 multi-reference identity workflow. This is intentional: it preserves current identity conditioning instead of pretending FLUX text prompts alone can keep exact faces stable.
+- `Qwen/Qwen-Image` is the default public no-login image model target and can be loaded through Diffusers, but it is still large. CPU/NAS runs can be extremely slow and may need local GPU/offload tuning.
+- identity-conditioned character shots currently use the SDXL IP-Adapter face workflow because the project does not yet implement a native Qwen multi-reference identity workflow. This is intentional: it preserves current identity conditioning instead of pretending text prompts alone can keep exact faces stable.
 - `Lightricks/LTX-2.3` is the newest configured video model target and is downloaded/prepared by setup, but its public checkpoint layout is not a drop-in Diffusers `from_pretrained` model at the time this README was updated. Use it through a compatible LTX-2/ComfyUI workflow or external runner rather than pointing `SERIES_VIDEO_MODEL_DIR` at the raw checkpoint folder.
 - even the improved LTX default will not make characters perfectly match a source series by itself. Strong likeness still depends on rights-safe canonical face references, clean set references, identity-conditioned image keyframes, character-specific LoRAs or regional identity workflows, and measured rejection of warped/drifting outputs.
 - SDXL plus one shared IP-Adapter reference board improves identity stability but does not fully solve multi-person regional identity binding, difficult profiles, occlusion, extreme expressions, hands crossing faces, or long-range video identity drift
@@ -666,9 +666,9 @@ python -m py_compile 00_prepare_runtime.py 03_diarize_and_transcribe.py 04_link_
 - when backend scene-video or scene-audio generation still fails in quality-first mode, rendering stops with explicit missing-output details instead of exporting a fake final episode
 - if external runners fail repeatedly, the quality gate will keep rejecting the episode even when the render technically finishes
 - shared NAS runs still depend on file-system stability and can be slower for large backend/model downloads
-- CPU-only storyboard generation uses the same real local image backend and is not a fallback, but FLUX.2/SDXL can take much longer per scene; running step `16` or `24` simultaneously on a CUDA PC lets both workers divide the remaining scene leases
+- CPU-only storyboard generation uses the same real local image backend and is not a fallback, but Qwen-Image/SDXL can take much longer per scene; running step `16` or `24` simultaneously on a CUDA PC lets both workers divide the remaining scene leases
 - higher-recall face scanning keeps strict face validation but can take longer and can expose more unknown clusters for manual review when crowded or low-quality source shots contain many candidate faces
-- large Hugging Face model downloads are more reliable with authentication via `HF_TOKEN`
+- setup intentionally avoids login-only Hugging Face models; if a configured model is gated/private, `59_prepare_quality_backends.py` stops with a clear error instead of asking for `HF_TOKEN`
 
 ## Finished
 
@@ -702,8 +702,8 @@ python -m py_compile 00_prepare_runtime.py 03_diarize_and_transcribe.py 04_link_
 - `08b_analyze_behavior_model.py`, behavior-aware scene metadata, voice metadata propagation, and stricter content checks in `18_quality_gate.py` are now part of the main generation path
 - behavior-model schema version `2`, writer-room scene plans, richer delivery metadata, lip-sync backend priority resolution, and scope-aware weak-scene regeneration are now part of the main generation path
 - Finished Episode Mode now adds episode blueprints, set bible, character continuity locks, multi-shot plans, EDL, audio mix planning, backend manifests, Finished Episode Gate, Realism Reports, export-type separation, and blocked-scope retry handling
-- local FLUX/SDXL and LTX runners now execute shot packages, write shot manifests, and let scene video be assembled from generated shot clips instead of relying only on scene-level placeholders
-- the local image runner now defaults to `black-forest-labs/FLUX.2-dev` for general image generation, records model family/class in shot manifests, and automatically uses the project-local SDXL IP-Adapter model for identity-conditioned shots
+- local Qwen/SDXL and LTX runners now execute shot packages, write shot manifests, and let scene video be assembled from generated shot clips instead of relying only on scene-level placeholders
+- the local image runner now defaults to `Qwen/Qwen-Image` for general image generation, records model family/class in shot manifests, and automatically uses the project-local SDXL IP-Adapter model for identity-conditioned shots
 - the local LTX runner now defaults to `Lightricks/LTX-Video-0.9.8-13B-distilled`, records the active model/profile in shot manifests, supports Diffusers `DiffusionPipeline` loading for the newer model format, and uses richer source-series identity/set/behavior prompts plus negative prompt support when the loaded pipeline accepts it
 - reviewed face previews now feed a portable canonical reference library, local SDXL uses project-downloaded IP-Adapter identity conditioning, and the quality gate blocks missing or partial named-character conditioning
 - SDXL now loads the IP-Adapter before applying memory optimizations; compatible VAE slicing/tiling remains enabled while incompatible attention-processor replacement is avoided, fixing CPU/Linux failures with current Diffusers releases
@@ -722,7 +722,7 @@ python -m py_compile 00_prepare_runtime.py 03_diarize_and_transcribe.py 04_link_
 
 - active validation is now evidence-driven: run real rights-safe source material through the configured image, video, voice, lip-sync, and mastering backends, inspect the readiness reports, and fix the blocker that the Finished Episode Gate names
 - compare the built-in LTX 0.9.8 13B Diffusers runner against a rights-safe external LTX-2.3/ComfyUI workflow once that workflow is installed locally, then keep the better backend as the configured production runner
-- validate FLUX.2 output quality on actual series shot packages and decide where a native FLUX reference/editing workflow can replace the current SDXL identity fallback
+- validate Qwen-Image output quality on actual series shot packages and decide where a native Qwen reference/editing workflow can replace the current SDXL identity fallback
 - improve source-series likeness by collecting stronger canonical face/set/outfit references and by training or configuring character-specific identity adapters instead of relying only on text prompts and a shared reference board
 - backend-specific quality still improves only when those backends return stronger media, manifests, reference coverage, and metrics than the project-local compatibility paths can measure
 
@@ -730,7 +730,7 @@ python -m py_compile 00_prepare_runtime.py 03_diarize_and_transcribe.py 04_link_
 
 - add a backend benchmark script that renders the same shot package through configured video backends and compares motion quality, identity drift, duration match, and manifest completeness
 - add optional ComfyUI/LTX-2.3 workflow templates for newer non-Diffusers checkpoints while keeping them disabled until the required tools and model files are present locally
-- add a native FLUX.2 reference/editing workflow for identity-preserving character shots once the local runner can provide stable multi-reference conditioning without SDXL IP-Adapter
+- add a native Qwen-Image reference/editing workflow for identity-preserving character shots once the local runner can provide stable multi-reference conditioning without SDXL IP-Adapter
 - add stronger per-character visual consistency scoring using face embedding checks against generated keyframes and video preview frames
 - add set-reference selection and shot continuity scoring so the gate can distinguish a real recurring set from generic AI interiors
 - future ideas should be added here only after a measured backend, reference, review, or quality-report bottleneck shows that the existing diagnostics, manifests, budgets, profiles, evaluators, benchmark helpers, review flows, and disclosure packaging need another concrete extension

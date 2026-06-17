@@ -22,11 +22,10 @@ from support_scripts.pipeline_common import (
     write_json,
 )
 
-IMAGE_MODEL_ID = "black-forest-labs/FLUX.2-dev"
-IMAGE_MODEL_DIR = "tools/quality_models/image/black-forest-labs__FLUX.2-dev"
+IMAGE_MODEL_ID = "Qwen/Qwen-Image"
+IMAGE_MODEL_DIR = "tools/quality_models/image/Qwen__Qwen-Image"
 IMAGE_MODEL_REQUIRED_FILES = [
     "model_index.json",
-    "flux2-dev.safetensors",
     "scheduler/scheduler_config.json",
     "text_encoder/model.safetensors.index.json",
     "transformer/diffusion_pytorch_model.safetensors.index.json",
@@ -104,9 +103,9 @@ def configured_backends() -> dict:
                 "SERIES_IMAGE_ALLOW_CPU": "1",
                 "SERIES_IMAGE_WIDTH": "1216",
                 "SERIES_IMAGE_HEIGHT": "704",
-                "SERIES_IMAGE_INFERENCE_STEPS": "28",
-                "SERIES_IMAGE_GUIDANCE_SCALE": "3.5",
-                "SERIES_IMAGE_QUALITY_PRESET": "flux2_source_series",
+                "SERIES_IMAGE_INFERENCE_STEPS": "50",
+                "SERIES_IMAGE_GUIDANCE_SCALE": "4.0",
+                "SERIES_IMAGE_QUALITY_PRESET": "qwen_image_source_series",
                 "SERIES_IMAGE_REQUIRE_IDENTITY_REFERENCES": "1",
                 "SERIES_IMAGE_REQUIRE_IDENTITY_ADAPTER": "1",
                 "PYTHONUNBUFFERED": "1",
@@ -147,9 +146,9 @@ def configured_backends() -> dict:
                 "SERIES_IMAGE_ALLOW_CPU": "1",
                 "SERIES_IMAGE_WIDTH": "1216",
                 "SERIES_IMAGE_HEIGHT": "704",
-                "SERIES_IMAGE_INFERENCE_STEPS": "28",
-                "SERIES_IMAGE_GUIDANCE_SCALE": "3.5",
-                "SERIES_IMAGE_QUALITY_PRESET": "flux2_source_series",
+                "SERIES_IMAGE_INFERENCE_STEPS": "50",
+                "SERIES_IMAGE_GUIDANCE_SCALE": "4.0",
+                "SERIES_IMAGE_QUALITY_PRESET": "qwen_image_source_series",
                 "SERIES_IMAGE_REQUIRE_IDENTITY_REFERENCES": "1",
                 "SERIES_IMAGE_REQUIRE_IDENTITY_ADAPTER": "1",
                 "SERIES_IMAGE_RESUME_SHOTS": "1",

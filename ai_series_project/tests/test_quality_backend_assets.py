@@ -187,7 +187,7 @@ class QualityBackendAssetTests(unittest.TestCase):
     def test_default_quality_backend_asset_targets_include_project_local_comfyui(self) -> None:
         cfg = {
             "foundation_training": {
-                "image_base_model": "black-forest-labs/FLUX.2-dev",
+                "image_base_model": "Qwen/Qwen-Image",
                 "image_identity_fallback_model": "stabilityai/stable-diffusion-xl-base-1.0",
                 "video_base_model": "Lightricks/LTX-2.3",
                 "video_diffusers_fallback_model": "Lightricks/LTX-Video-0.9.8-13B-distilled",
@@ -202,8 +202,8 @@ class QualityBackendAssetTests(unittest.TestCase):
         comfy = next(target for target in targets if target["name"] == "comfyui")
         self.assertEqual(comfy["target_dir"], "tools/quality_backends/comfyui")
         image = next(target for target in targets if target["name"] == "image_base_model")
-        self.assertEqual(image["repo_id"], "black-forest-labs/FLUX.2-dev")
-        self.assertIn("flux2-dev.safetensors", image["required_files"])
+        self.assertEqual(image["repo_id"], "Qwen/Qwen-Image")
+        self.assertIn("transformer/diffusion_pytorch_model.safetensors.index.json", image["required_files"])
         image_identity = next(target for target in targets if target["name"] == "image_identity_fallback_model")
         self.assertEqual(image_identity["repo_id"], "stabilityai/stable-diffusion-xl-base-1.0")
         self.assertIn("unet/diffusion_pytorch_model.safetensors", image_identity["required_files"])
@@ -223,6 +223,14 @@ class QualityBackendAssetTests(unittest.TestCase):
             with mock.patch.object(STEP59, "github_request_json", return_value={"sha": "abc123def456"}):
                 revision = STEP59.fetch_remote_git_revision(target)
         self.assertEqual(revision, "abc123def456")
+
+    def test_fetch_remote_hf_revision_rejects_gated_models(self) -> None:
+        fake_api = mock.Mock()
+        fake_api.model_info.return_value = mock.Mock(sha="abc123", gated="auto")
+        target = {"repo_id": "black-forest-labs/FLUX.2-dev"}
+
+        with self.assertRaisesRegex(RuntimeError, "gated"):
+            STEP59.fetch_remote_hf_revision(fake_api, target, "")
 
     def test_run_git_command_always_allows_safe_directory(self) -> None:
         with mock.patch.object(STEP59.subprocess, "run", return_value=mock.Mock(returncode=0)) as run_mock:

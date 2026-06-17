@@ -47,9 +47,8 @@ DIFFUSERS_LTX_098_13B_REQUIRED_FILES = [
     "vae/diffusion_pytorch_model.safetensors",
     "tokenizer/tokenizer_config.json",
 ]
-FLUX2_DEV_REQUIRED_FILES = [
+QWEN_IMAGE_REQUIRED_FILES = [
     "model_index.json",
-    "flux2-dev.safetensors",
     "scheduler/scheduler_config.json",
     "text_encoder/model.safetensors.index.json",
     "transformer/diffusion_pytorch_model.safetensors.index.json",
@@ -209,9 +208,9 @@ def default_quality_backend_asset_targets(cfg: dict[str, Any]) -> list[dict[str,
             target["required_files"] = required_files
         else:
             target["required_patterns"] = required_patterns
-        if model_id == "black-forest-labs/FLUX.2-dev":
+        if model_id == "Qwen/Qwen-Image":
             target.pop("required_patterns", None)
-            target["required_files"] = FLUX2_DEV_REQUIRED_FILES
+            target["required_files"] = QWEN_IMAGE_REQUIRED_FILES
         elif model_id == "stabilityai/stable-diffusion-xl-base-1.0":
             target.pop("required_patterns", None)
             target["required_files"] = SDXL_REQUIRED_FILES
@@ -463,6 +462,13 @@ def refresh_git_target_via_archive(target: dict[str, Any], remote_revision: str)
 
 def fetch_remote_hf_revision(api: Any, target: dict[str, Any], token: str) -> str:
     info_payload = api.model_info(repo_id=target["repo_id"], token=token or None)
+    gated = getattr(info_payload, "gated", False)
+    if gated not in {False, None, "", "false", "False"}:
+        raise RuntimeError(
+            f"Hugging Face model '{target['repo_id']}' is gated and would require login or token access. "
+            "This project is configured for no-login setup; choose a public non-gated model in project.json "
+            "or ai_series_project/configs/project.template.json."
+        )
     return coalesce_text(getattr(info_payload, "sha", ""))
 
 

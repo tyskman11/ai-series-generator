@@ -428,7 +428,7 @@ class IdentityContinuityAndIntroTests(unittest.TestCase):
         video_runner = runner_configs["finished_episode_video_runner"]["external_backends"]["finished_episode_video_runner"]
         self.assertEqual(image_runner["timeout_seconds"], 0)
         self.assertEqual(video_runner["timeout_seconds"], 0)
-        self.assertEqual(image_runner["environment"]["SERIES_IMAGE_MODEL_ID"], "black-forest-labs/FLUX.2-dev")
+        self.assertEqual(image_runner["environment"]["SERIES_IMAGE_MODEL_ID"], "Qwen/Qwen-Image")
         self.assertEqual(
             image_runner["environment"]["SERIES_IMAGE_IDENTITY_MODEL_DIR"],
             "tools/quality_models/image/stabilityai__stable-diffusion-xl-base-1.0",

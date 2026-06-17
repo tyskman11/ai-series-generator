@@ -199,27 +199,27 @@ class QualityFirstModeTests(unittest.TestCase):
         self.assertNotIn("dialogue style", prompt)
         self.assertLess(len(prompt.split()), 77)
 
-    def test_local_image_backend_uses_flux_default_and_sdxl_identity_fallback(self) -> None:
+    def test_local_image_backend_uses_qwen_default_and_sdxl_identity_fallback(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
-            flux_dir = root / "black-forest-labs__FLUX.2-dev"
+            qwen_dir = root / "Qwen__Qwen-Image"
             sdxl_dir = root / "stabilityai__stable-diffusion-xl-base-1.0"
-            for directory in (flux_dir, sdxl_dir):
+            for directory in (qwen_dir, sdxl_dir):
                 directory.mkdir(parents=True, exist_ok=True)
                 (directory / "model_index.json").write_text("{}", encoding="utf-8")
                 (directory / "weights.safetensors").write_bytes(b"weights")
 
             with patch.dict(os.environ, {}, clear=True):
-                with patch.object(local_diffusion_image_backend, "DEFAULT_IMAGE_MODEL_DIR", flux_dir):
+                with patch.object(local_diffusion_image_backend, "DEFAULT_IMAGE_MODEL_DIR", qwen_dir):
                     with patch.object(local_diffusion_image_backend, "SDXL_IDENTITY_MODEL_DIR", sdxl_dir):
                         with patch.object(
                             local_diffusion_image_backend,
                             "FALLBACK_IMAGE_MODEL_DIRS",
-                            [flux_dir, sdxl_dir],
+                            [qwen_dir, sdxl_dir],
                         ):
                             self.assertEqual(
                                 local_diffusion_image_backend.resolve_model_dir(require_identity_adapter=False),
-                                flux_dir.resolve(strict=False),
+                                qwen_dir.resolve(strict=False),
                             )
                             self.assertEqual(
                                 local_diffusion_image_backend.resolve_model_dir(require_identity_adapter=True),
@@ -227,10 +227,10 @@ class QualityFirstModeTests(unittest.TestCase):
                             )
                             self.assertEqual(
                                 local_diffusion_image_backend.image_model_family(
-                                    "black-forest-labs/FLUX.2-dev",
-                                    flux_dir,
+                                    "Qwen/Qwen-Image",
+                                    qwen_dir,
                                 ),
-                                "flux",
+                                "qwen",
                             )
                             self.assertEqual(
                                 local_diffusion_image_backend.image_model_family(
@@ -281,10 +281,10 @@ class QualityFirstModeTests(unittest.TestCase):
         self.assertEqual(image_runner["required_commands"], [])
         self.assertIn("SERIES_IMAGE_BACKEND_COMMAND", image_runner["environment"])
         self.assertIn("local_diffusion_image_backend.py", image_runner["environment"]["SERIES_IMAGE_BACKEND_COMMAND"])
-        self.assertEqual(image_runner["environment"]["SERIES_IMAGE_MODEL_ID"], "black-forest-labs/FLUX.2-dev")
+        self.assertEqual(image_runner["environment"]["SERIES_IMAGE_MODEL_ID"], "Qwen/Qwen-Image")
         self.assertEqual(
             image_runner["environment"]["SERIES_IMAGE_MODEL_DIR"],
-            "tools/quality_models/image/black-forest-labs__FLUX.2-dev",
+            "tools/quality_models/image/Qwen__Qwen-Image",
         )
         self.assertEqual(
             image_runner["environment"]["SERIES_IMAGE_IDENTITY_MODEL_ID"],
@@ -297,7 +297,9 @@ class QualityFirstModeTests(unittest.TestCase):
         self.assertEqual(image_runner["environment"]["SERIES_IMAGE_ALLOW_CPU"], "1")
         self.assertEqual(image_runner["environment"]["SERIES_IMAGE_WIDTH"], "1216")
         self.assertEqual(image_runner["environment"]["SERIES_IMAGE_HEIGHT"], "704")
-        self.assertEqual(image_runner["environment"]["SERIES_IMAGE_QUALITY_PRESET"], "flux2_source_series")
+        self.assertEqual(image_runner["environment"]["SERIES_IMAGE_INFERENCE_STEPS"], "50")
+        self.assertEqual(image_runner["environment"]["SERIES_IMAGE_GUIDANCE_SCALE"], "4.0")
+        self.assertEqual(image_runner["environment"]["SERIES_IMAGE_QUALITY_PRESET"], "qwen_image_source_series")
         self.assertEqual(image_runner["environment"]["SERIES_IMAGE_RESUME_SHOTS"], "1")
         self.assertEqual(image_runner["timeout_seconds"], 0)
         self.assertTrue(image_runner["allow_cpu_execution"])

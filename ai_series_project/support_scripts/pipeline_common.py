@@ -350,7 +350,7 @@ DEFAULT_CONFIG = {
         "allow_visible_only_voice_fallback": False,
         "frame_width": 1280,
         "frame_height": 720,
-        "image_base_model": "black-forest-labs/FLUX.2-dev",
+        "image_base_model": "Qwen/Qwen-Image",
         "image_identity_fallback_model": "stabilityai/stable-diffusion-xl-base-1.0",
         "identity_adapter_model": "h94/IP-Adapter",
         "video_base_model": "Lightricks/LTX-2.3",
@@ -539,11 +539,10 @@ DEFAULT_CONFIG = {
             {
                 "name": "image_base_model",
                 "kind": "huggingface",
-                "repo_id": "black-forest-labs/FLUX.2-dev",
-                "target_dir": "tools/quality_models/image/black-forest-labs__FLUX.2-dev",
+                "repo_id": "Qwen/Qwen-Image",
+                "target_dir": "tools/quality_models/image/Qwen__Qwen-Image",
                 "required_files": [
                     "model_index.json",
-                    "flux2-dev.safetensors",
                     "scheduler/scheduler_config.json",
                     "text_encoder/model.safetensors.index.json",
                     "transformer/diffusion_pytorch_model.safetensors.index.json",

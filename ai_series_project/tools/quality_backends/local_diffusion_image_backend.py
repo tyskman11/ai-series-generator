@@ -22,8 +22,8 @@ from backend_common import (
 )
 
 
-DEFAULT_IMAGE_MODEL_ID = "black-forest-labs/FLUX.2-dev"
-DEFAULT_IMAGE_MODEL_DIR = PROJECT_DIR / "tools" / "quality_models" / "image" / "black-forest-labs__FLUX.2-dev"
+DEFAULT_IMAGE_MODEL_ID = "Qwen/Qwen-Image"
+DEFAULT_IMAGE_MODEL_DIR = PROJECT_DIR / "tools" / "quality_models" / "image" / "Qwen__Qwen-Image"
 SDXL_IDENTITY_MODEL_ID = "stabilityai/stable-diffusion-xl-base-1.0"
 SDXL_IDENTITY_MODEL_DIR = PROJECT_DIR / "tools" / "quality_models" / "image" / "stabilityai__stable-diffusion-xl-base-1.0"
 DEFAULT_IDENTITY_ADAPTER_DIR = PROJECT_DIR / "tools" / "quality_models" / "image" / "h94__IP-Adapter"
@@ -154,6 +154,8 @@ def normalize_model_dir(candidate: Path) -> Path:
 
 def image_model_family(model_id: str, model_dir: Path) -> str:
     text = f"{model_id} {model_dir}".lower()
+    if "qwen" in text:
+        return "qwen"
     if "flux" in text:
         return "flux"
     if "stable-diffusion-xl" in text or "sdxl" in text:
@@ -202,7 +204,7 @@ def resolve_model_dir(*, require_identity_adapter: bool = False) -> Path:
             f"SERIES_IMAGE_IDENTITY_MODEL_DIR. Expected model_index.json and safetensors files in {expected}."
         )
     raise RuntimeError(
-        "Local FLUX.2 image model is not ready. Run 00_prepare_runtime.py without --skip-downloads "
+        "Local Qwen-Image model is not ready. Run 00_prepare_runtime.py without --skip-downloads "
         f"or set SERIES_IMAGE_MODEL_DIR. Expected model_index.json and safetensors files in {expected}."
     )
 
@@ -329,11 +331,11 @@ def load_pipeline(require_identity_adapter: bool) -> tuple[Any, dict[str, Any]]:
             "shot-image tasks. Run step 16 on a CUDA worker, or explicitly set SERIES_IMAGE_ALLOW_CPU=1 "
             "for a very slow diagnostic CPU render."
         )
-    dtype = torch.bfloat16 if cuda_ready and model_family == "flux" else torch.float16 if cuda_ready else torch.float32
+    dtype = torch.bfloat16 if cuda_ready and model_family in {"flux", "qwen"} else torch.float16 if cuda_ready else torch.float32
     device = "cuda" if cuda_ready else "cpu"
     width, height = target_size()
-    default_steps = "28" if model_family == "flux" else "36"
-    default_guidance = "3.5" if model_family == "flux" else "6.0"
+    default_steps = "50" if model_family == "qwen" else "28" if model_family == "flux" else "36"
+    default_guidance = "4.0" if model_family == "qwen" else "3.5" if model_family == "flux" else "6.0"
     steps = int(float(os.environ.get("SERIES_IMAGE_INFERENCE_STEPS", default_steps) or default_steps))
     guidance = float(os.environ.get("SERIES_IMAGE_GUIDANCE_SCALE", default_guidance) or default_guidance)
     print(
@@ -461,7 +463,9 @@ def generate_image(
     }
     if negative_prompt and pipeline_accepts_argument(pipeline, "negative_prompt"):
         arguments["negative_prompt"] = negative_prompt
-    if pipeline_accepts_argument(pipeline, "guidance_scale"):
+    if pipeline_accepts_argument(pipeline, "true_cfg_scale"):
+        arguments["true_cfg_scale"] = guidance
+    elif pipeline_accepts_argument(pipeline, "guidance_scale"):
         arguments["guidance_scale"] = guidance
     if identity_reference is not None and pipeline_accepts_argument(pipeline, "ip_adapter_image"):
         arguments["ip_adapter_image"] = identity_reference
