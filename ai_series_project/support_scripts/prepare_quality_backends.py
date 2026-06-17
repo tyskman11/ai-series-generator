@@ -47,6 +47,27 @@ DIFFUSERS_LTX_098_13B_REQUIRED_FILES = [
     "vae/diffusion_pytorch_model.safetensors",
     "tokenizer/tokenizer_config.json",
 ]
+FLUX2_DEV_REQUIRED_FILES = [
+    "model_index.json",
+    "flux2-dev.safetensors",
+    "scheduler/scheduler_config.json",
+    "text_encoder/model.safetensors.index.json",
+    "transformer/diffusion_pytorch_model.safetensors.index.json",
+    "vae/diffusion_pytorch_model.safetensors",
+    "tokenizer/tokenizer_config.json",
+]
+SDXL_REQUIRED_FILES = [
+    "model_index.json",
+    "scheduler/scheduler_config.json",
+    "text_encoder/model.safetensors",
+    "text_encoder_2/model.safetensors",
+    "unet/diffusion_pytorch_model.safetensors",
+    "vae/diffusion_pytorch_model.safetensors",
+    "tokenizer/tokenizer_config.json",
+]
+LTX23_REQUIRED_FILES = [
+    "ltx-2.3-22b-distilled-1.1.safetensors",
+]
 
 
 def parse_args() -> argparse.Namespace:
@@ -168,11 +189,13 @@ def default_quality_backend_asset_targets(cfg: dict[str, Any]) -> list[dict[str,
         }
     ]
     model_specs = [
-        ("image_base_model", "image", ["model_index.json", "*.safetensors"]),
-        ("video_base_model", "video", ["*.safetensors"]),
-        ("voice_base_model", "voice", []),
+        ("image_base_model", "image", ["model_index.json", "*.safetensors"], []),
+        ("image_identity_fallback_model", "image", ["model_index.json", "*.safetensors"], []),
+        ("video_base_model", "video", ["*.safetensors"], []),
+        ("video_diffusers_fallback_model", "video", [], DIFFUSERS_LTX_098_13B_REQUIRED_FILES),
+        ("voice_base_model", "voice", [], []),
     ]
-    for config_key, group_name, required_patterns in model_specs:
+    for config_key, group_name, required_patterns, required_files in model_specs:
         model_id = coalesce_text(foundation_cfg.get(config_key, ""))
         if not model_id:
             continue
@@ -181,9 +204,21 @@ def default_quality_backend_asset_targets(cfg: dict[str, Any]) -> list[dict[str,
             "kind": "huggingface",
             "repo_id": model_id,
             "target_dir": f"tools/quality_models/{group_name}/{model_id.replace('/', '__')}",
-            "required_patterns": required_patterns,
         }
-        if config_key == "video_base_model" and model_id == "Lightricks/LTX-Video-0.9.8-13B-distilled":
+        if required_files:
+            target["required_files"] = required_files
+        else:
+            target["required_patterns"] = required_patterns
+        if model_id == "black-forest-labs/FLUX.2-dev":
+            target.pop("required_patterns", None)
+            target["required_files"] = FLUX2_DEV_REQUIRED_FILES
+        elif model_id == "stabilityai/stable-diffusion-xl-base-1.0":
+            target.pop("required_patterns", None)
+            target["required_files"] = SDXL_REQUIRED_FILES
+        elif model_id == "Lightricks/LTX-2.3":
+            target.pop("required_patterns", None)
+            target["required_files"] = LTX23_REQUIRED_FILES
+        elif model_id == "Lightricks/LTX-Video-0.9.8-13B-distilled":
             target.pop("required_patterns", None)
             target["required_files"] = DIFFUSERS_LTX_098_13B_REQUIRED_FILES
         targets.append(target)

@@ -428,8 +428,14 @@ class IdentityContinuityAndIntroTests(unittest.TestCase):
         video_runner = runner_configs["finished_episode_video_runner"]["external_backends"]["finished_episode_video_runner"]
         self.assertEqual(image_runner["timeout_seconds"], 0)
         self.assertEqual(video_runner["timeout_seconds"], 0)
+        self.assertEqual(image_runner["environment"]["SERIES_IMAGE_MODEL_ID"], "black-forest-labs/FLUX.2-dev")
+        self.assertEqual(
+            image_runner["environment"]["SERIES_IMAGE_IDENTITY_MODEL_DIR"],
+            "tools/quality_models/image/stabilityai__stable-diffusion-xl-base-1.0",
+        )
         self.assertEqual(image_runner["environment"]["SERIES_IMAGE_RESUME_SHOTS"], "1")
         self.assertEqual(video_runner["environment"]["SERIES_VIDEO_RESUME_SHOTS"], "1")
+        self.assertEqual(video_runner["environment"]["SERIES_VIDEO_LATEST_MODEL_ID"], "Lightricks/LTX-2.3")
         self.assertEqual(video_runner["environment"]["SERIES_VIDEO_MODEL_ID"], "Lightricks/LTX-Video-0.9.8-13B-distilled")
         self.assertEqual(video_runner["environment"]["SERIES_VIDEO_WIDTH"], "1216")
         self.assertEqual(video_runner["environment"]["SERIES_VIDEO_HEIGHT"], "704")

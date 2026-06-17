@@ -69,14 +69,31 @@ from support_scripts.pipeline_common import (
 )
 
 DEFAULT_LTX_VIDEO_ENVIRONMENT = {
+    "SERIES_VIDEO_LATEST_MODEL_ID": "Lightricks/LTX-2.3",
+    "SERIES_VIDEO_LATEST_MODEL_DIR": "tools/quality_models/video/Lightricks__LTX-2.3",
     "SERIES_VIDEO_MODEL_ID": "Lightricks/LTX-Video-0.9.8-13B-distilled",
     "SERIES_VIDEO_MODEL_DIR": "tools/quality_models/video/Lightricks__LTX-Video-0.9.8-13B-distilled",
+    "SERIES_VIDEO_COMPATIBILITY_MODE": "ltx_diffusers_fallback_until_ltx2_runner",
     "SERIES_VIDEO_WIDTH": "1216",
     "SERIES_VIDEO_HEIGHT": "704",
     "SERIES_VIDEO_FPS": "30",
     "SERIES_VIDEO_INFERENCE_STEPS": "30",
     "SERIES_VIDEO_GUIDANCE_SCALE": "3.0",
     "SERIES_VIDEO_QUALITY_PRESET": "source_series_high",
+}
+DEFAULT_IMAGE_ENVIRONMENT = {
+    "SERIES_IMAGE_MODEL_ID": "black-forest-labs/FLUX.2-dev",
+    "SERIES_IMAGE_MODEL_DIR": "tools/quality_models/image/black-forest-labs__FLUX.2-dev",
+    "SERIES_IMAGE_IDENTITY_MODEL_ID": "stabilityai/stable-diffusion-xl-base-1.0",
+    "SERIES_IMAGE_IDENTITY_MODEL_DIR": "tools/quality_models/image/stabilityai__stable-diffusion-xl-base-1.0",
+    "SERIES_IMAGE_ALLOW_CPU": "1",
+    "SERIES_IMAGE_WIDTH": "1216",
+    "SERIES_IMAGE_HEIGHT": "704",
+    "SERIES_IMAGE_INFERENCE_STEPS": "28",
+    "SERIES_IMAGE_GUIDANCE_SCALE": "3.5",
+    "SERIES_IMAGE_QUALITY_PRESET": "flux2_source_series",
+    "SERIES_IMAGE_REQUIRE_IDENTITY_REFERENCES": "1",
+    "SERIES_IMAGE_REQUIRE_IDENTITY_ADAPTER": "1",
 }
 
 
@@ -4401,6 +4418,8 @@ def generate_season_intro_video(
             else {}
         )
         if runner_name == "finished_episode_image_runner":
+            for key, value in DEFAULT_IMAGE_ENVIRONMENT.items():
+                environment.setdefault(key, value)
             environment["SERIES_IMAGE_RESUME_SHOTS"] = "1"
         else:
             for key, value in DEFAULT_LTX_VIDEO_ENVIRONMENT.items():

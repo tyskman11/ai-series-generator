@@ -199,6 +199,47 @@ class QualityFirstModeTests(unittest.TestCase):
         self.assertNotIn("dialogue style", prompt)
         self.assertLess(len(prompt.split()), 77)
 
+    def test_local_image_backend_uses_flux_default_and_sdxl_identity_fallback(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            flux_dir = root / "black-forest-labs__FLUX.2-dev"
+            sdxl_dir = root / "stabilityai__stable-diffusion-xl-base-1.0"
+            for directory in (flux_dir, sdxl_dir):
+                directory.mkdir(parents=True, exist_ok=True)
+                (directory / "model_index.json").write_text("{}", encoding="utf-8")
+                (directory / "weights.safetensors").write_bytes(b"weights")
+
+            with patch.dict(os.environ, {}, clear=True):
+                with patch.object(local_diffusion_image_backend, "DEFAULT_IMAGE_MODEL_DIR", flux_dir):
+                    with patch.object(local_diffusion_image_backend, "SDXL_IDENTITY_MODEL_DIR", sdxl_dir):
+                        with patch.object(
+                            local_diffusion_image_backend,
+                            "FALLBACK_IMAGE_MODEL_DIRS",
+                            [flux_dir, sdxl_dir],
+                        ):
+                            self.assertEqual(
+                                local_diffusion_image_backend.resolve_model_dir(require_identity_adapter=False),
+                                flux_dir.resolve(strict=False),
+                            )
+                            self.assertEqual(
+                                local_diffusion_image_backend.resolve_model_dir(require_identity_adapter=True),
+                                sdxl_dir.resolve(strict=False),
+                            )
+                            self.assertEqual(
+                                local_diffusion_image_backend.image_model_family(
+                                    "black-forest-labs/FLUX.2-dev",
+                                    flux_dir,
+                                ),
+                                "flux",
+                            )
+                            self.assertEqual(
+                                local_diffusion_image_backend.image_model_family(
+                                    "stabilityai/stable-diffusion-xl-base-1.0",
+                                    sdxl_dir,
+                                ),
+                                "sdxl",
+                            )
+
     def test_find_project_local_ffmpeg_prefers_platform_binary_from_runtime(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             project_root = Path(tmpdir) / "ai_series_project"
@@ -240,18 +281,40 @@ class QualityFirstModeTests(unittest.TestCase):
         self.assertEqual(image_runner["required_commands"], [])
         self.assertIn("SERIES_IMAGE_BACKEND_COMMAND", image_runner["environment"])
         self.assertIn("local_diffusion_image_backend.py", image_runner["environment"]["SERIES_IMAGE_BACKEND_COMMAND"])
+        self.assertEqual(image_runner["environment"]["SERIES_IMAGE_MODEL_ID"], "black-forest-labs/FLUX.2-dev")
+        self.assertEqual(
+            image_runner["environment"]["SERIES_IMAGE_MODEL_DIR"],
+            "tools/quality_models/image/black-forest-labs__FLUX.2-dev",
+        )
+        self.assertEqual(
+            image_runner["environment"]["SERIES_IMAGE_IDENTITY_MODEL_ID"],
+            "stabilityai/stable-diffusion-xl-base-1.0",
+        )
+        self.assertEqual(
+            image_runner["environment"]["SERIES_IMAGE_IDENTITY_MODEL_DIR"],
+            "tools/quality_models/image/stabilityai__stable-diffusion-xl-base-1.0",
+        )
         self.assertEqual(image_runner["environment"]["SERIES_IMAGE_ALLOW_CPU"], "1")
+        self.assertEqual(image_runner["environment"]["SERIES_IMAGE_WIDTH"], "1216")
+        self.assertEqual(image_runner["environment"]["SERIES_IMAGE_HEIGHT"], "704")
+        self.assertEqual(image_runner["environment"]["SERIES_IMAGE_QUALITY_PRESET"], "flux2_source_series")
         self.assertEqual(image_runner["environment"]["SERIES_IMAGE_RESUME_SHOTS"], "1")
         self.assertEqual(image_runner["timeout_seconds"], 0)
         self.assertTrue(image_runner["allow_cpu_execution"])
         self.assertEqual(image_runner["required_python_modules"], ["diffusers"])
         self.assertIn("local_ltx_video_backend.py", video_runner["environment"]["SERIES_VIDEO_BACKEND_COMMAND"])
         self.assertEqual(video_runner["environment"]["SERIES_VIDEO_RESUME_SHOTS"], "1")
+        self.assertEqual(video_runner["environment"]["SERIES_VIDEO_LATEST_MODEL_ID"], "Lightricks/LTX-2.3")
+        self.assertEqual(
+            video_runner["environment"]["SERIES_VIDEO_LATEST_MODEL_DIR"],
+            "tools/quality_models/video/Lightricks__LTX-2.3",
+        )
         self.assertEqual(video_runner["environment"]["SERIES_VIDEO_MODEL_ID"], "Lightricks/LTX-Video-0.9.8-13B-distilled")
         self.assertEqual(
             video_runner["environment"]["SERIES_VIDEO_MODEL_DIR"],
             "tools/quality_models/video/Lightricks__LTX-Video-0.9.8-13B-distilled",
         )
+        self.assertEqual(video_runner["environment"]["SERIES_VIDEO_COMPATIBILITY_MODE"], "ltx_diffusers_fallback_until_ltx2_runner")
         self.assertEqual(video_runner["environment"]["SERIES_VIDEO_WIDTH"], "1216")
         self.assertEqual(video_runner["environment"]["SERIES_VIDEO_HEIGHT"], "704")
         self.assertEqual(video_runner["environment"]["SERIES_VIDEO_QUALITY_PRESET"], "source_series_high")

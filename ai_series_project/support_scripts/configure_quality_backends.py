@@ -22,9 +22,36 @@ from support_scripts.pipeline_common import (
     write_json,
 )
 
-VIDEO_MODEL_ID = "Lightricks/LTX-Video-0.9.8-13B-distilled"
-VIDEO_MODEL_DIR = "tools/quality_models/video/Lightricks__LTX-Video-0.9.8-13B-distilled"
-VIDEO_MODEL_REQUIRED_FILES = [
+IMAGE_MODEL_ID = "black-forest-labs/FLUX.2-dev"
+IMAGE_MODEL_DIR = "tools/quality_models/image/black-forest-labs__FLUX.2-dev"
+IMAGE_MODEL_REQUIRED_FILES = [
+    "model_index.json",
+    "flux2-dev.safetensors",
+    "scheduler/scheduler_config.json",
+    "text_encoder/model.safetensors.index.json",
+    "transformer/diffusion_pytorch_model.safetensors.index.json",
+    "vae/diffusion_pytorch_model.safetensors",
+    "tokenizer/tokenizer_config.json",
+]
+IMAGE_IDENTITY_FALLBACK_MODEL_ID = "stabilityai/stable-diffusion-xl-base-1.0"
+IMAGE_IDENTITY_FALLBACK_MODEL_DIR = "tools/quality_models/image/stabilityai__stable-diffusion-xl-base-1.0"
+IMAGE_IDENTITY_FALLBACK_REQUIRED_FILES = [
+    "model_index.json",
+    "scheduler/scheduler_config.json",
+    "text_encoder/model.safetensors",
+    "text_encoder_2/model.safetensors",
+    "unet/diffusion_pytorch_model.safetensors",
+    "vae/diffusion_pytorch_model.safetensors",
+    "tokenizer/tokenizer_config.json",
+]
+VIDEO_LATEST_MODEL_ID = "Lightricks/LTX-2.3"
+VIDEO_LATEST_MODEL_DIR = "tools/quality_models/video/Lightricks__LTX-2.3"
+VIDEO_LATEST_REQUIRED_FILES = [
+    "ltx-2.3-22b-distilled-1.1.safetensors",
+]
+VIDEO_DIFFUSERS_MODEL_ID = "Lightricks/LTX-Video-0.9.8-13B-distilled"
+VIDEO_DIFFUSERS_MODEL_DIR = "tools/quality_models/video/Lightricks__LTX-Video-0.9.8-13B-distilled"
+VIDEO_DIFFUSERS_REQUIRED_FILES = [
     "model_index.json",
     "scheduler/scheduler_config.json",
     "text_encoder/model.safetensors.index.json",
@@ -70,7 +97,18 @@ def configured_backends() -> dict:
             "working_directory": ".",
             "environment": {
                 "SERIES_STORYBOARD_BACKEND_COMMAND": storyboard_backend_command,
+                "SERIES_IMAGE_MODEL_ID": IMAGE_MODEL_ID,
+                "SERIES_IMAGE_MODEL_DIR": IMAGE_MODEL_DIR,
+                "SERIES_IMAGE_IDENTITY_MODEL_ID": IMAGE_IDENTITY_FALLBACK_MODEL_ID,
+                "SERIES_IMAGE_IDENTITY_MODEL_DIR": IMAGE_IDENTITY_FALLBACK_MODEL_DIR,
                 "SERIES_IMAGE_ALLOW_CPU": "1",
+                "SERIES_IMAGE_WIDTH": "1216",
+                "SERIES_IMAGE_HEIGHT": "704",
+                "SERIES_IMAGE_INFERENCE_STEPS": "28",
+                "SERIES_IMAGE_GUIDANCE_SCALE": "3.5",
+                "SERIES_IMAGE_QUALITY_PRESET": "flux2_source_series",
+                "SERIES_IMAGE_REQUIRE_IDENTITY_REFERENCES": "1",
+                "SERIES_IMAGE_REQUIRE_IDENTITY_ADAPTER": "1",
                 "PYTHONUNBUFFERED": "1",
             },
             "requires_gpu": False,
@@ -102,7 +140,18 @@ def configured_backends() -> dict:
             "working_directory": ".",
             "environment": {
                 "SERIES_IMAGE_BACKEND_COMMAND": image_backend_command,
+                "SERIES_IMAGE_MODEL_ID": IMAGE_MODEL_ID,
+                "SERIES_IMAGE_MODEL_DIR": IMAGE_MODEL_DIR,
+                "SERIES_IMAGE_IDENTITY_MODEL_ID": IMAGE_IDENTITY_FALLBACK_MODEL_ID,
+                "SERIES_IMAGE_IDENTITY_MODEL_DIR": IMAGE_IDENTITY_FALLBACK_MODEL_DIR,
                 "SERIES_IMAGE_ALLOW_CPU": "1",
+                "SERIES_IMAGE_WIDTH": "1216",
+                "SERIES_IMAGE_HEIGHT": "704",
+                "SERIES_IMAGE_INFERENCE_STEPS": "28",
+                "SERIES_IMAGE_GUIDANCE_SCALE": "3.5",
+                "SERIES_IMAGE_QUALITY_PRESET": "flux2_source_series",
+                "SERIES_IMAGE_REQUIRE_IDENTITY_REFERENCES": "1",
+                "SERIES_IMAGE_REQUIRE_IDENTITY_ADAPTER": "1",
                 "SERIES_IMAGE_RESUME_SHOTS": "1",
             },
             "requires_gpu": False,
@@ -136,8 +185,11 @@ def configured_backends() -> dict:
             "working_directory": ".",
             "environment": {
                 "SERIES_VIDEO_BACKEND_COMMAND": video_backend_command,
-                "SERIES_VIDEO_MODEL_ID": VIDEO_MODEL_ID,
-                "SERIES_VIDEO_MODEL_DIR": VIDEO_MODEL_DIR,
+                "SERIES_VIDEO_LATEST_MODEL_ID": VIDEO_LATEST_MODEL_ID,
+                "SERIES_VIDEO_LATEST_MODEL_DIR": VIDEO_LATEST_MODEL_DIR,
+                "SERIES_VIDEO_MODEL_ID": VIDEO_DIFFUSERS_MODEL_ID,
+                "SERIES_VIDEO_MODEL_DIR": VIDEO_DIFFUSERS_MODEL_DIR,
+                "SERIES_VIDEO_COMPATIBILITY_MODE": "ltx_diffusers_fallback_until_ltx2_runner",
                 "SERIES_VIDEO_WIDTH": "1216",
                 "SERIES_VIDEO_HEIGHT": "704",
                 "SERIES_VIDEO_FPS": "30",
@@ -228,7 +280,10 @@ def configured_backends() -> dict:
 def ensure_quality_asset_targets(config: dict) -> None:
     foundation_cfg = config.setdefault("foundation_training", {})
     if isinstance(foundation_cfg, dict):
-        foundation_cfg["video_base_model"] = VIDEO_MODEL_ID
+        foundation_cfg["image_base_model"] = IMAGE_MODEL_ID
+        foundation_cfg["image_identity_fallback_model"] = IMAGE_IDENTITY_FALLBACK_MODEL_ID
+        foundation_cfg["video_base_model"] = VIDEO_LATEST_MODEL_ID
+        foundation_cfg["video_diffusers_fallback_model"] = VIDEO_DIFFUSERS_MODEL_ID
     assets_cfg = config.setdefault("quality_backend_assets", {})
     if not isinstance(assets_cfg, dict):
         assets_cfg = {}
@@ -238,20 +293,44 @@ def ensure_quality_asset_targets(config: dict) -> None:
         targets = []
         assets_cfg["targets"] = targets
     existing_names = {str(item.get("name", "")).strip() for item in targets if isinstance(item, dict)}
-    video_target = {
-        "name": "video_base_model",
-        "kind": "huggingface",
-        "repo_id": VIDEO_MODEL_ID,
-        "target_dir": VIDEO_MODEL_DIR,
-        "required_files": VIDEO_MODEL_REQUIRED_FILES,
-    }
-    for item in targets:
-        if isinstance(item, dict) and str(item.get("name", "")).strip() == "video_base_model":
-            item.pop("required_patterns", None)
-            item.update(video_target)
-            break
-    else:
-        targets.append(video_target)
+    model_targets = [
+        {
+            "name": "image_base_model",
+            "kind": "huggingface",
+            "repo_id": IMAGE_MODEL_ID,
+            "target_dir": IMAGE_MODEL_DIR,
+            "required_files": IMAGE_MODEL_REQUIRED_FILES,
+        },
+        {
+            "name": "image_identity_fallback_model",
+            "kind": "huggingface",
+            "repo_id": IMAGE_IDENTITY_FALLBACK_MODEL_ID,
+            "target_dir": IMAGE_IDENTITY_FALLBACK_MODEL_DIR,
+            "required_files": IMAGE_IDENTITY_FALLBACK_REQUIRED_FILES,
+        },
+        {
+            "name": "video_base_model",
+            "kind": "huggingface",
+            "repo_id": VIDEO_LATEST_MODEL_ID,
+            "target_dir": VIDEO_LATEST_MODEL_DIR,
+            "required_files": VIDEO_LATEST_REQUIRED_FILES,
+        },
+        {
+            "name": "video_diffusers_fallback_model",
+            "kind": "huggingface",
+            "repo_id": VIDEO_DIFFUSERS_MODEL_ID,
+            "target_dir": VIDEO_DIFFUSERS_MODEL_DIR,
+            "required_files": VIDEO_DIFFUSERS_REQUIRED_FILES,
+        },
+    ]
+    for model_target in model_targets:
+        for item in targets:
+            if isinstance(item, dict) and str(item.get("name", "")).strip() == model_target["name"]:
+                item.pop("required_patterns", None)
+                item.update(model_target)
+                break
+        else:
+            targets.append(model_target)
     if "wav2lip" not in existing_names:
         targets.insert(
             1 if targets else 0,

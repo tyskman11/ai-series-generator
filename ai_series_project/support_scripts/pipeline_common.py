@@ -350,9 +350,11 @@ DEFAULT_CONFIG = {
         "allow_visible_only_voice_fallback": False,
         "frame_width": 1280,
         "frame_height": 720,
-        "image_base_model": "stabilityai/stable-diffusion-xl-base-1.0",
+        "image_base_model": "black-forest-labs/FLUX.2-dev",
+        "image_identity_fallback_model": "stabilityai/stable-diffusion-xl-base-1.0",
         "identity_adapter_model": "h94/IP-Adapter",
-        "video_base_model": "Lightricks/LTX-Video-0.9.8-13B-distilled",
+        "video_base_model": "Lightricks/LTX-2.3",
+        "video_diffusers_fallback_model": "Lightricks/LTX-Video-0.9.8-13B-distilled",
         "voice_base_model": "openbmb/VoxCPM2",
         "use_local_character_voice_models": True,
         "min_voice_duration_seconds_total": 8.0,
@@ -537,11 +539,31 @@ DEFAULT_CONFIG = {
             {
                 "name": "image_base_model",
                 "kind": "huggingface",
+                "repo_id": "black-forest-labs/FLUX.2-dev",
+                "target_dir": "tools/quality_models/image/black-forest-labs__FLUX.2-dev",
+                "required_files": [
+                    "model_index.json",
+                    "flux2-dev.safetensors",
+                    "scheduler/scheduler_config.json",
+                    "text_encoder/model.safetensors.index.json",
+                    "transformer/diffusion_pytorch_model.safetensors.index.json",
+                    "vae/diffusion_pytorch_model.safetensors",
+                    "tokenizer/tokenizer_config.json",
+                ],
+            },
+            {
+                "name": "image_identity_fallback_model",
+                "kind": "huggingface",
                 "repo_id": "stabilityai/stable-diffusion-xl-base-1.0",
                 "target_dir": "tools/quality_models/image/stabilityai__stable-diffusion-xl-base-1.0",
-                "required_patterns": [
+                "required_files": [
                     "model_index.json",
-                    "*.safetensors",
+                    "scheduler/scheduler_config.json",
+                    "text_encoder/model.safetensors",
+                    "text_encoder_2/model.safetensors",
+                    "unet/diffusion_pytorch_model.safetensors",
+                    "vae/diffusion_pytorch_model.safetensors",
+                    "tokenizer/tokenizer_config.json",
                 ],
             },
             {
@@ -560,6 +582,15 @@ DEFAULT_CONFIG = {
             },
             {
                 "name": "video_base_model",
+                "kind": "huggingface",
+                "repo_id": "Lightricks/LTX-2.3",
+                "target_dir": "tools/quality_models/video/Lightricks__LTX-2.3",
+                "required_files": [
+                    "ltx-2.3-22b-distilled-1.1.safetensors",
+                ],
+            },
+            {
+                "name": "video_diffusers_fallback_model",
                 "kind": "huggingface",
                 "repo_id": "Lightricks/LTX-Video-0.9.8-13B-distilled",
                 "target_dir": "tools/quality_models/video/Lightricks__LTX-Video-0.9.8-13B-distilled",

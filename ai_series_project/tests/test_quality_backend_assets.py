@@ -187,8 +187,10 @@ class QualityBackendAssetTests(unittest.TestCase):
     def test_default_quality_backend_asset_targets_include_project_local_comfyui(self) -> None:
         cfg = {
             "foundation_training": {
-                "image_base_model": "stabilityai/stable-diffusion-xl-base-1.0",
-                "video_base_model": "Lightricks/LTX-Video-0.9.8-13B-distilled",
+                "image_base_model": "black-forest-labs/FLUX.2-dev",
+                "image_identity_fallback_model": "stabilityai/stable-diffusion-xl-base-1.0",
+                "video_base_model": "Lightricks/LTX-2.3",
+                "video_diffusers_fallback_model": "Lightricks/LTX-Video-0.9.8-13B-distilled",
                 "voice_base_model": "openbmb/VoxCPM2",
                 "lipsync_model": "wav2lip",
             },
@@ -199,9 +201,18 @@ class QualityBackendAssetTests(unittest.TestCase):
         targets = STEP59.default_quality_backend_asset_targets(cfg)
         comfy = next(target for target in targets if target["name"] == "comfyui")
         self.assertEqual(comfy["target_dir"], "tools/quality_backends/comfyui")
+        image = next(target for target in targets if target["name"] == "image_base_model")
+        self.assertEqual(image["repo_id"], "black-forest-labs/FLUX.2-dev")
+        self.assertIn("flux2-dev.safetensors", image["required_files"])
+        image_identity = next(target for target in targets if target["name"] == "image_identity_fallback_model")
+        self.assertEqual(image_identity["repo_id"], "stabilityai/stable-diffusion-xl-base-1.0")
+        self.assertIn("unet/diffusion_pytorch_model.safetensors", image_identity["required_files"])
         video = next(target for target in targets if target["name"] == "video_base_model")
-        self.assertEqual(video["repo_id"], "Lightricks/LTX-Video-0.9.8-13B-distilled")
-        self.assertIn("model_index.json", video["required_files"])
+        self.assertEqual(video["repo_id"], "Lightricks/LTX-2.3")
+        self.assertIn("ltx-2.3-22b-distilled-1.1.safetensors", video["required_files"])
+        video_fallback = next(target for target in targets if target["name"] == "video_diffusers_fallback_model")
+        self.assertEqual(video_fallback["repo_id"], "Lightricks/LTX-Video-0.9.8-13B-distilled")
+        self.assertIn("model_index.json", video_fallback["required_files"])
 
     def test_fetch_remote_git_revision_uses_github_api_when_git_missing(self) -> None:
         target = {

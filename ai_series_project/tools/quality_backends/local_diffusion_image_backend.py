@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 import os
 from datetime import datetime
@@ -21,9 +22,13 @@ from backend_common import (
 )
 
 
-DEFAULT_IMAGE_MODEL_DIR = PROJECT_DIR / "tools" / "quality_models" / "image" / "stabilityai__stable-diffusion-xl-base-1.0"
+DEFAULT_IMAGE_MODEL_ID = "black-forest-labs/FLUX.2-dev"
+DEFAULT_IMAGE_MODEL_DIR = PROJECT_DIR / "tools" / "quality_models" / "image" / "black-forest-labs__FLUX.2-dev"
+SDXL_IDENTITY_MODEL_ID = "stabilityai/stable-diffusion-xl-base-1.0"
+SDXL_IDENTITY_MODEL_DIR = PROJECT_DIR / "tools" / "quality_models" / "image" / "stabilityai__stable-diffusion-xl-base-1.0"
 DEFAULT_IDENTITY_ADAPTER_DIR = PROJECT_DIR / "tools" / "quality_models" / "image" / "h94__IP-Adapter"
 IDENTITY_ADAPTER_WEIGHT = "ip-adapter-plus-face_sdxl_vit-h.safetensors"
+FALLBACK_IMAGE_MODEL_DIRS = [DEFAULT_IMAGE_MODEL_DIR, SDXL_IDENTITY_MODEL_DIR]
 _PIPELINE: Any = None
 _PIPELINE_META: dict[str, Any] = {}
 
@@ -137,18 +142,69 @@ def compact_visual_prompt(context: dict[str, Any], scene_package: dict[str, Any]
     return ", ".join([*original_parts[:4], compact])
 
 
-def resolve_model_dir() -> Path:
-    configured = clean_text(os.environ.get("SERIES_IMAGE_MODEL_DIR", ""))
-    candidate = Path(configured) if configured else DEFAULT_IMAGE_MODEL_DIR
+def model_dir_ready(candidate: Path) -> bool:
+    return (candidate / "model_index.json").is_file() and any(candidate.rglob("*.safetensors"))
+
+
+def normalize_model_dir(candidate: Path) -> Path:
     if not candidate.is_absolute():
         candidate = PROJECT_DIR / candidate
-    candidate = candidate.resolve(strict=False)
-    if not (candidate / "model_index.json").exists():
-        raise RuntimeError(
-            "Local SDXL image model is not ready. Run 00_prepare_runtime.py without --skip-downloads "
-            f"or set SERIES_IMAGE_MODEL_DIR. Expected model_index.json in {candidate}."
+    return candidate.resolve(strict=False)
+
+
+def image_model_family(model_id: str, model_dir: Path) -> str:
+    text = f"{model_id} {model_dir}".lower()
+    if "flux" in text:
+        return "flux"
+    if "stable-diffusion-xl" in text or "sdxl" in text:
+        return "sdxl"
+    return "diffusers"
+
+
+def configured_model_id(candidate: Path, *, require_identity_adapter: bool) -> str:
+    env_name = "SERIES_IMAGE_IDENTITY_MODEL_ID" if require_identity_adapter else "SERIES_IMAGE_MODEL_ID"
+    configured = clean_text(os.environ.get(env_name, ""))
+    if configured:
+        return configured
+    resolved = candidate.resolve(strict=False)
+    if resolved == DEFAULT_IMAGE_MODEL_DIR.resolve(strict=False):
+        return DEFAULT_IMAGE_MODEL_ID
+    if resolved == SDXL_IDENTITY_MODEL_DIR.resolve(strict=False):
+        return SDXL_IDENTITY_MODEL_ID
+    return candidate.name.replace("__", "/")
+
+
+def image_model_candidates(*, require_identity_adapter: bool) -> list[Path]:
+    if require_identity_adapter:
+        configured = (
+            clean_text(os.environ.get("SERIES_IMAGE_IDENTITY_MODEL_DIR", ""))
+            or clean_text(os.environ.get("SERIES_IMAGE_IDENTITY_FALLBACK_MODEL_DIR", ""))
         )
-    return candidate
+        if configured:
+            return [normalize_model_dir(Path(configured))]
+        return [SDXL_IDENTITY_MODEL_DIR.resolve(strict=False)]
+    configured = clean_text(os.environ.get("SERIES_IMAGE_MODEL_DIR", ""))
+    if configured:
+        return [normalize_model_dir(Path(configured))]
+    return [path.resolve(strict=False) for path in FALLBACK_IMAGE_MODEL_DIRS]
+
+
+def resolve_model_dir(*, require_identity_adapter: bool = False) -> Path:
+    candidates = image_model_candidates(require_identity_adapter=require_identity_adapter)
+    for candidate in candidates:
+        if model_dir_ready(candidate):
+            return candidate
+    expected = ", ".join(str(candidate) for candidate in candidates)
+    if require_identity_adapter:
+        raise RuntimeError(
+            "Canonical face references require the project-local SDXL identity model because the current "
+            "IP-Adapter face workflow is SDXL-based. Run 00_prepare_runtime.py without --skip-downloads or set "
+            f"SERIES_IMAGE_IDENTITY_MODEL_DIR. Expected model_index.json and safetensors files in {expected}."
+        )
+    raise RuntimeError(
+        "Local FLUX.2 image model is not ready. Run 00_prepare_runtime.py without --skip-downloads "
+        f"or set SERIES_IMAGE_MODEL_DIR. Expected model_index.json and safetensors files in {expected}."
+    )
 
 
 def prompt_from_context(context: dict[str, Any], scene_package: dict[str, Any]) -> tuple[str, str]:
@@ -237,9 +293,20 @@ def enable_pipeline_memory_optimizations(pipeline: Any, *, identity_adapter_load
         pipeline.enable_vae_tiling()
 
 
+def pipeline_accepts_argument(pipeline: Any, name: str) -> bool:
+    try:
+        signature = inspect.signature(pipeline.__call__)
+    except (TypeError, ValueError):
+        return True
+    return name in signature.parameters
+
+
 def load_pipeline(require_identity_adapter: bool) -> tuple[Any, dict[str, Any]]:
     global _PIPELINE, _PIPELINE_META
-    if _PIPELINE is not None:
+    model_dir = resolve_model_dir(require_identity_adapter=require_identity_adapter)
+    model_id = configured_model_id(model_dir, require_identity_adapter=require_identity_adapter)
+    model_family = image_model_family(model_id, model_dir)
+    if _PIPELINE is not None and clean_text(_PIPELINE_META.get("model_dir", "")) == str(model_dir):
         if require_identity_adapter and not bool(_PIPELINE_META.get("identity_adapter_loaded", False)):
             raise RuntimeError(
                 "Canonical face references are present, but the SDXL identity adapter is not loaded. "
@@ -248,33 +315,34 @@ def load_pipeline(require_identity_adapter: bool) -> tuple[Any, dict[str, Any]]:
         return _PIPELINE, dict(_PIPELINE_META)
     try:
         import torch
-        from diffusers import StableDiffusionXLPipeline
+        from diffusers import DiffusionPipeline
     except Exception as exc:
         raise RuntimeError(
             "The real local image backend requires diffusers and torch. Run 00_prepare_runtime.py first."
         ) from exc
 
-    model_dir = resolve_model_dir()
     cuda_ready = bool(torch.cuda.is_available())
     allow_cpu = clean_text(os.environ.get("SERIES_IMAGE_ALLOW_CPU", "")).lower() in {"1", "true", "yes", "on"}
     if not cuda_ready and not allow_cpu:
         raise RuntimeError(
-            "The local SDXL backend requires a CUDA GPU. This worker is CPU-only, so it must not claim "
+            "The local image backend requires a CUDA GPU for production speed. This worker is CPU-only, so it must not claim "
             "shot-image tasks. Run step 16 on a CUDA worker, or explicitly set SERIES_IMAGE_ALLOW_CPU=1 "
             "for a very slow diagnostic CPU render."
         )
-    dtype = torch.float16 if cuda_ready else torch.float32
+    dtype = torch.bfloat16 if cuda_ready and model_family == "flux" else torch.float16 if cuda_ready else torch.float32
     device = "cuda" if cuda_ready else "cpu"
     width, height = target_size()
-    steps = int(float(os.environ.get("SERIES_IMAGE_INFERENCE_STEPS", "36") or "36"))
-    guidance = float(os.environ.get("SERIES_IMAGE_GUIDANCE_SCALE", "6.0") or "6.0")
+    default_steps = "28" if model_family == "flux" else "36"
+    default_guidance = "3.5" if model_family == "flux" else "6.0"
+    steps = int(float(os.environ.get("SERIES_IMAGE_INFERENCE_STEPS", default_steps) or default_steps))
+    guidance = float(os.environ.get("SERIES_IMAGE_GUIDANCE_SCALE", default_guidance) or default_guidance)
     print(
-        f"[INFO] SDXL backend: device={device}, size={width}x{height}, steps={steps}, model={model_dir}",
+        f"[INFO] {model_family.upper()} image backend: device={device}, size={width}x{height}, steps={steps}, model={model_id}",
         flush=True,
     )
 
-    print("[INFO] Loading local SDXL pipeline ...", flush=True)
-    pipeline = StableDiffusionXLPipeline.from_pretrained(
+    print("[INFO] Loading local Diffusers image pipeline ...", flush=True)
+    pipeline = DiffusionPipeline.from_pretrained(
         str(model_dir),
         local_files_only=True,
         torch_dtype=dtype,
@@ -282,7 +350,12 @@ def load_pipeline(require_identity_adapter: bool) -> tuple[Any, dict[str, Any]]:
     )
     adapter_dir = resolve_identity_adapter_dir()
     adapter_loaded = False
-    if identity_adapter_ready(adapter_dir):
+    if model_family != "sdxl" and require_identity_adapter:
+        raise RuntimeError(
+            "Identity-conditioned shots currently use the SDXL IP-Adapter face workflow. "
+            f"The selected model {model_id} is not SDXL; set SERIES_IMAGE_IDENTITY_MODEL_DIR to the project-local SDXL model."
+        )
+    if model_family == "sdxl" and identity_adapter_ready(adapter_dir):
         try:
             pipeline.load_ip_adapter(
                 str(adapter_dir),
@@ -329,7 +402,10 @@ def load_pipeline(require_identity_adapter: bool) -> tuple[Any, dict[str, Any]]:
         "height": height,
         "steps": steps,
         "guidance": guidance,
+        "model_id": model_id,
         "model_dir": str(model_dir),
+        "model_family": model_family,
+        "pipeline_class": type(pipeline).__name__,
         "identity_adapter_dir": str(adapter_dir),
         "identity_adapter_loaded": adapter_loaded,
     }
@@ -378,14 +454,16 @@ def generate_image(
     print(f"[INFO] Generating image: {output_path}", flush=True)
     arguments: dict[str, Any] = {
         "prompt": prompt,
-        "negative_prompt": negative_prompt,
         "width": width,
         "height": height,
         "num_inference_steps": steps,
-        "guidance_scale": guidance,
         "generator": generator,
     }
-    if identity_reference is not None:
+    if negative_prompt and pipeline_accepts_argument(pipeline, "negative_prompt"):
+        arguments["negative_prompt"] = negative_prompt
+    if pipeline_accepts_argument(pipeline, "guidance_scale"):
+        arguments["guidance_scale"] = guidance
+    if identity_reference is not None and pipeline_accepts_argument(pipeline, "ip_adapter_image"):
         arguments["ip_adapter_image"] = identity_reference
     result = pipeline(
         **arguments,
@@ -419,7 +497,7 @@ def write_alternate_image(context: dict[str, Any], source: Path) -> None:
         return
     target_dir = Path(alternate_dir)
     target_dir.mkdir(parents=True, exist_ok=True)
-    target = target_dir / f"{source.stem}_sdxl_alt01{source.suffix or '.png'}"
+    target = target_dir / f"{source.stem}_image_alt01{source.suffix or '.png'}"
     copy_if_needed(source, target)
 
 
@@ -521,7 +599,7 @@ def shot_manifest(
     ensure_parent(str(manifest_path))
     digest = hashlib.sha256(output_path.read_bytes()).hexdigest() if output_path.exists() else ""
     payload = {
-        "task_id": f"{clean_text(shot.get('shot_id', 'shot'))}_local_sdxl_image",
+        "task_id": f"{clean_text(shot.get('shot_id', 'shot'))}_local_image",
         "scene_id": clean_text(shot.get("scene_id", "")),
         "shot_id": clean_text(shot.get("shot_id", "")),
         "task_type": "image",
@@ -531,6 +609,8 @@ def shot_manifest(
             "seed": seed,
             "identity_reference_images": [str(path) for path in reference_paths],
             "identity_seed_scope": "episode_scene_character_set",
+            "model_id": clean_text(pipeline_meta.get("model_id", "")),
+            "model_family": clean_text(pipeline_meta.get("model_family", "")),
         },
         "outputs": {"primary_frame": str(output_path)},
         "output_hashes": {str(output_path): digest} if digest else {},
@@ -538,12 +618,19 @@ def shot_manifest(
         "fallback_used": False,
         "placeholder_used": False,
         "identity_conditioning": {
-            "mode": "sdxl_ip_adapter_plus_face",
+            "mode": "sdxl_ip_adapter_plus_face" if reference_paths else "none",
             "adapter_loaded": bool(pipeline_meta.get("identity_adapter_loaded", False)),
             "adapter_dir": clean_text(pipeline_meta.get("identity_adapter_dir", "")),
             "reference_count": len(reference_paths),
             "characters_conditioned": reference_characters,
             "missing_characters": missing_characters,
+            "identity_model_id": clean_text(pipeline_meta.get("model_id", "")),
+        },
+        "model": {
+            "id": clean_text(pipeline_meta.get("model_id", "")),
+            "family": clean_text(pipeline_meta.get("model_family", "")),
+            "dir": clean_text(pipeline_meta.get("model_dir", "")),
+            "pipeline_class": clean_text(pipeline_meta.get("pipeline_class", "")),
         },
         "finished_at": datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
     }
