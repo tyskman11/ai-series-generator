@@ -430,6 +430,92 @@ class IdentityContinuityAndIntroTests(unittest.TestCase):
         self.assertEqual(video_runner["timeout_seconds"], 0)
         self.assertEqual(image_runner["environment"]["SERIES_IMAGE_RESUME_SHOTS"], "1")
         self.assertEqual(video_runner["environment"]["SERIES_VIDEO_RESUME_SHOTS"], "1")
+        self.assertEqual(video_runner["environment"]["SERIES_VIDEO_MODEL_ID"], "Lightricks/LTX-Video-0.9.8-13B-distilled")
+        self.assertEqual(video_runner["environment"]["SERIES_VIDEO_WIDTH"], "1216")
+        self.assertEqual(video_runner["environment"]["SERIES_VIDEO_HEIGHT"], "704")
+
+    def test_ltx_video_prompt_uses_identity_set_and_writer_room_context(self) -> None:
+        scene_package = {
+            "summary": "Babe tries to hide a shortcut before the demo.",
+            "characters": ["Babe Carano", "Kenzie Bell"],
+            "behavior_constraints": ["Babe deflects blame quickly"],
+            "dialogue_style_constraints": ["Kenzie uses analytical corrections"],
+            "conflict": "the shortcut broke the demo",
+            "set_context": {
+                "name": "Game Shakers office",
+                "visual_description": "bright studio set with game posters",
+                "lighting": "bright sitcom studio lighting",
+                "camera_axis": "front-facing multi-camera setup",
+                "key_props": ["tablet", "monitors"],
+            },
+            "writer_room_plan": {
+                "scene_function": "escalation",
+                "conflict_source": "Babe hides an improvisation",
+                "who_drives_scene": "Babe",
+                "who_resists_scene": "Kenzie",
+                "who_gets_punchline": "Hudson",
+            },
+            "character_continuity_lock": {
+                "Babe Carano": {"outfit_lock": True, "hair_lock": True, "voice_lock": True},
+                "Kenzie Bell": {"outfit_lock": True, "hair_lock": True, "voice_lock": True},
+            },
+            "dialogue_line_metadata": [
+                {
+                    "line_index": 0,
+                    "speaker": "Babe Carano",
+                    "dialogue_function": "deflects blame",
+                    "physical_action": "hides tablet",
+                    "facial_expression": "forced confidence",
+                }
+            ],
+            "shot_packages": [
+                {
+                    "shot_id": "scene_0001_shot_001",
+                    "characters_visible": ["Babe Carano", "Kenzie Bell"],
+                    "dialogue_line_indices": [0],
+                }
+            ],
+            "video_generation": {"prompt": "generate a grounded sitcom shot"},
+        }
+
+        prompt = VIDEO_BACKEND.prompt_from_package(
+            {"shot_id": "scene_0001_shot_001", "shot_type": "medium two-shot"},
+            scene_package,
+        )
+        negative = VIDEO_BACKEND.negative_prompt_from_package(scene_package)
+
+        self.assertIn("visible characters: Babe Carano, Kenzie Bell", prompt)
+        self.assertIn("same canonical face from references", prompt)
+        self.assertIn("Game Shakers office", prompt)
+        self.assertIn("who gets punchline: Hudson", prompt)
+        self.assertIn("shot acting beats", prompt)
+        self.assertIn("no gender swaps", prompt)
+        self.assertIn("wrong gender", negative)
+
+    def test_ltx_model_dir_prefers_new_diffusers_model_and_falls_back_to_legacy(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            new_dir = root / "new"
+            legacy_dir = root / "legacy"
+            legacy_dir.mkdir(parents=True)
+            (legacy_dir / "model_index.json").write_text("{}", encoding="utf-8")
+            (legacy_dir / "model.safetensors").write_bytes(b"weights")
+            with mock.patch.object(VIDEO_BACKEND, "DEFAULT_VIDEO_MODEL_DIR", new_dir), mock.patch.object(
+                VIDEO_BACKEND,
+                "LEGACY_VIDEO_MODEL_DIR",
+                legacy_dir,
+            ), mock.patch.object(
+                VIDEO_BACKEND,
+                "FALLBACK_VIDEO_MODEL_DIRS",
+                [new_dir, legacy_dir],
+            ), mock.patch.dict(
+                "os.environ",
+                {},
+                clear=False,
+            ):
+                resolved = VIDEO_BACKEND.resolve_model_dir()
+
+        self.assertEqual(resolved, legacy_dir.resolve(strict=False))
 
     def test_ltx_intro_resume_keeps_completed_shot(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

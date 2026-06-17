@@ -39,6 +39,14 @@ from support_scripts.pipeline_common import (
 
 DOWNLOAD_METADATA_FILE = ".quality_backend_asset.json"
 GITHUB_API_BASE = "https://api.github.com"
+DIFFUSERS_LTX_098_13B_REQUIRED_FILES = [
+    "model_index.json",
+    "scheduler/scheduler_config.json",
+    "text_encoder/model.safetensors.index.json",
+    "transformer/diffusion_pytorch_model.safetensors.index.json",
+    "vae/diffusion_pytorch_model.safetensors",
+    "tokenizer/tokenizer_config.json",
+]
 
 
 def parse_args() -> argparse.Namespace:
@@ -168,15 +176,17 @@ def default_quality_backend_asset_targets(cfg: dict[str, Any]) -> list[dict[str,
         model_id = coalesce_text(foundation_cfg.get(config_key, ""))
         if not model_id:
             continue
-        targets.append(
-            {
-                "name": config_key,
-                "kind": "huggingface",
-                "repo_id": model_id,
-                "target_dir": f"tools/quality_models/{group_name}/{model_id.replace('/', '__')}",
-                "required_patterns": required_patterns,
-            }
-        )
+        target = {
+            "name": config_key,
+            "kind": "huggingface",
+            "repo_id": model_id,
+            "target_dir": f"tools/quality_models/{group_name}/{model_id.replace('/', '__')}",
+            "required_patterns": required_patterns,
+        }
+        if config_key == "video_base_model" and model_id == "Lightricks/LTX-Video-0.9.8-13B-distilled":
+            target.pop("required_patterns", None)
+            target["required_files"] = DIFFUSERS_LTX_098_13B_REQUIRED_FILES
+        targets.append(target)
     identity_adapter_model = coalesce_text(foundation_cfg.get("identity_adapter_model", ""))
     if identity_adapter_model:
         targets.append(

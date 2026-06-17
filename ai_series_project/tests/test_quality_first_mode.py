@@ -247,6 +247,14 @@ class QualityFirstModeTests(unittest.TestCase):
         self.assertEqual(image_runner["required_python_modules"], ["diffusers"])
         self.assertIn("local_ltx_video_backend.py", video_runner["environment"]["SERIES_VIDEO_BACKEND_COMMAND"])
         self.assertEqual(video_runner["environment"]["SERIES_VIDEO_RESUME_SHOTS"], "1")
+        self.assertEqual(video_runner["environment"]["SERIES_VIDEO_MODEL_ID"], "Lightricks/LTX-Video-0.9.8-13B-distilled")
+        self.assertEqual(
+            video_runner["environment"]["SERIES_VIDEO_MODEL_DIR"],
+            "tools/quality_models/video/Lightricks__LTX-Video-0.9.8-13B-distilled",
+        )
+        self.assertEqual(video_runner["environment"]["SERIES_VIDEO_WIDTH"], "1216")
+        self.assertEqual(video_runner["environment"]["SERIES_VIDEO_HEIGHT"], "704")
+        self.assertEqual(video_runner["environment"]["SERIES_VIDEO_QUALITY_PRESET"], "source_series_high")
         self.assertEqual(video_runner["timeout_seconds"], 0)
         self.assertEqual(video_runner["required_python_modules"], ["diffusers"])
         self.assertIn("local_wav2lip_backend.py", lipsync_runner["environment"]["SERIES_LIPSYNC_BACKEND_COMMAND"])

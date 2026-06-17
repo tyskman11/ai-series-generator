@@ -68,6 +68,17 @@ from support_scripts.pipeline_common import (
     write_realtime_preview,
 )
 
+DEFAULT_LTX_VIDEO_ENVIRONMENT = {
+    "SERIES_VIDEO_MODEL_ID": "Lightricks/LTX-Video-0.9.8-13B-distilled",
+    "SERIES_VIDEO_MODEL_DIR": "tools/quality_models/video/Lightricks__LTX-Video-0.9.8-13B-distilled",
+    "SERIES_VIDEO_WIDTH": "1216",
+    "SERIES_VIDEO_HEIGHT": "704",
+    "SERIES_VIDEO_FPS": "30",
+    "SERIES_VIDEO_INFERENCE_STEPS": "30",
+    "SERIES_VIDEO_GUIDANCE_SCALE": "3.0",
+    "SERIES_VIDEO_QUALITY_PRESET": "source_series_high",
+}
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -4392,6 +4403,8 @@ def generate_season_intro_video(
         if runner_name == "finished_episode_image_runner":
             environment["SERIES_IMAGE_RESUME_SHOTS"] = "1"
         else:
+            for key, value in DEFAULT_LTX_VIDEO_ENVIRONMENT.items():
+                environment.setdefault(key, value)
             environment["SERIES_VIDEO_RESUME_SHOTS"] = "1"
         external_cfg[runner_name] = runner_settings
         runner_cfg["external_backends"] = external_cfg

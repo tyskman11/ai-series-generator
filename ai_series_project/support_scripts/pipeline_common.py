@@ -352,7 +352,7 @@ DEFAULT_CONFIG = {
         "frame_height": 720,
         "image_base_model": "stabilityai/stable-diffusion-xl-base-1.0",
         "identity_adapter_model": "h94/IP-Adapter",
-        "video_base_model": "Lightricks/LTX-Video",
+        "video_base_model": "Lightricks/LTX-Video-0.9.8-13B-distilled",
         "voice_base_model": "openbmb/VoxCPM2",
         "use_local_character_voice_models": True,
         "min_voice_duration_seconds_total": 8.0,
@@ -561,10 +561,15 @@ DEFAULT_CONFIG = {
             {
                 "name": "video_base_model",
                 "kind": "huggingface",
-                "repo_id": "Lightricks/LTX-Video",
-                "target_dir": "tools/quality_models/video/Lightricks__LTX-Video",
-                "required_patterns": [
-                    "*.safetensors",
+                "repo_id": "Lightricks/LTX-Video-0.9.8-13B-distilled",
+                "target_dir": "tools/quality_models/video/Lightricks__LTX-Video-0.9.8-13B-distilled",
+                "required_files": [
+                    "model_index.json",
+                    "scheduler/scheduler_config.json",
+                    "text_encoder/model.safetensors.index.json",
+                    "transformer/diffusion_pytorch_model.safetensors.index.json",
+                    "vae/diffusion_pytorch_model.safetensors",
+                    "tokenizer/tokenizer_config.json",
                 ],
             },
             {

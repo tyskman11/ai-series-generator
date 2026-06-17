@@ -71,9 +71,11 @@ The project is intentionally strict about the difference between an intermediate
 - `19_regenerate_weak_scenes.py` now reads those hints and chooses a narrower retry plan for story/dialogue, voice/lip-sync, or scene-render problems instead of always treating every weak scene the same way
 - `18_quality_gate.py` keeps running regeneration/rerender cycles until the gate passes or the configured retry-cycle limit is reached
 - final output quality now depends on the real local backend stack being ready: SDXL/diffusers for frames, LTX/diffusers for video, XTTS for cloned dialogue, and Wav2Lip for lip-sync
+- the default local video checkpoint is now `Lightricks/LTX-Video-0.9.8-13B-distilled` in Diffusers format; the older `Lightricks/LTX-Video` folder remains a compatibility fallback when already downloaded
 - generation now creates a finished-episode blueprint with act structure, A/B story, callbacks, scene functions, set continuity, shot plans, dialogue-line acting metadata, audio-mix plans, and an edit decision list
 - render packages now carry per-shot package targets, character continuity locks, set context, scene audio-mix targets, and standard backend manifest paths
 - the local SDXL and LTX quality backends now execute shot packages, write per-shot manifests, and assemble scene video from generated shot clips instead of treating the shot plan as metadata only
+- the LTX runner now builds prompts from visible characters, continuity locks, set context, writer-room plans, behavior constraints, dialogue acting beats, and strong negative prompts against identity drift, gender swaps, blue-filter placeholders, and slideshow output
 - character frame generation now resolves reviewed preview assets portably, builds a compact canonical reference library, and conditions SDXL with the project-local IP-Adapter Plus Face model instead of relying on names alone
 - multi-character shots now reserve reference-board coverage for every visible figure before adding extra samples; shot manifests record exactly which named identities were conditioned
 - the Finished Episode Gate now rejects missing canonical face references and shots rendered without identity conditioning, so distorted or identity-drifting frames cannot count as finished output
@@ -324,6 +326,7 @@ The project is configured for quality-first finished-episode generation:
 - lip-sync expected
 - external backend runner hooks configured through portable project-local wrappers
 - `00_prepare_runtime.py` writes real local backend commands for SDXL image generation, LTX video generation, XTTS voice cloning, and Wav2Lip lip-sync
+- the configured LTX video runner uses `Lightricks/LTX-Video-0.9.8-13B-distilled` at `1216x704`/`30fps` by default, writes model/prompt/runtime metadata into shot manifests, and only falls back to the legacy `Lightricks/LTX-Video` directory when the new Diffusers model is not present
 - the old `project_local_*` still-frame/mux scripts are treated as diagnostics and are rejected by the quality-first guard
 - the XTTS voice runner now clones from character reference audio and does not use system TTS in quality-first mode
 - `cloning.force_voice_cloning` is enabled by default, so quality-first dialogue lines must be synthesized as cloned speech instead of copied from original episode audio
@@ -467,6 +470,7 @@ Important areas:
 - `generation.show_profile.*`: reusable public style, camera, continuity, subtitle, and export-disclosure defaults that are copied into scene-generation prompts without absolute paths
 - `generation.default_season_id`: season key written into episode blueprints and render packages, defaulting to `season_01`
 - `foundation_training.identity_adapter_model`: project-local Hugging Face identity-conditioning model, defaulting to `h94/IP-Adapter`
+- `foundation_training.video_base_model`: project-local Hugging Face video model, defaulting to `Lightricks/LTX-Video-0.9.8-13B-distilled` for the Diffusers LTX runner
 - `season_intro.enabled`: enables the fixed per-season intro in Finished Episode rendering
 - `season_intro.auto_generate_if_missing`: generates the first canonical intro through the real image/video backends when no approved source exists
 - `season_intro.generated_duration_seconds`: default generated intro duration; profiles can override it
@@ -495,6 +499,8 @@ Important areas:
 - `foundation_training.*`, `adapter_training.*`, `fine_tune_training.*`, `backend_fine_tune.*`
 - `external_backends.*`: runner templates and project-local backend commands
 - `external_backends.*.environment`: set real generation commands for storyboard/image/video/lip-sync; fallback scripts such as `project_local_video_backend.py` are blocked by default in quality-first mode
+- `external_backends.finished_episode_video_runner.environment.SERIES_VIDEO_MODEL_DIR`: project-relative path to the active Diffusers LTX model; leave the template default unless you intentionally test another compatible local model
+- `SERIES_VIDEO_MODEL_ID`, `SERIES_VIDEO_WIDTH`, `SERIES_VIDEO_HEIGHT`, `SERIES_VIDEO_FPS`, `SERIES_VIDEO_INFERENCE_STEPS`, and `SERIES_VIDEO_GUIDANCE_SCALE`: optional local overrides for model identity and render quality. Increasing size/steps can improve output but may make CPU/NAS generation extremely slow.
 - `external_backends.*.timeout_seconds`: configured quality backends use `0`, meaning no generation time limit; interrupted image/video shot batches resume completed shots through `SERIES_IMAGE_RESUME_SHOTS=1` and `SERIES_VIDEO_RESUME_SHOTS=1`
 - `release_mode.*`: quality gate thresholds and retry behavior, including `retry_until_pass`, `max_auto_retry_cycles`, and full-rerender retries when no weak-scene queue remains
 - `release_mode.max_regeneration_cost_per_cycle`: per-cycle weak-scene regeneration cost budget; low-cost and blocked diagnostics remain visible while expensive work can be deferred
@@ -631,6 +637,8 @@ python -m py_compile 00_prepare_runtime.py 03_diarize_and_transcribe.py 04_link_
 ## Known Limitations
 
 - project-local fallback image/video generation still does not equal strong dedicated TV-quality generation backends
+- `Lightricks/LTX-2.3` is newer than the Diffusers default and may be a better external video backend target, but its public checkpoint layout is not a drop-in Diffusers `from_pretrained` model at the time this README was updated. Use it through a compatible LTX-2/ComfyUI workflow or external runner rather than pointing `SERIES_VIDEO_MODEL_DIR` at the raw checkpoint folder.
+- even the improved LTX default will not make characters perfectly match a source series by itself. Strong likeness still depends on rights-safe canonical face references, clean set references, identity-conditioned image keyframes, character-specific LoRAs or regional identity workflows, and measured rejection of warped/drifting outputs.
 - SDXL plus one shared IP-Adapter reference board improves identity stability but does not fully solve multi-person regional identity binding, difficult profiles, occlusion, extreme expressions, hands crossing faces, or long-range video identity drift
 - the quality gate verifies reference and conditioning evidence from manifests; it does not yet run an independent face-embedding comparison against every generated frame
 - canonical outfit, hairstyle, age-group, and visual-presentation labels are only as complete as the reviewed character metadata; the image references remain the authoritative identity anchor when these text fields are empty
@@ -685,6 +693,7 @@ python -m py_compile 00_prepare_runtime.py 03_diarize_and_transcribe.py 04_link_
 - behavior-model schema version `2`, writer-room scene plans, richer delivery metadata, lip-sync backend priority resolution, and scope-aware weak-scene regeneration are now part of the main generation path
 - Finished Episode Mode now adds episode blueprints, set bible, character continuity locks, multi-shot plans, EDL, audio mix planning, backend manifests, Finished Episode Gate, Realism Reports, export-type separation, and blocked-scope retry handling
 - local SDXL and LTX runners now execute shot packages, write shot manifests, and let scene video be assembled from generated shot clips instead of relying only on scene-level placeholders
+- the local LTX runner now defaults to `Lightricks/LTX-Video-0.9.8-13B-distilled`, records the active model/profile in shot manifests, supports Diffusers `DiffusionPipeline` loading for the newer model format, and uses richer source-series identity/set/behavior prompts plus negative prompt support when the loaded pipeline accepts it
 - reviewed face previews now feed a portable canonical reference library, local SDXL uses project-downloaded IP-Adapter identity conditioning, and the quality gate blocks missing or partial named-character conditioning
 - SDXL now loads the IP-Adapter before applying memory optimizations; compatible VAE slicing/tiling remains enabled while incompatible attention-processor replacement is avoided, fixing CPU/Linux failures with current Diffusers releases
 - scene generation now creates a canonical identity slot for every visible named character instead of silently limiting conditioning to two people; step `16` also repairs older storyboard inputs from `character_reference_library.json` before dispatching a backend
@@ -700,11 +709,15 @@ python -m py_compile 00_prepare_runtime.py 03_diarize_and_transcribe.py 04_link_
 
 ## In Progress
 
-- no repo-local roadmap item from the previous `In Progress` list is intentionally left as a documentation-only promise after this implementation pass
 - active validation is now evidence-driven: run real rights-safe source material through the configured image, video, voice, lip-sync, and mastering backends, inspect the readiness reports, and fix the blocker that the Finished Episode Gate names
+- compare the new LTX 0.9.8 13B Diffusers runner against a rights-safe external LTX-2.3/ComfyUI workflow once that workflow is installed locally, then keep the better backend as the configured production runner
+- improve source-series likeness by collecting stronger canonical face/set/outfit references and by training or configuring character-specific identity adapters instead of relying only on text prompts and a shared reference board
 - backend-specific quality still improves only when those backends return stronger media, manifests, reference coverage, and metrics than the project-local compatibility paths can measure
 
 ## Planned
 
-- no named repo-local feature from the previous `Planned` list remains unimplemented in the public pipeline contract
+- add a backend benchmark script that renders the same shot package through configured video backends and compares motion quality, identity drift, duration match, and manifest completeness
+- add optional ComfyUI/LTX-2 workflow templates for newer non-Diffusers checkpoints while keeping them disabled until the required tools and model files are present locally
+- add stronger per-character visual consistency scoring using face embedding checks against generated keyframes and video preview frames
+- add set-reference selection and shot continuity scoring so the gate can distinguish a real recurring set from generic AI interiors
 - future ideas should be added here only after a measured backend, reference, review, or quality-report bottleneck shows that the existing diagnostics, manifests, budgets, profiles, evaluators, benchmark helpers, review flows, and disclosure packaging need another concrete extension

@@ -188,7 +188,7 @@ class QualityBackendAssetTests(unittest.TestCase):
         cfg = {
             "foundation_training": {
                 "image_base_model": "stabilityai/stable-diffusion-xl-base-1.0",
-                "video_base_model": "Lightricks/LTX-Video",
+                "video_base_model": "Lightricks/LTX-Video-0.9.8-13B-distilled",
                 "voice_base_model": "openbmb/VoxCPM2",
                 "lipsync_model": "wav2lip",
             },
@@ -199,7 +199,9 @@ class QualityBackendAssetTests(unittest.TestCase):
         targets = STEP59.default_quality_backend_asset_targets(cfg)
         comfy = next(target for target in targets if target["name"] == "comfyui")
         self.assertEqual(comfy["target_dir"], "tools/quality_backends/comfyui")
-        self.assertTrue(any(target["name"] == "video_base_model" for target in targets))
+        video = next(target for target in targets if target["name"] == "video_base_model")
+        self.assertEqual(video["repo_id"], "Lightricks/LTX-Video-0.9.8-13B-distilled")
+        self.assertIn("model_index.json", video["required_files"])
 
     def test_fetch_remote_git_revision_uses_github_api_when_git_missing(self) -> None:
         target = {

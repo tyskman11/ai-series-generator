@@ -22,6 +22,17 @@ from support_scripts.pipeline_common import (
     write_json,
 )
 
+VIDEO_MODEL_ID = "Lightricks/LTX-Video-0.9.8-13B-distilled"
+VIDEO_MODEL_DIR = "tools/quality_models/video/Lightricks__LTX-Video-0.9.8-13B-distilled"
+VIDEO_MODEL_REQUIRED_FILES = [
+    "model_index.json",
+    "scheduler/scheduler_config.json",
+    "text_encoder/model.safetensors.index.json",
+    "transformer/diffusion_pytorch_model.safetensors.index.json",
+    "vae/diffusion_pytorch_model.safetensors",
+    "tokenizer/tokenizer_config.json",
+]
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -125,6 +136,14 @@ def configured_backends() -> dict:
             "working_directory": ".",
             "environment": {
                 "SERIES_VIDEO_BACKEND_COMMAND": video_backend_command,
+                "SERIES_VIDEO_MODEL_ID": VIDEO_MODEL_ID,
+                "SERIES_VIDEO_MODEL_DIR": VIDEO_MODEL_DIR,
+                "SERIES_VIDEO_WIDTH": "1216",
+                "SERIES_VIDEO_HEIGHT": "704",
+                "SERIES_VIDEO_FPS": "30",
+                "SERIES_VIDEO_INFERENCE_STEPS": "30",
+                "SERIES_VIDEO_GUIDANCE_SCALE": "3.0",
+                "SERIES_VIDEO_QUALITY_PRESET": "source_series_high",
                 "SERIES_VIDEO_RESUME_SHOTS": "1",
             },
             "required_commands": [],
@@ -207,6 +226,9 @@ def configured_backends() -> dict:
 
 
 def ensure_quality_asset_targets(config: dict) -> None:
+    foundation_cfg = config.setdefault("foundation_training", {})
+    if isinstance(foundation_cfg, dict):
+        foundation_cfg["video_base_model"] = VIDEO_MODEL_ID
     assets_cfg = config.setdefault("quality_backend_assets", {})
     if not isinstance(assets_cfg, dict):
         assets_cfg = {}
@@ -216,6 +238,20 @@ def ensure_quality_asset_targets(config: dict) -> None:
         targets = []
         assets_cfg["targets"] = targets
     existing_names = {str(item.get("name", "")).strip() for item in targets if isinstance(item, dict)}
+    video_target = {
+        "name": "video_base_model",
+        "kind": "huggingface",
+        "repo_id": VIDEO_MODEL_ID,
+        "target_dir": VIDEO_MODEL_DIR,
+        "required_files": VIDEO_MODEL_REQUIRED_FILES,
+    }
+    for item in targets:
+        if isinstance(item, dict) and str(item.get("name", "")).strip() == "video_base_model":
+            item.pop("required_patterns", None)
+            item.update(video_target)
+            break
+    else:
+        targets.append(video_target)
     if "wav2lip" not in existing_names:
         targets.insert(
             1 if targets else 0,
