@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 import subprocess
 import sys
@@ -239,6 +240,57 @@ class QualityFirstModeTests(unittest.TestCase):
                                 ),
                                 "sdxl",
                             )
+
+    def test_local_image_backend_filters_montage_and_context_identity_references(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            preview_dir = root / "characters" / "previews" / "face_001"
+            safe_crop = preview_dir / "scene_0001_f10_1_crop.jpg"
+            montage = preview_dir / "face_001_montage.jpg"
+            context = preview_dir / "scene_0001_f10_1_context.jpg"
+            for path in (safe_crop, montage, context):
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(b"image")
+
+            scene_package = {
+                "reference_slots": [
+                    {
+                        "type": "character",
+                        "name": "Babe Carano",
+                        "portrait_images": [str(montage), str(safe_crop)],
+                        "context_images": [str(context)],
+                    }
+                ]
+            }
+
+            references = local_diffusion_image_backend.reference_images_by_character(
+                scene_package,
+                ["Babe Carano"],
+            )
+
+            self.assertEqual(references["Babe Carano"], [safe_crop])
+            self.assertTrue(local_diffusion_image_backend.identity_reference_is_safe(safe_crop))
+            self.assertFalse(local_diffusion_image_backend.identity_reference_is_safe(montage))
+            self.assertFalse(local_diffusion_image_backend.identity_reference_is_safe(context))
+
+    def test_local_image_backend_rejects_resume_manifest_with_montage_reference(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            manifest = root / "shot_image_manifest.json"
+            manifest.write_text(
+                json.dumps(
+                    {
+                        "inputs": {
+                            "identity_reference_images": [
+                                str(root / "face_001" / "face_001_montage.jpg"),
+                            ]
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            self.assertFalse(local_diffusion_image_backend.manifest_identity_references_are_safe(manifest))
 
     def test_find_project_local_ffmpeg_prefers_platform_binary_from_runtime(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

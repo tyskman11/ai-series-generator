@@ -222,6 +222,47 @@ class IdentityContinuityAndIntroTests(unittest.TestCase):
         self.assertTrue(status["reference_ready"])
         self.assertFalse(status["identity_conditioned"])
 
+    def test_identity_gate_rejects_montage_reference_manifests(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            babe_reference = root / "scene_0001_f10_1_crop.jpg"
+            babe_reference.write_bytes(b"babe")
+            manifest = root / "shot_manifest.json"
+            pipeline_common.write_json(
+                manifest,
+                {
+                    "identity_conditioning": {
+                        "adapter_loaded": True,
+                        "reference_count": 1,
+                        "characters_conditioned": ["Babe"],
+                        "reference_safety": False,
+                        "unsafe_reference_images": [str(root / "face_001_montage.jpg")],
+                    }
+                },
+            )
+            scene = {
+                "scene_id": "scene_0001",
+                "characters": ["Babe"],
+                "character_continuity_lock": {
+                    "Babe": {"reference_images": [str(babe_reference)]},
+                },
+                "shot_packages": [
+                    {
+                        "characters_visible": ["Babe"],
+                        "target_outputs": {"manifest": str(manifest)},
+                    }
+                ],
+            }
+
+            status = STEP18.scene_identity_status(scene)
+            checks = STEP18.scene_content_quality_checks({"scenes": [scene]}, {"finished_episode_mode": {"enabled": True}})
+
+        self.assertTrue(status["reference_ready"])
+        self.assertFalse(status["identity_references_safe"])
+        self.assertFalse(status["identity_conditioned"])
+        self.assertEqual(checks["unsafe_identity_reference_scene_count"], 1)
+        self.assertIn("identity references include montage/contact-sheet images", checks["realism_rows"][0]["failed_reasons"])
+
     def test_scene_without_visible_people_does_not_create_identity_blocker(self) -> None:
         status = STEP18.scene_identity_status({"characters": [], "shot_packages": []})
 

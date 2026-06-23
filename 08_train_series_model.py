@@ -784,13 +784,13 @@ def build_character_reference_library(char_map: dict) -> dict[str, dict]:
         append_reference_assets(
             entry["context_images"],
             preview_dirs,
-            ["*_context.jpg", "*_speaker_frame_*.jpg", "*.jpg"],
+            ["*_context.jpg", "*_speaker_frame_*.jpg"],
             limit=8,
         )
         append_reference_assets(
             entry["portrait_images"],
             preview_dirs,
-            ["*_crop.jpg", "*_montage.jpg", "*.jpg"],
+            ["*_crop.jpg"],
             limit=8,
         )
     for entry in library.values():

@@ -375,6 +375,7 @@ def scene_identity_status(scene: dict[str, Any]) -> dict[str, Any]:
 
     expected_conditioned_shots = 0
     conditioned_shots = 0
+    unsafe_identity_reference_images: list[str] = []
     for shot in scene.get("shot_packages", []) if isinstance(scene.get("shot_packages", []), list) else []:
         if not isinstance(shot, dict):
             continue
@@ -386,6 +387,13 @@ def scene_identity_status(scene: dict[str, Any]) -> dict[str, Any]:
         manifest_path = stored_path_if_present(outputs.get("manifest", ""))
         manifest = read_json(manifest_path, {}) if manifest_path and manifest_path.is_file() else {}
         identity = manifest.get("identity_conditioning", {}) if isinstance(manifest.get("identity_conditioning", {}), dict) else {}
+        shot_unsafe_references = [
+            str(value or "").strip()
+            for value in identity.get("unsafe_reference_images", [])
+            if str(value or "").strip()
+        ] if isinstance(identity.get("unsafe_reference_images", []), list) else []
+        if shot_unsafe_references:
+            unsafe_identity_reference_images.extend(shot_unsafe_references)
         conditioned_characters = {
             str(value or "").strip()
             for value in identity.get("characters_conditioned", [])
@@ -396,14 +404,19 @@ def scene_identity_status(scene: dict[str, Any]) -> dict[str, Any]:
             if conditioned_characters
             else int(identity.get("reference_count", 0) or 0) >= len(visible)
         )
-        if bool(identity.get("adapter_loaded", False)) and covered:
+        references_safe = bool(identity.get("reference_safety", True)) and not shot_unsafe_references
+        if bool(identity.get("adapter_loaded", False)) and covered and references_safe:
             conditioned_shots += 1
+    unsafe_identity_reference_images = list(dict.fromkeys(unsafe_identity_reference_images))
     return {
         "characters": characters,
         "missing_characters": missing_characters,
         "reference_ready": not missing_characters,
         "expected_conditioned_shots": expected_conditioned_shots,
         "conditioned_shots": conditioned_shots,
+        "unsafe_identity_reference_images": unsafe_identity_reference_images,
+        "unsafe_identity_reference_count": len(unsafe_identity_reference_images),
+        "identity_references_safe": not unsafe_identity_reference_images,
         "identity_conditioned": expected_conditioned_shots == 0 or conditioned_shots == expected_conditioned_shots,
     }
 
@@ -883,6 +896,10 @@ def scene_realism_row(
         missing_names = ", ".join(identity_status.get("missing_characters", []) or [])
         failed_reasons.append(f"canonical face references missing{f' for {missing_names}' if missing_names else ''}")
         hints["collect_character_face_references"] = True
+    if not bool(identity_status.get("identity_references_safe", True)):
+        failed_reasons.append("identity references include montage/contact-sheet images")
+        hints["rerun_identity_conditioned_images"] = True
+        hints["repair_backend_manifests"] = True
     if not bool(identity_status.get("identity_conditioned", False)):
         failed_reasons.append("shot images were not generated with canonical identity conditioning")
         hints["rerun_identity_conditioned_images"] = True
@@ -958,6 +975,7 @@ def scene_content_quality_checks(package_payload: dict[str, Any], cfg: dict[str,
         "missing_reference_data_line_count": 0,
         "template_heavy_scene_count": 0,
         "missing_character_reference_scene_count": 0,
+        "unsafe_identity_reference_scene_count": 0,
         "missing_identity_conditioning_scene_count": 0,
     }
     total_lines = 0
@@ -1028,6 +1046,8 @@ def scene_content_quality_checks(package_payload: dict[str, Any], cfg: dict[str,
             counters["stale_backend_manifest_scene_count"] += 1
         if not bool(identity_status.get("reference_ready", False)):
             counters["missing_character_reference_scene_count"] += 1
+        if not bool(identity_status.get("identity_references_safe", True)):
+            counters["unsafe_identity_reference_scene_count"] += 1
         if not bool(identity_status.get("identity_conditioned", False)):
             counters["missing_identity_conditioning_scene_count"] += 1
 
@@ -1153,6 +1173,10 @@ def scene_content_quality_checks(package_payload: dict[str, Any], cfg: dict[str,
         warnings.append(
             f"{counters['missing_character_reference_scene_count']} scene(s) are missing canonical character face references."
         )
+    if counters["unsafe_identity_reference_scene_count"]:
+        warnings.append(
+            f"{counters['unsafe_identity_reference_scene_count']} scene(s) used montage/contact-sheet identity references and must be rerendered."
+        )
     if counters["missing_identity_conditioning_scene_count"]:
         warnings.append(
             f"{counters['missing_identity_conditioning_scene_count']} scene(s) were not fully rendered with identity conditioning."
@@ -1199,8 +1223,9 @@ def scene_content_quality_checks(package_payload: dict[str, Any], cfg: dict[str,
             1.0
             - safe_ratio(
                 counters["missing_character_reference_scene_count"]
+                + counters["unsafe_identity_reference_scene_count"]
                 + counters["missing_identity_conditioning_scene_count"],
-                max(1, len(rows) * 2),
+                max(1, len(rows) * 3),
             ),
             "canonical-reference and identity-conditioned shot coverage",
         ),
@@ -1325,11 +1350,13 @@ def build_finished_episode_gate(
             blockers.append("one or more scenes have no episode-arc function")
         if int(content_checks.get("missing_character_reference_scene_count", 0) or 0):
             blockers.append("one or more scenes are missing canonical character face references")
+        if int(content_checks.get("unsafe_identity_reference_scene_count", 0) or 0):
+            blockers.append("one or more scenes used montage/contact-sheet images as identity references")
         if int(content_checks.get("missing_identity_conditioning_scene_count", 0) or 0):
             blockers.append("one or more scenes were not rendered with canonical identity conditioning")
         if any("shot plans" in blocker or "set continuity" in blocker or "episode-arc" in blocker for blocker in blockers):
             required_actions.append("Regenerate story metadata so every scene has a function, set, shot plan, and continuity lock.")
-        if any("character face references" in blocker or "identity conditioning" in blocker for blocker in blockers):
+        if any("character face references" in blocker or "identity references" in blocker or "identity conditioning" in blocker for blocker in blockers):
             required_actions.append(
                 "Rerun steps 08, 14, and the image backend so every character uses reviewed face references and the SDXL identity adapter."
             )

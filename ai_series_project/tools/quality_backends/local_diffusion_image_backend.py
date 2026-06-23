@@ -435,6 +435,49 @@ def build_identity_reference_board(reference_paths: list[Path]) -> Image.Image |
     return board
 
 
+UNSAFE_IDENTITY_REFERENCE_TOKENS = {
+    "montage",
+    "contact",
+    "sheet",
+    "context",
+    "storyboard",
+    "preview",
+    "poster",
+    "panel",
+    "collage",
+    "grid",
+    "speaker_frame",
+    "full_frame",
+    "scene_frame",
+}
+
+
+def identity_reference_is_safe(path: Path) -> bool:
+    name = path.name.lower()
+    if any(token in name for token in UNSAFE_IDENTITY_REFERENCE_TOKENS):
+        return False
+    stem = path.stem.lower()
+    if "_crop" in stem or "portrait" in stem or stem.startswith("face_"):
+        return True
+    return path.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp"}
+
+
+def unsafe_identity_reference_images(paths: list[Path]) -> list[str]:
+    return [str(path) for path in paths if not identity_reference_is_safe(path)]
+
+
+def manifest_identity_references_are_safe(manifest_path: Path) -> bool:
+    try:
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except Exception:
+        return False
+    inputs = payload.get("inputs", {}) if isinstance(payload.get("inputs"), dict) else {}
+    references = inputs.get("identity_reference_images", [])
+    if not isinstance(references, list):
+        return False
+    return not unsafe_identity_reference_images([Path(str(value)) for value in references])
+
+
 def generate_image(
     prompt: str,
     negative_prompt: str,
@@ -537,6 +580,8 @@ def reference_images_by_character(scene_package: dict[str, Any], names: list[str
         candidate = resolve_stored_project_path(value)
         if not candidate.is_file():
             return
+        if not identity_reference_is_safe(candidate):
+            return
         key = str(candidate.resolve(strict=False)).lower()
         if key not in seen:
             seen.add(key)
@@ -550,7 +595,7 @@ def reference_images_by_character(scene_package: dict[str, Any], names: list[str
         lock_values = clean_text_list(lock.get("reference_images", []))
         character_paths: list[Path] = []
         seen: set[str] = set()
-        for value in [*portrait_values[:2], *lock_values[:2], *context_values[:1]]:
+        for value in [*portrait_values, *lock_values, *context_values]:
             append(character_paths, seen, value)
         results[name] = character_paths
     return results
@@ -602,6 +647,7 @@ def shot_manifest(
     manifest_path = Path(manifest_text)
     ensure_parent(str(manifest_path))
     digest = hashlib.sha256(output_path.read_bytes()).hexdigest() if output_path.exists() else ""
+    unsafe_references = unsafe_identity_reference_images(reference_paths)
     payload = {
         "task_id": f"{clean_text(shot.get('shot_id', 'shot'))}_local_image",
         "scene_id": clean_text(shot.get("scene_id", "")),
@@ -628,6 +674,8 @@ def shot_manifest(
             "reference_count": len(reference_paths),
             "characters_conditioned": reference_characters,
             "missing_characters": missing_characters,
+            "reference_safety": not unsafe_references,
+            "unsafe_reference_images": unsafe_references,
             "identity_model_id": clean_text(pipeline_meta.get("model_id", "")),
         },
         "model": {
@@ -666,6 +714,7 @@ def generate_shot_images(context: dict[str, Any], scene_package: dict[str, Any],
             and manifest_text
             and manifest_path.is_file()
             and manifest_path.stat().st_size > 0
+            and manifest_identity_references_are_safe(manifest_path)
         ):
             print(f"[INFO] Resuming image package: keeping completed shot {shot.get('shot_id', output_path.stem)}", flush=True)
             paths.append(output_path)
