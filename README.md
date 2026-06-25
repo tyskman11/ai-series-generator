@@ -109,7 +109,7 @@ Run the numbered scripts from the repository root.
 
 ### Repository Root
 
-- `00_prepare_runtime.py` to `24_process_next_episode.py`: numbered pipeline and orchestration scripts
+- `00_prepare_runtime.py` to `25_manage_generated_episodes.py`: numbered pipeline, orchestration, and generated-output management scripts
 - `README.md`: public root overview for the whole project
 - `ai_series_project/`: project-internal data, config, runtime, support code, tests, tools, training, and outputs
 
@@ -156,6 +156,7 @@ Run the numbered scripts from the repository root.
 - `22_refresh_after_manual_review.py`: rebuild from reviewed data after manual review changes
 - `23_generate_finished_episodes.py`: batch finished-episode generation
 - `24_process_next_episode.py`: full inbox-to-finished-episode orchestrator
+- `25_manage_generated_episodes.py`: CLI/Tk manager for generated episodes, live-run status, final videos, deliveries, quality/realism reports, safe archiving, and generated-output deletion
 
 ### Support Scripts Inside `ai_series_project/support_scripts/`
 
@@ -186,7 +187,7 @@ Run the numbered scripts from the repository root.
 
 If your review data is already ready, the intended main order is:
 
-`00 -> 06 -> 07 -> 08 -> 08b -> 09 -> 10 -> 11 -> 12 -> 13 -> 14 -> 15 -> 16 -> 17 -> 18 -> (19 if weak scenes are queued) -> 20 -> 21`
+`00 -> 06 -> 07 -> 08 -> 08b -> 09 -> 10 -> 11 -> 12 -> 13 -> 14 -> 15 -> 16 -> 17 -> 18 -> (19 if weak scenes are queued) -> 20 -> 21 -> (25 optional management)`
 
 That means:
 
@@ -198,12 +199,13 @@ That means:
 - storyboard backend materialization happens before render
 - render, quality gate, conditional regeneration, bible, and export happen only after generation
 - `19_regenerate_weak_scenes.py` is not a mandatory normal step; `18_quality_gate.py` calls it automatically when the quality gate queues weak scenes and auto-retry is enabled
+- `25_manage_generated_episodes.py` is an optional post-generation management step for inspecting live-run status, opening artifacts, archiving outputs, and deleting generated episode outputs
 
 ### Full Inbox Pipeline
 
 For a raw new episode source, the full order is:
 
-`00 -> 01 -> 02 -> 03 -> 04 -> 05 -> 06 -> 07 -> 08 -> 08b -> 09 -> 10 -> 11 -> 12 -> 13 -> 14 -> 15 -> 16 -> 17 -> 18 -> (19 if weak scenes are queued) -> 20 -> 21`
+`00 -> 01 -> 02 -> 03 -> 04 -> 05 -> 06 -> 07 -> 08 -> 08b -> 09 -> 10 -> 11 -> 12 -> 13 -> 14 -> 15 -> 16 -> 17 -> 18 -> (19 if weak scenes are queued) -> 20 -> 21 -> (25 optional management)`
 
 `24_process_next_episode.py` runs that complete chain and starts with `00` automatically. It now builds a source backlog from:
 
@@ -316,6 +318,41 @@ python 23_generate_finished_episodes.py --count 1
 ```powershell
 python 22_refresh_after_manual_review.py
 ```
+
+### 6. Manage Generated Episodes
+
+Use step `25` after rendering/exporting to inspect generated episode outputs without digging through nested folders:
+
+```powershell
+python 25_manage_generated_episodes.py
+python 25_manage_generated_episodes.py --list
+python 25_manage_generated_episodes.py --gui
+python 25_manage_generated_episodes.py --live
+python 25_manage_generated_episodes.py --watch
+python 25_manage_generated_episodes.py --episode-id folge_05 --open best-video
+```
+
+Starting `25_manage_generated_episodes.py` without arguments, including by double-clicking it on Windows, opens the GUI. The manager combines shotlists, final renders, delivery bundles, production packages, quality gates, Realism Reports, and regeneration queues into one overview. It also reads live generation status from `runtime/autosaves/24_process_next_episode/current_status.json`, step autosaves, and distributed worker leases. `--live` prints the current run once; `--watch` keeps the terminal live monitor updating continuously; the GUI shows the same live status at the top and updates live status plus episode list when you press `Refresh`.
+
+Live status marks old running autosaves as `STALE` when there is no fresh worker heartbeat, so an interrupted NAS/PC process does not look active forever. ETA is shown when the running status source provides it; otherwise it displays `calculating` instead of inventing a time.
+
+The GUI can open the best available video, output folder, quality report, realism report, production package, or current live status file. It has a checkbox-style `Select` column (`[ ]` / `[x]`) for multi-episode cleanup. Use `Archive Checked` or `Delete Checked` to archive/delete several generated episodes at once.
+
+To remove an episode from the active generation folders without permanently deleting it, archive it:
+
+```powershell
+python 25_manage_generated_episodes.py --episode-id folge_05 --archive --confirm folge_05
+```
+
+Archived outputs are moved under `ai_series_project/generation/archive/generated_episodes/` with an `archive_manifest.json`. This keeps cleanup reversible and avoids touching source episodes, training data, or reviewed character evidence.
+
+To permanently delete active generated outputs for an episode:
+
+```powershell
+python 25_manage_generated_episodes.py --episode-id folge_05 --delete --confirm folge_05
+```
+
+Deletion is limited to generated outputs under `ai_series_project/generation/`. It does not delete source episodes, reviewed character maps, relationships, training datasets, or model checkpoints.
 
 ## Quality-First Mode
 
@@ -641,7 +678,7 @@ python -m unittest discover -s ai_series_project\tests -v
 Useful smoke checks:
 
 ```powershell
-python -m py_compile 00_prepare_runtime.py 03_diarize_and_transcribe.py 04_link_faces_and_speakers.py 05_review_unknowns.py 06_manage_character_relationships.py 08_train_series_model.py 08b_analyze_behavior_model.py 09_prepare_foundation_training.py 10_train_foundation_models.py 14_generate_episode.py 15_generate_storyboard_assets.py 16_run_storyboard_backend.py 17_render_episode.py 18_quality_gate.py 19_regenerate_weak_scenes.py 20_build_series_bible.py 21_export_package.py 22_refresh_after_manual_review.py 23_generate_finished_episodes.py 24_process_next_episode.py ai_series_project\support_scripts\pipeline_common.py ai_series_project\support_scripts\generation_toolkit.py ai_series_project\support_scripts\production_diagnostics.py ai_series_project\support_scripts\configure_quality_backends.py ai_series_project\support_scripts\prepare_quality_backends.py ai_series_project\support_scripts\manage_character_relationships.py ai_series_project\tools\quality_backends\local_diffusion_image_backend.py ai_series_project\tools\quality_backends\local_ltx_video_backend.py ai_series_project\tools\quality_backends\local_wav2lip_backend.py ai_series_project\tools\quality_backends\master_runner.py ai_series_project\tools\quality_backends\project_local_voice_backend.py
+python -m py_compile 00_prepare_runtime.py 03_diarize_and_transcribe.py 04_link_faces_and_speakers.py 05_review_unknowns.py 06_manage_character_relationships.py 08_train_series_model.py 08b_analyze_behavior_model.py 09_prepare_foundation_training.py 10_train_foundation_models.py 14_generate_episode.py 15_generate_storyboard_assets.py 16_run_storyboard_backend.py 17_render_episode.py 18_quality_gate.py 19_regenerate_weak_scenes.py 20_build_series_bible.py 21_export_package.py 22_refresh_after_manual_review.py 23_generate_finished_episodes.py 24_process_next_episode.py 25_manage_generated_episodes.py ai_series_project\support_scripts\pipeline_common.py ai_series_project\support_scripts\generation_toolkit.py ai_series_project\support_scripts\production_diagnostics.py ai_series_project\support_scripts\configure_quality_backends.py ai_series_project\support_scripts\prepare_quality_backends.py ai_series_project\support_scripts\manage_character_relationships.py ai_series_project\tools\quality_backends\local_diffusion_image_backend.py ai_series_project\tools\quality_backends\local_ltx_video_backend.py ai_series_project\tools\quality_backends\local_wav2lip_backend.py ai_series_project\tools\quality_backends\master_runner.py ai_series_project\tools\quality_backends\project_local_voice_backend.py
 ```
 
 ## Known Limitations
@@ -685,6 +722,7 @@ python -m py_compile 00_prepare_runtime.py 03_diarize_and_transcribe.py 04_link_
 - `22_refresh_after_manual_review.py`, `23_generate_finished_episodes.py`, and `24_process_next_episode.py` now begin with `00_prepare_runtime.py`
 - the documented order is now setup/downloads first, then review, relationships, dataset/training, backend fine-tunes, then generate/render/gate/export
 - the orchestrators now export `21_export_package.py` after `20_build_series_bible.py` so finished packages are the final pipeline artifact
+- `25_manage_generated_episodes.py` now provides a post-generation CLI/Tk manager that refreshes generated-episode/live-run status on demand, opens best available videos/folders/reports/packages/status files, supports checkbox-based multi-episode archive/delete actions, safely archives active outputs under `generation/archive/generated_episodes/`, and can delete generated outputs after explicit confirmation
 - `24_process_next_episode.py` now processes the whole pending source backlog, including raw files imported before the run and scene folders left behind by aborted `02/03/04` steps; `--single` or `--max-source-episodes` can cap the batch when needed
 - release-gate auto-retry now calls `19_regenerate_weak_scenes.py` from the repository root layout correctly after the root/`ai_series_project` split
 - `23_generate_finished_episodes.py` and `24_process_next_episode.py` now call the generation toolkit so optional tools actively feed continuity, voice, pacing, subtitle, review, metadata, and export quality signals into finished-episode generation
