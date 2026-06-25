@@ -338,6 +338,15 @@ Live status marks old running autosaves as `STALE` when there is no fresh worker
 
 The GUI can open the best available video, output folder, quality report, realism report, production package, or current live status file. It has a checkbox-style `Select` column (`[ ]` / `[x]`) for multi-episode cleanup. Use `Archive Checked` or `Delete Checked` to archive/delete several generated episodes at once.
 
+GUI controls:
+
+- `Refresh`: reloads live run status and generated-episode list on demand; the GUI does not auto-refresh.
+- `Select All` / `Clear Checks`: quickly mark or unmark all generated episodes in the current list.
+- `[ ]` / `[x]` in the `Select` column: toggles one episode for batch cleanup.
+- `Open Video`, `Open Folder`, `Quality Report`, `Realism Report`, and `Production Package`: operate on the highlighted episode row.
+- `Archive Checked`: moves checked generated outputs into the reversible archive.
+- `Delete Checked`: permanently deletes checked generated outputs after typing `DELETE`; only paths under `ai_series_project/generation/` are eligible.
+
 To remove an episode from the active generation folders without permanently deleting it, archive it:
 
 ```powershell
