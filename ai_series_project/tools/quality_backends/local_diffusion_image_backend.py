@@ -82,6 +82,7 @@ def character_identity_descriptors(scene_package: dict[str, Any], names: list[st
     for name in names:
         row = locks.get(name, {})
         details = [
+            clean_text(row.get("identity_attribute_policy", "")),
             clean_text(row.get("gender_presentation", "")),
             clean_text(row.get("age_group", "")),
             clean_text(row.get("canonical_hairstyle", "")),
@@ -231,8 +232,18 @@ def prompt_from_context(context: dict[str, Any], scene_package: dict[str, Any]) 
         negative = (
             "cropped faces, deformed face, warped face, melted face, asymmetrical eyes, crossed eyes, "
             "wrong person, identity drift, face swap, gender swap, age swap, wrong hairstyle, wrong body proportions, "
-            "merged people, duplicate characters, extra people, missing people, distorted hands, unreadable text, "
-            "watermark, low quality, blurry, unfinished, blue placeholder frame"
+            "merged people, duplicate characters, extra people, unnamed extras, background crowd, random children, "
+            "missing people, distorted hands, unreadable text, watermark, low quality, blurry, unfinished, "
+            "blue placeholder frame"
+        )
+    else:
+        negative = ", ".join(
+            part
+            for part in [
+                negative,
+                "unnamed extras, background crowd, random children, extra faces, duplicate cast members, identity drift",
+            ]
+            if part
         )
     return positive, negative
 
@@ -551,19 +562,53 @@ def write_alternate_image(context: dict[str, Any], source: Path) -> None:
 def shot_prompt(prompt: str, shot: dict[str, Any]) -> str:
     visible_characters = clean_text_list(shot.get("characters_visible", []))
     explicit_people_free = isinstance(shot.get("characters_visible"), list) and not visible_characters
+    visible_count = len(visible_characters)
+    exact_people_contract = ""
+    if visible_characters:
+        exact_people_contract = (
+            f"STRICT CAST COUNT: exactly {visible_count} person{'s' if visible_count != 1 else ''} total in frame, "
+            f"only {', '.join(visible_characters)}, no extras, no background people, no crowd, no duplicated faces, "
+            "do not add any other person"
+        )
     parts = [
         prompt,
         clean_text(shot.get("shot_type", "")),
         clean_text(shot.get("camera_angle", "")),
         clean_text(shot.get("camera_movement", "")),
         clean_text(shot.get("purpose", "")),
+        exact_people_contract,
         f"exactly {len(visible_characters)} visible named characters: {', '.join(visible_characters)}; preserve each supplied identity separately"
         if visible_characters
-        else "no people visible, environment and props only"
+        else "STRICT EMPTY SET SHOT: no people visible, no faces, environment and props only"
         if explicit_people_free
         else "",
     ]
     return ", ".join(part for part in parts if part)
+
+
+def shot_identity_contract(
+    visible_characters: list[str],
+    reference_paths: list[Path],
+    conditioned_characters: list[str],
+    missing_characters: list[str],
+) -> dict[str, Any]:
+    visible_count = len(visible_characters)
+    multi_character = visible_count > 1
+    return {
+        "expected_visible_characters": visible_characters,
+        "expected_visible_character_count": visible_count,
+        "maximum_allowed_visible_people": visible_count,
+        "forbid_unnamed_extras": True,
+        "forbid_duplicate_characters": True,
+        "forbid_gender_or_age_swap": True,
+        "reference_mode": "multi_character_reference_board" if multi_character else "single_character_reference",
+        "regional_identity_control": False,
+        "verification_status": "unverified_multi_character_identity_board" if multi_character else "single_character_identity_conditioned",
+        "identity_risk": "high" if multi_character else "normal",
+        "reference_count": len(reference_paths),
+        "characters_conditioned": conditioned_characters,
+        "missing_characters": missing_characters,
+    }
 
 
 def reference_images_by_character(scene_package: dict[str, Any], names: list[str]) -> dict[str, list[Path]]:
@@ -678,6 +723,12 @@ def shot_manifest(
             "unsafe_reference_images": unsafe_references,
             "identity_model_id": clean_text(pipeline_meta.get("model_id", "")),
         },
+        "identity_contract": shot_identity_contract(
+            clean_text_list(shot.get("characters_visible", [])),
+            reference_paths,
+            reference_characters,
+            missing_characters,
+        ),
         "model": {
             "id": clean_text(pipeline_meta.get("model_id", "")),
             "family": clean_text(pipeline_meta.get("model_family", "")),

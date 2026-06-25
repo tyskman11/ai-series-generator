@@ -22,6 +22,7 @@ from support_scripts.pipeline_common import (
     add_batch_job,
     add_shared_worker_arguments,
     distributed_item_lease,
+    distributed_lease_path,
     distributed_step_runtime_root,
     ensure_quality_first_ready,
     open_face_review_item_count,
@@ -79,6 +80,13 @@ GLOBAL_STEPS = [
     "20_build_series_bible.py",
     "21_export_package.py",
 ]
+HELPER_COMPATIBLE_EPISODE_STEPS = {
+    "03_diarize_and_transcribe.py",
+}
+HELPER_COMPATIBLE_GLOBAL_STEPS = {
+    "15_generate_storyboard_assets.py",
+    "16_run_storyboard_backend.py",
+}
 
 
 def parse_args() -> argparse.Namespace:
@@ -98,6 +106,11 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=DEFAULT_SOURCE_EPISODE_LIMIT,
         help="Maximum pending/backlog source episodes to process. 0 means all.",
+    )
+    parser.add_argument(
+        "--orchestrator-only",
+        action="store_true",
+        help="Exit when another 24_process_next_episode.py owns orchestration instead of joining as a helper worker.",
     )
     add_shared_worker_arguments(parser)
     return parser.parse_args()
@@ -915,6 +928,170 @@ def run_toolkit_after_global_step(cfg: dict, script_name: str) -> None:
         run_generation_toolkit_phase(cfg, "post_export", episode_id)
 
 
+def active_generated_episode_id(cfg: dict, state: dict) -> str:
+    latest = state.get("latest_generated_episode", {})
+    if isinstance(latest, dict):
+        episode_id = str(latest.get("episode_id", "") or "").strip()
+        if episode_id:
+            return episode_id
+    outputs = latest_generated_episode_artifacts(cfg)
+    if isinstance(outputs, dict):
+        return str(outputs.get("episode_id", "") or "").strip()
+    return ""
+
+
+def load_active_pipeline_state(cfg: dict) -> dict:
+    state = load_latest_autosave(cfg)
+    if isinstance(state, dict) and state:
+        return state
+    status_path = status_json_path(cfg)
+    payload = read_json(status_path, {}) if status_path.exists() else {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def helper_target_for_active_pipeline(cfg: dict, state: dict) -> tuple[str, str, list[str], str] | None:
+    phase = str(state.get("current_phase", "") or "").strip()
+    step = str(state.get("current_step", "") or "").strip()
+    if not step:
+        return None
+
+    if phase == "episode" and step in HELPER_COMPATIBLE_EPISODE_STEPS:
+        episode_name = str(state.get("current_episode_name", "") or "").strip()
+        if not episode_name:
+            return None
+        return (
+            step,
+            f"Helper Worker: {episode_step_title(step, str(state.get('current_episode_file', '') or ''), episode_name)}",
+            episode_step_args(step, str(state.get("current_episode_file", "") or ""), episode_name),
+            "scene-level source episode work",
+        )
+
+    if phase == "global" and step in HELPER_COMPATIBLE_GLOBAL_STEPS:
+        episode_id = active_generated_episode_id(cfg, state)
+        if not episode_id:
+            return None
+        return (
+            step,
+            f"Helper Worker: {global_step_title(step)}",
+            ["--episode-id", episode_id],
+            "scene-level generated episode work",
+        )
+
+    return None
+
+
+def helper_skip_reason(state: dict) -> str:
+    phase = str(state.get("current_phase", "") or "").strip() or "-"
+    step = str(state.get("current_step", "") or "").strip() or "-"
+    if step in {"01_import_episode.py", "02_split_scenes.py", "06_manage_character_relationships.py"}:
+        return f"active step {step} is not safely shareable; phase={phase}"
+    if step in {
+        "07_build_dataset.py",
+        "08_train_series_model.py",
+        "08b_analyze_behavior_model.py",
+        "09_prepare_foundation_training.py",
+        "10_train_foundation_models.py",
+        "11_train_adapter_models.py",
+        "12_train_fine_tune_models.py",
+        "13_run_backend_finetunes.py",
+        "14_generate_episode.py",
+        "17_render_episode.py",
+        "18_quality_gate.py",
+        "20_build_series_bible.py",
+        "21_export_package.py",
+    }:
+        return f"active step {step} is currently orchestrator-only or uses a whole-output lock; phase={phase}"
+    return f"no helper-compatible active step was found; phase={phase}, step={step}"
+
+
+def run_worker_helper_for_active_pipeline(cfg: dict, child_shared_args: list[str]) -> bool:
+    state = load_active_pipeline_state(cfg)
+    if not state:
+        info("No active pipeline status was readable, so this worker cannot attach to the current run.")
+        return False
+    target = helper_target_for_active_pipeline(cfg, state)
+    if target is None:
+        info(f"Worker helper idle: {helper_skip_reason(state)}.")
+        return False
+    script_name, title, extra_args, reason = target
+    info(f"Joining active pipeline as helper for {reason}: {script_name}")
+    run_step(script_name, title, extra_args, shared_args=child_shared_args)
+    return True
+
+
+def format_duration_compact(seconds: float | int) -> str:
+    seconds = max(0, int(float(seconds or 0)))
+    hours, remainder = divmod(seconds, 3600)
+    minutes, rem_seconds = divmod(remainder, 60)
+    return f"{hours:02d}:{minutes:02d}:{rem_seconds:02d}"
+
+
+def coerce_unix_seconds(value: object) -> float:
+    try:
+        return float(value or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def format_unix_timestamp(value: object) -> str:
+    timestamp = coerce_unix_seconds(value)
+    if timestamp <= 0:
+        return "-"
+    return datetime.fromtimestamp(timestamp).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def pipeline_orchestrator_lease_lines(cfg: dict) -> list[str]:
+    root = distributed_step_runtime_root("24_process_next_episode", "global")
+    lease_path = distributed_lease_path(root, "global")
+    lease = read_json(lease_path, {})
+    if not isinstance(lease, dict) or not lease:
+        return [
+            "The full pipeline orchestrator could not acquire the shared lease.",
+            f"Lease file was not readable anymore: {lease_path}",
+            "Try starting 24_process_next_episode.py again.",
+        ]
+
+    now = time.time()
+    meta = lease.get("meta", {}) if isinstance(lease.get("meta"), dict) else {}
+    heartbeat_at = coerce_unix_seconds(lease.get("heartbeat_at"))
+    expires_at = coerce_unix_seconds(lease.get("expires_at"))
+    heartbeat_age = now - heartbeat_at if heartbeat_at else 0.0
+    expires_in = expires_at - now if expires_at else 0.0
+
+    status = "active" if expires_in > 0 else "expired"
+    lines = [
+        "The full pipeline orchestrator is already running on another worker.",
+        f"Lease status: {status}",
+        f"Lease file: {lease_path}",
+        f"Owner: {lease.get('owner_id', '-')}",
+        f"Worker: {meta.get('worker_id', '-')}",
+        f"Host/PID: {meta.get('hostname', '-')} / {meta.get('pid', '-')}",
+        f"Runtime: {meta.get('runtime_tag', '-')}",
+        f"Python: {meta.get('python', '-')}",
+        f"Heartbeat: {format_unix_timestamp(heartbeat_at)} ({format_duration_compact(heartbeat_age)} ago)",
+        f"Expires: {format_unix_timestamp(expires_at)} ({format_duration_compact(expires_in)} remaining)",
+    ]
+
+    status_path = status_json_path(cfg)
+    status_payload = read_json(status_path, {}) if status_path.exists() else {}
+    if isinstance(status_payload, dict) and status_payload:
+        lines.extend(
+            [
+                f"Current step: {status_payload.get('current_step', '-')}",
+                f"Current source: {status_payload.get('current_episode_file', '-')}",
+                f"Status file: {status_path}",
+            ]
+        )
+    if expires_in <= 0:
+        lines.append("The lease already looks expired; rerun 24_process_next_episode.py so the normal lease cleanup can take over.")
+    else:
+        lines.append(
+            "If this worker is truly still running, leave it alone. If it was killed, wait until the lease "
+            "expires or remove the stale lease after verifying no process is active."
+        )
+    return lines
+
+
 def main() -> None:
     rerun_in_runtime()
     args = parse_args()
@@ -936,7 +1113,12 @@ def main() -> None:
     )
     acquired = lease_manager.__enter__()
     if not acquired:
-        info("The full pipeline orchestrator is already running on another worker.")
+        lease_lines = pipeline_orchestrator_lease_lines(cfg)
+        warn(lease_lines[0])
+        for line in lease_lines[1:]:
+            info(line)
+        if not bool(args.orchestrator_only):
+            run_worker_helper_for_active_pipeline(cfg, child_shared_args)
         lease_manager.__exit__(None, None, None)
         return
     state = load_latest_autosave(cfg) or default_state()

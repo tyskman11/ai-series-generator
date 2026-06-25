@@ -79,6 +79,7 @@ The project is intentionally strict about the difference between an intermediate
 - character frame generation now resolves reviewed preview assets portably, builds a compact canonical reference library, uses Qwen-Image for general non-identity images, and routes identity-critical shots through the project-local SDXL IP-Adapter Plus Face workflow instead of relying on names alone
 - multi-character shots now reserve reference-board coverage for every visible figure before adding extra samples; shot manifests record exactly which named identities were conditioned
 - identity conditioning now rejects montage/contact-sheet/context preview images as face references, refuses to resume old image manifests that used those unsafe references, and the quality gate flags affected scenes for identity-conditioned rerendering
+- identity-critical dialogue shots are now planned as face-safe single-character close-ups/reaction shots, while establishing shots avoid visible faces; image manifests carry a shot-level identity contract, and the quality gate rejects unverified multi-character IP-Adapter boards so generic crowd frames do not count as stable character output
 - the Finished Episode Gate now rejects missing canonical face references and shots rendered without identity conditioning, so distorted or identity-drifting frames cannot count as finished output
 - every generated episode carries a `season_id`; rendering materializes one approved, hash-locked intro per season and reuses the identical canonical intro in later episodes
 - the master runner now follows shot/EDL clip order, writes dialogue-stem/final-mix targets, records audio-mix metrics, and muxes the final mix into the episode master when available
@@ -216,6 +217,8 @@ For a raw new episode source, the full order is:
 
 This means a failed or interrupted `01` to `04` run can be resumed without moving the source episode back into the inbox. Fully completed `01` to `04` artifacts are detected and skipped.
 
+When `24_process_next_episode.py` is started on a second PC/NAS while another `24` instance already owns the orchestration lock, the second process no longer has to sit idle. By default it reads the active autosave/status file and joins as a helper worker for currently shareable steps such as `03_diarize_and_transcribe.py`, `15_generate_storyboard_assets.py`, or `16_run_storyboard_backend.py`. Non-shareable whole-output steps still stay under the main orchestrator to avoid corrupting training, render, export, or autosave state. Use `--orchestrator-only` if a second `24` run should only report the active owner and exit instead of helping.
+
 `22_refresh_after_manual_review.py` and `23_generate_finished_episodes.py` also start with `00` automatically before their own main work.
 
 ## Quick Start
@@ -343,6 +346,8 @@ GUI controls:
 - `Refresh`: reloads live run status and generated-episode list on demand; the GUI does not auto-refresh.
 - `Select All` / `Clear Checks`: quickly mark or unmark all generated episodes in the current list.
 - `[ ]` / `[x]` in the `Select` column: toggles one episode for batch cleanup.
+- `Live generation` is shown above the lower workspace; `Generated episodes` are on the left and `Episode details` on the right, separated by draggable panes.
+- The episode table has scrollbars and resizable columns; drag column borders in the header to adjust field width.
 - `Open Video`, `Open Folder`, `Quality Report`, `Realism Report`, and `Production Package`: operate on the highlighted episode row.
 - `Archive Checked`: moves checked generated outputs into the reversible archive.
 - `Delete Checked`: permanently deletes checked generated outputs after typing `DELETE`; only paths under `ai_series_project/generation/` are eligible.
@@ -432,6 +437,10 @@ Finished Episode Mode adds these structures to generated packages:
 - writes `characters_conditioned`, missing characters, adapter status, and reference files into every shot manifest
 
 This is stricter and substantially more stable than text-only SDXL, but a single shared IP-Adapter reference board is not perfect regional identity control. Complex crowded shots can still need character-specific LoRAs, InstantID/PhotoMaker-style regional conditioning, or a dedicated ComfyUI workflow.
+
+If early generated frames already look generic, distorted, gender-swapped, or full of unplanned extras, regenerate from the planning stage instead of only rerunning the renderer. Run `08_train_series_model.py` again so new face-safe shot plans are written, then rerun `14 -> 15 -> 16 -> 17 -> 18` or use the orchestrator. Old scene packages can contain multi-character shot plans and stale manifests that were valid before the stricter identity contract existed; the current quality gate now flags those shots instead of counting them as finished character output.
+
+For identity-critical dialogue scenes, the safest default is one visible speaking character per generated close-up/reaction shot. Establishing shots should show the set, props, and blocking without visible faces. Multi-character shots are still allowed as story/camera plans, but they must come from a backend that can prove regional identity control or they will be treated as unverified by the Finished Episode Gate.
 
 ### Fixed Season Intro
 

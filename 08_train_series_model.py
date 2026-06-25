@@ -1680,7 +1680,7 @@ def build_set_bible(focus_characters: list[str], keywords: list[str], style_desc
                 "key_props": ["work table", "screens", "character-specific props"],
                 "lighting": "bright multi-camera TV lighting",
                 "camera_axis": "front-facing multi-camera axis with repeatable reverse angles",
-                "allowed_camera_angles": ["wide establishing shot", "medium two-shot", "reaction close-up", "insert shot"],
+                "allowed_camera_angles": ["wide establishing shot", "medium close-up", "reaction close-up", "insert shot"],
                 "reference_frames": [],
             },
             {
@@ -1690,7 +1690,7 @@ def build_set_bible(focus_characters: list[str], keywords: list[str], style_desc
                 "key_props": ["sofa", "side table", "background dressing"],
                 "lighting": "consistent sitcom fill light",
                 "camera_axis": "stable 180-degree conversation axis",
-                "allowed_camera_angles": ["medium two-shot", "close-up", "cutaway"],
+                "allowed_camera_angles": ["medium close-up", "reaction close-up", "cutaway"],
                 "reference_frames": [],
             },
             {
@@ -1740,6 +1740,7 @@ def build_character_continuity_lock(scene_characters: list[str], model: dict) ->
             "canonical_body_shape": coalesce_text(references.get("canonical_body_shape", "")) or "preserve source proportions",
             "gender_presentation": coalesce_text(references.get("gender_presentation", "")),
             "age_group": coalesce_text(references.get("age_group", "")),
+            "identity_attribute_policy": "derive gender, age, face shape, hairstyle, and wardrobe only from reviewed references",
             "identity_primary_cluster": coalesce_text(references.get("identity_primary_cluster", "")),
             "identity_cluster_ids": list((references.get("identity_cluster_ids", []) or [])[:12]),
             "allowed_variations": ["minor pose and expression changes"],
@@ -1798,8 +1799,8 @@ def build_scene_shot_plan(
         "wide establishing shot",
         min(3.2, total_duration * 0.12),
         [],
-        "establish set geography and blocking",
-        scene_characters[: min(3, len(scene_characters))],
+        "establish set geography and blocking without showing character faces",
+        [],
     )
     if not dialogue:
         add_shot("final button shot", max(2.0, total_duration - 3.2), [], "hold the scene button", scene_characters[:1])
@@ -1810,23 +1811,20 @@ def build_scene_shot_plan(
     per_line = remaining / line_budget
     line_index = 0
     while line_index < len(dialogue):
-        chunk = list(range(line_index, min(len(dialogue), line_index + 2)))
+        chunk = [line_index]
         speakers = []
         for idx in chunk:
             meta = dialogue_metadata[idx] if idx < len(dialogue_metadata) and isinstance(dialogue_metadata[idx], dict) else {}
             speaker = coalesce_text(meta.get("speaker", "")) or coalesce_text(meta.get("speaker_name", ""))
             if speaker and speaker not in speakers:
                 speakers.append(speaker)
-        if len(chunk) == 1:
-            shot_type = "reaction close-up" if line_index else "medium close-up"
-        else:
-            shot_type = "medium two-shot"
+        shot_type = "reaction close-up" if line_index else "medium close-up"
         add_shot(
             shot_type,
             max(1.4, per_line * len(chunk)),
             chunk,
-            "cover dialogue beat and reaction",
-            speakers or scene_characters[:2],
+            "cover a single speaker identity-safe dialogue beat",
+            speakers[:1] or scene_characters[:1],
         )
         line_index += len(chunk)
     add_shot(

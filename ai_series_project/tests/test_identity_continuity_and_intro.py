@@ -222,6 +222,84 @@ class IdentityContinuityAndIntroTests(unittest.TestCase):
         self.assertTrue(status["reference_ready"])
         self.assertFalse(status["identity_conditioned"])
 
+    def test_identity_gate_reads_image_manifest_and_rejects_unverified_multi_character_board(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            babe_reference = root / "babe_crop.jpg"
+            kenzie_reference = root / "kenzie_crop.jpg"
+            babe_reference.write_bytes(b"babe")
+            kenzie_reference.write_bytes(b"kenzie")
+            manifest = root / "shot_image_manifest.json"
+            pipeline_common.write_json(
+                manifest,
+                {
+                    "identity_conditioning": {
+                        "adapter_loaded": True,
+                        "reference_count": 2,
+                        "characters_conditioned": ["Babe", "Kenzie"],
+                        "reference_safety": True,
+                    },
+                    "identity_contract": {
+                        "expected_visible_characters": ["Babe", "Kenzie"],
+                        "expected_visible_character_count": 2,
+                        "maximum_allowed_visible_people": 2,
+                        "verification_status": "unverified_multi_character_identity_board",
+                        "identity_risk": "high",
+                        "regional_identity_control": False,
+                    },
+                },
+            )
+            scene = {
+                "characters": ["Babe", "Kenzie"],
+                "character_continuity_lock": {
+                    "Babe": {"reference_images": [str(babe_reference)]},
+                    "Kenzie": {"reference_images": [str(kenzie_reference)]},
+                },
+                "shot_packages": [
+                    {
+                        "shot_id": "scene_0001_shot_001",
+                        "characters_visible": ["Babe", "Kenzie"],
+                        "target_outputs": {"image_manifest": str(manifest)},
+                    }
+                ],
+            }
+
+            status = STEP18.scene_identity_status(scene)
+
+        self.assertTrue(status["reference_ready"])
+        self.assertEqual(status["unverified_multi_character_shot_count"], 1)
+        self.assertFalse(status["identity_conditioned"])
+
+    def test_image_backend_shot_prompt_forbids_extra_people_for_visible_cast(self) -> None:
+        prompt = IMAGE_BACKEND.shot_prompt(
+            "live-action sitcom frame",
+            {
+                "shot_type": "medium close-up",
+                "characters_visible": ["Babe"],
+                "purpose": "cover a single speaker beat",
+            },
+        )
+
+        self.assertIn("exactly 1 person total", prompt)
+        self.assertIn("only Babe", prompt)
+        self.assertIn("no extras", prompt)
+
+    def test_generated_shot_plan_uses_face_safe_establishing_and_single_speaker_shots(self) -> None:
+        shot_plan = STEP08.build_scene_shot_plan(
+            scene_id="scene_0001",
+            scene_function="setup",
+            scene_characters=["Babe", "Kenzie"],
+            dialogue=["Babe: Test", "Kenzie: Nein"],
+            dialogue_metadata=[{"speaker": "Babe"}, {"speaker": "Kenzie"}],
+            duration_seconds=14.0,
+            location_id="office",
+        )
+
+        self.assertEqual(shot_plan[0]["characters_visible"], [])
+        dialogue_shots = [row for row in shot_plan if row["dialogue_line_indices"]]
+        self.assertEqual(dialogue_shots[0]["characters_visible"], ["Babe"])
+        self.assertEqual(dialogue_shots[1]["characters_visible"], ["Kenzie"])
+
     def test_identity_gate_rejects_montage_reference_manifests(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)

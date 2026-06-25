@@ -376,6 +376,8 @@ def scene_identity_status(scene: dict[str, Any]) -> dict[str, Any]:
     expected_conditioned_shots = 0
     conditioned_shots = 0
     unsafe_identity_reference_images: list[str] = []
+    unverified_multi_character_shots: list[str] = []
+    identity_contract_violations: list[str] = []
     for shot in scene.get("shot_packages", []) if isinstance(scene.get("shot_packages", []), list) else []:
         if not isinstance(shot, dict):
             continue
@@ -384,9 +386,10 @@ def scene_identity_status(scene: dict[str, Any]) -> dict[str, Any]:
             continue
         expected_conditioned_shots += 1
         outputs = shot.get("target_outputs", {}) if isinstance(shot.get("target_outputs", {}), dict) else {}
-        manifest_path = stored_path_if_present(outputs.get("manifest", ""))
+        manifest_path = stored_path_if_present(outputs.get("manifest", "")) or stored_path_if_present(outputs.get("image_manifest", ""))
         manifest = read_json(manifest_path, {}) if manifest_path and manifest_path.is_file() else {}
         identity = manifest.get("identity_conditioning", {}) if isinstance(manifest.get("identity_conditioning", {}), dict) else {}
+        contract = manifest.get("identity_contract", {}) if isinstance(manifest.get("identity_contract", {}), dict) else {}
         shot_unsafe_references = [
             str(value or "").strip()
             for value in identity.get("unsafe_reference_images", [])
@@ -405,9 +408,29 @@ def scene_identity_status(scene: dict[str, Any]) -> dict[str, Any]:
             else int(identity.get("reference_count", 0) or 0) >= len(visible)
         )
         references_safe = bool(identity.get("reference_safety", True)) and not shot_unsafe_references
-        if bool(identity.get("adapter_loaded", False)) and covered and references_safe:
+        shot_id = str(shot.get("shot_id", "") or "").strip() or f"shot_{expected_conditioned_shots:03d}"
+        verification_status = str(contract.get("verification_status", "") or "").strip()
+        identity_risk = str(contract.get("identity_risk", "") or "").strip()
+        multi_character_unverified = (
+            len(visible) > 1
+            and (
+                verification_status == "unverified_multi_character_identity_board"
+                or identity_risk == "high"
+                or not bool(contract.get("regional_identity_control", False))
+            )
+        )
+        if multi_character_unverified:
+            unverified_multi_character_shots.append(shot_id)
+        expected_count = int(contract.get("expected_visible_character_count", len(visible)) or len(visible))
+        maximum_people = int(contract.get("maximum_allowed_visible_people", expected_count) or expected_count)
+        current_contract_violation = expected_count != len(visible) or maximum_people < len(visible)
+        if current_contract_violation:
+            identity_contract_violations.append(shot_id)
+        if bool(identity.get("adapter_loaded", False)) and covered and references_safe and not multi_character_unverified and not current_contract_violation:
             conditioned_shots += 1
     unsafe_identity_reference_images = list(dict.fromkeys(unsafe_identity_reference_images))
+    unverified_multi_character_shots = list(dict.fromkeys(unverified_multi_character_shots))
+    identity_contract_violations = list(dict.fromkeys(identity_contract_violations))
     return {
         "characters": characters,
         "missing_characters": missing_characters,
@@ -416,8 +439,19 @@ def scene_identity_status(scene: dict[str, Any]) -> dict[str, Any]:
         "conditioned_shots": conditioned_shots,
         "unsafe_identity_reference_images": unsafe_identity_reference_images,
         "unsafe_identity_reference_count": len(unsafe_identity_reference_images),
+        "unverified_multi_character_shots": unverified_multi_character_shots,
+        "unverified_multi_character_shot_count": len(unverified_multi_character_shots),
+        "identity_contract_violations": identity_contract_violations,
+        "identity_contract_violation_count": len(identity_contract_violations),
         "identity_references_safe": not unsafe_identity_reference_images,
-        "identity_conditioned": expected_conditioned_shots == 0 or conditioned_shots == expected_conditioned_shots,
+        "identity_conditioned": (
+            expected_conditioned_shots == 0
+            or (
+                conditioned_shots == expected_conditioned_shots
+                and not unverified_multi_character_shots
+                and not identity_contract_violations
+            )
+        ),
     }
 
 
@@ -900,6 +934,14 @@ def scene_realism_row(
         failed_reasons.append("identity references include montage/contact-sheet images")
         hints["rerun_identity_conditioned_images"] = True
         hints["repair_backend_manifests"] = True
+    if int(identity_status.get("unverified_multi_character_shot_count", 0) or 0):
+        failed_reasons.append("multi-character identity board is unverified; split into identity-safe single-character shots or use regional identity control")
+        hints["rerun_identity_conditioned_images"] = True
+        hints["repair_shot_plan"] = True
+    if int(identity_status.get("identity_contract_violation_count", 0) or 0):
+        failed_reasons.append("shot identity contract was violated")
+        hints["rerun_identity_conditioned_images"] = True
+        hints["repair_backend_manifests"] = True
     if not bool(identity_status.get("identity_conditioned", False)):
         failed_reasons.append("shot images were not generated with canonical identity conditioning")
         hints["rerun_identity_conditioned_images"] = True
@@ -976,6 +1018,8 @@ def scene_content_quality_checks(package_payload: dict[str, Any], cfg: dict[str,
         "template_heavy_scene_count": 0,
         "missing_character_reference_scene_count": 0,
         "unsafe_identity_reference_scene_count": 0,
+        "unverified_multi_character_identity_scene_count": 0,
+        "identity_contract_violation_scene_count": 0,
         "missing_identity_conditioning_scene_count": 0,
     }
     total_lines = 0
@@ -1048,6 +1092,10 @@ def scene_content_quality_checks(package_payload: dict[str, Any], cfg: dict[str,
             counters["missing_character_reference_scene_count"] += 1
         if not bool(identity_status.get("identity_references_safe", True)):
             counters["unsafe_identity_reference_scene_count"] += 1
+        if int(identity_status.get("unverified_multi_character_shot_count", 0) or 0):
+            counters["unverified_multi_character_identity_scene_count"] += 1
+        if int(identity_status.get("identity_contract_violation_count", 0) or 0):
+            counters["identity_contract_violation_scene_count"] += 1
         if not bool(identity_status.get("identity_conditioned", False)):
             counters["missing_identity_conditioning_scene_count"] += 1
 
@@ -1177,6 +1225,14 @@ def scene_content_quality_checks(package_payload: dict[str, Any], cfg: dict[str,
         warnings.append(
             f"{counters['unsafe_identity_reference_scene_count']} scene(s) used montage/contact-sheet identity references and must be rerendered."
         )
+    if counters["unverified_multi_character_identity_scene_count"]:
+        warnings.append(
+            f"{counters['unverified_multi_character_identity_scene_count']} scene(s) used unverified multi-character identity boards; split shots or use regional identity control."
+        )
+    if counters["identity_contract_violation_scene_count"]:
+        warnings.append(
+            f"{counters['identity_contract_violation_scene_count']} scene(s) have shot identity contract violations."
+        )
     if counters["missing_identity_conditioning_scene_count"]:
         warnings.append(
             f"{counters['missing_identity_conditioning_scene_count']} scene(s) were not fully rendered with identity conditioning."
@@ -1224,8 +1280,10 @@ def scene_content_quality_checks(package_payload: dict[str, Any], cfg: dict[str,
             - safe_ratio(
                 counters["missing_character_reference_scene_count"]
                 + counters["unsafe_identity_reference_scene_count"]
+                + counters["unverified_multi_character_identity_scene_count"]
+                + counters["identity_contract_violation_scene_count"]
                 + counters["missing_identity_conditioning_scene_count"],
-                max(1, len(rows) * 3),
+                max(1, len(rows) * 5),
             ),
             "canonical-reference and identity-conditioned shot coverage",
         ),

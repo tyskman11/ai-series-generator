@@ -942,18 +942,29 @@ def run_gui(cfg: dict[str, Any]) -> None:
     root = tk.Tk()
     root.title("Generated Episode Manager")
     root.geometry("1160x720")
+    root.minsize(900, 560)
 
     records: list[EpisodeRecord] = []
     checked_episode_ids: set[str] = set()
     selected_episode = tk.StringVar(value="")
     status_text = tk.StringVar(value="")
 
-    live_frame = ttk.LabelFrame(root, text="Live generation")
+    main_pane = ttk.PanedWindow(root, orient=tk.VERTICAL)
+    lower_pane = ttk.PanedWindow(main_pane, orient=tk.HORIZONTAL)
+    live_frame = ttk.LabelFrame(main_pane, text="Live generation")
+    list_frame = ttk.LabelFrame(lower_pane, text="Generated episodes")
+    detail_frame = ttk.LabelFrame(lower_pane, text="Episode details")
+
     live_detail = tk.Text(live_frame, height=9, wrap="word")
     live_detail.configure(state="disabled")
+    live_scroll = ttk.Scrollbar(live_frame, orient="vertical", command=live_detail.yview)
+    live_detail.configure(yscrollcommand=live_scroll.set)
 
     columns = ("checked", "episode", "title", "ready", "quality", "release", "finished", "scenes", "updated")
-    tree = ttk.Treeview(root, columns=columns, show="headings", height=16)
+    tree = ttk.Treeview(list_frame, columns=columns, show="headings", height=16)
+    tree_y_scroll = ttk.Scrollbar(list_frame, orient="vertical", command=tree.yview)
+    tree_x_scroll = ttk.Scrollbar(list_frame, orient="horizontal", command=tree.xview)
+    tree.configure(yscrollcommand=tree_y_scroll.set, xscrollcommand=tree_x_scroll.set)
     labels = {
         "checked": "Select",
         "episode": "Episode",
@@ -978,10 +989,14 @@ def run_gui(cfg: dict[str, Any]) -> None:
     }
     for column in columns:
         tree.heading(column, text=labels[column])
-        tree.column(column, width=widths[column], anchor="w")
+        tree.column(column, width=widths[column], minwidth=45, anchor="w", stretch=True)
+    tree.column("checked", minwidth=58, stretch=False)
 
-    detail = tk.Text(root, height=18, wrap="word")
+    detail = tk.Text(detail_frame, height=18, wrap="none")
     detail.configure(state="disabled")
+    detail_y_scroll = ttk.Scrollbar(detail_frame, orient="vertical", command=detail.yview)
+    detail_x_scroll = ttk.Scrollbar(detail_frame, orient="horizontal", command=detail.xview)
+    detail.configure(yscrollcommand=detail_y_scroll.set, xscrollcommand=detail_x_scroll.set)
 
     def set_live_detail(text: str) -> None:
         live_detail.configure(state="normal")
@@ -1190,35 +1205,49 @@ def run_gui(cfg: dict[str, Any]) -> None:
 
     tree.bind("<<TreeviewSelect>>", update_detail)
     tree.bind("<Button-1>", on_tree_click, add="+")
-    live_frame.grid(row=0, column=0, columnspan=8, sticky="nsew", padx=10, pady=(10, 4))
+    main_pane.grid(row=0, column=0, columnspan=8, sticky="nsew", padx=10, pady=(10, 4))
+    main_pane.add(live_frame)
+    main_pane.add(lower_pane)
+    lower_pane.add(detail_frame)
+    lower_pane.add(list_frame)
+
     live_detail.grid(row=0, column=0, sticky="nsew", padx=6, pady=6)
-    ttk.Button(live_frame, text="Open Status", command=open_live_status_file).grid(row=0, column=1, sticky="nsew", padx=6, pady=6)
+    live_scroll.grid(row=0, column=1, sticky="ns", pady=6)
+    ttk.Button(live_frame, text="Open Status", command=open_live_status_file).grid(row=0, column=2, sticky="nsew", padx=6, pady=6)
     live_frame.columnconfigure(0, weight=1)
     live_frame.columnconfigure(1, weight=0)
+    live_frame.columnconfigure(2, weight=0)
     live_frame.rowconfigure(0, weight=1)
 
-    tree.grid(row=1, column=0, columnspan=8, sticky="nsew", padx=10, pady=4)
-    detail.grid(row=2, column=0, columnspan=8, sticky="nsew", padx=10, pady=4)
+    tree.grid(row=0, column=0, sticky="nsew", padx=(6, 0), pady=(6, 0))
+    tree_y_scroll.grid(row=0, column=1, sticky="ns", pady=(6, 0))
+    tree_x_scroll.grid(row=1, column=0, sticky="ew", padx=(6, 0), pady=(0, 6))
+    list_frame.columnconfigure(0, weight=1)
+    list_frame.rowconfigure(0, weight=1)
 
-    ttk.Button(root, text="Refresh", command=refresh_all).grid(row=3, column=0, sticky="ew", padx=6, pady=6)
-    ttk.Button(root, text="Select All", command=select_all).grid(row=3, column=1, sticky="ew", padx=6, pady=6)
-    ttk.Button(root, text="Clear Checks", command=clear_checks).grid(row=3, column=2, sticky="ew", padx=6, pady=6)
-    ttk.Button(root, text="Open Video", command=lambda: open_target("best-video")).grid(row=3, column=3, sticky="ew", padx=6, pady=6)
-    ttk.Button(root, text="Open Folder", command=lambda: open_target("folder")).grid(row=3, column=4, sticky="ew", padx=6, pady=6)
-    ttk.Button(root, text="Quality Report", command=lambda: open_target("quality")).grid(row=3, column=5, sticky="ew", padx=6, pady=6)
-    ttk.Button(root, text="Realism Report", command=lambda: open_target("realism")).grid(row=3, column=6, sticky="ew", padx=6, pady=6)
-    ttk.Button(root, text="Production Package", command=lambda: open_target("package")).grid(row=3, column=7, sticky="ew", padx=6, pady=6)
-    ttk.Button(root, text="Archive Checked", command=archive_checked).grid(row=4, column=0, columnspan=3, sticky="ew", padx=6, pady=6)
-    ttk.Button(root, text="Delete Checked", command=delete_checked).grid(row=4, column=3, columnspan=3, sticky="ew", padx=6, pady=6)
-    ttk.Button(root, text="Close", command=root.destroy).grid(row=4, column=6, columnspan=2, sticky="ew", padx=6, pady=6)
-    ttk.Label(root, textvariable=status_text).grid(row=5, column=0, columnspan=8, sticky="w", padx=10, pady=(0, 8))
+    detail.grid(row=0, column=0, sticky="nsew", padx=(6, 0), pady=(6, 0))
+    detail_y_scroll.grid(row=0, column=1, sticky="ns", pady=(6, 0))
+    detail_x_scroll.grid(row=1, column=0, sticky="ew", padx=(6, 0), pady=(0, 6))
+    detail_frame.columnconfigure(0, weight=1)
+    detail_frame.rowconfigure(0, weight=1)
+
+    ttk.Button(root, text="Refresh", command=refresh_all).grid(row=1, column=0, sticky="ew", padx=6, pady=6)
+    ttk.Button(root, text="Select All", command=select_all).grid(row=1, column=1, sticky="ew", padx=6, pady=6)
+    ttk.Button(root, text="Clear Checks", command=clear_checks).grid(row=1, column=2, sticky="ew", padx=6, pady=6)
+    ttk.Button(root, text="Open Video", command=lambda: open_target("best-video")).grid(row=1, column=3, sticky="ew", padx=6, pady=6)
+    ttk.Button(root, text="Open Folder", command=lambda: open_target("folder")).grid(row=1, column=4, sticky="ew", padx=6, pady=6)
+    ttk.Button(root, text="Quality Report", command=lambda: open_target("quality")).grid(row=1, column=5, sticky="ew", padx=6, pady=6)
+    ttk.Button(root, text="Realism Report", command=lambda: open_target("realism")).grid(row=1, column=6, sticky="ew", padx=6, pady=6)
+    ttk.Button(root, text="Production Package", command=lambda: open_target("package")).grid(row=1, column=7, sticky="ew", padx=6, pady=6)
+    ttk.Button(root, text="Archive Checked", command=archive_checked).grid(row=2, column=0, columnspan=3, sticky="ew", padx=6, pady=6)
+    ttk.Button(root, text="Delete Checked", command=delete_checked).grid(row=2, column=3, columnspan=3, sticky="ew", padx=6, pady=6)
+    ttk.Button(root, text="Close", command=root.destroy).grid(row=2, column=6, columnspan=2, sticky="ew", padx=6, pady=6)
+    ttk.Label(root, textvariable=status_text).grid(row=3, column=0, columnspan=8, sticky="w", padx=10, pady=(0, 8))
 
     root.columnconfigure(0, weight=1)
     for index in range(1, 8):
         root.columnconfigure(index, weight=1)
     root.rowconfigure(0, weight=1)
-    root.rowconfigure(1, weight=2)
-    root.rowconfigure(2, weight=3)
 
     refresh_all()
     root.mainloop()

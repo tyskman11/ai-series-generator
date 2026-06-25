@@ -41,6 +41,7 @@ class ProcessNextEpisodeTests(unittest.TestCase):
         with mock.patch("sys.argv", ["24_process_next_episode.py"]):
             args = STEP23.parse_args()
         self.assertIsNone(STEP23.source_episode_limit(args))
+        self.assertFalse(args.orchestrator_only)
 
         with mock.patch("sys.argv", ["24_process_next_episode.py", "--single"]):
             args = STEP23.parse_args()
@@ -49,6 +50,55 @@ class ProcessNextEpisodeTests(unittest.TestCase):
         with mock.patch("sys.argv", ["24_process_next_episode.py", "--max-source-episodes", "3"]):
             args = STEP23.parse_args()
         self.assertEqual(STEP23.source_episode_limit(args), 3)
+
+        with mock.patch("sys.argv", ["24_process_next_episode.py", "--orchestrator-only"]):
+            args = STEP23.parse_args()
+        self.assertTrue(args.orchestrator_only)
+
+    def test_helper_target_joins_shareable_episode_step(self) -> None:
+        target = STEP23.helper_target_for_active_pipeline(
+            {},
+            {
+                "current_phase": "episode",
+                "current_step": "03_diarize_and_transcribe.py",
+                "current_episode_file": "Pilot.mp4",
+                "current_episode_name": "Pilot",
+            },
+        )
+
+        self.assertIsNotNone(target)
+        script_name, title, extra_args, reason = target
+        self.assertEqual(script_name, "03_diarize_and_transcribe.py")
+        self.assertIn("Audio Segmentation", title)
+        self.assertEqual(extra_args, ["--episode", "Pilot"])
+        self.assertIn("scene-level", reason)
+
+    def test_helper_target_joins_shareable_global_storyboard_step(self) -> None:
+        target = STEP23.helper_target_for_active_pipeline(
+            {},
+            {
+                "current_phase": "global",
+                "current_step": "16_run_storyboard_backend.py",
+                "latest_generated_episode": {"episode_id": "folge_07"},
+            },
+        )
+
+        self.assertIsNotNone(target)
+        script_name, title, extra_args, reason = target
+        self.assertEqual(script_name, "16_run_storyboard_backend.py")
+        self.assertIn("Materialize Storyboard", title)
+        self.assertEqual(extra_args, ["--episode-id", "folge_07"])
+        self.assertIn("scene-level", reason)
+
+    def test_helper_target_does_not_join_orchestrator_only_step(self) -> None:
+        state = {
+            "current_phase": "global",
+            "current_step": "17_render_episode.py",
+            "latest_generated_episode": {"episode_id": "folge_07"},
+        }
+
+        self.assertIsNone(STEP23.helper_target_for_active_pipeline({}, state))
+        self.assertIn("orchestrator-only", STEP23.helper_skip_reason(state))
 
     def test_discover_episode_backlog_includes_raw_scene_and_inbox_work(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
