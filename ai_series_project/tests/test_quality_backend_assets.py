@@ -250,6 +250,7 @@ class QualityBackendAssetTests(unittest.TestCase):
                 "video_base_model": "Wan-AI/Wan2.1-T2V-1.3B",
                 "video_diffusers_fallback_model": "",
                 "voice_base_model": "openbmb/VoxCPM2",
+                "identity_adapter_model": "h94/IP-Adapter",
                 "lipsync_model": "wav2lip",
             },
             "local_generation": {
@@ -280,6 +281,9 @@ class QualityBackendAssetTests(unittest.TestCase):
         self.assertNotIn("video_diffusers_fallback_model", {target["name"] for target in targets})
         self.assertIn("local_scriptwriter_model", {target["name"] for target in targets})
         self.assertIn("anime_image_model", {target["name"] for target in targets})
+        identity_adapter = next(target for target in targets if target["name"] == "image_identity_adapter")
+        self.assertEqual(identity_adapter["repo_id"], "h94/IP-Adapter")
+        self.assertTrue(identity_adapter["public_no_login"])
         self.assertTrue(all(target.get("public_no_login") is True for target in targets if target.get("kind") == "huggingface"))
 
     def test_fetch_remote_git_revision_uses_github_api_when_git_missing(self) -> None:

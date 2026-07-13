@@ -231,6 +231,7 @@ def default_quality_backend_asset_targets(cfg: dict[str, Any]) -> list[dict[str,
                 "kind": "huggingface",
                 "repo_id": identity_adapter_model,
                 "target_dir": f"tools/quality_models/image/{identity_adapter_model.replace('/', '__')}",
+                "public_no_login": True,
                 "allow_patterns": [
                     "models/image_encoder/**",
                     "sdxl_models/ip-adapter-plus-face_sdxl_vit-h.safetensors",

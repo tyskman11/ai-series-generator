@@ -29,6 +29,25 @@ SPEC.loader.exec_module(STEP58)
 
 
 class QualityFirstModeTests(unittest.TestCase):
+    def test_quality_backend_configuration_repairs_public_identity_adapter_target(self) -> None:
+        config = {
+            "foundation_training": {"identity_adapter_model": "old/private-adapter"},
+            "quality_backend_assets": {
+                "targets": [{"name": "image_identity_adapter", "kind": "huggingface", "public_no_login": False}]
+            },
+        }
+
+        STEP58.ensure_quality_asset_targets(config)
+
+        target = next(
+            item
+            for item in config["quality_backend_assets"]["targets"]
+            if item.get("name") == "image_identity_adapter"
+        )
+        self.assertEqual(config["foundation_training"]["identity_adapter_model"], "h94/IP-Adapter")
+        self.assertEqual(target["repo_id"], "h94/IP-Adapter")
+        self.assertTrue(target["public_no_login"])
+
     def test_active_local_generation_profile_selects_anime_without_machine_paths(self) -> None:
         profile = pipeline_common.active_local_generation_profile(
             {

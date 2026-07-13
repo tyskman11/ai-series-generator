@@ -43,6 +43,12 @@ IMAGE_IDENTITY_FALLBACK_REQUIRED_FILES = [
     "vae/diffusion_pytorch_model.safetensors",
     "tokenizer/tokenizer_config.json",
 ]
+IMAGE_IDENTITY_ADAPTER_MODEL_ID = "h94/IP-Adapter"
+IMAGE_IDENTITY_ADAPTER_MODEL_DIR = "tools/quality_models/image/h94__IP-Adapter"
+IMAGE_IDENTITY_ADAPTER_REQUIRED_FILES = [
+    "models/image_encoder/config.json",
+    "sdxl_models/ip-adapter-plus-face_sdxl_vit-h.safetensors",
+]
 ANIME_IMAGE_MODEL_ID = "cagliostrolab/animagine-xl-4.0"
 ANIME_IMAGE_MODEL_DIR = "tools/quality_models/image/cagliostrolab__animagine-xl-4.0"
 ANIME_IMAGE_MODEL_REQUIRED_FILES = [
@@ -302,6 +308,7 @@ def ensure_quality_asset_targets(config: dict) -> None:
     if isinstance(foundation_cfg, dict):
         foundation_cfg["image_base_model"] = IMAGE_MODEL_ID
         foundation_cfg["image_identity_fallback_model"] = IMAGE_IDENTITY_FALLBACK_MODEL_ID
+        foundation_cfg["identity_adapter_model"] = IMAGE_IDENTITY_ADAPTER_MODEL_ID
         foundation_cfg["video_base_model"] = VIDEO_LATEST_MODEL_ID
         foundation_cfg["video_diffusers_fallback_model"] = ""
     assets_cfg = config.setdefault("quality_backend_assets", {})
@@ -340,6 +347,18 @@ def ensure_quality_asset_targets(config: dict) -> None:
             "target_dir": IMAGE_IDENTITY_FALLBACK_MODEL_DIR,
             "public_no_login": True,
             "required_files": IMAGE_IDENTITY_FALLBACK_REQUIRED_FILES,
+        },
+        {
+            "name": "image_identity_adapter",
+            "kind": "huggingface",
+            "repo_id": IMAGE_IDENTITY_ADAPTER_MODEL_ID,
+            "target_dir": IMAGE_IDENTITY_ADAPTER_MODEL_DIR,
+            "public_no_login": True,
+            "allow_patterns": [
+                "models/image_encoder/**",
+                "sdxl_models/ip-adapter-plus-face_sdxl_vit-h.safetensors",
+            ],
+            "required_files": IMAGE_IDENTITY_ADAPTER_REQUIRED_FILES,
         },
         {
             "name": "video_base_model",
