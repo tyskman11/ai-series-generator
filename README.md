@@ -644,6 +644,7 @@ Important areas:
 - `release_mode.*`: quality gate thresholds and retry behavior, including `retry_until_pass`, `max_auto_retry_cycles` (`0` means unlimited retry until pass or a diagnosed blocker), and full-rerender retries when no weak-scene queue remains
 - `release_mode.max_regeneration_cost_per_cycle`: per-cycle weak-scene regeneration cost budget; low-cost and blocked diagnostics remain visible while expensive work can be deferred
 - `quality_backend_assets.*`: project-local backend tool/model targets
+- `00_prepare_runtime.py` repairs existing quality-backend targets, including `voice_base_model.public_no_login: true`, so a project created by an older version remains compatible with the local-models-only policy without requiring a login
 - `quality_backend_assets.huggingface_download_retries` and `quality_backend_assets.huggingface_download_retry_delay_seconds`: retry policy for very large Hugging Face downloads. Interrupted HTTP streams keep their `.incomplete` files so rerunning `00_prepare_runtime.py` or `59_prepare_quality_backends.py` resumes instead of starting from zero.
 
 ### Source Language Detection

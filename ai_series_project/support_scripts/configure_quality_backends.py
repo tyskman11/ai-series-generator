@@ -311,6 +311,7 @@ def ensure_quality_asset_targets(config: dict) -> None:
         foundation_cfg["identity_adapter_model"] = IMAGE_IDENTITY_ADAPTER_MODEL_ID
         foundation_cfg["video_base_model"] = VIDEO_LATEST_MODEL_ID
         foundation_cfg["video_diffusers_fallback_model"] = ""
+        foundation_cfg["voice_base_model"] = VOICE_MODEL_ID
     assets_cfg = config.setdefault("quality_backend_assets", {})
     if not isinstance(assets_cfg, dict):
         assets_cfg = {}
@@ -385,6 +386,14 @@ def ensure_quality_asset_targets(config: dict) -> None:
             "public_no_login": True,
             "license_spdx": "Apache-2.0",
             "required_files": SCRIPTWRITER_MODEL_REQUIRED_FILES,
+        },
+        {
+            "name": "voice_base_model",
+            "kind": "huggingface",
+            "repo_id": VOICE_MODEL_ID,
+            "target_dir": VOICE_MODEL_DIR,
+            "public_no_login": True,
+            "required_patterns": [],
         },
     ]
     for model_target in model_targets:

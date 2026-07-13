@@ -48,6 +48,25 @@ class QualityFirstModeTests(unittest.TestCase):
         self.assertEqual(target["repo_id"], "h94/IP-Adapter")
         self.assertTrue(target["public_no_login"])
 
+    def test_quality_backend_configuration_repairs_public_voice_base_target(self) -> None:
+        config = {
+            "foundation_training": {"voice_base_model": "old/private-voice"},
+            "quality_backend_assets": {
+                "targets": [{"name": "voice_base_model", "kind": "huggingface", "public_no_login": False}]
+            },
+        }
+
+        STEP58.ensure_quality_asset_targets(config)
+
+        target = next(
+            item
+            for item in config["quality_backend_assets"]["targets"]
+            if item.get("name") == "voice_base_model"
+        )
+        self.assertEqual(config["foundation_training"]["voice_base_model"], "openbmb/VoxCPM2")
+        self.assertEqual(target["repo_id"], "openbmb/VoxCPM2")
+        self.assertTrue(target["public_no_login"])
+
     def test_active_local_generation_profile_selects_anime_without_machine_paths(self) -> None:
         profile = pipeline_common.active_local_generation_profile(
             {
