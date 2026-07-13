@@ -14,6 +14,7 @@ if str(PROJECT_DIR) not in sys.path:
     sys.path.insert(0, str(PROJECT_DIR))
 
 from support_scripts import pipeline_common
+from support_scripts import local_screenwriter
 
 
 def load_module(filename: str, module_name: str):
@@ -99,6 +100,41 @@ def minimal_behavior_model() -> dict:
 
 
 class BehaviorModelPipelineTests(unittest.TestCase):
+    def test_local_screenwriter_normalizes_batch_encoding_for_generation(self) -> None:
+        class FakeTensor:
+            def __init__(self, shape: tuple[int, int]) -> None:
+                self.shape = shape
+                self.moved_to = None
+
+            def to(self, device: str):
+                self.moved_to = device
+                return self
+
+        input_ids = FakeTensor((1, 17))
+        attention_mask = FakeTensor((1, 17))
+        inputs, prompt_token_count = local_screenwriter.prepare_generation_inputs(
+            {"input_ids": input_ids, "attention_mask": attention_mask},
+            "cpu",
+        )
+
+        self.assertEqual(prompt_token_count, 17)
+        self.assertIs(inputs["input_ids"], input_ids)
+        self.assertIs(inputs["attention_mask"], attention_mask)
+        self.assertEqual(input_ids.moved_to, "cpu")
+        self.assertEqual(attention_mask.moved_to, "cpu")
+
+    def test_local_screenwriter_normalizes_plain_tensor_for_generation(self) -> None:
+        class FakeTensor:
+            shape = (1, 9)
+
+            def to(self, _device: str):
+                return self
+
+        inputs, prompt_token_count = local_screenwriter.prepare_generation_inputs(FakeTensor(), "cpu")
+
+        self.assertEqual(prompt_token_count, 9)
+        self.assertIn("input_ids", inputs)
+
     def test_generate_episode_rewrites_dialogue_with_local_screenwriter_metadata(self) -> None:
         package = {
             "language": "de",

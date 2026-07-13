@@ -461,6 +461,7 @@ The project is configured for quality-first finished-episode generation:
 - project-local quality backends now prefer the platform-correct FFmpeg binary from `ai_series_project/runtime/host_runtime/ffmpeg/bin` before falling back to older tool copies
 - render-time scene duration now respects the planned per-scene runtime from episode generation instead of compressing most scenes into a short 8 to 22 second window
 - scene packages now include behavior-model guidance and per-line voice metadata (`emotion`, `pace`, `energy`, `target_duration_seconds`, `pause_after_seconds`, `overlap_with_next_seconds`, `delivery_notes`, and `voice_reference_priority`) so voice runners can clone speech with clearer intent and timing
+- the project-local Transformers screenwriter accepts both tensor and `BatchEncoding` chat-template outputs, so supported local Qwen tokenizer versions pass `input_ids` and optional attention masks to generation correctly
 - show-profile rules plus the latest successful generation-toolkit roles now become prompt/camera/continuity guidance instead of passive reports
 - local image/video quality runners now consume shot packages; scene masters can be assembled from generated shot clips and the EDL prefers shot clips when all required shot outputs exist
 - the voice runner now records per-line delivery/reference diagnostics and respects planned pauses in generated dialogue audio

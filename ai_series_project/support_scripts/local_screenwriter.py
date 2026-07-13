@@ -78,6 +78,23 @@ def _json_payload(text: str) -> dict[str, Any]:
     return payload if isinstance(payload, dict) else {}
 
 
+def prepare_generation_inputs(tokenized: Any, device: Any) -> tuple[dict[str, Any], int]:
+    """Normalize tensor and BatchEncoding chat-template outputs for ``generate``."""
+    if isinstance(tokenized, dict) or hasattr(tokenized, "items"):
+        raw_inputs = dict(tokenized)
+    else:
+        raw_inputs = {"input_ids": tokenized}
+    inputs = {
+        str(name): value.to(device)
+        for name, value in raw_inputs.items()
+        if value is not None and hasattr(value, "to")
+    }
+    input_ids = inputs.get("input_ids")
+    if input_ids is None or not hasattr(input_ids, "shape"):
+        raise RuntimeError("Local screenwriter tokenizer did not return input_ids tensors for generation.")
+    return inputs, int(input_ids.shape[-1])
+
+
 def rewrite_scene_dialogue(
     cfg: dict[str, Any],
     *,
@@ -119,19 +136,19 @@ def rewrite_scene_dialogue(
         import torch
     except Exception as exc:
         raise RuntimeError("Local screenwriter runtime lost torch during inference.") from exc
-    input_ids = tokenizer.apply_chat_template(messages, add_generation_prompt=True, return_tensors="pt")
     device = next(model.parameters()).device
-    input_ids = input_ids.to(device)
+    tokenized = tokenizer.apply_chat_template(messages, add_generation_prompt=True, return_tensors="pt")
+    generation_inputs, prompt_token_count = prepare_generation_inputs(tokenized, device)
     settings = screenwriter_config(cfg)
     with torch.inference_mode():
         generated = model.generate(
-            input_ids,
+            **generation_inputs,
             max_new_tokens=max(128, int(settings.get("max_new_tokens", 768) or 768)),
             do_sample=True,
             temperature=max(0.1, float(settings.get("temperature", 0.75) or 0.75)),
             pad_token_id=tokenizer.eos_token_id,
         )
-    text = tokenizer.decode(generated[0][input_ids.shape[-1] :], skip_special_tokens=True)
+    text = tokenizer.decode(generated[0][prompt_token_count:], skip_special_tokens=True)
     payload = _json_payload(text)
     lines = payload.get("lines", []) if isinstance(payload.get("lines"), list) else []
     validated: list[dict[str, str]] = []
