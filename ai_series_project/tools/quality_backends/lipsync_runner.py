@@ -19,6 +19,14 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     scene_package = load_json(args.scene_package)
+    lip_sync = scene_package.get("lip_sync", {}) if isinstance(scene_package.get("lip_sync", {}), dict) else {}
+    selected_backend = str(lip_sync.get("selected_backend", "wav2lip") or "wav2lip").strip().lower()
+    if selected_backend not in {"", "wav2lip"}:
+        raise RuntimeError(
+            f"Lip-sync backend '{selected_backend}' was selected, but no complete project-local runner is configured for it. "
+            "Install its code and public model bundle under ai_series_project/tools/quality_backends and "
+            "ai_series_project/tools/quality_models, then add a dedicated local runner."
+        )
     ensure_parent(args.lipsync_video)
     if args.lipsync_poster_frame:
         ensure_parent(args.lipsync_poster_frame)
@@ -32,7 +40,7 @@ def main() -> int:
         "scene_id": scene_package.get("scene_id", ""),
         "episode_id": scene_package.get("episode_id", ""),
         "scene_title": scene_package.get("title", ""),
-        "lip_sync": scene_package.get("lip_sync", {}),
+        "lip_sync": lip_sync,
     }
     return run_delegated_backend(
         env_var_name="SERIES_LIPSYNC_BACKEND_COMMAND",

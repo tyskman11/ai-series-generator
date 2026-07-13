@@ -414,6 +414,21 @@ def remove_stale_backend_outputs(paths: list[Path]) -> None:
             pass
 
 
+def remove_stale_storyboard_scene_outputs(
+    frame_path: Path,
+    preview_path: Path,
+    poster_path: Path,
+    clip_path: Path,
+    manifest_path: Path,
+    alternates_root: Path,
+) -> None:
+    remove_stale_backend_outputs([frame_path, preview_path, poster_path, clip_path, manifest_path])
+    if alternates_root.exists() and alternates_root.is_dir():
+        for pattern in ("*.png", "*.jpg", "*.jpeg"):
+            for path in alternates_root.glob(pattern):
+                remove_stale_backend_outputs([path])
+
+
 def apply_backend_grade(
     image: Image.Image,
     payload: dict,
@@ -709,28 +724,43 @@ def materialize_scene_backend_frame(
     existing_backend_mode = str(existing_manifest.get("backend_mode", "materialized_local_backend_scene_pack") or "materialized_local_backend_scene_pack")
     if backend_output_ready(frame_path) and not force:
         if not backend_manifest_is_external_generated(existing_manifest) and not allow_existing_local_frame_reuse(cfg):
-            raise RuntimeError(
-                f"{scene_id} already has a local fallback storyboard frame at {frame_path}. "
-                "Run 16_run_storyboard_backend.py with --force after configuring a real external storyboard runner, "
-                "or enable storyboard_backend.allow_existing_local_frame_reuse only for diagnostics."
+            warn(
+                f"{scene_id} has a stale local fallback storyboard frame at {frame_path}. "
+                "Removing it and requiring the configured storyboard runner to create a real frame."
             )
-        return scene_backend_row(
-            scene_id=scene_id,
-            frame_path=frame_path,
-            preview_path=preview_path,
-            poster_path=poster_path,
-            clip_path=clip_path,
-            alternates_root=alternates_root,
-            manifest_path=manifest_path,
-            status="existing",
-            source_type="existing_backend_frame",
-            backend_mode=existing_backend_mode,
-            clip_status=str(existing_manifest.get("clip_status", "")),
-            external_runner=existing_manifest.get("external_runner") if isinstance(existing_manifest.get("external_runner"), dict) else None,
-        )
+            remove_stale_storyboard_scene_outputs(
+                frame_path,
+                preview_path,
+                poster_path,
+                clip_path,
+                manifest_path,
+                alternates_root,
+            )
+        else:
+            return scene_backend_row(
+                scene_id=scene_id,
+                frame_path=frame_path,
+                preview_path=preview_path,
+                poster_path=poster_path,
+                clip_path=clip_path,
+                alternates_root=alternates_root,
+                manifest_path=manifest_path,
+                status="existing",
+                source_type="existing_backend_frame",
+                backend_mode=existing_backend_mode,
+                clip_status=str(existing_manifest.get("clip_status", "")),
+                external_runner=existing_manifest.get("external_runner") if isinstance(existing_manifest.get("external_runner"), dict) else None,
+            )
 
     if force and not allow_existing_local_frame_reuse(cfg):
-        remove_stale_backend_outputs([frame_path, preview_path, poster_path, clip_path])
+        remove_stale_storyboard_scene_outputs(
+            frame_path,
+            preview_path,
+            poster_path,
+            clip_path,
+            manifest_path,
+            alternates_root,
+        )
 
     backend_candidates = payload.get("backend_candidates", {}) if isinstance(payload.get("backend_candidates"), dict) else {}
     image_candidates = backend_candidates.get("image", []) if isinstance(backend_candidates.get("image"), list) else []

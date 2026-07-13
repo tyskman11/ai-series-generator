@@ -25,11 +25,9 @@ from backend_common import (
 )
 
 
-DEFAULT_VIDEO_MODEL_ID = "Lightricks/LTX-Video-0.9.8-13B-distilled"
-LEGACY_VIDEO_MODEL_ID = "Lightricks/LTX-Video"
-DEFAULT_VIDEO_MODEL_DIR = PROJECT_DIR / "tools" / "quality_models" / "video" / "Lightricks__LTX-Video-0.9.8-13B-distilled"
-LEGACY_VIDEO_MODEL_DIR = PROJECT_DIR / "tools" / "quality_models" / "video" / "Lightricks__LTX-Video"
-FALLBACK_VIDEO_MODEL_DIRS = [DEFAULT_VIDEO_MODEL_DIR, LEGACY_VIDEO_MODEL_DIR]
+DEFAULT_VIDEO_MODEL_ID = "Wan-AI/Wan2.1-T2V-1.3B"
+DEFAULT_VIDEO_MODEL_DIR = PROJECT_DIR / "tools" / "quality_models" / "video" / "Wan-AI__Wan2.1-T2V-1.3B"
+FALLBACK_VIDEO_MODEL_DIRS = [DEFAULT_VIDEO_MODEL_DIR]
 DEFAULT_NEGATIVE_PROMPT = (
     "worst quality, low resolution, blurry, jittery, inconsistent motion, slideshow, still image, "
     "color-grade-only effect, blue filter, warped face, distorted eyes, deformed mouth, extra limbs, "
@@ -40,6 +38,25 @@ DEFAULT_NEGATIVE_PROMPT = (
 
 def clean_text(value: object) -> str:
     return str(value or "").strip()
+
+
+def local_model_profile(scene_package: dict[str, Any]) -> dict[str, Any]:
+    plan = scene_package.get("generation_plan", {}) if isinstance(scene_package.get("generation_plan", {}), dict) else {}
+    profile = plan.get("local_model_profile", {}) if isinstance(plan.get("local_model_profile", {}), dict) else {}
+    return dict(profile)
+
+
+def apply_local_model_profile(scene_package: dict[str, Any]) -> str:
+    profile = local_model_profile(scene_package)
+    profile_id = clean_text(profile.get("profile_id", "")) or "live_action"
+    for key, value in {
+        "SERIES_VIDEO_MODEL_ID": clean_text(profile.get("video_model_id", "")),
+        "SERIES_VIDEO_MODEL_DIR": clean_text(profile.get("video_model_dir", "")),
+        "SERIES_VIDEO_MODEL_FAMILY": clean_text(profile.get("video_model_family", "")),
+    }.items():
+        if value:
+            os.environ[key] = value
+    return profile_id
 
 
 def truthy_env(name: str, default: bool = False) -> bool:
@@ -66,8 +83,6 @@ def configured_model_id(candidate: Path) -> str:
     resolved = candidate.resolve(strict=False)
     if resolved == DEFAULT_VIDEO_MODEL_DIR.resolve(strict=False):
         return DEFAULT_VIDEO_MODEL_ID
-    if resolved == LEGACY_VIDEO_MODEL_DIR.resolve(strict=False):
-        return LEGACY_VIDEO_MODEL_ID
     return candidate.name.replace("__", "/")
 
 
@@ -78,14 +93,8 @@ def resolve_model_dir() -> Path:
         if model_dir_ready(candidate):
             return candidate
     expected = ", ".join(str(candidate) for candidate in candidates)
-    if any("LTX-2" in str(candidate) and not (candidate / "model_index.json").exists() for candidate in candidates):
-        raise RuntimeError(
-            "The selected LTX-2/LTX-2.3 checkpoint directory is not a Diffusers-ready model. "
-            "Use an external LTX-2/ComfyUI runner for that model, or use the project default "
-            f"{DEFAULT_VIDEO_MODEL_ID}. Checked: {expected}"
-        )
     raise RuntimeError(
-        "Local LTX video model is not ready. Run 00_prepare_runtime.py without --skip-downloads "
+        "Local Wan video model is not ready. Run 00_prepare_runtime.py without --skip-downloads "
         f"or set SERIES_VIDEO_MODEL_DIR. Expected model_index.json and safetensors files in {expected}."
     )
 
@@ -246,7 +255,12 @@ def negative_prompt_from_package(scene_package: dict[str, Any]) -> str:
     ]
     style_constraints = video_generation.get("style_constraints", {}) if isinstance(video_generation.get("style_constraints", {}), dict) else {}
     negatives.extend(text_list(style_constraints.get("negative", []), 8))
-    negatives.append(DEFAULT_NEGATIVE_PROMPT)
+    profile = local_model_profile(scene_package)
+    negatives.append(clean_text(profile.get("negative_prompt", "")))
+    default_negative = DEFAULT_NEGATIVE_PROMPT
+    if clean_text(profile.get("profile_id", "")) == "anime":
+        default_negative = default_negative.replace(", cartoon, anime", "") + ", photorealistic live action, live-action skin texture"
+    negatives.append(default_negative)
     seen: set[str] = set()
     unique: list[str] = []
     for item in negatives:
@@ -341,14 +355,15 @@ def generate_ltx_video(context: dict[str, Any], scene_package: dict[str, Any], o
             "The real local video backend requires diffusers and torch. Run 00_prepare_runtime.py first."
         ) from exc
 
-    pipeline_cls = (
-        getattr(diffusers, "LTXImageToVideoPipeline", None)
-        or getattr(diffusers, "LTXPipeline", None)
-        or getattr(diffusers, "DiffusionPipeline", None)
-    )
+    model_family = clean_text(os.environ.get("SERIES_VIDEO_MODEL_FAMILY", "")).lower()
+    if model_family and model_family != "wan":
+        raise RuntimeError(
+            f"Unsupported local video family '{model_family}'. The approved local-models-only video profile is Wan."
+        )
+    pipeline_cls = getattr(diffusers, "WanPipeline", None) or getattr(diffusers, "DiffusionPipeline", None)
     if pipeline_cls is None:
         raise RuntimeError(
-            "The installed diffusers version does not expose an LTX-compatible DiffusionPipeline. "
+            "The installed diffusers version does not expose the configured local video DiffusionPipeline. "
             "Run 00_prepare_runtime.py to upgrade the project runtime."
         )
 
@@ -400,12 +415,12 @@ def generate_ltx_video(context: dict[str, Any], scene_package: dict[str, Any], o
         if videos:
             frames = videos[0]
     if not frames:
-        raise RuntimeError("LTX did not return video frames.")
+        raise RuntimeError("The local video model did not return video frames.")
 
     ensure_parent(str(output_path))
     export_to_video(frames, str(output_path), fps=fps)
     if not output_path.exists() or output_path.stat().st_size <= 0:
-        raise RuntimeError("LTX video export produced no output.")
+        raise RuntimeError("Local video export produced no output.")
     return {
         "model_id": configured_model_id(model_dir),
         "model_dir": str(model_dir),
@@ -480,7 +495,7 @@ def write_shot_manifest(shot: dict[str, Any], output_path: Path, generation_meta
         "scene_id": clean_text(shot.get("scene_id", "")),
         "shot_id": clean_text(shot.get("shot_id", "")),
         "task_type": "video",
-        "backend": "local_ltx_video_backend",
+        "backend": "local_diffusers_video_backend",
         "inputs": {
             "shot_type": clean_text(shot.get("shot_type", "")),
             "camera_angle": clean_text(shot.get("camera_angle", "")),
@@ -580,10 +595,12 @@ def main() -> int:
     context = load_backend_context()
     scene_package = load_json(clean_text(context.get("scene_package", "")))
     if not scene_package:
-        raise RuntimeError("Could not load scene package for the local LTX video backend.")
+        raise RuntimeError("Could not load scene package for the local video backend.")
+    profile_id = apply_local_model_profile(scene_package)
+    print(f"[INFO] Local video model profile: {profile_id}", flush=True)
     output_text = clean_text(context.get("scene_video", ""))
     if not output_text:
-        raise RuntimeError("The local LTX video backend did not receive a scene video output path.")
+        raise RuntimeError("The local video backend did not receive a scene video output path.")
     output_path = Path(output_text)
 
     if not generate_ltx_shots(context, scene_package, output_path):

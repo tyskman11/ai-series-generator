@@ -2,8 +2,12 @@
 from __future__ import annotations
 
 import json
+import os
+import signal
 import subprocess
 import tempfile
+import time
+import wave
 from datetime import datetime
 from pathlib import Path
 
@@ -18,6 +22,13 @@ from backend_common import (
 
 AUDIO_PATTERNS = ("*.wav", "*.flac", "*.mp3", "*.m4a", "*.ogg")
 NON_SPEECH_AUDIO_TYPES = {"music", "applause", "laughter", "noise", "ambience", "sfx", "silence", "uncertain_non_speech"}
+DEFAULT_XTTS_LINE_TIMEOUT_SECONDS = 600
+DEFAULT_MIN_REFERENCE_SECONDS = 6.0
+DEFAULT_MIN_REFERENCE_COUNT = 2
+DEFAULT_MIN_SINGLE_REFERENCE_SECONDS = 0.35
+DEFAULT_MAX_REFERENCE_PATHS = 4
+DEFAULT_VOXCPM_INFERENCE_TIMESTEPS = 10
+DEFAULT_VOXCPM_CFG_VALUE = 2.0
 
 
 def clean_text(value: object) -> str:
@@ -33,6 +44,44 @@ def normalize_language_code(value: object) -> str:
     if text.startswith("en"):
         return "en"
     return text.split("-", 1)[0]
+
+
+def env_float(name: str, default: float) -> float:
+    raw = str(os.environ.get(name, "") or "").strip()
+    if not raw:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        return default
+
+
+def env_int(name: str, default: int) -> int:
+    raw = str(os.environ.get(name, "") or "").strip()
+    if not raw:
+        return default
+    try:
+        return int(float(raw))
+    except ValueError:
+        return default
+
+
+def runtime_float(runtime_cfg: dict, key: str, default: float, env_name: str = "") -> float:
+    if env_name and str(os.environ.get(env_name, "") or "").strip():
+        return env_float(env_name, default)
+    try:
+        return float(runtime_cfg.get(key, default) or default)
+    except (TypeError, ValueError):
+        return default
+
+
+def runtime_int(runtime_cfg: dict, key: str, default: int, env_name: str = "") -> int:
+    if env_name and str(os.environ.get(env_name, "") or "").strip():
+        return env_int(env_name, default)
+    try:
+        return int(float(runtime_cfg.get(key, default) or default))
+    except (TypeError, ValueError):
+        return default
 
 
 def reference_dict_eligible(item: dict) -> bool:
@@ -106,6 +155,104 @@ def collect_reference_audio_paths(line: dict) -> list[Path]:
     return candidates
 
 
+def audio_duration_seconds(path: Path) -> float:
+    try:
+        if path.suffix.lower() == ".wav":
+            with wave.open(str(path), "rb") as handle:
+                rate = float(handle.getframerate() or 0)
+                if rate <= 0:
+                    return 0.0
+                return float(handle.getnframes()) / rate
+    except Exception:
+        return 0.0
+    return 0.0
+
+
+def voice_reference_profile(line: dict, runtime_cfg: dict) -> dict:
+    all_paths = collect_reference_audio_paths(line)
+    min_single_seconds = max(
+        0.0,
+        runtime_float(
+            runtime_cfg,
+            "min_single_voice_reference_seconds",
+            DEFAULT_MIN_SINGLE_REFERENCE_SECONDS,
+            "SERIES_XTTS_MIN_SINGLE_REFERENCE_SECONDS",
+        ),
+    )
+    rows: list[dict] = []
+    usable_paths: list[Path] = []
+    for path in all_paths:
+        duration = audio_duration_seconds(path)
+        usable = duration >= min_single_seconds
+        rows.append(
+            {
+                "path": str(path),
+                "duration_seconds": round(duration, 3),
+                "usable": usable,
+            }
+        )
+        if usable:
+            usable_paths.append(path)
+    return {
+        "candidate_count": len(all_paths),
+        "usable_count": len(usable_paths),
+        "usable_duration_seconds": round(sum(audio_duration_seconds(path) for path in usable_paths), 3),
+        "usable_paths": usable_paths,
+        "rows": rows,
+    }
+
+
+def select_xtts_reference_audio_paths(line: dict, runtime_cfg: dict) -> tuple[list[Path], dict]:
+    profile = voice_reference_profile(line, runtime_cfg)
+    min_reference_seconds = max(
+        0.0,
+        runtime_float(
+            runtime_cfg,
+            "min_voice_reference_seconds",
+            DEFAULT_MIN_REFERENCE_SECONDS,
+            "SERIES_XTTS_MIN_REFERENCE_SECONDS",
+        ),
+    )
+    min_reference_count = max(
+        1,
+        runtime_int(
+            runtime_cfg,
+            "min_voice_reference_count",
+            DEFAULT_MIN_REFERENCE_COUNT,
+            "SERIES_XTTS_MIN_REFERENCE_COUNT",
+        ),
+    )
+    max_reference_paths = max(
+        1,
+        runtime_int(
+            runtime_cfg,
+            "max_voice_reference_paths",
+            DEFAULT_MAX_REFERENCE_PATHS,
+            "SERIES_XTTS_MAX_REFERENCE_PATHS",
+        ),
+    )
+    voice_profile = line.get("voice_profile", {}) if isinstance(line.get("voice_profile", {}), dict) else {}
+    voice_model = load_voice_model_metadata(voice_profile.get("voice_model_path", ""))
+    clone_ready = bool(voice_model.get("clone_ready", False))
+    total_seconds = float(profile.get("usable_duration_seconds", 0.0) or 0.0)
+    usable_count = int(profile.get("usable_count", 0) or 0)
+    if usable_count < min_reference_count or total_seconds < min_reference_seconds:
+        raise RuntimeError(
+            f"{line['speaker_name']}: insufficient usable XTTS reference audio for line "
+            f"{int(line.get('line_index', 0) or 0) + 1:03d}. "
+            f"usable_refs={usable_count}/{min_reference_count}, "
+            f"usable_seconds={total_seconds:.2f}/{min_reference_seconds:.2f}, "
+            f"voice_model_clone_ready={clone_ready}. "
+            "Rerun 03-10 for this speaker or review/repair voice assignments before rendering."
+        )
+    selected_paths = list(profile.get("usable_paths", []))[:max_reference_paths]
+    profile["selected_count"] = len(selected_paths)
+    profile["voice_model_clone_ready"] = clone_ready
+    profile["voice_model_quality_score"] = voice_model.get("quality_score", "")
+    profile["voice_model_duration_seconds_total"] = voice_model.get("duration_seconds_total", "")
+    return selected_paths, profile
+
+
 def collect_line_specs(scene_package: dict) -> list[dict]:
     voice_clone = scene_package.get("voice_clone", {}) if isinstance(scene_package.get("voice_clone"), dict) else {}
     lines = voice_clone.get("lines", []) if isinstance(voice_clone.get("lines"), list) else []
@@ -171,7 +318,14 @@ def load_xtts_runtime(runtime_cfg: dict):
         return None, f"XTTS could not be initialized: {exc}"
 
 
-def synthesize_xtts_line(synthesizer, text: str, language: str, reference_paths: list[Path], output_path: Path) -> None:
+def synthesize_xtts_line(
+    synthesizer,
+    text: str,
+    language: str,
+    reference_paths: list[Path],
+    output_path: Path,
+    timeout_seconds: int = 0,
+) -> None:
     kwargs = {
         "text": text,
         "file_path": str(output_path),
@@ -180,10 +334,156 @@ def synthesize_xtts_line(synthesizer, text: str, language: str, reference_paths:
         kwargs["speaker_wav"] = [str(path) for path in reference_paths[:4]]
     if language:
         kwargs["language"] = language
+    if timeout_seconds > 0 and hasattr(signal, "SIGALRM") and hasattr(signal, "setitimer"):
+        def timeout_handler(_signum, _frame):
+            raise TimeoutError(f"XTTS line synthesis exceeded {timeout_seconds} seconds.")
+
+        previous_handler = signal.getsignal(signal.SIGALRM)
+        signal.signal(signal.SIGALRM, timeout_handler)
+        signal.setitimer(signal.ITIMER_REAL, float(timeout_seconds))
+        try:
+            synthesizer.tts_to_file(**kwargs)
+        finally:
+            signal.setitimer(signal.ITIMER_REAL, 0)
+            signal.signal(signal.SIGALRM, previous_handler)
+        return
     synthesizer.tts_to_file(**kwargs)
 
 
-def synthesize_missing_lines_xtts(temp_root: Path, line_specs: list[dict]) -> tuple[dict[int, Path], list[str]]:
+def load_voxcpm_runtime(runtime_cfg: dict):
+    if clean_text(runtime_cfg.get("engine", "")).lower() not in {"voxcpm", "voxcpm2"}:
+        return None, ""
+    model_dir = clean_text(os.environ.get("SERIES_VOICE_MODEL_DIR", "")) or clean_text(runtime_cfg.get("voice_model_dir", ""))
+    if not model_dir:
+        return None, "VoxCPM2 model directory is not configured. Run 00_prepare_runtime.py."
+    candidate = Path(model_dir)
+    if not candidate.is_absolute():
+        candidate = Path(__file__).resolve().parents[2] / candidate
+    if not candidate.exists() or not any(candidate.rglob("*.safetensors")):
+        return None, f"Project-local VoxCPM2 model is incomplete: {candidate}. Run 00_prepare_runtime.py without --skip-downloads."
+    try:
+        from voxcpm import VoxCPM
+    except Exception as exc:
+        return None, f"VoxCPM2 runtime is not available: {exc}"
+    try:
+        import torch
+
+        device = "cuda" if bool(torch.cuda.is_available()) else "cpu"
+    except Exception:
+        device = "cpu"
+    try:
+        # The local_files_only flag is deliberate: inference must never fetch a
+        # model or contact a service after step 00 has completed.
+        runtime = VoxCPM.from_pretrained(
+            str(candidate),
+            local_files_only=True,
+            load_denoiser=False,
+            optimize=device == "cuda",
+            device=device,
+        )
+        return runtime, ""
+    except Exception as exc:
+        return None, f"VoxCPM2 could not be initialized from {candidate}: {exc}"
+
+
+def synthesize_missing_lines_voxcpm(
+    temp_root: Path,
+    line_specs: list[dict],
+    progress_path: Path,
+) -> tuple[dict[int, Path], list[str]]:
+    runtime_cfg = next(
+        (line.get("runtime", {}) for line in line_specs if isinstance(line.get("runtime", {}), dict) and line.get("runtime")),
+        {},
+    )
+    synthesizer, runtime_error = load_voxcpm_runtime(runtime_cfg)
+    created: dict[int, Path] = {}
+    failures: list[str] = []
+    if synthesizer is None:
+        if runtime_error:
+            failures.append(runtime_error)
+        return created, failures
+    try:
+        import soundfile as sf
+    except Exception as exc:
+        return created, [f"VoxCPM2 requires soundfile: {exc}"]
+    inference_steps = max(1, runtime_int(runtime_cfg, "voxcpm_inference_timesteps", DEFAULT_VOXCPM_INFERENCE_TIMESTEPS))
+    cfg_value = max(0.1, runtime_float(runtime_cfg, "voxcpm_cfg_value", DEFAULT_VOXCPM_CFG_VALUE))
+    for line in line_specs:
+        if line.get("audio_path") is not None or not clean_text(line.get("text", "")):
+            continue
+        try:
+            reference_paths, reference_profile = select_xtts_reference_audio_paths(line, runtime_cfg)
+        except Exception as exc:
+            failures.append(str(exc).replace("XTTS", "VoxCPM2"))
+            continue
+        line_index = int(line.get("line_index", 0) or 0)
+        target_text = clean_text(line.get("target_output_audio", ""))
+        target = Path(target_text) if target_text else temp_root / f"line_{line_index:04d}_voxcpm.wav"
+        ensure_parent(str(target))
+        started_at = time.time()
+        write_voice_progress(
+            progress_path,
+            {
+                "status": "synthesizing_line",
+                "engine": "voxcpm2",
+                "line_index": line_index,
+                "line_number": line_index + 1,
+                "speaker_name": line["speaker_name"],
+                "target_output_audio": str(target),
+                "reference_profile": {key: value for key, value in reference_profile.items() if key != "usable_paths"},
+            },
+        )
+        try:
+            reference_path = reference_paths[0]
+            result = synthesizer.generate(
+                text=clean_text(line.get("text", "")),
+                prompt_wav_path=str(reference_path),
+                cfg_value=cfg_value,
+                inference_timesteps=inference_steps,
+                normalize=True,
+                denoise=True,
+            )
+            sample_rate = int(getattr(getattr(synthesizer, "tts_model", None), "sample_rate", 48000) or 48000)
+            sf.write(str(target), result, sample_rate)
+        except Exception as exc:
+            failures.append(f"{line['speaker_name']}: VoxCPM2 synthesis failed for line {line_index}: {exc}")
+            write_voice_progress(
+                progress_path,
+                {"status": "line_failed", "engine": "voxcpm2", "line_index": line_index, "error": str(exc)},
+            )
+            continue
+        if not target.exists() or target.stat().st_size <= 0:
+            failures.append(f"{line['speaker_name']}: VoxCPM2 produced no audio for line {line_index}.")
+            continue
+        created[line_index] = target
+        write_voice_progress(
+            progress_path,
+            {
+                "status": "line_complete",
+                "engine": "voxcpm2",
+                "line_index": line_index,
+                "elapsed_seconds": round(time.time() - started_at, 3),
+                "target_output_audio": str(target),
+            },
+        )
+    return created, failures
+
+
+def write_voice_progress(progress_path: Path, payload: dict) -> None:
+    try:
+        ensure_parent(str(progress_path))
+        payload = dict(payload)
+        payload["updated_at"] = datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+        progress_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    except Exception:
+        pass
+
+
+def synthesize_missing_lines_xtts(
+    temp_root: Path,
+    line_specs: list[dict],
+    progress_path: Path,
+) -> tuple[dict[int, Path], list[str]]:
     runtime_cfg = {}
     for line in line_specs:
         if isinstance(line.get("runtime", {}), dict):
@@ -197,17 +497,46 @@ def synthesize_missing_lines_xtts(temp_root: Path, line_specs: list[dict]) -> tu
         if xtts_error:
             failures.append(xtts_error)
         return created, failures
+    line_timeout_seconds = max(
+        0,
+        runtime_int(
+            runtime_cfg,
+            "xtts_line_timeout_seconds",
+            DEFAULT_XTTS_LINE_TIMEOUT_SECONDS,
+            "SERIES_XTTS_LINE_TIMEOUT_SECONDS",
+        ),
+    )
     for line in line_specs:
         if line.get("audio_path") is not None or not clean_text(line.get("text", "")):
             continue
-        reference_paths = collect_reference_audio_paths(line)
-        if not reference_paths:
-            failures.append(f"{line['speaker_name']}: no character reference audio was found.")
+        try:
+            reference_paths, reference_profile = select_xtts_reference_audio_paths(line, runtime_cfg)
+        except Exception as exc:
+            failures.append(str(exc))
             continue
         line_index = int(line.get("line_index", 0) or 0)
         target_text = clean_text(line.get("target_output_audio", ""))
         target = Path(target_text) if target_text else temp_root / f"line_{line_index:04d}_xtts.wav"
         ensure_parent(str(target))
+        started_at = time.time()
+        write_voice_progress(
+            progress_path,
+            {
+                "status": "synthesizing_line",
+                "line_index": line_index,
+                "line_number": line_index + 1,
+                "speaker_name": line["speaker_name"],
+                "text": clean_text(line.get("text", "")),
+                "language": normalize_language_code(line.get("language", "")) or normalize_language_code(runtime_cfg.get("xtts_language", "")),
+                "target_output_audio": str(target),
+                "reference_profile": {
+                    key: value
+                    for key, value in reference_profile.items()
+                    if key != "usable_paths"
+                },
+                "line_timeout_seconds": line_timeout_seconds,
+            },
+        )
         try:
             synthesize_xtts_line(
                 synthesizer,
@@ -215,14 +544,39 @@ def synthesize_missing_lines_xtts(temp_root: Path, line_specs: list[dict]) -> tu
                 normalize_language_code(line.get("language", "")) or normalize_language_code(runtime_cfg.get("xtts_language", "")),
                 reference_paths,
                 target,
+                line_timeout_seconds,
             )
         except Exception as exc:
             failures.append(f"{line['speaker_name']}: XTTS synthesis failed for line {line_index}: {exc}")
+            write_voice_progress(
+                progress_path,
+                {
+                    "status": "line_failed",
+                    "line_index": line_index,
+                    "line_number": line_index + 1,
+                    "speaker_name": line["speaker_name"],
+                    "target_output_audio": str(target),
+                    "elapsed_seconds": round(time.time() - started_at, 3),
+                    "error": str(exc),
+                },
+            )
             continue
         if not target.exists() or target.stat().st_size <= 0:
             failures.append(f"{line['speaker_name']}: XTTS produced no audio for line {line_index}.")
             continue
         created[line_index] = target
+        write_voice_progress(
+            progress_path,
+            {
+                "status": "line_completed",
+                "line_index": line_index,
+                "line_number": line_index + 1,
+                "speaker_name": line["speaker_name"],
+                "target_output_audio": str(target),
+                "elapsed_seconds": round(time.time() - started_at, 3),
+                "bytes": target.stat().st_size,
+            },
+        )
     return created, failures
 
 
@@ -261,22 +615,28 @@ def synthesize_missing_lines_pyttsx3(temp_root: Path, line_specs: list[dict]) ->
     return created
 
 
-def synthesize_missing_lines(temp_root: Path, line_specs: list[dict]) -> tuple[dict[int, Path], str]:
-    created, failures = synthesize_missing_lines_xtts(temp_root, line_specs)
+def synthesize_missing_lines(temp_root: Path, line_specs: list[dict], progress_path: Path) -> tuple[dict[int, Path], str]:
+    runtime_cfg = next(
+        (line.get("runtime", {}) for line in line_specs if isinstance(line.get("runtime", {}), dict) and line.get("runtime")),
+        {},
+    )
+    engine = clean_text(runtime_cfg.get("engine", "")).lower()
+    if engine in {"voxcpm", "voxcpm2"}:
+        created, failures = synthesize_missing_lines_voxcpm(temp_root, line_specs, progress_path)
+        backend_name = "voxcpm2_voice_clone"
+    else:
+        created, failures = {}, [
+            f"Unsupported local voice clone engine '{engine or 'unset'}'. "
+            "This project accepts only the project-local VoxCPM2 model; run 00_prepare_runtime.py to migrate the configuration."
+        ]
     if created:
-        return created, "xtts_voice_clone"
+        return created, backend_name
     force_clone = any(bool(line.get("force_voice_cloning", True)) for line in line_specs)
-    runtime_cfg = {}
-    for line in line_specs:
-        if isinstance(line.get("runtime", {}), dict):
-            runtime_cfg = line.get("runtime", {})
-            if runtime_cfg:
-                break
     if force_clone:
-        detail = "; ".join(failures) if failures else "No character reference audio is available for XTTS synthesis."
+        detail = "; ".join(failures) if failures else "No character reference audio is available for local voice-clone synthesis."
         raise RuntimeError(f"Project-local voice cloning could not synthesize the missing lines. {detail}")
     if not bool(runtime_cfg.get("allow_system_tts_fallback", False)):
-        detail = "; ".join(failures) if failures else "No character reference audio is available for XTTS synthesis."
+        detail = "; ".join(failures) if failures else "No character reference audio is available for VoxCPM2 synthesis."
         raise RuntimeError(f"Project-local voice cloning could not synthesize the missing lines. {detail}")
     return synthesize_missing_lines_pyttsx3(temp_root, line_specs), "pyttsx3"
 
@@ -321,6 +681,11 @@ def write_voice_diagnostics(output_path: Path, line_specs: list[dict], backend_n
                 "pause_after_seconds": float(line.get("pause_after_seconds", 0.0) or 0.0),
                 "delivery_notes": clean_text(line.get("delivery_notes", "")),
                 "reference_candidate_count": len(collect_reference_audio_paths(line)),
+                "reference_profile": {
+                    key: value
+                    for key, value in voice_reference_profile(line, line.get("runtime", {}) if isinstance(line.get("runtime", {}), dict) else {}).items()
+                    if key != "usable_paths"
+                },
             }
             for line in line_specs
         ],
@@ -346,7 +711,8 @@ def main() -> int:
     ffmpeg = find_project_local_ffmpeg()
     with tempfile.TemporaryDirectory() as tmpdir:
         temp_root = Path(tmpdir)
-        synthesized, backend_name = synthesize_missing_lines(temp_root, line_specs)
+        progress_path = output_path.with_suffix(output_path.suffix + ".progress.json")
+        synthesized, backend_name = synthesize_missing_lines(temp_root, line_specs, progress_path)
         audio_files: list[Path] = []
         for line in sorted(line_specs, key=lambda item: int(item.get("line_index", 0) or 0)):
             candidate = line.get("audio_path")

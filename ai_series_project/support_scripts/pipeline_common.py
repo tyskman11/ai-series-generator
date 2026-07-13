@@ -208,9 +208,9 @@ DEFAULT_CONFIG = {
         "speaker_unknown_episode_min_token_margin": 0.8,
     },
     "diarization": {
-        "model_name": "pyannote/speaker-diarization-community-1",
-        "hf_token_env": "HF_TOKEN",
+        "model_name": "",
         "enabled": False,
+        "allow_authenticated_download": False,
     },
     "character_detection": {
         "sample_every_n_frames": 6,
@@ -313,6 +313,49 @@ DEFAULT_CONFIG = {
         },
         "quality_mode": "original_episode_quality_first",
         "allow_fallbacks": False,
+        "model_profile": "live_action",
+    },
+    "local_generation": {
+        "enabled": True,
+        "local_models_only": True,
+        "allow_runtime_model_downloads": False,
+        "require_public_non_gated_models": True,
+        "active_profile": "live_action",
+        "scriptwriter": {
+            "enabled": True,
+            "engine": "transformers",
+            "model_id": "Qwen/Qwen2.5-7B-Instruct",
+            "model_dir": "tools/quality_models/text/Qwen__Qwen2.5-7B-Instruct",
+            "local_files_only": True,
+            "max_new_tokens": 768,
+            "temperature": 0.75,
+        },
+        "profiles": {
+            "live_action": {
+                "label": "Live action",
+                "image_model_id": "Qwen/Qwen-Image",
+                "image_model_dir": "tools/quality_models/image/Qwen__Qwen-Image",
+                "identity_model_id": "stabilityai/stable-diffusion-xl-base-1.0",
+                "identity_model_dir": "tools/quality_models/image/stabilityai__stable-diffusion-xl-base-1.0",
+                "video_model_id": "Wan-AI/Wan2.1-T2V-1.3B",
+                "video_model_dir": "tools/quality_models/video/Wan-AI__Wan2.1-T2V-1.3B",
+                "video_model_family": "wan",
+                "style_prompt": "live-action episodic television, natural production lighting",
+                "negative_prompt": "anime, illustration, cartoon, cel shading",
+            },
+            "anime": {
+                "label": "Anime",
+                "image_model_id": "cagliostrolab/animagine-xl-4.0",
+                "image_model_dir": "tools/quality_models/image/cagliostrolab__animagine-xl-4.0",
+                "identity_model_id": "cagliostrolab/animagine-xl-4.0",
+                "identity_model_dir": "tools/quality_models/image/cagliostrolab__animagine-xl-4.0",
+                "video_model_id": "Wan-AI/Wan2.1-T2V-1.3B",
+                "video_model_dir": "tools/quality_models/video/Wan-AI__Wan2.1-T2V-1.3B",
+                "video_model_family": "wan",
+                "style_prompt": "high-quality serialized anime, clean line art, consistent cel shading, expressive animation",
+                "negative_prompt": "photorealistic live action, live-action skin texture, realistic camera footage",
+            },
+        },
     },
     "storyboard_backend": {
         "allow_local_frame_fallback": False,
@@ -339,7 +382,7 @@ DEFAULT_CONFIG = {
         "required_before_render": True,
         "download_base_models": True,
         "check_model_updates": True,
-        "huggingface_token_env": "HF_TOKEN",
+        "public_downloads_without_login": True,
         "min_character_scene_count": 3,
         "min_character_line_count": 3,
         "max_frame_samples_per_character": 48,
@@ -353,8 +396,8 @@ DEFAULT_CONFIG = {
         "image_base_model": "Qwen/Qwen-Image",
         "image_identity_fallback_model": "stabilityai/stable-diffusion-xl-base-1.0",
         "identity_adapter_model": "h94/IP-Adapter",
-        "video_base_model": "Lightricks/LTX-2.3",
-        "video_diffusers_fallback_model": "Lightricks/LTX-Video-0.9.8-13B-distilled",
+        "video_base_model": "Wan-AI/Wan2.1-T2V-1.3B",
+        "video_diffusers_fallback_model": "",
         "voice_base_model": "openbmb/VoxCPM2",
         "use_local_character_voice_models": True,
         "min_voice_duration_seconds_total": 8.0,
@@ -407,13 +450,15 @@ DEFAULT_CONFIG = {
         "enable_voice_cloning": True,
         "enable_face_clone": True,
         "enable_lipsync": True,
-        "voice_clone_engine": "xtts",
+        "voice_clone_engine": "voxcpm2",
         "require_trained_voice_models": True,
         "force_voice_cloning": True,
         "allow_system_tts_fallback": False,
-        "xtts_model_name": "tts_models/multilingual/multi-dataset/xtts_v2",
-        "xtts_language": "auto",
-        "xtts_license_accepted": False,
+        "voice_model_id": "openbmb/VoxCPM2",
+        "voice_model_dir": "tools/quality_models/voice/openbmb__VoxCPM2",
+        "voice_model_local_files_only": True,
+        "voxcpm_inference_timesteps": 10,
+        "voxcpm_cfg_value": 2.0,
         "prefer_detected_character_language": True,
         "voice_reference_max_segments": 4,
         "voice_reference_target_seconds": 16.0,
@@ -439,9 +484,9 @@ DEFAULT_CONFIG = {
     "season_intro": {
         "enabled": True,
         "default_season_id": "season_01",
-        "require_in_finished_episode_mode": True,
+        "require_in_finished_episode_mode": False,
         "lock_after_first_use": True,
-        "auto_generate_if_missing": True,
+        "auto_generate_if_missing": False,
         "generated_duration_seconds": 12.0,
         "max_generated_intro_characters": 4,
         "generated_prompt": "",
@@ -451,6 +496,25 @@ DEFAULT_CONFIG = {
                 "start_seconds": 0.0,
                 "duration_seconds": 0.0,
                 "generated_duration_seconds": 12.0,
+                "title": "",
+                "prompt": "",
+            }
+        },
+    },
+    "season_outro": {
+        "enabled": True,
+        "default_season_id": "season_01",
+        "lock_after_first_use": True,
+        "auto_generate_if_missing": False,
+        "generated_duration_seconds": 8.0,
+        "max_generated_outro_characters": 1,
+        "generated_prompt": "",
+        "profiles": {
+            "season_01": {
+                "source_video": "assets/season_outros/season_01/outro.mp4",
+                "start_seconds": 0.0,
+                "duration_seconds": 0.0,
+                "generated_duration_seconds": 8.0,
                 "title": "",
                 "prompt": "",
             }
@@ -466,6 +530,7 @@ DEFAULT_CONFIG = {
         "require_backend_manifests": True,
         "block_placeholder_outputs": True,
         "block_stale_outputs": True,
+        "min_identity_references_per_character": 3,
         "min_episode_realism_score": 0.82,
         "min_scene_realism_score": 0.72,
     },
@@ -510,7 +575,7 @@ DEFAULT_CONFIG = {
     },
     "quality_backend_assets": {
         "check_for_updates": True,
-        "huggingface_token_env": "HF_TOKEN",
+        "public_downloads_without_login": True,
         "huggingface_download_retries": 8,
         "huggingface_download_retry_delay_seconds": 20,
         "summary_path": "tools/quality_backends/quality_backend_assets.json",
@@ -543,6 +608,7 @@ DEFAULT_CONFIG = {
                 "kind": "huggingface",
                 "repo_id": "Qwen/Qwen-Image",
                 "target_dir": "tools/quality_models/image/Qwen__Qwen-Image",
+                "public_no_login": True,
                 "required_files": [
                     "model_index.json",
                     "scheduler/scheduler_config.json",
@@ -557,6 +623,7 @@ DEFAULT_CONFIG = {
                 "kind": "huggingface",
                 "repo_id": "stabilityai/stable-diffusion-xl-base-1.0",
                 "target_dir": "tools/quality_models/image/stabilityai__stable-diffusion-xl-base-1.0",
+                "public_no_login": True,
                 "required_files": [
                     "model_index.json",
                     "scheduler/scheduler_config.json",
@@ -572,6 +639,7 @@ DEFAULT_CONFIG = {
                 "kind": "huggingface",
                 "repo_id": "h94/IP-Adapter",
                 "target_dir": "tools/quality_models/image/h94__IP-Adapter",
+                "public_no_login": True,
                 "allow_patterns": [
                     "models/image_encoder/**",
                     "sdxl_models/ip-adapter-plus-face_sdxl_vit-h.safetensors",
@@ -584,38 +652,36 @@ DEFAULT_CONFIG = {
             {
                 "name": "video_base_model",
                 "kind": "huggingface",
-                "repo_id": "Lightricks/LTX-2.3",
-                "target_dir": "tools/quality_models/video/Lightricks__LTX-2.3",
-                "required_files": [
-                    "ltx-2.3-22b-distilled-1.1.safetensors",
-                ],
+                "repo_id": "Wan-AI/Wan2.1-T2V-1.3B",
+                "target_dir": "tools/quality_models/video/Wan-AI__Wan2.1-T2V-1.3B",
+                "public_no_login": True,
+                "license_spdx": "Apache-2.0",
+                "required_files": ["model_index.json"],
             },
             {
-                "name": "video_diffusers_fallback_model",
+                "name": "anime_image_model",
                 "kind": "huggingface",
-                "repo_id": "Lightricks/LTX-Video-0.9.8-13B-distilled",
-                "target_dir": "tools/quality_models/video/Lightricks__LTX-Video-0.9.8-13B-distilled",
-                "required_files": [
-                    "model_index.json",
-                    "scheduler/scheduler_config.json",
-                    "text_encoder/model.safetensors.index.json",
-                    "transformer/diffusion_pytorch_model.safetensors.index.json",
-                    "vae/diffusion_pytorch_model.safetensors",
-                    "tokenizer/tokenizer_config.json",
-                ],
+                "repo_id": "cagliostrolab/animagine-xl-4.0",
+                "target_dir": "tools/quality_models/image/cagliostrolab__animagine-xl-4.0",
+                "public_no_login": True,
+                "license_spdx": "openrail++",
+                "required_files": ["model_index.json", "unet/diffusion_pytorch_model.safetensors"],
+            },
+            {
+                "name": "local_scriptwriter_model",
+                "kind": "huggingface",
+                "repo_id": "Qwen/Qwen2.5-7B-Instruct",
+                "target_dir": "tools/quality_models/text/Qwen__Qwen2.5-7B-Instruct",
+                "public_no_login": True,
+                "license_spdx": "Apache-2.0",
+                "required_files": ["config.json", "tokenizer_config.json", "model.safetensors.index.json"],
             },
             {
                 "name": "voice_base_model",
                 "kind": "huggingface",
                 "repo_id": "openbmb/VoxCPM2",
                 "target_dir": "tools/quality_models/voice/openbmb__VoxCPM2",
-                "required_patterns": [],
-            },
-            {
-                "name": "xtts_model_name_record",
-                "kind": "metadata",
-                "repo_id": "tts_models/multilingual/multi-dataset/xtts_v2",
-                "target_dir": "tools/quality_models/voice/xtts_runtime",
+                "public_no_login": True,
                 "required_patterns": [],
             },
             {
@@ -674,7 +740,14 @@ DEFAULT_CONFIG = {
             "enabled": False,
             "command_template": [],
             "working_directory": "",
-            "environment": {},
+            "environment": {
+                "SERIES_VOICE_BACKEND_TIMEOUT_SECONDS": "0",
+                "SERIES_VOICE_MODEL_ID": "openbmb/VoxCPM2",
+                "SERIES_VOICE_MODEL_DIR": "tools/quality_models/voice/openbmb__VoxCPM2",
+                "SERIES_VOICE_LOCAL_FILES_ONLY": "1",
+                "SERIES_VOICE_MIN_REFERENCE_SECONDS": "6.0",
+                "SERIES_VOICE_MIN_REFERENCE_COUNT": "2",
+            },
             "shell": False,
             "timeout_seconds": 0,
             "skip_if_outputs_exist": True,
@@ -2230,10 +2303,12 @@ def scene_quality_assessment(
         audio_score = 0.28
     elif "pyttsx3" in audio_backend:
         audio_score = 0.46
-    elif audio_backend in {"xtts_voice_clone", "voice_clone"} or audio_backend.endswith("_voice_clone"):
+    elif audio_backend in {"voxcpm_voice_clone", "voxcpm2_voice_clone"}:
         audio_score = 1.0
-    elif audio_backend == "xtts":
-        audio_score = 0.94
+    elif audio_backend in {"xtts", "xtts_voice_clone", "voice_clone"} or audio_backend.endswith("_voice_clone"):
+        # Historical manifests stay inspectable, but must be regenerated using
+        # VoxCPM2 before a local-models-only release can pass.
+        audio_score = 0.42
     elif audio_backend in {"reused_original_segments", "original_segment_reuse"}:
         audio_score = 0.58
     else:
@@ -5568,11 +5643,47 @@ def quality_first_requirements_report(config: dict[str, Any]) -> dict[str, Any]:
     render_cfg = config.get("render", {}) if isinstance(config.get("render"), dict) else {}
     generation_cfg = config.get("generation", {}) if isinstance(config.get("generation"), dict) else {}
     storyboard_backend_cfg = config.get("storyboard_backend", {}) if isinstance(config.get("storyboard_backend"), dict) else {}
+    local_generation_cfg = config.get("local_generation", {}) if isinstance(config.get("local_generation"), dict) else {}
     missing: list[str] = []
     warnings: list[str] = []
 
     if not release_mode_enabled(config):
         missing.append("release_mode.enabled must be true")
+    if not bool(local_generation_cfg.get("enabled", False)):
+        missing.append("local_generation.enabled must be true")
+    if not bool(local_generation_cfg.get("local_models_only", False)):
+        missing.append("local_generation.local_models_only must be true")
+    if bool(local_generation_cfg.get("allow_runtime_model_downloads", True)):
+        missing.append("local_generation.allow_runtime_model_downloads must be false; run 00_prepare_runtime.py for downloads")
+    if not bool(local_generation_cfg.get("require_public_non_gated_models", False)):
+        missing.append("local_generation.require_public_non_gated_models must be true")
+    scriptwriter_cfg = local_generation_cfg.get("scriptwriter", {}) if isinstance(local_generation_cfg.get("scriptwriter"), dict) else {}
+    if not bool(scriptwriter_cfg.get("enabled", False)):
+        missing.append("local_generation.scriptwriter.enabled must be true")
+    if str(scriptwriter_cfg.get("engine", "") or "").strip().lower() != "transformers":
+        missing.append("local_generation.scriptwriter.engine must be transformers for project-local inference")
+    if not bool(scriptwriter_cfg.get("local_files_only", False)):
+        missing.append("local_generation.scriptwriter.local_files_only must be true")
+    assets_cfg = config.get("quality_backend_assets", {}) if isinstance(config.get("quality_backend_assets"), dict) else {}
+    asset_targets = assets_cfg.get("targets", []) if isinstance(assets_cfg.get("targets"), list) else []
+    for target in asset_targets:
+        if not isinstance(target, dict) or str(target.get("kind", "") or "").strip().lower() != "huggingface":
+            continue
+        target_name = str(target.get("name", target.get("repo_id", "model")) or "model").strip()
+        if target.get("public_no_login") is not True:
+            missing.append(f"quality_backend_assets.targets.{target_name} must set public_no_login=true")
+        repo_id = str(target.get("repo_id", "") or "").strip().lower()
+        if repo_id.startswith("black-forest-labs/"):
+            missing.append(f"quality_backend_assets.targets.{target_name} references a gated/login model")
+    generation_profile_id = str(generation_cfg.get("model_profile", "") or local_generation_cfg.get("active_profile", "")).strip() or "live_action"
+    profiles = local_generation_cfg.get("profiles", {}) if isinstance(local_generation_cfg.get("profiles"), dict) else {}
+    active_profile = profiles.get(generation_profile_id, {}) if isinstance(profiles.get(generation_profile_id), dict) else {}
+    if not active_profile:
+        missing.append(f"local_generation.profiles.{generation_profile_id} is missing")
+    else:
+        for field in ("image_model_id", "image_model_dir", "identity_model_id", "identity_model_dir", "video_model_id", "video_model_dir", "video_model_family"):
+            if not str(active_profile.get(field, "") or "").strip():
+                missing.append(f"local_generation.profiles.{generation_profile_id}.{field} must be configured")
     if bool(generation_cfg.get("allow_fallbacks", False)):
         missing.append("generation.allow_fallbacks must be false")
     if not bool(cloning_cfg.get("enable_voice_cloning", False)):
@@ -5613,10 +5724,19 @@ def quality_first_requirements_report(config: dict[str, Any]) -> dict[str, Any]:
         if runner_name in missing_runners:
             continue
         missing.extend(external_backend_runner_prerequisite_gaps(config, runner_name))
+        fragments = " ".join(external_backend_runner_text_fragments(config, runner_name)).lower()
+        if "http://" in fragments or "https://" in fragments or "api.openai" in fragments:
+            missing.append(f"external_backends.{runner_name} must invoke a project-local runner, not a remote URL or API")
 
     voice_clone_engine = str(cloning_cfg.get("voice_clone_engine", "") or "").strip().lower()
-    if voice_clone_engine in {"", "pyttsx3"}:
-        warnings.append("cloning.voice_clone_engine is still set to a fallback-oriented value")
+    if voice_clone_engine != "voxcpm2":
+        missing.append("cloning.voice_clone_engine must be voxcpm2 in local-models-only mode")
+    if str(cloning_cfg.get("voice_model_id", "") or "").strip() != "openbmb/VoxCPM2":
+        missing.append("cloning.voice_model_id must be openbmb/VoxCPM2 in local-models-only mode")
+    if not str(cloning_cfg.get("voice_model_dir", "") or "").strip():
+        missing.append("cloning.voice_model_dir must point to the project-local VoxCPM2 download")
+    if not bool(cloning_cfg.get("voice_model_local_files_only", False)):
+        missing.append("cloning.voice_model_local_files_only must be true")
 
     release_cfg = config.get("release_mode", {}) if isinstance(config.get("release_mode"), dict) else {}
     allow_project_local_fallback_backends = bool(release_cfg.get("allow_project_local_fallback_backends", False))
@@ -5656,6 +5776,16 @@ def ensure_quality_first_ready(config: dict[str, Any], *, context_label: str = "
     raise RuntimeError(
         f"{context_label} is blocked until the project is configured for real original-episode quality.\n{details}"
     )
+
+
+def active_local_generation_profile(config: dict[str, Any]) -> dict[str, Any]:
+    """Return the selected local visual profile without resolving any machine-specific paths."""
+    local_cfg = config.get("local_generation", {}) if isinstance(config.get("local_generation"), dict) else {}
+    generation_cfg = config.get("generation", {}) if isinstance(config.get("generation"), dict) else {}
+    profiles = local_cfg.get("profiles", {}) if isinstance(local_cfg.get("profiles"), dict) else {}
+    profile_id = str(generation_cfg.get("model_profile", "") or local_cfg.get("active_profile", "")).strip() or "live_action"
+    profile = profiles.get(profile_id, {}) if isinstance(profiles.get(profile_id), dict) else {}
+    return {"profile_id": profile_id, **profile}
 
 
 def release_quality_gate(

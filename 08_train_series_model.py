@@ -19,6 +19,7 @@ from pathlib import Path
 
 from support_scripts.pipeline_common import (
     PROJECT_ROOT,
+    active_local_generation_profile,
     add_shared_worker_arguments,
     coalesce_text,
     derive_prompt_constraints_from_bible,
@@ -56,6 +57,7 @@ from support_scripts.pipeline_common import (
     write_json,
     write_text,
 )
+from support_scripts.behavior_model import refresh_behavior_model
 
 GENERIC_FOCUS_CHARACTERS = ["Hauptfigur A", "Hauptfigur B", "Hauptfigur C"]
 SERIES_MODEL_SCHEMA_VERSION = 2
@@ -144,6 +146,39 @@ TITLE_WEAK_TERMS = {
     "wieder",
 }
 SAFE_SHORT_TITLE_TERMS = {"app", "code", "chat", "deal", "geld", "plan", "song", "spiel", "test", "web"}
+ABSTRACT_TITLE_KEYWORDS = {
+    "chaos",
+    "durcheinander",
+    "idee",
+    "plan",
+    "problem",
+    "sache",
+    "geheimnis",
+    "projekt",
+    "verwechslung",
+    "missverständnis",
+    "missverstaendnis",
+    "challenge",
+}
+GERMAN_ABSTRACT_TITLE_PATTERNS = {
+    "chaos": ["Das totale Durcheinander", "Chaos im Studio", "Der Plan im Chaos"],
+    "durcheinander": ["Das totale Durcheinander", "Der große Wirbel", "Alles außer Kontrolle"],
+    "idee": ["Die falsche Idee", "Die beste schlechte Idee", "Eine Idee zu viel"],
+    "plan": ["Der große Plan", "Der Plan geht schief", "Plan B"],
+    "problem": ["Das große Problem", "Ein Problem zu viel", "Das Problem mit dem Plan"],
+    "sache": ["Die große Sache", "Eine Sache zu viel", "Die Sache läuft schief"],
+    "geheimnis": ["Das geheime Projekt", "Ein Geheimnis zu viel", "Das falsche Geheimnis"],
+    "projekt": ["Das geheime Projekt", "Das Projekt mit Haken", "Projekt Chaos"],
+    "verwechslung": ["Die doppelte Verwechslung", "Alles verwechselt", "Die falsche Person"],
+    "missverständnis": ["Das große Missverständnis", "Ein Missverständnis zu viel", "Falsch verstanden"],
+    "missverstaendnis": ["Das große Missverständnis", "Ein Missverständnis zu viel", "Falsch verstanden"],
+    "challenge": ["Die verrückte Challenge", "Die falsche Challenge", "Challenge mit Folgen"],
+}
+GENERIC_TITLE_BAD_PATTERNS = (
+    re.compile(r"^Die Sache mit\s+(Chaos|Idee|Plan|Problem|Sache|Geheimnis|Projekt|Durcheinander)$", re.IGNORECASE),
+    re.compile(r"^Das Geheimnis um\s+(Chaos|Idee|Plan|Problem|Sache|Geheimnis|Projekt|Durcheinander)$", re.IGNORECASE),
+    re.compile(r"^Das Chaos um\s+(Chaos|Idee|Plan|Problem|Sache|Geheimnis|Projekt|Durcheinander)$", re.IGNORECASE),
+)
 GENERIC_TITLE_FALLBACKS = [
     "Der große Plan",
     "Das geheime Projekt",
@@ -337,6 +372,48 @@ def humanize_keyword(keyword: str, language: str = "") -> str:
     return " ".join(token.capitalize() for token in tokens[:3])
 
 
+def normalized_title_keyword(keyword: str) -> str:
+    return coalesce_text(keyword).replace("_", " ").replace("-", " ").strip().lower()
+
+
+def title_keyword_is_abstract(keyword: str, language: str = "") -> bool:
+    normalized = normalized_title_keyword(keyword)
+    if not normalized:
+        return False
+    tokens = [token.lower() for token in tokens_from_text(normalized)]
+    if not tokens:
+        return False
+    if normalized in ABSTRACT_TITLE_KEYWORDS:
+        return True
+    return len(tokens) == 1 and tokens[0] in ABSTRACT_TITLE_KEYWORDS
+
+
+def bad_generic_title(title: str, language: str = "") -> bool:
+    if language_family(language) != "de":
+        return False
+    text = coalesce_text(title).strip()
+    if not text:
+        return True
+    return any(pattern.search(text) for pattern in GENERIC_TITLE_BAD_PATTERNS)
+
+
+def natural_title_fallback(keyword: str, episode_index: int, language: str = "") -> str:
+    family = language_family(language)
+    normalized = normalized_title_keyword(keyword)
+    if family == "de":
+        candidates = GERMAN_ABSTRACT_TITLE_PATTERNS.get(normalized)
+        if not candidates:
+            for token in tokens_from_text(normalized):
+                candidates = GERMAN_ABSTRACT_TITLE_PATTERNS.get(token.lower())
+                if candidates:
+                    break
+        if candidates:
+            return candidates[max(0, episode_index - 1) % len(candidates)]
+        return GENERIC_TITLE_FALLBACKS[max(0, episode_index - 1) % len(GENERIC_TITLE_FALLBACKS)]
+    localized = LOCALIZED_GENERIC_TITLE_FALLBACKS.get(family, LOCALIZED_GENERIC_TITLE_FALLBACKS["en"])
+    return localized[max(0, episode_index - 1) % len(localized)]
+
+
 def clean_generation_keywords(keywords: object, limit: int = 20) -> list[str]:
     cleaned: list[str] = []
     seen: set[str] = set()
@@ -505,6 +582,9 @@ def build_episode_title(
     anchor_candidates = collect_title_anchor_candidates(model, blocked_tokens, usable_keywords[:3])
     if anchor_candidates:
         best_anchor = anchor_candidates[0][0]
+        if title_keyword_is_abstract(best_anchor, language):
+            best_anchor = ""
+    if anchor_candidates and best_anchor:
         if " " in best_anchor:
             return best_anchor
         if family == "de":
@@ -536,6 +616,11 @@ def build_episode_title(
             )
         if secondary_keyword:
             candidate_titles.append(f"{title_prefix}{main_compound} {humanize_keyword(secondary_keyword, language).replace(' ', '-')} {words['problem']}".strip())
+    elif title_keyword_is_abstract(main_keyword, language):
+        candidate_titles.append(natural_title_fallback(main_keyword, episode_index + len(focus_characters), language))
+        if secondary_keyword and not title_keyword_is_abstract(secondary_keyword, language):
+            secondary_compound = humanize_keyword(secondary_keyword, language).replace(" ", "-")
+            candidate_titles.append(f"Der {secondary_compound}-Plan")
     elif " " in main_keyword:
         candidate_titles.extend(
             [
@@ -560,11 +645,17 @@ def build_episode_title(
         else:
             candidate_titles.append(f"Das Geheimnis um {main_keyword}")
 
-    cleaned_titles = [coalesce_text(title).strip() for title in candidate_titles if coalesce_text(title).strip()]
+    cleaned_titles = [
+        coalesce_text(title).strip()
+        for title in candidate_titles
+        if coalesce_text(title).strip() and not bad_generic_title(coalesce_text(title).strip(), language)
+    ]
     deduped_titles: list[str] = []
     for title in cleaned_titles:
         if title not in deduped_titles:
             deduped_titles.append(title)
+    if not deduped_titles:
+        return natural_title_fallback(main_keyword, title_seed, language)
     return deduped_titles[title_seed % len(deduped_titles)]
 
 
@@ -688,7 +779,10 @@ def collect_preview_assets(preview_dir: str, patterns: list[str], limit: int = 3
         return []
     results: list[str] = []
     for pattern in patterns:
-        for candidate in sorted(root.glob(pattern)):
+        candidates = [candidate for candidate in root.glob(pattern) if candidate.is_file()]
+        # Larger reviewed face crops usually preserve more usable identity detail.
+        candidates.sort(key=lambda candidate: (candidate.stat().st_size, candidate.name), reverse=True)
+        for candidate in candidates:
             if candidate.is_file():
                 resolved = portable_project_asset_path(candidate)
                 if resolved not in results:
@@ -839,6 +933,206 @@ def build_linked_segment_line_library(cfg: dict) -> tuple[dict[str, list[str]], 
     return speaker_samples, speaker_line_library
 
 
+def positive_float(value: object, default: float = 0.0) -> float:
+    try:
+        result = float(value or 0.0)
+    except (TypeError, ValueError):
+        return default
+    return result if result > 0.0 else default
+
+
+def median_float(values: list[float]) -> float:
+    cleaned = sorted(value for value in values if value > 0.0)
+    if not cleaned:
+        return 0.0
+    mid = len(cleaned) // 2
+    if len(cleaned) % 2:
+        return float(cleaned[mid])
+    return float((cleaned[mid - 1] + cleaned[mid]) / 2.0)
+
+
+def trimmed_mean_float(values: list[float], trim_ratio: float = 0.1) -> float:
+    cleaned = sorted(value for value in values if value > 0.0)
+    if not cleaned:
+        return 0.0
+    trim = int(len(cleaned) * max(0.0, min(0.4, trim_ratio)))
+    if trim and len(cleaned) > trim * 2:
+        cleaned = cleaned[trim:-trim]
+    return float(sum(cleaned) / max(1, len(cleaned)))
+
+
+def source_episode_runtime_profile(duration_by_episode: dict[str, float]) -> dict:
+    durations = [positive_float(value) for value in duration_by_episode.values()]
+    durations = [value for value in durations if value > 0.0]
+    if not durations:
+        return {
+            "episode_count": 0,
+            "average_seconds": 0.0,
+            "median_seconds": 0.0,
+            "trimmed_mean_seconds": 0.0,
+            "min_seconds": 0.0,
+            "max_seconds": 0.0,
+            "target_seconds": 0.0,
+        }
+    average = sum(durations) / len(durations)
+    median = median_float(durations)
+    trimmed = trimmed_mean_float(durations)
+    target = trimmed if len(durations) >= 5 and trimmed > 0.0 else median or average
+    return {
+        "episode_count": len(durations),
+        "average_seconds": round(average, 3),
+        "median_seconds": round(median, 3),
+        "trimmed_mean_seconds": round(trimmed, 3),
+        "min_seconds": round(min(durations), 3),
+        "max_seconds": round(max(durations), 3),
+        "target_seconds": round(target, 3),
+    }
+
+
+def build_screenwriter_model(
+    *,
+    episode_duration_counter: dict[str, float],
+    episode_scene_counter: dict[str, int],
+    episode_line_counter: dict[str, int],
+    episode_word_counter: dict[str, int],
+    scene_durations: list[float],
+    segment_durations: list[float],
+    cfg: dict,
+) -> dict:
+    generation_cfg = cfg.get("generation", {}) if isinstance(cfg.get("generation", {}), dict) else {}
+    runtime_profile = source_episode_runtime_profile(episode_duration_counter)
+    line_values = [int(value or 0) for value in episode_line_counter.values() if int(value or 0) > 0]
+    word_values = [int(value or 0) for value in episode_word_counter.values() if int(value or 0) > 0]
+    scene_values = [int(value or 0) for value in episode_scene_counter.values() if int(value or 0) > 0]
+    target_runtime = positive_float(runtime_profile.get("target_seconds", 0.0))
+    target_scene_duration = max(18.0, positive_float(generation_cfg.get("target_scene_duration_seconds", 42.0), 42.0))
+    target_script_scene_count = (
+        max(8, int(round(target_runtime / target_scene_duration)))
+        if target_runtime
+        else int(generation_cfg.get("default_scene_count", 6) or 6)
+    )
+    target_script_scene_count = max(8, min(42, target_script_scene_count))
+    avg_lines = trimmed_mean_float([float(value) for value in line_values]) if line_values else 0.0
+    avg_words = trimmed_mean_float([float(value) for value in word_values]) if word_values else 0.0
+    lines_per_minute = (avg_lines / (target_runtime / 60.0)) if target_runtime and avg_lines else 0.0
+    words_per_minute = (avg_words / (target_runtime / 60.0)) if target_runtime and avg_words else 0.0
+    target_dialogue_line_count = int(round(lines_per_minute * (target_runtime / 60.0))) if lines_per_minute else 0
+    target_words_per_episode = int(round(words_per_minute * (target_runtime / 60.0))) if words_per_minute else 0
+    target_lines_per_scene = (
+        int(round(target_dialogue_line_count / max(1, target_script_scene_count)))
+        if target_dialogue_line_count
+        else int(generation_cfg.get("max_dialogue_lines_per_scene", 7) or 7)
+    )
+    return {
+        "schema_version": 1,
+        "trained_from_input_series": True,
+        "runtime_profile": runtime_profile,
+        "dialogue_density": {
+            "average_lines_per_episode": round(sum(line_values) / max(1, len(line_values)), 3) if line_values else 0.0,
+            "median_lines_per_episode": round(median_float([float(value) for value in line_values]), 3) if line_values else 0.0,
+            "trimmed_mean_lines_per_episode": round(avg_lines, 3),
+            "average_words_per_episode": round(sum(word_values) / max(1, len(word_values)), 3) if word_values else 0.0,
+            "trimmed_mean_words_per_episode": round(avg_words, 3),
+            "lines_per_minute": round(lines_per_minute, 3),
+            "words_per_minute": round(words_per_minute, 3),
+            "average_segment_duration_seconds": round(trimmed_mean_float(segment_durations), 3),
+        },
+        "source_scene_detection": {
+            "average_detected_scenes_per_episode": round(sum(scene_values) / max(1, len(scene_values)), 3) if scene_values else 0.0,
+            "median_detected_scenes_per_episode": round(median_float([float(value) for value in scene_values]), 3) if scene_values else 0.0,
+            "average_detected_scene_duration_seconds": round(trimmed_mean_float(scene_durations), 3),
+            "note": "Detected source scenes can be short diarization/cut segments; generated script scenes are grouped into TV-story beats.",
+        },
+        "target_planning": {
+            "target_runtime_seconds": round(target_runtime, 3),
+            "target_script_scene_count": target_script_scene_count,
+            "target_dialogue_line_count": target_dialogue_line_count,
+            "target_dialogue_lines_per_scene": max(2, target_lines_per_scene),
+            "target_words_per_episode": target_words_per_episode,
+            "target_scene_duration_seconds": round(target_scene_duration, 3),
+            "runtime_lock_tolerance_ratio": float(generation_cfg.get("runtime_lock_tolerance_ratio", 0.08) or 0.08),
+        },
+        "beat_sequence": [
+            "cold_open",
+            "setup",
+            "inciting_incident",
+            "plan",
+            "complication",
+            "escalation",
+            "midpoint_turn",
+            "low_point",
+            "reveal",
+            "resolution",
+            "tag_joke",
+        ],
+    }
+
+
+def screenwriter_model_from_existing_model(model: dict, cfg: dict) -> dict:
+    existing = model.get("screenwriter_model", {}) if isinstance(model.get("screenwriter_model", {}), dict) else {}
+    if existing:
+        return existing
+    episode_duration_counter = {
+        coalesce_text(key): positive_float(value)
+        for key, value in (model.get("source_episode_durations", {}) or {}).items()
+        if coalesce_text(key) and positive_float(value) > 0.0
+    }
+    episode_scene_counter: defaultdict[str, int] = defaultdict(int)
+    scene_durations: list[float] = []
+    for scene in model.get("scene_library", []) or []:
+        if not isinstance(scene, dict):
+            continue
+        episode_id = coalesce_text(scene.get("episode_id", ""))
+        if episode_id:
+            episode_scene_counter[episode_id] += 1
+        duration = positive_float(scene.get("duration_seconds", 0.0))
+        if duration:
+            scene_durations.append(duration)
+    episode_line_counter: defaultdict[str, int] = defaultdict(int)
+    episode_word_counter: defaultdict[str, int] = defaultdict(int)
+    segment_durations: list[float] = []
+    speaker_line_library = model.get("speaker_line_library", {}) if isinstance(model.get("speaker_line_library", {}), dict) else {}
+    for entries in speaker_line_library.values():
+        if not isinstance(entries, list):
+            continue
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            episode_id = coalesce_text(entry.get("episode_id", ""))
+            text = coalesce_text(entry.get("text", ""))
+            if episode_id and text:
+                episode_line_counter[episode_id] += 1
+                episode_word_counter[episode_id] += len(tokens_from_text(text))
+            start = positive_float(entry.get("start", 0.0))
+            end = positive_float(entry.get("end", 0.0))
+            if end > start:
+                segment_durations.append(end - start)
+    estimated_segment_duration = positive_float(model.get("average_segment_duration_seconds", 0.0), 0.0)
+    estimated_total_lines = (
+        sum(episode_duration_counter.values()) / estimated_segment_duration
+        if estimated_segment_duration > 0.0
+        else 0.0
+    )
+    if estimated_segment_duration > 0.0 and sum(episode_line_counter.values()) < estimated_total_lines * 0.5:
+        for episode_id, duration in episode_duration_counter.items():
+            estimated_lines = max(1, int(round(duration / estimated_segment_duration)))
+            if episode_line_counter[episode_id] < estimated_lines:
+                episode_line_counter[episode_id] = estimated_lines
+                episode_word_counter[episode_id] = max(episode_word_counter[episode_id], estimated_lines * 4)
+        segment_durations.append(estimated_segment_duration)
+    if not episode_duration_counter:
+        return {}
+    return build_screenwriter_model(
+        episode_duration_counter=episode_duration_counter,
+        episode_scene_counter=dict(episode_scene_counter),
+        episode_line_counter=dict(episode_line_counter),
+        episode_word_counter=dict(episode_word_counter),
+        scene_durations=scene_durations,
+        segment_durations=segment_durations,
+        cfg=cfg,
+    )
+
+
 def build_series_model(dataset_files: list, cfg: dict, char_map: dict) -> dict:
     character_directory = build_character_directory(char_map)
     character_reference_library = build_character_reference_library(char_map)
@@ -853,6 +1147,9 @@ def build_series_model(dataset_files: list, cfg: dict, char_map: dict) -> dict:
     keyword_counter: Counter[str] = Counter()
     language_counter: Counter[str] = Counter()
     episode_duration_counter: defaultdict[str, float] = defaultdict(float)
+    episode_scene_counter: defaultdict[str, int] = defaultdict(int)
+    episode_line_counter: defaultdict[str, int] = defaultdict(int)
+    episode_word_counter: defaultdict[str, int] = defaultdict(int)
     segment_durations: list[float] = []
     scene_durations: list[float] = []
 
@@ -864,7 +1161,9 @@ def build_series_model(dataset_files: list, cfg: dict, char_map: dict) -> dict:
 
     for dataset_file in dataset_files:
         rows = read_json(dataset_file, [])
+        fallback_episode_id = Path(dataset_file).stem.replace("_dataset", "")
         for row in rows:
+            episode_id = coalesce_text(row.get("episode_id", "")) or fallback_episode_id
             transcript = coalesce_text(row.get("transcript", ""))
             if transcript:
                 transcripts.append(transcript)
@@ -874,7 +1173,8 @@ def build_series_model(dataset_files: list, cfg: dict, char_map: dict) -> dict:
             scene_keywords = clean_generation_keywords(row.get("scene_keywords") or extract_keywords([transcript], limit=8), limit=8)
             keyword_counter.update(scene_keywords)
             row_duration = float(row.get("duration_seconds", 0.0) or 0.0)
-            episode_duration_counter[str(row.get("episode_id", ""))] += row_duration
+            episode_duration_counter[episode_id] += row_duration
+            episode_scene_counter[episode_id] += 1
             if row_duration > 0.0:
                 scene_durations.append(row_duration)
             characters = [name for name in extract_scene_characters(row, character_directory) if useful_character(name)]
@@ -886,6 +1186,10 @@ def build_series_model(dataset_files: list, cfg: dict, char_map: dict) -> dict:
                         character_directory[character].get("face_cluster_count", 0) or 0
                     )
             for segment in row.get("transcript_segments", []):
+                text_for_script_stats = coalesce_text(segment.get("text", ""))
+                if text_for_script_stats:
+                    episode_line_counter[episode_id] += 1
+                    episode_word_counter[episode_id] += len(tokens_from_text(text_for_script_stats))
                 if not voice_segment_reference_eligible(segment, cfg):
                     continue
                 speaker_name = segment.get("speaker_name", "")
@@ -903,7 +1207,7 @@ def build_series_model(dataset_files: list, cfg: dict, char_map: dict) -> dict:
                     speaker_samples[sample_key].append(text)
                     speaker_line_library[sample_key].append(
                         {
-                            "episode_id": row.get("episode_id", ""),
+                            "episode_id": episode_id,
                             "scene_id": row.get("scene_id", ""),
                             "segment_id": segment.get("segment_id", ""),
                             "text": text,
@@ -919,7 +1223,7 @@ def build_series_model(dataset_files: list, cfg: dict, char_map: dict) -> dict:
                         character_stats[sample_key]["line_count"] += 1
             scene_library.append(
                 {
-                    "episode_id": row["episode_id"],
+                    "episode_id": episode_id,
                     "scene_id": row["scene_id"],
                     "characters": characters,
                     "speaker_names": row.get("speaker_names", []),
@@ -963,6 +1267,15 @@ def build_series_model(dataset_files: list, cfg: dict, char_map: dict) -> dict:
     markov_chain = build_markov_chain(transcripts)
     average_scene_duration = sum(scene_durations) / max(1, len(scene_durations))
     average_segment_duration = sum(segment_durations) / max(1, len(segment_durations))
+    screenwriter_model = build_screenwriter_model(
+        episode_duration_counter=dict(episode_duration_counter),
+        episode_scene_counter=dict(episode_scene_counter),
+        episode_line_counter=dict(episode_line_counter),
+        episode_word_counter=dict(episode_word_counter),
+        scene_durations=scene_durations,
+        segment_durations=segment_durations,
+        cfg=cfg,
+    )
 
     configured_language = configured_series_language(cfg)
     return {
@@ -991,6 +1304,8 @@ def build_series_model(dataset_files: list, cfg: dict, char_map: dict) -> dict:
         "character_reference_library": character_reference_library,
         "scene_library": scene_library,
         "source_episode_durations": dict(episode_duration_counter),
+        "source_episode_runtime_profile": screenwriter_model.get("runtime_profile", {}),
+        "screenwriter_model": screenwriter_model,
         "average_scene_duration_seconds": round(average_scene_duration, 3),
         "average_segment_duration_seconds": round(average_segment_duration, 3),
         "markov_order": 2,
@@ -1727,7 +2042,6 @@ def build_character_continuity_lock(scene_characters: list[str], model: dict) ->
         references = reference_library.get(character, {}) if isinstance(reference_library.get(character, {}), dict) else {}
         reference_images = [
             *list((references.get("portrait_images", []) or [])[:3]),
-            *list((references.get("context_images", []) or [])[:3]),
         ]
         locks[character] = {
             "identity_required": True,
@@ -2231,25 +2545,48 @@ def build_behavior_scene_fields(
 
 def select_target_runtime_seconds(model: dict, cfg: dict) -> int:
     generation_cfg = cfg.get("generation", {})
+    screenwriter_model = model.get("screenwriter_model", {}) if isinstance(model.get("screenwriter_model", {}), dict) else {}
+    runtime_profile = screenwriter_model.get("runtime_profile", {}) if isinstance(screenwriter_model.get("runtime_profile", {}), dict) else {}
+    profile_target = positive_float(runtime_profile.get("target_seconds", 0.0))
     durations = [int(float(value or 0.0)) for value in (model.get("source_episode_durations", {}) or {}).values() if float(value or 0.0) > 0.0]
     if durations and bool(generation_cfg.get("match_source_episode_runtime", True)):
-        average = int(sum(durations) / max(1, len(durations)))
-        return max(300, average)
+        target = int(round(profile_target or median_float([float(value) for value in durations]) or (sum(durations) / max(1, len(durations)))))
+        tolerance = max(0.0, float(generation_cfg.get("source_runtime_tolerance_ratio", 0.08) or 0.08))
+        source_min = positive_float(runtime_profile.get("min_seconds", 0.0), min(durations))
+        source_max = positive_float(runtime_profile.get("max_seconds", 0.0), max(durations))
+        lower = int(max(1.0, source_min * max(0.1, 1.0 - tolerance)))
+        upper = int(max(lower, source_max * (1.0 + tolerance)))
+        target = max(lower, min(upper, target))
+        configured_min = positive_float(generation_cfg.get("target_episode_minutes_min", 0.0)) * 60.0
+        configured_max = positive_float(generation_cfg.get("target_episode_minutes_max", 0.0)) * 60.0
+        if configured_min:
+            target = max(target, int(configured_min))
+        if configured_max:
+            target = min(target, int(configured_max))
+        return max(300, target)
     fallback_seconds = int(float(generation_cfg.get("target_episode_minutes_fallback", 22.0)) * 60.0)
     return max(300, fallback_seconds)
 
 
 def planning_targets(model: dict, cfg: dict, target_runtime_seconds: int) -> tuple[int, int]:
     generation_cfg = cfg.get("generation", {})
+    screenwriter_model = model.get("screenwriter_model", {}) if isinstance(model.get("screenwriter_model", {}), dict) else {}
+    target_planning = screenwriter_model.get("target_planning", {}) if isinstance(screenwriter_model.get("target_planning", {}), dict) else {}
     target_scene_duration = max(18.0, float(generation_cfg.get("target_scene_duration_seconds", 42.0)))
     estimated_line_seconds = max(
         1.4,
         float(model.get("average_segment_duration_seconds", 0.0) or 0.0)
         or float(generation_cfg.get("estimated_dialogue_line_seconds", 2.7)),
     )
-    target_scene_count = max(12, int(math.ceil(target_runtime_seconds / target_scene_duration)))
-    target_line_count = max(target_scene_count * 6, int(math.ceil(target_runtime_seconds / estimated_line_seconds)))
-    per_scene_lines = max(8, int(math.ceil(target_line_count / max(1, target_scene_count))))
+    trained_scene_count = int(target_planning.get("target_script_scene_count", 0) or 0)
+    target_scene_count = trained_scene_count or int(math.ceil(target_runtime_seconds / target_scene_duration))
+    target_scene_count = max(8, min(42, target_scene_count))
+    trained_line_count = int(target_planning.get("target_dialogue_line_count", 0) or 0)
+    target_line_count = trained_line_count or int(math.ceil(target_runtime_seconds / estimated_line_seconds))
+    target_line_count = max(target_scene_count * 4, target_line_count)
+    trained_per_scene = int(target_planning.get("target_dialogue_lines_per_scene", 0) or 0)
+    per_scene_lines = trained_per_scene or int(math.ceil(target_line_count / max(1, target_scene_count)))
+    per_scene_lines = max(4, min(32, per_scene_lines))
     return target_scene_count, per_scene_lines
 
 
@@ -2316,6 +2653,31 @@ def allocate_scene_runtime_seconds(
     for floor, weight in zip(floors, weights):
         allocations.append(round(floor + (remaining * (weight / weight_total)), 2))
     return rebalance_allocations(allocations, floors)
+
+
+def build_scene_runtime_lock(
+    scene_runtime_seconds: float,
+    target_runtime_seconds: int,
+    screenwriter_model: dict,
+    cfg: dict,
+) -> dict:
+    generation_cfg = cfg.get("generation", {}) if isinstance(cfg.get("generation", {}), dict) else {}
+    target_planning = screenwriter_model.get("target_planning", {}) if isinstance(screenwriter_model.get("target_planning", {}), dict) else {}
+    tolerance = positive_float(
+        generation_cfg.get("runtime_lock_tolerance_ratio", target_planning.get("runtime_lock_tolerance_ratio", 0.08)),
+        0.08,
+    )
+    planned = max(0.0, float(scene_runtime_seconds or 0.0))
+    return {
+        "enabled": True,
+        "source": "screenwriter_model",
+        "trained_from_input_series": bool(screenwriter_model.get("trained_from_input_series", False)),
+        "target_episode_runtime_seconds": int(target_runtime_seconds or 0),
+        "planned_scene_runtime_seconds": round(planned, 3),
+        "max_scene_runtime_seconds": round(planned * (1.0 + tolerance), 3),
+        "runtime_lock_tolerance_ratio": round(tolerance, 4),
+        "allow_dialogue_expansion": False,
+    }
 
 
 def configured_character_group_id(model: dict, cfg: dict | None) -> str:
@@ -2554,6 +2916,7 @@ def build_scene_generation_plan(
     behavior_fields: dict | None = None,
     show_profile: dict | None = None,
     toolkit_guidance: dict | None = None,
+    local_model_profile: dict | None = None,
 ) -> dict:
     continuity_memory = continuity_memory if isinstance(continuity_memory, dict) else load_character_continuity_memory(PROJECT_ROOT)
     style_constraints = style_constraints if isinstance(style_constraints, dict) else derive_prompt_constraints_from_bible(PROJECT_ROOT, {})
@@ -2610,6 +2973,9 @@ def build_scene_generation_plan(
     style_descriptor = coalesce_text(style_descriptor) or "source-series faithful TV episode frame"
     show_profile = show_profile if isinstance(show_profile, dict) else {}
     toolkit_guidance = toolkit_guidance if isinstance(toolkit_guidance, dict) else {}
+    local_model_profile = local_model_profile if isinstance(local_model_profile, dict) else {}
+    local_style_prompt = coalesce_text(local_model_profile.get("style_prompt", ""))
+    local_negative_prompt = coalesce_text(local_model_profile.get("negative_prompt", ""))
     show_style_rules = [coalesce_text(value) for value in show_profile.get("style_rules", []) if coalesce_text(value)] if isinstance(show_profile.get("style_rules", []), list) else []
     show_camera_rules = [coalesce_text(value) for value in show_profile.get("camera_rules", []) if coalesce_text(value)] if isinstance(show_profile.get("camera_rules", []), list) else []
     show_continuity_rules = [coalesce_text(value) for value in show_profile.get("continuity_rules", []) if coalesce_text(value)] if isinstance(show_profile.get("continuity_rules", []), list) else []
@@ -2652,6 +3018,8 @@ def build_scene_generation_plan(
         positive_prompt += f", show profile continuity: {'; '.join(show_continuity_rules[:3])}"
     if toolkit_prompt_fragments:
         positive_prompt += f", toolkit guidance: {'; '.join(toolkit_prompt_fragments[:3])}"
+    if local_style_prompt:
+        positive_prompt += f", local model profile: {local_style_prompt}"
     negative_prompt = (
         "no collage, no split panel, no duplicate characters, no extra fingers, no warped face, "
         "no mismatched outfit, no generic cartoon style, no blue placeholder frame, no filtered still-frame slideshow, "
@@ -2659,6 +3027,8 @@ def build_scene_generation_plan(
     )
     if style_negative:
         negative_prompt += f", avoid {style_negative}"
+    if local_negative_prompt:
+        negative_prompt += f", avoid {local_negative_prompt}"
     batch_prompt_line = (
         f"{beat} | {', '.join(scene_characters)} | {keyword} | {camera_plan['shot_type']} | "
         f"{camera_plan['composition']} | match original episode style | continuity from {previous_scene_id or 'none'}"
@@ -2687,6 +3057,7 @@ def build_scene_generation_plan(
             "show_profile_camera": "; ".join(show_camera_rules[:3]),
         },
         "style_constraints": style_profile,
+        "local_model_profile": local_model_profile,
         "show_profile": show_profile,
         "toolkit_guidance": toolkit_guidance,
         "character_continuity": character_continuity,
@@ -2716,6 +3087,7 @@ def build_scene_generation_plan(
             "writer_room_plan_available": bool(writer_room_plan),
             "show_profile_id": coalesce_text(show_profile.get("profile_id", "")) or "default",
             "toolkit_guidance_available": bool(toolkit_prompt_fragments),
+            "local_model_profile_id": coalesce_text(local_model_profile.get("profile_id", "")) or "live_action",
         },
         "positive_prompt": positive_prompt,
         "negative_prompt": negative_prompt,
@@ -2744,6 +3116,9 @@ def generate_episode_package(model: dict, cfg: dict, episode_index: int = 1) -> 
     if len(keywords) > 1:
         keyword_offset = episode_index % len(keywords)
         keywords = keywords[keyword_offset:] + keywords[:keyword_offset]
+    screenwriter_model = screenwriter_model_from_existing_model(model, cfg)
+    if screenwriter_model:
+        model = {**model, "screenwriter_model": screenwriter_model}
     target_runtime_seconds = select_target_runtime_seconds(model, cfg)
     scene_count, target_lines_per_scene = planning_targets(model, cfg, target_runtime_seconds)
     continuity_memory = load_character_continuity_memory(PROJECT_ROOT)
@@ -2756,10 +3131,12 @@ def generate_episode_package(model: dict, cfg: dict, episode_index: int = 1) -> 
         or "source-series faithful TV episode frame"
     )
     show_profile = normalized_show_profile(cfg)
+    local_model_profile = active_local_generation_profile(cfg)
     toolkit_guidance = latest_toolkit_guidance()
     behavior_model = active_behavior_model(model, cfg)
     if behavior_model:
         model = {**model, "behavior_model": behavior_model}
+    screenwriter_model = model.get("screenwriter_model", {}) if isinstance(model.get("screenwriter_model", {}), dict) else {}
     relationship_payload = model.get("character_relationships") or load_character_relationships(cfg)
     if not model.get("character_groups") and isinstance(relationship_payload, dict):
         model = {
@@ -2820,6 +3197,7 @@ def generate_episode_package(model: dict, cfg: dict, episode_index: int = 1) -> 
         f"- Target runtime: about {round(target_runtime_seconds / 60.0, 1)} minutes",
         f"- Target scenes: {scene_count}",
         f"- Target dialogue lines per scene: {target_lines_per_scene}",
+        f"- Screenwriter model: {'trained from input series' if screenwriter_model.get('trained_from_input_series') else 'fallback planning'}",
         "- Storyboard-Plan: multi-reference, continuity-aware, model-native prompts",
         "",
     ]
@@ -2912,6 +3290,7 @@ def generate_episode_package(model: dict, cfg: dict, episode_index: int = 1) -> 
             behavior_fields=behavior_fields,
             show_profile=show_profile,
             toolkit_guidance=toolkit_guidance,
+            local_model_profile=local_model_profile,
         )
         scenes.append(
             {
@@ -2942,6 +3321,7 @@ def generate_episode_package(model: dict, cfg: dict, episode_index: int = 1) -> 
                     else f"{localized_beat_label(beat, series_language)} with {', '.join(scene_characters)}. Focus on {keyword}, clear conflict and source-language dialogue."
                 ),
                 "generation_plan": generation_plan,
+                "generation_profile_id": coalesce_text(local_model_profile.get("profile_id", "")) or "live_action",
                 "estimated_runtime_seconds": round(len(dialogue) * float(model.get("average_segment_duration_seconds", 2.7) or 2.7), 2),
             }
         )
@@ -2978,6 +3358,7 @@ def generate_episode_package(model: dict, cfg: dict, episode_index: int = 1) -> 
     allocated_scene_runtimes = allocate_scene_runtime_seconds(target_runtime_seconds, scene_runtime_floors, scene_beats)
     for scene, runtime_seconds in zip(scenes, allocated_scene_runtimes):
         scene["estimated_runtime_seconds"] = round(float(runtime_seconds or 0.0), 2)
+        scene["runtime_lock"] = build_scene_runtime_lock(runtime_seconds, target_runtime_seconds, screenwriter_model, cfg)
         scene["shot_plan"] = build_scene_shot_plan(
             scene_id=coalesce_text(scene.get("scene_id", "")),
             scene_function=coalesce_text(scene.get("scene_function", "")),
@@ -3011,6 +3392,7 @@ def generate_episode_package(model: dict, cfg: dict, episode_index: int = 1) -> 
         "style_descriptor": style_descriptor,
         "show_profile": show_profile,
         "toolkit_guidance": toolkit_guidance,
+        "screenwriter_model": screenwriter_model,
         "episode_blueprint": episode_blueprint,
         "set_bible": set_bible,
         "edit_decision_list": edit_decision_list,
@@ -3066,12 +3448,26 @@ def main() -> None:
             model_path.parent / "character_reference_library.json",
             model.get("character_reference_library", {}),
         )
+        behavior_model, _behavior_summary, behavior_path, behavior_summary_path = refresh_behavior_model(
+            cfg,
+            series_model=model,
+            relationship_payload=model.get("character_relationships", {}),
+        )
+        model["behavior_model_path"] = str(behavior_path)
+        model["behavior_model_schema_version"] = int(behavior_model.get("schema_version", 0) or 0)
+        write_json(model_path, model)
         mark_step_completed(
             "08_train_series_model",
             "global",
-            {"series_model": str(model_path), "dataset_count": len(dataset_files)},
+            {
+                "series_model": str(model_path),
+                "behavior_model": str(behavior_path),
+                "behavior_summary": str(behavior_summary_path),
+                "dataset_count": len(dataset_files),
+            },
         )
         ok(f"Series Model trainiert: {model_path}")
+        ok(f"Behavior-Modell aktualisiert: {behavior_path}")
     except Exception as exc:
         mark_step_failed("08_train_series_model", str(exc), "global", {"dataset_count": len(dataset_files)})
         raise

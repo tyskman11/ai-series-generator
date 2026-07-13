@@ -632,6 +632,8 @@ class RegenerationQueueTests(unittest.TestCase):
             ), mock.patch.object(
                 STEP52, "quality_gate_report_path", return_value=report_path
             ), mock.patch.object(
+                STEP52, "write_realism_reports", return_value={}
+            ), mock.patch.object(
                 STEP52, "persist_quality_gate_result"
             ), mock.patch.object(
                 STEP52, "headline"
@@ -675,6 +677,8 @@ class RegenerationQueueTests(unittest.TestCase):
                 STEP52, "build_warnings", return_value=[]
             ), mock.patch.object(
                 STEP52, "quality_gate_report_path", return_value=report_path
+            ), mock.patch.object(
+                STEP52, "write_realism_reports", return_value={}
             ), mock.patch.object(
                 STEP52, "persist_quality_gate_result"
             ), mock.patch.object(
@@ -731,6 +735,8 @@ class RegenerationQueueTests(unittest.TestCase):
                 STEP52, "build_warnings", return_value=[]
             ), mock.patch.object(
                 STEP52, "quality_gate_report_path", return_value=report_path
+            ), mock.patch.object(
+                STEP52, "write_realism_reports", return_value={}
             ), mock.patch.object(
                 STEP52, "persist_quality_gate_result"
             ), mock.patch.object(
@@ -807,6 +813,8 @@ class RegenerationQueueTests(unittest.TestCase):
                 STEP52, "build_warnings", return_value=[]
             ), mock.patch.object(
                 STEP52, "quality_gate_report_path", return_value=report_path
+            ), mock.patch.object(
+                STEP52, "write_realism_reports", return_value={}
             ), mock.patch.object(
                 STEP52, "persist_quality_gate_result"
             ), mock.patch.object(

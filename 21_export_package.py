@@ -229,7 +229,6 @@ def build_common_export_payload(
     realism_md = str(quality_gate.get("realism_report_markdown", "") or artifacts.get("realism_report_markdown", "") or "")
     audio_mastering = production_package.get("audio_mastering", {}) if isinstance(production_package.get("audio_mastering", {}), dict) else {}
     audio_outputs = audio_mastering.get("target_outputs", {}) if isinstance(audio_mastering.get("target_outputs", {}), dict) else {}
-    season_intro = production_package.get("season_intro", {}) if isinstance(production_package.get("season_intro", {}), dict) else {}
     return {
         "format": format_name,
         "export_type": export_type,
@@ -273,14 +272,8 @@ def build_common_export_payload(
         "realism_report_json": stored_path_text(realism_json),
         "realism_report_markdown": stored_path_text(realism_md),
         "final_audio_mix": stored_path_text(audio_outputs.get("final_mix", "")),
-        "season_id": str(production_package.get("season_id", "") or season_intro.get("season_id", "") or ""),
-        "season_intro": {
-            **season_intro,
-            "canonical_video": stored_path_text(season_intro.get("canonical_video", "")),
-            "manifest": stored_path_text(season_intro.get("manifest", "")),
-        },
-        "season_intro_video": stored_path_text(season_intro.get("canonical_video", "")),
-        "season_intro_manifest": stored_path_text(season_intro.get("manifest", "")),
+        "season_id": str(production_package.get("season_id", "") or ""),
+        "season_assets_embedded": False,
         "edit_decision_list": production_package.get("edit_decision_list", []) if isinstance(production_package.get("edit_decision_list", []), list) else [],
         "backend_manifests": collect_backend_manifest_paths(production_package),
         "disclosure": {
@@ -317,7 +310,7 @@ def write_episode_export_readme(target_root: Path, export_payload: dict[str, Any
         f"- Export type: {export_payload.get('export_type') or '-'}",
         f"- Finished episode gate: {'PASS' if finished_gate.get('passed') else 'FAIL'}",
         f"- Season: {export_payload.get('season_id') or '-'}",
-        f"- Locked season intro: {(export_payload.get('season_intro') or {}).get('canonical_video') or '-'}",
+        "- Season intro/outro: managed independently by 25_generate_season_assets.py and not embedded in this episode.",
         f"- Final master: {export_payload.get('full_generated_episode') or export_payload.get('delivery_episode') or '-'}",
         f"- Final audio mix: {export_payload.get('final_audio_mix') or '-'}",
         f"- Realism report: {export_payload.get('realism_report_markdown') or '-'}",
@@ -357,8 +350,6 @@ def copy_referenced_media(export_payload: dict[str, Any], media_root: Path) -> d
         "realism_report_json",
         "realism_report_markdown",
         "final_audio_mix",
-        "season_intro_video",
-        "season_intro_manifest",
         "regeneration_queue_manifest",
     )
     for field in top_level_fields:

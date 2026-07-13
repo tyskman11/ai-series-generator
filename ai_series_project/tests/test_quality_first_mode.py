@@ -29,6 +29,45 @@ SPEC.loader.exec_module(STEP58)
 
 
 class QualityFirstModeTests(unittest.TestCase):
+    def test_active_local_generation_profile_selects_anime_without_machine_paths(self) -> None:
+        profile = pipeline_common.active_local_generation_profile(
+            {
+                "generation": {"model_profile": "anime"},
+                "local_generation": {
+                    "profiles": {
+                        "anime": {
+                            "image_model_id": "cagliostrolab/animagine-xl-4.0",
+                            "video_model_id": "Wan-AI/Wan2.1-T2V-1.3B",
+                            "video_model_family": "wan",
+                        }
+                    }
+                },
+            }
+        )
+
+        self.assertEqual(profile["profile_id"], "anime")
+        self.assertEqual(profile["image_model_id"], "cagliostrolab/animagine-xl-4.0")
+        self.assertEqual(profile["video_model_family"], "wan")
+
+    def test_quality_first_rejects_authenticated_or_gated_model_target(self) -> None:
+        report = pipeline_common.quality_first_requirements_report(
+            {
+                "quality_backend_assets": {
+                    "targets": [
+                        {
+                            "name": "restricted",
+                            "kind": "huggingface",
+                            "repo_id": "black-forest-labs/FLUX.2-dev",
+                            "public_no_login": False,
+                        }
+                    ]
+                }
+            }
+        )
+
+        self.assertIn("quality_backend_assets.targets.restricted must set public_no_login=true", report["missing"])
+        self.assertIn("quality_backend_assets.targets.restricted references a gated/login model", report["missing"])
+
     def test_quality_first_requirements_report_flags_missing_runners_and_fallbacks(self) -> None:
         cfg = {
             "release_mode": {"enabled": False, "min_episode_quality": 0.68, "max_weak_scenes": 2},
@@ -55,6 +94,25 @@ class QualityFirstModeTests(unittest.TestCase):
         runner = {"enabled": True, "command_template": ["python", "runner.py", "{scene_video}"]}
         cfg = {
             "release_mode": {"enabled": True, "min_episode_quality": 0.9, "max_weak_scenes": 0},
+            "generation": {"model_profile": "anime", "allow_fallbacks": False},
+            "local_generation": {
+                "enabled": True,
+                "local_models_only": True,
+                "allow_runtime_model_downloads": False,
+                "require_public_non_gated_models": True,
+                "scriptwriter": {"enabled": True, "engine": "transformers", "local_files_only": True},
+                "profiles": {
+                    "anime": {
+                        "image_model_id": "cagliostrolab/animagine-xl-4.0",
+                        "image_model_dir": "tools/quality_models/image/cagliostrolab__animagine-xl-4.0",
+                        "identity_model_id": "cagliostrolab/animagine-xl-4.0",
+                        "identity_model_dir": "tools/quality_models/image/cagliostrolab__animagine-xl-4.0",
+                        "video_model_id": "Wan-AI/Wan2.1-T2V-1.3B",
+                        "video_model_dir": "tools/quality_models/video/Wan-AI__Wan2.1-T2V-1.3B",
+                        "video_model_family": "wan",
+                    }
+                },
+            },
             "cloning": {
                 "enable_voice_cloning": True,
                 "force_voice_cloning": True,
@@ -62,7 +120,10 @@ class QualityFirstModeTests(unittest.TestCase):
                 "allow_system_tts_fallback": False,
                 "enable_original_line_reuse": True,
                 "enable_lipsync": True,
-                "voice_clone_engine": "xtts",
+                "voice_clone_engine": "voxcpm2",
+                "voice_model_id": "openbmb/VoxCPM2",
+                "voice_model_dir": "tools/quality_models/voice/openbmb__VoxCPM2",
+                "voice_model_local_files_only": True,
             },
             "external_backends": {
                 "storyboard_scene_runner": dict(runner),
@@ -98,7 +159,8 @@ class QualityFirstModeTests(unittest.TestCase):
                 "allow_system_tts_fallback": False,
                 "enable_original_line_reuse": True,
                 "enable_lipsync": True,
-                "voice_clone_engine": "xtts",
+                "voice_clone_engine": "voxcpm2",
+                "voice_model_local_files_only": True,
             },
             "external_backends": {
                 "storyboard_scene_runner": {"enabled": True, "command_template": ["python", "runner.py"]},
@@ -356,19 +418,20 @@ class QualityFirstModeTests(unittest.TestCase):
         self.assertEqual(image_runner["timeout_seconds"], 0)
         self.assertTrue(image_runner["allow_cpu_execution"])
         self.assertEqual(image_runner["required_python_modules"], ["diffusers"])
-        self.assertIn("local_ltx_video_backend.py", video_runner["environment"]["SERIES_VIDEO_BACKEND_COMMAND"])
+        self.assertIn("local_wan_video_backend.py", video_runner["environment"]["SERIES_VIDEO_BACKEND_COMMAND"])
         self.assertEqual(video_runner["environment"]["SERIES_VIDEO_RESUME_SHOTS"], "1")
-        self.assertEqual(video_runner["environment"]["SERIES_VIDEO_LATEST_MODEL_ID"], "Lightricks/LTX-2.3")
+        self.assertEqual(video_runner["environment"]["SERIES_VIDEO_LATEST_MODEL_ID"], "Wan-AI/Wan2.1-T2V-1.3B")
         self.assertEqual(
             video_runner["environment"]["SERIES_VIDEO_LATEST_MODEL_DIR"],
-            "tools/quality_models/video/Lightricks__LTX-2.3",
+            "tools/quality_models/video/Wan-AI__Wan2.1-T2V-1.3B",
         )
-        self.assertEqual(video_runner["environment"]["SERIES_VIDEO_MODEL_ID"], "Lightricks/LTX-Video-0.9.8-13B-distilled")
+        self.assertEqual(video_runner["environment"]["SERIES_VIDEO_MODEL_ID"], "Wan-AI/Wan2.1-T2V-1.3B")
         self.assertEqual(
             video_runner["environment"]["SERIES_VIDEO_MODEL_DIR"],
-            "tools/quality_models/video/Lightricks__LTX-Video-0.9.8-13B-distilled",
+            "tools/quality_models/video/Wan-AI__Wan2.1-T2V-1.3B",
         )
-        self.assertEqual(video_runner["environment"]["SERIES_VIDEO_COMPATIBILITY_MODE"], "ltx_diffusers_fallback_until_ltx2_runner")
+        self.assertEqual(video_runner["environment"]["SERIES_VIDEO_MODEL_FAMILY"], "wan")
+        self.assertEqual(video_runner["environment"]["SERIES_VIDEO_COMPATIBILITY_MODE"], "local_wan_diffusers")
         self.assertEqual(video_runner["environment"]["SERIES_VIDEO_WIDTH"], "1216")
         self.assertEqual(video_runner["environment"]["SERIES_VIDEO_HEIGHT"], "704")
         self.assertEqual(video_runner["environment"]["SERIES_VIDEO_QUALITY_PRESET"], "source_series_high")
@@ -376,9 +439,12 @@ class QualityFirstModeTests(unittest.TestCase):
         self.assertEqual(video_runner["required_python_modules"], ["diffusers"])
         self.assertIn("local_wav2lip_backend.py", lipsync_runner["environment"]["SERIES_LIPSYNC_BACKEND_COMMAND"])
         self.assertEqual(lipsync_runner["timeout_seconds"], 0)
-        self.assertIn("local_xtts_voice_backend.py", voice_runner["environment"]["SERIES_VOICE_BACKEND_COMMAND"])
+        self.assertIn("local_voxcpm_voice_backend.py", voice_runner["environment"]["SERIES_VOICE_BACKEND_COMMAND"])
+        self.assertEqual(voice_runner["environment"]["SERIES_VOICE_BACKEND_TIMEOUT_SECONDS"], "0")
+        self.assertEqual(voice_runner["environment"]["SERIES_VOICE_MODEL_ID"], "openbmb/VoxCPM2")
+        self.assertEqual(voice_runner["environment"]["SERIES_VOICE_MIN_REFERENCE_SECONDS"], "6.0")
         self.assertEqual(voice_runner["timeout_seconds"], 0)
-        self.assertEqual(voice_runner["required_python_modules"], ["TTS"])
+        self.assertEqual(voice_runner["required_python_modules"], ["voxcpm", "soundfile"])
         self.assertEqual(master_runner["command_template"][0], "{python}")
         self.assertEqual(master_runner["timeout_seconds"], 0)
         self.assertEqual(master_runner["required_commands"], [])
@@ -399,7 +465,10 @@ class QualityFirstModeTests(unittest.TestCase):
                 "allow_system_tts_fallback": False,
                 "enable_original_line_reuse": True,
                 "enable_lipsync": True,
-                "voice_clone_engine": "xtts",
+                "voice_clone_engine": "voxcpm2",
+                "voice_model_id": "openbmb/VoxCPM2",
+                "voice_model_dir": "tools/quality_models/voice/openbmb__VoxCPM2",
+                "voice_model_local_files_only": True,
             },
             "external_backends": {
                 "storyboard_scene_runner": dict(runner),

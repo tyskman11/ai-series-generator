@@ -30,6 +30,7 @@ from support_scripts.pipeline_common import (
     DistributedLeaseHeartbeat,
     acquire_distributed_lease,
     add_shared_worker_arguments,
+    active_local_generation_profile,
     distributed_heartbeat_interval_seconds,
     distributed_lease_ttl_seconds,
     distributed_step_runtime_root,
@@ -68,12 +69,13 @@ from support_scripts.pipeline_common import (
     write_realtime_preview,
 )
 
-DEFAULT_LTX_VIDEO_ENVIRONMENT = {
-    "SERIES_VIDEO_LATEST_MODEL_ID": "Lightricks/LTX-2.3",
-    "SERIES_VIDEO_LATEST_MODEL_DIR": "tools/quality_models/video/Lightricks__LTX-2.3",
-    "SERIES_VIDEO_MODEL_ID": "Lightricks/LTX-Video-0.9.8-13B-distilled",
-    "SERIES_VIDEO_MODEL_DIR": "tools/quality_models/video/Lightricks__LTX-Video-0.9.8-13B-distilled",
-    "SERIES_VIDEO_COMPATIBILITY_MODE": "ltx_diffusers_fallback_until_ltx2_runner",
+DEFAULT_LOCAL_VIDEO_ENVIRONMENT = {
+    "SERIES_VIDEO_LATEST_MODEL_ID": "Wan-AI/Wan2.1-T2V-1.3B",
+    "SERIES_VIDEO_LATEST_MODEL_DIR": "tools/quality_models/video/Wan-AI__Wan2.1-T2V-1.3B",
+    "SERIES_VIDEO_MODEL_ID": "Wan-AI/Wan2.1-T2V-1.3B",
+    "SERIES_VIDEO_MODEL_DIR": "tools/quality_models/video/Wan-AI__Wan2.1-T2V-1.3B",
+    "SERIES_VIDEO_MODEL_FAMILY": "wan",
+    "SERIES_VIDEO_COMPATIBILITY_MODE": "local_wan_diffusers",
     "SERIES_VIDEO_WIDTH": "1216",
     "SERIES_VIDEO_HEIGHT": "704",
     "SERIES_VIDEO_FPS": "30",
@@ -416,8 +418,48 @@ def safe_duration_seconds(scene: dict) -> float:
             0.0,
             (len(dialogue_tokens) / 150.0) * 60.0 + max(0.8, len(dialogue_lines) * 0.35),
         )
+    runtime_lock = scene.get("runtime_lock", {}) if isinstance(scene.get("runtime_lock", {}), dict) else {}
+    if bool(runtime_lock.get("enabled", False)) and not bool(runtime_lock.get("allow_dialogue_expansion", False)):
+        planned = duration if duration > 0 else safe_float(runtime_lock.get("planned_scene_runtime_seconds", 0.0), 0.0)
+        max_locked_duration = safe_float(runtime_lock.get("max_scene_runtime_seconds", 0.0), 0.0)
+        if planned > 0.0:
+            target_duration = max(planned, 6.0)
+            if max_locked_duration > 0.0:
+                target_duration = min(target_duration, max_locked_duration)
+            return max(6.0, min(75.0, target_duration))
     target_duration = max(duration if duration > 0 else 0.0, dialogue_runtime, 6.0)
     return max(6.0, min(75.0, target_duration))
+
+
+def apply_runtime_locks_from_shotlist(shotlist: dict, scenes: list[dict]) -> None:
+    target_runtime = safe_float(shotlist.get("target_runtime_seconds", 0.0), 0.0)
+    if target_runtime <= 0.0 or not scenes:
+        return
+    planned_total = sum(safe_float(scene.get("estimated_runtime_seconds", 0.0), 0.0) for scene in scenes if isinstance(scene, dict))
+    if planned_total <= 0.0:
+        return
+    # Only trust old shotlists when their scene estimates already add up to the episode target.
+    if abs(planned_total - target_runtime) / max(1.0, target_runtime) > 0.12:
+        return
+    for scene in scenes:
+        if not isinstance(scene, dict):
+            continue
+        existing_lock = scene.get("runtime_lock", {}) if isinstance(scene.get("runtime_lock", {}), dict) else {}
+        if existing_lock.get("enabled"):
+            continue
+        planned = safe_float(scene.get("estimated_runtime_seconds", 0.0), 0.0)
+        if planned <= 0.0:
+            continue
+        scene["runtime_lock"] = {
+            "enabled": True,
+            "source": "shotlist_target_runtime",
+            "trained_from_input_series": bool(shotlist.get("screenwriter_model", {})),
+            "target_episode_runtime_seconds": round(target_runtime, 3),
+            "planned_scene_runtime_seconds": round(planned, 3),
+            "max_scene_runtime_seconds": round(planned * 1.08, 3),
+            "runtime_lock_tolerance_ratio": 0.08,
+            "allow_dialogue_expansion": False,
+        }
 
 
 def render_output_ready(path: Path) -> bool:
@@ -480,7 +522,9 @@ def safe_float(value: object, default: float = 0.0) -> float:
 
 
 STRICT_GENERATED_VIDEO_TYPES = {"generated_scene_video", "generated_lipsync_video"}
-STRICT_VOICE_BACKENDS = {"xtts", "xtts_voice_clone", "voice_clone"}
+# Finished episodes accept only the project-local VoxCPM2 route.  Old XTTS
+# manifests remain readable, but must be regenerated before they can pass.
+STRICT_VOICE_BACKENDS = {"voxcpm", "voxcpm2", "voxcpm2_voice_clone"}
 LOCAL_COMPOSED_VIDEO_TYPES = {
     "auto_generated_multishot_video",
     "local_motion_fallback",
@@ -543,23 +587,23 @@ def lipsync_backend_profile(cfg: dict) -> dict:
     candidates: list[dict] = []
     for backend in preferred_order:
         backend_key = backend.lower()
-        env_name = f"SERIES_{backend_key.upper().replace('-', '_')}_COMMAND"
         tool_dir = resolve_project_path(f"tools/quality_backends/{backend_key}")
         model_dir = resolve_project_path(f"tools/quality_models/lipsync/{backend_key}")
         checkpoint = resolve_project_path("tools/quality_models/lipsync/wav2lip_gan.pth")
-        env_command = clean_text(os.environ.get(env_name, ""))
         if backend_key == "wav2lip":
-            available = bool(env_command or checkpoint.exists() or tool_dir.exists())
-            reason = "wav2lip checkpoint/tooling ready" if available else "wav2lip checkpoint or command missing"
+            available = bool((tool_dir / "inference.py").is_file() and checkpoint.is_file() and checkpoint.stat().st_size > 0)
+            reason = "project-local Wav2Lip tooling and checkpoint ready" if available else "project-local Wav2Lip tooling or checkpoint missing"
         else:
-            available = bool(env_command or tool_dir.exists() or model_dir.exists())
-            reason = f"{backend_key} command/tooling ready" if available else f"{backend_key} command/tooling not installed"
+            # These integrations are intentionally not claimed merely because a
+            # folder happens to exist.  Their runner and all model dependencies
+            # must be installed project-locally before they may be selected.
+            available = False
+            reason = f"{backend_key} has no complete project-local runner/model bundle installed"
         candidates.append(
             {
                 "name": backend_key,
                 "available": available,
                 "reason": reason,
-                "command_env": env_name,
                 "tool_dir": str(tool_dir),
                 "model_dir": str(model_dir),
             }
@@ -1053,10 +1097,20 @@ def build_scene_voice_plan(
     raw_total = sum(safe_float(row.get("raw_duration_seconds", 0.0), 0.0) for row in prepared)
     line_gap_seconds = 0.18 if len(prepared) > 1 else 0.0
     raw_total_with_gaps = raw_total + max(0, len(prepared) - 1) * line_gap_seconds
-    effective_scene_duration = max(safe_float(scene_duration_seconds, 0.0), raw_total_with_gaps, len(prepared) * 1.15)
+    runtime_lock = scene.get("runtime_lock", {}) if isinstance(scene.get("runtime_lock", {}), dict) else {}
+    runtime_locked = bool(runtime_lock.get("enabled", False)) and not bool(runtime_lock.get("allow_dialogue_expansion", False))
+    if runtime_locked:
+        effective_scene_duration = max(safe_float(scene_duration_seconds, 0.0), len(prepared) * 0.42, 0.25)
+        line_gap_seconds = min(line_gap_seconds, 0.08)
+        raw_total_with_gaps = raw_total + max(0, len(prepared) - 1) * line_gap_seconds
+    else:
+        effective_scene_duration = max(safe_float(scene_duration_seconds, 0.0), raw_total_with_gaps, len(prepared) * 1.15)
     scale = 1.0
     if raw_total_with_gaps > effective_scene_duration:
-        scale = max(0.82, effective_scene_duration / max(raw_total_with_gaps, 0.001))
+        scale = min(1.0, effective_scene_duration / max(raw_total_with_gaps, 0.001)) if runtime_locked else max(
+            0.82,
+            effective_scene_duration / max(raw_total_with_gaps, 0.001),
+        )
 
     cursor = safe_float(scene_start_seconds, 0.0)
     scene_end = safe_float(scene_start_seconds, 0.0) + max(0.0, safe_float(effective_scene_duration, 0.0))
@@ -1576,9 +1630,11 @@ def build_voice_clone_line_package(cfg: dict, episode_package_root: Path, line: 
         "candidate_model_dirs": [path for path in candidate_model_dirs if path],
         "runtime": {
             "engine": clean_text(cloning_cfg.get("voice_clone_engine", "")),
-            "xtts_model_name": clean_text(cloning_cfg.get("xtts_model_name", "")),
-            "xtts_language": clean_text(cloning_cfg.get("xtts_language", "")),
-            "xtts_license_accepted": bool(cloning_cfg.get("xtts_license_accepted", False)),
+            "voice_model_id": clean_text(cloning_cfg.get("voice_model_id", "")),
+            "voice_model_dir": clean_text(cloning_cfg.get("voice_model_dir", "")),
+            "voice_model_local_files_only": bool(cloning_cfg.get("voice_model_local_files_only", True)),
+            "voxcpm_inference_timesteps": int(cloning_cfg.get("voxcpm_inference_timesteps", 10) or 10),
+            "voxcpm_cfg_value": float(cloning_cfg.get("voxcpm_cfg_value", 2.0) or 2.0),
             "force_voice_cloning": bool(cloning_cfg.get("force_voice_cloning", True)),
             "allow_system_tts_fallback": bool(cloning_cfg.get("allow_system_tts_fallback", False)),
         },
@@ -2062,7 +2118,7 @@ def build_episode_production_package_payload(
         "episode_title": clean_text(shotlist.get("episode_title", "")),
         "season_id": clean_text(shotlist.get("season_id", ""))
         or clean_text((shotlist.get("episode_blueprint", {}) if isinstance(shotlist.get("episode_blueprint", {}), dict) else {}).get("season_id", "")),
-        "season_intro": manifest.get("season_intro", {}) if isinstance(manifest.get("season_intro", {}), dict) else {},
+        "season_assets_embedded": False,
         "source_shotlist": clean_text(manifest.get("shotlist_path", "")),
         "source_storyboard_request_dir": clean_text(shotlist.get("storyboard_request_dir", "")),
         "source_render_manifest": clean_text(manifest.get("render_manifest_path", "")),
@@ -2515,22 +2571,37 @@ def estimate_backend_unit_seconds(
     return max(1.0, float(median(intervals)))
 
 
+def canonical_identity_reference_paths(candidates: list[str]) -> list[Path]:
+    unsafe_tokens = ("montage", "contact", "sheet", "context", "storyboard", "preview", "poster", "panel", "collage", "grid")
+    resolved: list[Path] = []
+    seen: set[str] = set()
+    for value in candidates:
+        path = resolve_stored_project_path(value)
+        name = path.name.lower()
+        if any(token in name for token in unsafe_tokens):
+            continue
+        if "_crop" not in path.stem.lower() and "portrait" not in path.stem.lower() and not path.stem.lower().startswith("face_"):
+            continue
+        if not render_output_ready(path):
+            continue
+        key = str(path.resolve(strict=False)).lower()
+        if key not in seen:
+            seen.add(key)
+            resolved.append(path)
+    return resolved
+
+
 def strict_render_preflight_gaps(cfg: dict, shotlist: dict) -> list[str]:
     if not strict_original_episode_outputs_required(cfg):
         return []
     gaps: list[str] = []
     cloning_cfg = cfg.get("cloning", {}) if isinstance(cfg.get("cloning", {}), dict) else {}
     voice_engine = clean_text(cloning_cfg.get("voice_clone_engine", "")).lower()
-    if (
-        bool(cloning_cfg.get("force_voice_cloning", True))
-        and voice_engine == "xtts"
-        and not bool(cloning_cfg.get("xtts_license_accepted", False))
-    ):
-        gaps.append(
-            "XTTS license acceptance is missing. Review the XTTS/Coqui model license, then run "
-            "00_prepare_runtime.py --accept-xtts-license."
-        )
+    if bool(cloning_cfg.get("force_voice_cloning", True)) and voice_engine != "voxcpm2":
+        gaps.append("Local-models-only rendering requires cloning.voice_clone_engine=voxcpm2.")
 
+    finished_cfg = cfg.get("finished_episode_mode", {}) if isinstance(cfg.get("finished_episode_mode", {}), dict) else {}
+    minimum_references = max(1, int(finished_cfg.get("min_identity_references_per_character", 1) or 1))
     missing_characters: list[str] = []
     scenes = shotlist.get("scenes", []) if isinstance(shotlist.get("scenes", []), list) else []
     for scene in scenes:
@@ -2558,14 +2629,13 @@ def strict_render_preflight_gaps(cfg: dict, shotlist: dict) -> list[str]:
             candidates = [
                 *clean_text_list(lock.get("reference_images", [])),
                 *clean_text_list(slot.get("portrait_images", [])),
-                *clean_text_list(slot.get("context_images", [])),
             ]
-            if not any(render_output_ready(resolve_stored_project_path(path)) for path in candidates):
-                if character not in missing_characters:
-                    missing_characters.append(character)
+            reference_count = len(canonical_identity_reference_paths(candidates))
+            if reference_count < minimum_references and character not in missing_characters:
+                missing_characters.append(f"{character} ({reference_count}/{minimum_references} reviewed portraits)")
     if missing_characters:
         gaps.append(
-            "canonical face references are missing for "
+            f"at least {minimum_references} reviewed canonical face portraits are required for "
             f"{', '.join(missing_characters)}. Rerun 24_process_next_episode.py; it will now rebuild "
             "the stale series model and all dependent generation steps from step 08 onward."
         )
@@ -2797,8 +2867,8 @@ def refresh_scene_package_outputs(scene_package: dict, package_root: Path) -> di
         scene_visual_beat_count = int(local_video_plan.get("beat_count", 0) or 0)
     audio_backend = clean_text(current_outputs.get("audio_backend", ""))
     if render_output_ready(scene_dialogue_audio_path) and bool(voice_clone.get("required", False)):
-        if clean_text(voice_runtime.get("engine", "")).lower() == "xtts" and bool(voice_runtime.get("force_voice_cloning", True)):
-            audio_backend = "xtts_voice_clone"
+        if clean_text(voice_runtime.get("engine", "")).lower() in {"voxcpm", "voxcpm2"} and bool(voice_runtime.get("force_voice_cloning", True)):
+            audio_backend = f"{clean_text(voice_runtime.get('engine', '')).lower()}_voice_clone"
         elif not audio_backend:
             audio_backend = "scene_dialogue_audio"
     local_composed_scene_video = bool(current_outputs.get("local_composed_scene_video", False))
@@ -4076,14 +4146,24 @@ def media_duration_seconds(ffmpeg: Path, media_path: Path) -> float:
     return int(hours) * 3600.0 + int(minutes) * 60.0 + float(seconds)
 
 
-def season_id_for_episode(cfg: dict, shotlist: dict) -> str:
+def normalize_season_asset_kind(value: object) -> str:
+    return "outro" if clean_text(value).strip().lower() == "outro" else "intro"
+
+
+def season_asset_config(cfg: dict, asset_kind: str) -> dict:
+    key = f"season_{normalize_season_asset_kind(asset_kind)}"
+    value = cfg.get(key, {}) if isinstance(cfg.get(key, {}), dict) else {}
+    return dict(value)
+
+
+def season_id_for_episode(cfg: dict, shotlist: dict, asset_kind: str = "intro") -> str:
     blueprint = shotlist.get("episode_blueprint", {}) if isinstance(shotlist.get("episode_blueprint", {}), dict) else {}
-    intro_cfg = cfg.get("season_intro", {}) if isinstance(cfg.get("season_intro", {}), dict) else {}
+    asset_cfg = season_asset_config(cfg, asset_kind)
     generation_cfg = cfg.get("generation", {}) if isinstance(cfg.get("generation", {}), dict) else {}
     return (
         clean_text(shotlist.get("season_id", ""))
         or clean_text(blueprint.get("season_id", ""))
-        or clean_text(intro_cfg.get("default_season_id", ""))
+        or clean_text(asset_cfg.get("default_season_id", ""))
         or clean_text(generation_cfg.get("default_season_id", ""))
         or "season_01"
     )
@@ -4211,25 +4291,31 @@ def build_generated_season_intro_package(
     season_id: str,
     profile: dict,
     canonical_root: Path,
+    *,
+    asset_kind: str = "intro",
 ) -> dict[str, object]:
-    intro_cfg = cfg.get("season_intro", {}) if isinstance(cfg.get("season_intro", {}), dict) else {}
+    asset_kind = normalize_season_asset_kind(asset_kind)
+    asset_label = asset_kind.title()
+    asset_cfg = season_asset_config(cfg, asset_kind)
     generated_root = canonical_root / "generated"
-    scene_id = "season_intro"
-    episode_id = f"{season_id}_intro"
+    scene_id = f"season_{asset_kind}"
+    episode_id = f"{season_id}_{asset_kind}"
     title = season_intro_series_title(shotlist, profile)
     total_duration = max(
         6.0,
-        min(30.0, safe_float(profile.get("generated_duration_seconds", intro_cfg.get("generated_duration_seconds", 12.0)), 12.0)),
+        min(30.0, safe_float(profile.get("generated_duration_seconds", asset_cfg.get("generated_duration_seconds", 12.0)), 12.0)),
     )
     continuity = season_intro_character_continuity(
         shotlist,
-        limit=max(1, int(intro_cfg.get("max_generated_intro_characters", 4) or 4)),
+        # Current SDXL IP-Adapter has no regional identity control. Keep seasonal
+        # hero shots single-person until a backend can verify multi-person identity.
+        limit=1,
     )
-    cast = list(continuity)
-    base_prompt = clean_text(profile.get("prompt", "")) or clean_text(intro_cfg.get("generated_prompt", ""))
+    cast = list(continuity)[:1]
+    base_prompt = clean_text(profile.get("prompt", "")) or clean_text(asset_cfg.get("generated_prompt", ""))
     if not base_prompt:
         base_prompt = (
-            f"original polished television series opening sequence for {title}, broadcast-quality cinematography, "
+            f"original polished television series {asset_kind} sequence for {title}, broadcast-quality cinematography, "
             "energetic visual rhythm, coherent recurring sets and color palette, premium studio lighting, "
             "clean faces and stable identities, no readable generated text, no watermark"
         )
@@ -4241,17 +4327,17 @@ def build_generated_season_intro_package(
             "camera_angle": "wide eye-level",
             "camera_movement": "smooth forward crane",
             "characters_visible": [],
-            "purpose": "establish the recurring series world and signature visual motif",
+            "purpose": f"establish the recurring series world and {asset_kind} visual motif",
         },
         {
             "shot_id": f"{scene_id}_shot_002",
-            "shot_type": "hero ensemble shot" if cast else "kinetic prop montage",
+            "shot_type": "single-character hero shot" if cast else "kinetic prop montage",
             "duration_seconds": round(total_duration * 0.45, 3),
             "camera_angle": "medium-wide eye-level",
             "camera_movement": "controlled lateral tracking",
             "characters_visible": cast,
             "purpose": (
-                "introduce the canonical main cast with stable identity and wardrobe"
+                "introduce one canonical character with a verified stable identity and wardrobe"
                 if cast
                 else "show signature props and environments without inventing unreferenced people"
             ),
@@ -4263,7 +4349,7 @@ def build_generated_season_intro_package(
             "camera_angle": "symmetrical front view",
             "camera_movement": "slow push-in",
             "characters_visible": [],
-            "purpose": "finish on a reusable season identity plate with clear central composition",
+            "purpose": f"finish on a reusable season {asset_kind} plate with clear central composition",
         },
     ]
     shot_packages = build_shot_packages(generated_root, scene_id, shot_specs)
@@ -4280,23 +4366,35 @@ def build_generated_season_intro_package(
     ]
     image_root = generated_root / "images" / scene_id
     video_root = generated_root / "videos" / scene_id
-    prompt_preview_path = generated_root / "manifests" / "intro_backend_prompts.txt"
-    scene_package_path = generated_root / "scenes" / "season_intro_production.json"
-    raw_video_path = video_root / "season_intro_generated.mp4"
+    prompt_preview_path = generated_root / "manifests" / f"{asset_kind}_backend_prompts.txt"
+    scene_package_path = generated_root / "scenes" / f"season_{asset_kind}_production.json"
+    raw_video_path = video_root / f"season_{asset_kind}_generated.mp4"
+    local_model_profile = active_local_generation_profile(cfg)
+    profile_id = clean_text(local_model_profile.get("profile_id", "")) or "live_action"
+    profile_style = clean_text(local_model_profile.get("style_prompt", ""))
+    profile_negative = clean_text(local_model_profile.get("negative_prompt", ""))
+    if profile_style:
+        base_prompt = f"{base_prompt}, {profile_style}"
     scene_package = {
         "episode_id": episode_id,
         "scene_id": scene_id,
-        "title": f"{title} - {season_id} Intro",
-        "summary": "Reusable generated opening sequence for the season.",
+        "title": f"{title} - {season_id} {asset_label}",
+        "summary": f"Reusable generated {asset_kind} sequence for the season.",
         "duration_seconds": total_duration,
         "characters": cast,
         "character_continuity_lock": continuity,
         "reference_slots": reference_slots,
         "shot_plan": shot_specs,
         "shot_packages": shot_packages,
+        "generation_plan": {
+            "local_model_profile": local_model_profile,
+            "generation_profile_id": profile_id,
+            "positive_prompt": base_prompt,
+            "negative_prompt": profile_negative,
+        },
         "image_generation": {
             "required": True,
-            "mode": "generated_season_intro_keyframes",
+            "mode": f"generated_season_{asset_kind}_keyframes",
             "prompt": base_prompt,
             "negative_prompt": (
                 "placeholder, slideshow, still-frame pan, distorted face, merged people, wrong gender, "
@@ -4315,8 +4413,8 @@ def build_generated_season_intro_package(
         },
         "video_generation": {
             "required": True,
-            "mode": "generated_season_intro_video",
-            "prompt": f"{base_prompt}, real continuous motion, deliberate opening-title pacing",
+            "mode": f"generated_season_{asset_kind}_video",
+            "prompt": f"{base_prompt}, real continuous motion, deliberate {asset_kind} pacing",
             "shot_plan": shot_specs,
             "shot_packages": shot_packages,
             "character_continuity_lock": continuity,
@@ -4352,8 +4450,17 @@ def generate_season_intro_video(
     reporter: LiveProgressReporter | None = None,
     overall_base: float = 0.0,
     overall_span: float = 0.9,
+    asset_kind: str = "intro",
 ) -> dict[str, object]:
-    package = build_generated_season_intro_package(cfg, shotlist, season_id, profile, canonical_root)
+    asset_kind = normalize_season_asset_kind(asset_kind)
+    package = build_generated_season_intro_package(
+        cfg,
+        shotlist,
+        season_id,
+        profile,
+        canonical_root,
+        asset_kind=asset_kind,
+    )
     scene_package = package["scene_package"]
     scene_package_path = package["scene_package_path"]
     prompt_preview_path = package["prompt_preview_path"]
@@ -4395,7 +4502,7 @@ def generate_season_intro_video(
     runner_results: dict[str, dict] = {}
     backend_manifests: dict[str, str] = {}
     for runner_name, section_name, expected_path in runner_specs:
-        info(f"Generating missing {season_id} intro via {runner_name} ...")
+        info(f"Generating missing {season_id} {asset_kind} via {runner_name} ...")
         targets = runner_targets.get(runner_name, [])
         remove_stale_generated_output(expected_path)
         runner_cfg = copy.deepcopy(cfg)
@@ -4422,7 +4529,7 @@ def generate_season_intro_video(
                 environment.setdefault(key, value)
             environment["SERIES_IMAGE_RESUME_SHOTS"] = "1"
         else:
-            for key, value in DEFAULT_LTX_VIDEO_ENVIRONMENT.items():
+            for key, value in DEFAULT_LOCAL_VIDEO_ENVIRONMENT.items():
                 environment.setdefault(key, value)
             environment["SERIES_VIDEO_RESUME_SHOTS"] = "1"
         external_cfg[runner_name] = runner_settings
@@ -4431,7 +4538,7 @@ def generate_season_intro_video(
             BackendLiveProgressMonitor(
                 reporter=reporter,
                 runner_name=runner_name,
-                scene_id=f"{season_id} intro",
+                scene_id=f"{season_id} {asset_kind}",
                 targets=targets,
                 overall_base=overall_base,
                 overall_span=overall_span,
@@ -4455,7 +4562,7 @@ def generate_season_intro_video(
                 context=context,
                 force=True,
                 fallback_cwd=scene_package_path.parent,
-                log_dir=resolve_project_path("logs") / "external_backends" / runner_name / episode_id_for_intro(season_id),
+                log_dir=resolve_project_path("logs") / "external_backends" / runner_name / episode_id_for_intro(season_id, asset_kind),
                 raise_on_failure=True,
             )
         finally:
@@ -4464,13 +4571,13 @@ def generate_season_intro_video(
         status = clean_text(result.get("status", ""))
         if status not in {"completed", "existing_outputs"} or not render_output_ready(expected_path):
             raise RuntimeError(
-                f"Could not generate the {season_id} intro: {runner_name} returned '{status}' "
+                f"Could not generate the {season_id} {asset_kind}: {runner_name} returned '{status}' "
                 f"without a valid output at {expected_path}."
             )
         if backend_runner_fallback_used(result):
             raise RuntimeError(
-                f"Could not generate the {season_id} intro: {runner_name} used a fallback backend. "
-                "Finished season intros require real image/video generation."
+                f"Could not generate the {season_id} {asset_kind}: {runner_name} used a fallback backend. "
+                "Finished season assets require real image/video generation."
             )
         runner_results[runner_name] = result
         runner_units = max(1, len(targets))
@@ -4494,8 +4601,8 @@ def generate_season_intro_video(
     }
 
 
-def episode_id_for_intro(season_id: str) -> str:
-    return f"{season_id}_intro"
+def episode_id_for_intro(season_id: str, asset_kind: str = "intro") -> str:
+    return f"{season_id}_{normalize_season_asset_kind(asset_kind)}"
 
 
 def materialize_season_intro(
@@ -4509,31 +4616,35 @@ def materialize_season_intro(
     reporter: LiveProgressReporter | None = None,
     overall_base: float = 0.0,
     overall_span: float = 1.0,
+    asset_kind: str = "intro",
 ) -> dict[str, object]:
-    intro_cfg = cfg.get("season_intro", {}) if isinstance(cfg.get("season_intro", {}), dict) else {}
-    season_id = season_id_for_episode(cfg, shotlist)
-    if not bool(intro_cfg.get("enabled", False)):
-        return {"enabled": False, "season_id": season_id, "status": "disabled"}
-    profiles = intro_cfg.get("profiles", {}) if isinstance(intro_cfg.get("profiles", {}), dict) else {}
+    asset_kind = normalize_season_asset_kind(asset_kind)
+    asset_label = asset_kind.title()
+    asset_cfg = season_asset_config(cfg, asset_kind)
+    season_id = season_id_for_episode(cfg, shotlist, asset_kind)
+    if not bool(asset_cfg.get("enabled", False)):
+        return {"enabled": False, "season_id": season_id, "asset_kind": asset_kind, "status": "disabled"}
+    profiles = asset_cfg.get("profiles", {}) if isinstance(asset_cfg.get("profiles", {}), dict) else {}
     profile = profiles.get(season_id, {}) if isinstance(profiles.get(season_id, {}), dict) else {}
     source_path = resolve_stored_project_path(profile.get("source_video", ""))
-    canonical_root = resolve_project_path(f"generation/season_assets/{season_id}/intro")
-    canonical_path = canonical_root / "intro.mp4"
-    manifest_path = canonical_root / "intro_manifest.json"
-    lock_after_first_use = bool(intro_cfg.get("lock_after_first_use", True))
+    canonical_root = resolve_project_path(f"generation/season_assets/{season_id}/{asset_kind}")
+    canonical_path = canonical_root / f"{asset_kind}.mp4"
+    manifest_path = canonical_root / f"{asset_kind}_manifest.json"
+    lock_after_first_use = bool(asset_cfg.get("lock_after_first_use", True))
     existing_manifest = read_json(manifest_path, {}) if manifest_path.exists() else {}
     if render_output_ready(canonical_path):
         current_hash = file_sha256(canonical_path)
         expected_hash = clean_text(existing_manifest.get("canonical_sha256", ""))
         if lock_after_first_use and expected_hash and current_hash != expected_hash:
             raise RuntimeError(
-                f"The locked intro for {season_id} changed unexpectedly: {canonical_path}. "
-                "Restore the original file or deliberately remove its manifest before replacing the season intro."
+                f"The locked {asset_kind} for {season_id} changed unexpectedly: {canonical_path}. "
+                f"Restore the original file or deliberately remove its manifest before replacing the season {asset_kind}."
             )
         return {
             **existing_manifest,
             "enabled": True,
             "season_id": season_id,
+            "asset_kind": asset_kind,
             "status": "locked_existing",
             "canonical_video": str(canonical_path),
             "canonical_sha256": current_hash,
@@ -4542,7 +4653,7 @@ def materialize_season_intro(
         }
     generated_intro: dict[str, object] = {}
     source_origin = "configured_source"
-    if not source_path.is_file() and bool(intro_cfg.get("auto_generate_if_missing", True)):
+    if not source_path.is_file() and bool(asset_cfg.get("auto_generate_if_missing", True)):
         generated_intro = generate_season_intro_video(
             cfg,
             shotlist,
@@ -4552,20 +4663,22 @@ def materialize_season_intro(
             reporter=reporter,
             overall_base=overall_base,
             overall_span=overall_span * 0.9,
+            asset_kind=asset_kind,
         )
         generated_source = generated_intro.get("raw_video_path")
         source_path = generated_source if isinstance(generated_source, Path) else Path(str(generated_source or ""))
         source_origin = "backend_generated"
     if not source_path.is_file():
-        if bool(intro_cfg.get("require_in_finished_episode_mode", True)) and strict_original_episode_outputs_required(cfg):
+        if bool(asset_cfg.get("require_in_finished_episode_mode", False)) and strict_original_episode_outputs_required(cfg):
             raise RuntimeError(
-                f"Fixed season intro is required for {season_id}, but no source video exists at {source_path}. "
-                f"Place the approved intro there, set season_intro.profiles.{season_id}.source_video, "
-                "or enable season_intro.auto_generate_if_missing with working image/video backends."
+                f"Fixed season {asset_kind} is required for {season_id}, but no source video exists at {source_path}. "
+                f"Place the approved {asset_kind} there, set season_{asset_kind}.profiles.{season_id}.source_video, "
+                f"or enable season_{asset_kind}.auto_generate_if_missing with working image/video backends."
             )
         return {
             "enabled": True,
             "season_id": season_id,
+            "asset_kind": asset_kind,
             "status": "missing_optional",
             "canonical_video": "",
             "manifest": str(manifest_path),
@@ -4575,13 +4688,13 @@ def materialize_season_intro(
     if reporter is not None:
         reporter.update(
             overall_base + (overall_span * 0.9 if generated_intro else overall_span * 0.1),
-            current_label=f"{season_id} intro / normalization",
-            extra_label="Season intro: normalize and lock the canonical video",
+            current_label=f"{season_id} {asset_kind} / normalization",
+            extra_label=f"Season {asset_label.lower()}: normalize and lock the canonical video",
             force=True,
             scope_current=0,
             scope_total=1,
             scope_started_at=time.time(),
-            scope_label="Intro encode",
+            scope_label=f"{asset_label} encode",
             scope_eta_seconds=60.0,
             overall_eta_seconds=60.0,
         )
@@ -4598,9 +4711,10 @@ def materialize_season_intro(
     payload = {
         "enabled": True,
         "season_id": season_id,
+        "asset_kind": asset_kind,
         "status": "locked_new_generated" if source_origin == "backend_generated" else "locked_new",
         "source_origin": source_origin,
-        "generation_mode": "real_backend_multi_shot_intro" if source_origin == "backend_generated" else "approved_source_video",
+        "generation_mode": f"real_backend_multi_shot_{asset_kind}" if source_origin == "backend_generated" else "approved_source_video",
         "source_video": str(source_path),
         "source_sha256": file_sha256(source_path),
         "canonical_video": str(canonical_path),
@@ -4626,6 +4740,34 @@ def materialize_season_intro(
         payload["fallback_used"] = bool(generated_intro.get("fallback_used", False))
     write_json(manifest_path, payload)
     return payload
+
+
+def materialize_season_asset(
+    cfg: dict,
+    shotlist: dict,
+    ffmpeg: Path,
+    *,
+    asset_kind: str,
+    fps: int,
+    width: int,
+    height: int,
+    reporter: LiveProgressReporter | None = None,
+    overall_base: float = 0.0,
+    overall_span: float = 1.0,
+) -> dict[str, object]:
+    """Create or verify a standalone season intro/outro without rendering an episode."""
+    return materialize_season_intro(
+        cfg,
+        shotlist,
+        ffmpeg,
+        fps=fps,
+        width=width,
+        height=height,
+        reporter=reporter,
+        overall_base=overall_base,
+        overall_span=overall_span,
+        asset_kind=asset_kind,
+    )
 
 
 def materialize_scene_motion_video(
@@ -4831,6 +4973,7 @@ def main() -> None:
     if not scenes:
         info("No scenes found in the shotlist. Run 14_generate_episode.py first.")
         return
+    apply_runtime_locks_from_shotlist(shotlist, scenes)
 
     render_cfg = cfg.get("render", {}) if isinstance(cfg.get("render"), dict) else {}
     cloning_cfg = cfg.get("cloning", {}) if isinstance(cfg.get("cloning"), dict) else {}
@@ -4943,37 +5086,6 @@ def main() -> None:
         audio_render_error = ""
         full_generated_episode_master_meta: dict[str, object] = {}
         package_root = episode_production_package_root(cfg, episode_id)
-        season_intro_meta = materialize_season_intro(
-            cfg,
-            shotlist,
-            ffmpeg,
-            fps=fps,
-            width=width,
-            height=height,
-            reporter=reporter,
-            overall_base=0.0,
-            overall_span=float(render_progress_offset),
-        )
-        season_intro_path = resolve_stored_project_path(season_intro_meta.get("canonical_video", ""))
-        if render_output_ready(season_intro_path):
-            reporter.update(
-                render_progress_offset,
-                current_label=f"{season_intro_meta.get('season_id', 'season')} Intro",
-                extra_label=(
-                    "Season intro generated, normalized, and locked"
-                    if season_intro_meta.get("source_origin") == "backend_generated"
-                    else "Reusing the locked canonical season intro"
-                ),
-                force=True,
-                scope_current=1,
-                scope_total=1,
-                scope_label="Intro",
-                scope_eta_seconds=0.0,
-            )
-            opening_clip_paths.append(season_intro_path)
-            final_clip_paths.append(season_intro_path)
-            timeline_cursor += max(0.0, safe_float(season_intro_meta.get("duration_seconds", 0.0), 0.0))
-
         if include_title_cards and title_card_seconds > 0.0:
             reporter.update(
                 render_progress_offset,
@@ -5240,7 +5352,7 @@ def main() -> None:
             "height": height,
             "include_title_cards": include_title_cards,
             "season_id": season_id_for_episode(cfg, shotlist),
-            "season_intro": season_intro_meta,
+            "season_assets_embedded": False,
             "generated_scene_video_count": generated_scene_video_count,
             "scene_master_clip_count": len(scene_master_outputs),
             "full_generated_episode": str(full_generated_episode_path),
@@ -5289,7 +5401,7 @@ def main() -> None:
             generated_scene_dialogue_audio_path = resolve_stored_project_path(generated_scene_dialogue_meta.get("audio_path", ""))
             if render_output_ready(generated_scene_dialogue_audio_path):
                 preferred_dialogue_audio_path = generated_scene_dialogue_audio_path
-                generated_scene_dialogue_meta["audio_backend"] = "xtts_voice_clone"
+                generated_scene_dialogue_meta["audio_backend"] = "voxcpm2_voice_clone"
         scene_master_audio_outputs = (
             package_scene_dialogue_outputs
             if package_scene_dialogue_outputs

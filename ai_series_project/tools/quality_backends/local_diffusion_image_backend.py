@@ -106,10 +106,8 @@ def compact_visual_prompt(context: dict[str, Any], scene_package: dict[str, Any]
         if isinstance(scene_package.get("image_generation", {}), dict)
         else {}
     )
-    people_free_intro = (
-        clean_text(image_generation.get("mode", "")) == "generated_season_intro_keyframes"
-        and not characters
-    )
+    generation_mode = clean_text(image_generation.get("mode", ""))
+    people_free_intro = generation_mode.startswith("generated_season_") and generation_mode.endswith("_keyframes") and not characters
     subject = (
         f"canonical cast identities available for {', '.join(characters[:3])}"
         if characters
@@ -117,8 +115,9 @@ def compact_visual_prompt(context: dict[str, Any], scene_package: dict[str, Any]
         if people_free_intro
         else "people clearly visible with expressive faces"
     )
+    profile = local_model_profile(scene_package)
     parts = [
-        "live-action TV sitcom frame",
+        "serialized anime TV keyframe" if clean_text(profile.get("profile_id", "")) == "anime" else "live-action TV sitcom frame",
         "source-series visual style",
         clean_text(camera.get("shot_type", "") or camera.get("camera", "")),
         clean_text(camera.get("composition", "") or camera.get("focus", "")),
@@ -155,6 +154,8 @@ def normalize_model_dir(candidate: Path) -> Path:
 
 def image_model_family(model_id: str, model_dir: Path) -> str:
     text = f"{model_id} {model_dir}".lower()
+    if "animagine" in text:
+        return "sdxl"
     if "qwen" in text:
         return "qwen"
     if "flux" in text:
@@ -164,7 +165,37 @@ def image_model_family(model_id: str, model_dir: Path) -> str:
     return "diffusers"
 
 
-def configured_model_id(candidate: Path, *, require_identity_adapter: bool) -> str:
+def local_model_profile(scene_package: dict[str, Any]) -> dict[str, Any]:
+    plan = scene_package.get("generation_plan", {}) if isinstance(scene_package.get("generation_plan", {}), dict) else {}
+    profile = plan.get("local_model_profile", {}) if isinstance(plan.get("local_model_profile", {}), dict) else {}
+    return dict(profile)
+
+
+def apply_local_model_profile(scene_package: dict[str, Any]) -> str:
+    profile = local_model_profile(scene_package)
+    profile_id = clean_text(profile.get("profile_id", "")) or "live_action"
+    for key, value in {
+        "SERIES_IMAGE_MODEL_ID": clean_text(profile.get("image_model_id", "")),
+        "SERIES_IMAGE_MODEL_DIR": clean_text(profile.get("image_model_dir", "")),
+        "SERIES_IMAGE_IDENTITY_MODEL_ID": clean_text(profile.get("identity_model_id", "")),
+        "SERIES_IMAGE_IDENTITY_MODEL_DIR": clean_text(profile.get("identity_model_dir", "")),
+    }.items():
+        if value:
+            os.environ[key] = value
+    return profile_id
+
+
+def configured_model_id(candidate: Path, *, require_identity_adapter: bool, cpu_safe: bool = False) -> str:
+    if cpu_safe:
+        configured_cpu = clean_text(os.environ.get("SERIES_IMAGE_CPU_MODEL_ID", ""))
+        if configured_cpu:
+            return configured_cpu
+        resolved = candidate.resolve(strict=False)
+        if resolved == SDXL_IDENTITY_MODEL_DIR.resolve(strict=False):
+            return SDXL_IDENTITY_MODEL_ID
+        if resolved == DEFAULT_IMAGE_MODEL_DIR.resolve(strict=False):
+            return DEFAULT_IMAGE_MODEL_ID
+        return candidate.name.replace("__", "/")
     env_name = "SERIES_IMAGE_IDENTITY_MODEL_ID" if require_identity_adapter else "SERIES_IMAGE_MODEL_ID"
     configured = clean_text(os.environ.get(env_name, ""))
     if configured:
@@ -177,7 +208,7 @@ def configured_model_id(candidate: Path, *, require_identity_adapter: bool) -> s
     return candidate.name.replace("__", "/")
 
 
-def image_model_candidates(*, require_identity_adapter: bool) -> list[Path]:
+def image_model_candidates(*, require_identity_adapter: bool, cpu_safe: bool = False) -> list[Path]:
     if require_identity_adapter:
         configured = (
             clean_text(os.environ.get("SERIES_IMAGE_IDENTITY_MODEL_DIR", ""))
@@ -186,14 +217,19 @@ def image_model_candidates(*, require_identity_adapter: bool) -> list[Path]:
         if configured:
             return [normalize_model_dir(Path(configured))]
         return [SDXL_IDENTITY_MODEL_DIR.resolve(strict=False)]
+    if cpu_safe:
+        configured_cpu = clean_text(os.environ.get("SERIES_IMAGE_CPU_MODEL_DIR", ""))
+        if configured_cpu:
+            return [normalize_model_dir(Path(configured_cpu))]
+        return [SDXL_IDENTITY_MODEL_DIR.resolve(strict=False)]
     configured = clean_text(os.environ.get("SERIES_IMAGE_MODEL_DIR", ""))
     if configured:
         return [normalize_model_dir(Path(configured))]
     return [path.resolve(strict=False) for path in FALLBACK_IMAGE_MODEL_DIRS]
 
 
-def resolve_model_dir(*, require_identity_adapter: bool = False) -> Path:
-    candidates = image_model_candidates(require_identity_adapter=require_identity_adapter)
+def resolve_model_dir(*, require_identity_adapter: bool = False, cpu_safe: bool = False) -> Path:
+    candidates = image_model_candidates(require_identity_adapter=require_identity_adapter, cpu_safe=cpu_safe)
     for candidate in candidates:
         if model_dir_ready(candidate):
             return candidate
@@ -203,6 +239,11 @@ def resolve_model_dir(*, require_identity_adapter: bool = False) -> Path:
             "Canonical face references require the project-local SDXL identity model because the current "
             "IP-Adapter face workflow is SDXL-based. Run 00_prepare_runtime.py without --skip-downloads or set "
             f"SERIES_IMAGE_IDENTITY_MODEL_DIR. Expected model_index.json and safetensors files in {expected}."
+        )
+    if cpu_safe:
+        raise RuntimeError(
+            "The CPU-safe local image model is not ready. Run 00_prepare_runtime.py without --skip-downloads "
+            f"or set SERIES_IMAGE_CPU_MODEL_DIR. Expected model_index.json and safetensors files in {expected}."
         )
     raise RuntimeError(
         "Local Qwen-Image model is not ready. Run 00_prepare_runtime.py without --skip-downloads "
@@ -316,16 +357,6 @@ def pipeline_accepts_argument(pipeline: Any, name: str) -> bool:
 
 def load_pipeline(require_identity_adapter: bool) -> tuple[Any, dict[str, Any]]:
     global _PIPELINE, _PIPELINE_META
-    model_dir = resolve_model_dir(require_identity_adapter=require_identity_adapter)
-    model_id = configured_model_id(model_dir, require_identity_adapter=require_identity_adapter)
-    model_family = image_model_family(model_id, model_dir)
-    if _PIPELINE is not None and clean_text(_PIPELINE_META.get("model_dir", "")) == str(model_dir):
-        if require_identity_adapter and not bool(_PIPELINE_META.get("identity_adapter_loaded", False)):
-            raise RuntimeError(
-                "Canonical face references are present, but the SDXL identity adapter is not loaded. "
-                "Run 00_prepare_runtime.py without --skip-downloads."
-            )
-        return _PIPELINE, dict(_PIPELINE_META)
     try:
         import torch
         from diffusers import DiffusionPipeline
@@ -336,12 +367,27 @@ def load_pipeline(require_identity_adapter: bool) -> tuple[Any, dict[str, Any]]:
 
     cuda_ready = bool(torch.cuda.is_available())
     allow_cpu = clean_text(os.environ.get("SERIES_IMAGE_ALLOW_CPU", "")).lower() in {"1", "true", "yes", "on"}
+    allow_heavy_cpu = truthy_env("SERIES_IMAGE_ALLOW_HEAVY_CPU", False)
     if not cuda_ready and not allow_cpu:
         raise RuntimeError(
             "The local image backend requires a CUDA GPU for production speed. This worker is CPU-only, so it must not claim "
             "shot-image tasks. Run step 16 on a CUDA worker, or explicitly set SERIES_IMAGE_ALLOW_CPU=1 "
             "for a very slow diagnostic CPU render."
         )
+    cpu_safe = bool(not cuda_ready and not require_identity_adapter and not allow_heavy_cpu)
+    model_dir = resolve_model_dir(require_identity_adapter=require_identity_adapter, cpu_safe=cpu_safe)
+    model_id = configured_model_id(model_dir, require_identity_adapter=require_identity_adapter, cpu_safe=cpu_safe)
+    model_family = image_model_family(model_id, model_dir)
+    if _PIPELINE is not None and clean_text(_PIPELINE_META.get("model_dir", "")) == str(model_dir):
+        cached_adapter_loaded = bool(_PIPELINE_META.get("identity_adapter_loaded", False))
+        if cached_adapter_loaded == require_identity_adapter:
+            return _PIPELINE, dict(_PIPELINE_META)
+        print(
+            "[INFO] Reloading image pipeline because the shot identity-adapter requirement changed.",
+            flush=True,
+        )
+        _PIPELINE = None
+        _PIPELINE_META = {}
     dtype = torch.bfloat16 if cuda_ready and model_family in {"flux", "qwen"} else torch.float16 if cuda_ready else torch.float32
     device = "cuda" if cuda_ready else "cpu"
     width, height = target_size()
@@ -349,6 +395,21 @@ def load_pipeline(require_identity_adapter: bool) -> tuple[Any, dict[str, Any]]:
     default_guidance = "4.0" if model_family == "qwen" else "3.5" if model_family == "flux" else "6.0"
     steps = int(float(os.environ.get("SERIES_IMAGE_INFERENCE_STEPS", default_steps) or default_steps))
     guidance = float(os.environ.get("SERIES_IMAGE_GUIDANCE_SCALE", default_guidance) or default_guidance)
+    if cpu_safe:
+        max_cpu_width = int(float(os.environ.get("SERIES_IMAGE_CPU_MAX_WIDTH", "896") or "896"))
+        max_cpu_height = int(float(os.environ.get("SERIES_IMAGE_CPU_MAX_HEIGHT", "512") or "512"))
+        max_cpu_steps = int(float(os.environ.get("SERIES_IMAGE_CPU_MAX_STEPS", "24") or "24"))
+        original_size = (width, height, steps)
+        width = max(512, (min(width, max_cpu_width) // 8) * 8)
+        height = max(512, (min(height, max_cpu_height) // 8) * 8)
+        steps = max(12, min(steps, max_cpu_steps))
+        print(
+            "[INFO] CPU-safe image generation active: "
+            f"using {model_id} at {width}x{height}, {steps} steps instead of "
+            f"{original_size[0]}x{original_size[1]}, {original_size[2]} steps. "
+            "Set SERIES_IMAGE_ALLOW_HEAVY_CPU=1 to force the configured heavy model on CPU.",
+            flush=True,
+        )
     print(
         f"[INFO] {model_family.upper()} image backend: device={device}, size={width}x{height}, steps={steps}, model={model_id}",
         flush=True,
@@ -368,7 +429,7 @@ def load_pipeline(require_identity_adapter: bool) -> tuple[Any, dict[str, Any]]:
             "Identity-conditioned shots currently use the SDXL IP-Adapter face workflow. "
             f"The selected model {model_id} is not SDXL; set SERIES_IMAGE_IDENTITY_MODEL_DIR to the project-local SDXL model."
         )
-    if model_family == "sdxl" and identity_adapter_ready(adapter_dir):
+    if model_family == "sdxl" and require_identity_adapter and identity_adapter_ready(adapter_dir):
         try:
             pipeline.load_ip_adapter(
                 str(adapter_dir),
@@ -389,12 +450,14 @@ def load_pipeline(require_identity_adapter: bool) -> tuple[Any, dict[str, Any]]:
                     f"Could not load the project-local SDXL identity adapter from {adapter_dir}: {exc}"
                 ) from exc
             print(f"[WARN] SDXL identity adapter unavailable: {exc}", flush=True)
-    elif require_identity_adapter:
+    elif model_family == "sdxl" and require_identity_adapter:
         raise RuntimeError(
             "The project-local SDXL identity adapter is incomplete. Run 00_prepare_runtime.py without "
             f"--skip-downloads. Expected {adapter_dir / 'sdxl_models' / IDENTITY_ADAPTER_WEIGHT} and "
             f"{adapter_dir / 'models' / 'image_encoder' / 'config.json'}."
         )
+    elif model_family == "sdxl":
+        print("[INFO] Identity adapter not loaded for this no-character/text-only shot.", flush=True)
     enable_pipeline_memory_optimizations(
         pipeline,
         identity_adapter_loaded=adapter_loaded,
@@ -421,13 +484,14 @@ def load_pipeline(require_identity_adapter: bool) -> tuple[Any, dict[str, Any]]:
         "pipeline_class": type(pipeline).__name__,
         "identity_adapter_dir": str(adapter_dir),
         "identity_adapter_loaded": adapter_loaded,
+        "cpu_safe_mode": cpu_safe,
     }
     return pipeline, dict(_PIPELINE_META)
 
 
 def build_identity_reference_board(reference_paths: list[Path]) -> Image.Image | None:
     usable: list[Image.Image] = []
-    for path in reference_paths[:4]:
+    for path in reference_paths[:3]:
         try:
             with Image.open(path) as source:
                 usable.append(ImageOps.fit(source.convert("RGB"), (256, 256), method=Image.Resampling.LANCZOS))
@@ -435,15 +499,10 @@ def build_identity_reference_board(reference_paths: list[Path]) -> Image.Image |
             continue
     if not usable:
         return None
-    board = Image.new("RGB", (512, 512), (127, 127, 127))
-    positions = [(0, 0), (256, 0), (0, 256), (256, 256)]
-    for image, position in zip(usable, positions):
-        board.paste(image, position)
-    if len(usable) == 1:
-        board.paste(usable[0], (256, 0))
-        board.paste(usable[0], (0, 256))
-        board.paste(usable[0], (256, 256))
-    return board
+    # IP-Adapter Face is stable with one canonical portrait. A contact sheet of
+    # different poses makes the adapter blend identity attributes instead of
+    # keeping the person from the reviewed source material.
+    return ImageOps.fit(usable[0], (512, 512), method=Image.Resampling.LANCZOS)
 
 
 UNSAFE_IDENTITY_REFERENCE_TOKENS = {
@@ -605,6 +664,7 @@ def shot_identity_contract(
         "regional_identity_control": False,
         "verification_status": "unverified_multi_character_identity_board" if multi_character else "single_character_identity_conditioned",
         "identity_risk": "high" if multi_character else "normal",
+        "generation_allowed": not multi_character or truthy_env("SERIES_IMAGE_ALLOW_UNVERIFIED_MULTI_IDENTITY", False),
         "reference_count": len(reference_paths),
         "characters_conditioned": conditioned_characters,
         "missing_characters": missing_characters,
@@ -776,6 +836,12 @@ def generate_shot_images(context: dict[str, Any], scene_package: dict[str, Any],
             if isinstance(visible_value, list)
             else scene_character_names(scene_package)
         )
+        if len(visible_characters) > 1 and not truthy_env("SERIES_IMAGE_ALLOW_UNVERIFIED_MULTI_IDENTITY", False):
+            raise RuntimeError(
+                f"{shot.get('shot_id', 'shot')} asks for {len(visible_characters)} visible named characters, but the local "
+                "SDXL IP-Adapter backend cannot verify independent multi-person identity conditioning. "
+                "Regenerate the shot plan with single-character coverage, or configure a backend with regional identity control."
+            )
         references_by_character = reference_images_by_character(scene_package, visible_characters)
         require_identity_references(visible_characters, references_by_character)
         reference_paths = reference_image_paths(scene_package, visible_characters)
@@ -808,6 +874,8 @@ def main() -> int:
     context = load_backend_context()
     scene_package_path = clean_text(context.get("scene_package", "")) or clean_text(context.get("backend_input", ""))
     scene_package = load_json(scene_package_path) if scene_package_path else {}
+    profile_id = apply_local_model_profile(scene_package)
+    print(f"[INFO] Local image model profile: {profile_id}", flush=True)
     paths = output_paths(context)
     if not paths:
         raise RuntimeError("The local diffusion backend did not receive an output image path.")

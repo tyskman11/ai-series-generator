@@ -11,7 +11,7 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any
 
-PROJECT_DIR = Path(__file__).resolve().parent / "ai_series_project"
+PROJECT_DIR = Path(__file__).resolve().parents[1]
 if str(PROJECT_DIR) not in sys.path:
     sys.path.insert(0, str(PROJECT_DIR))
 
@@ -908,6 +908,27 @@ def build_behavior_model(
     return model, render_summary(model)
 
 
+def refresh_behavior_model(
+    cfg: dict[str, Any],
+    *,
+    series_model: dict[str, Any] | None = None,
+    relationship_payload: dict[str, Any] | None = None,
+) -> tuple[dict[str, Any], str, Path, Path]:
+    """Persist behavior artifacts from the numbered series-model training step."""
+    model, summary = build_behavior_model(
+        cfg,
+        relationship_payload=relationship_payload,
+        series_model=series_model,
+    )
+    target = behavior_model_path(cfg)
+    summary_target = behavior_summary_path(cfg)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    summary_target.parent.mkdir(parents=True, exist_ok=True)
+    write_json(target, model)
+    write_text(summary_target, summary)
+    return model, summary, target, summary_target
+
+
 def render_summary(model: dict[str, Any]) -> str:
     source_counts = model.get("source_counts", {}) if isinstance(model.get("source_counts"), dict) else {}
     lines = [
@@ -960,20 +981,20 @@ def render_summary(model: dict[str, Any]) -> str:
 def main() -> None:
     rerun_in_runtime()
     args = parse_args()
-    headline("Analyze Behavior Model")
+    headline("Refresh Behavior Model Support Task")
     cfg = load_config()
     worker_id = shared_worker_id_for_args(args)
     shared_workers = shared_workers_enabled_for_args(cfg, args)
-    mark_step_started("08b_analyze_behavior_model", "global")
+    mark_step_started("behavior_model_refresh", "global")
     if shared_workers:
         info(f"Shared NAS workers: enabled ({worker_id})")
     lease_manager = distributed_item_lease(
-        root=distributed_step_runtime_root("08b_analyze_behavior_model", "global"),
+        root=distributed_step_runtime_root("behavior_model_refresh", "global"),
         lease_name="global",
         cfg=cfg,
         worker_id=worker_id,
         enabled=shared_workers,
-        meta={"step": "08b_analyze_behavior_model", "scope": "global", "worker_id": worker_id},
+        meta={"step": "behavior_model_refresh", "scope": "global", "worker_id": worker_id},
     )
     acquired = lease_manager.__enter__()
     if not acquired:
@@ -986,18 +1007,14 @@ def main() -> None:
         if target.exists() and not args.force:
             ok(f"Behavior model already exists: {target}")
             mark_step_completed(
-                "08b_analyze_behavior_model",
+                "behavior_model_refresh",
                 "global",
                 {"behavior_model": str(target), "behavior_model_summary": str(summary_target), "skipped": True},
             )
             return
-        model, summary = build_behavior_model(cfg)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        summary_target.parent.mkdir(parents=True, exist_ok=True)
-        write_json(target, model)
-        write_text(summary_target, summary)
+        model, summary, target, summary_target = refresh_behavior_model(cfg)
         mark_step_completed(
-            "08b_analyze_behavior_model",
+            "behavior_model_refresh",
             "global",
             {
                 "behavior_model": str(target),
@@ -1009,7 +1026,7 @@ def main() -> None:
         ok(f"Behavior model written: {target}")
         ok(f"Behavior summary written: {summary_target}")
     except Exception as exc:
-        mark_step_failed("08b_analyze_behavior_model", str(exc), "global", {"behavior_model": str(target)})
+        mark_step_failed("behavior_model_refresh", str(exc), "global", {"behavior_model": str(target)})
         raise
     finally:
         lease_manager.__exit__(None, None, None)

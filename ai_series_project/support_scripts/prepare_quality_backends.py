@@ -39,14 +39,6 @@ from support_scripts.pipeline_common import (
 
 DOWNLOAD_METADATA_FILE = ".quality_backend_asset.json"
 GITHUB_API_BASE = "https://api.github.com"
-DIFFUSERS_LTX_098_13B_REQUIRED_FILES = [
-    "model_index.json",
-    "scheduler/scheduler_config.json",
-    "text_encoder/model.safetensors.index.json",
-    "transformer/diffusion_pytorch_model.safetensors.index.json",
-    "vae/diffusion_pytorch_model.safetensors",
-    "tokenizer/tokenizer_config.json",
-]
 QWEN_IMAGE_REQUIRED_FILES = [
     "model_index.json",
     "scheduler/scheduler_config.json",
@@ -63,9 +55,6 @@ SDXL_REQUIRED_FILES = [
     "unet/diffusion_pytorch_model.safetensors",
     "vae/diffusion_pytorch_model.safetensors",
     "tokenizer/tokenizer_config.json",
-]
-LTX23_REQUIRED_FILES = [
-    "ltx-2.3-22b-distilled-1.1.safetensors",
 ]
 RETRYABLE_HF_DOWNLOAD_ERROR_MARKERS = (
     "RemoteProtocolError",
@@ -184,7 +173,7 @@ def run_git_command(
 
 def default_quality_backend_asset_targets(cfg: dict[str, Any]) -> list[dict[str, Any]]:
     foundation_cfg = cfg.get("foundation_training", {}) if isinstance(cfg.get("foundation_training"), dict) else {}
-    clone_cfg = cfg.get("cloning", {}) if isinstance(cfg.get("cloning"), dict) else {}
+    local_cfg = cfg.get("local_generation", {}) if isinstance(cfg.get("local_generation"), dict) else {}
     targets: list[dict[str, Any]] = [
         {
             "name": "comfyui",
@@ -207,7 +196,6 @@ def default_quality_backend_asset_targets(cfg: dict[str, Any]) -> list[dict[str,
         ("image_base_model", "image", ["model_index.json", "*.safetensors"], []),
         ("image_identity_fallback_model", "image", ["model_index.json", "*.safetensors"], []),
         ("video_base_model", "video", ["*.safetensors"], []),
-        ("video_diffusers_fallback_model", "video", [], DIFFUSERS_LTX_098_13B_REQUIRED_FILES),
         ("voice_base_model", "voice", [], []),
     ]
     for config_key, group_name, required_patterns, required_files in model_specs:
@@ -219,6 +207,7 @@ def default_quality_backend_asset_targets(cfg: dict[str, Any]) -> list[dict[str,
             "kind": "huggingface",
             "repo_id": model_id,
             "target_dir": f"tools/quality_models/{group_name}/{model_id.replace('/', '__')}",
+            "public_no_login": True,
         }
         if required_files:
             target["required_files"] = required_files
@@ -230,12 +219,9 @@ def default_quality_backend_asset_targets(cfg: dict[str, Any]) -> list[dict[str,
         elif model_id == "stabilityai/stable-diffusion-xl-base-1.0":
             target.pop("required_patterns", None)
             target["required_files"] = SDXL_REQUIRED_FILES
-        elif model_id == "Lightricks/LTX-2.3":
+        elif model_id == "Wan-AI/Wan2.1-T2V-1.3B":
             target.pop("required_patterns", None)
-            target["required_files"] = LTX23_REQUIRED_FILES
-        elif model_id == "Lightricks/LTX-Video-0.9.8-13B-distilled":
-            target.pop("required_patterns", None)
-            target["required_files"] = DIFFUSERS_LTX_098_13B_REQUIRED_FILES
+            target["required_files"] = ["model_index.json"]
         targets.append(target)
     identity_adapter_model = coalesce_text(foundation_cfg.get("identity_adapter_model", ""))
     if identity_adapter_model:
@@ -255,17 +241,36 @@ def default_quality_backend_asset_targets(cfg: dict[str, Any]) -> list[dict[str,
                 ],
             }
         )
-    xtts_model_name = coalesce_text(clone_cfg.get("xtts_model_name", ""))
-    if xtts_model_name:
+    scriptwriter_cfg = local_cfg.get("scriptwriter", {}) if isinstance(local_cfg.get("scriptwriter"), dict) else {}
+    scriptwriter_model = coalesce_text(scriptwriter_cfg.get("model_id", ""))
+    scriptwriter_dir = coalesce_text(scriptwriter_cfg.get("model_dir", ""))
+    if scriptwriter_model and scriptwriter_dir:
         targets.append(
             {
-                "name": "xtts_model_name_record",
-                "kind": "metadata",
-                "repo_id": xtts_model_name,
-                "target_dir": "tools/quality_models/voice/xtts_runtime",
-                "required_patterns": [],
+                "name": "local_scriptwriter_model",
+                "kind": "huggingface",
+                "repo_id": scriptwriter_model,
+                "target_dir": scriptwriter_dir,
+                "public_no_login": True,
+                "required_files": ["config.json", "tokenizer_config.json", "model.safetensors.index.json"],
             }
         )
+    profiles = local_cfg.get("profiles", {}) if isinstance(local_cfg.get("profiles"), dict) else {}
+    anime_profile = profiles.get("anime", {}) if isinstance(profiles.get("anime"), dict) else {}
+    for name, key, required_files in (("anime_image_model", "image", ["model_index.json"]),):
+        model_id = coalesce_text(anime_profile.get(f"{key}_model_id", ""))
+        target_dir = coalesce_text(anime_profile.get(f"{key}_model_dir", ""))
+        if model_id and target_dir:
+            targets.append(
+                {
+                    "name": name,
+                    "kind": "huggingface",
+                    "repo_id": model_id,
+                    "target_dir": target_dir,
+                    "public_no_login": True,
+                    "required_files": required_files,
+                }
+            )
     lipsync_model = coalesce_text(foundation_cfg.get("lipsync_model", ""))
     if lipsync_model:
         targets.append(
@@ -714,8 +719,11 @@ def ensure_metadata_target(target: dict[str, Any]) -> dict[str, Any]:
 
 def prepare_quality_backend_assets(cfg: dict[str, Any], *, force: bool, skip_downloads: bool) -> list[dict[str, Any]]:
     assets_cfg = cfg.get("quality_backend_assets", {}) if isinstance(cfg.get("quality_backend_assets"), dict) else {}
-    token_env = coalesce_text(assets_cfg.get("huggingface_token_env", "HF_TOKEN")) or "HF_TOKEN"
-    token = coalesce_text(__import__("os").environ.get(token_env, ""))
+    local_cfg = cfg.get("local_generation", {}) if isinstance(cfg.get("local_generation"), dict) else {}
+    require_public = bool(local_cfg.get("require_public_non_gated_models", False))
+    # Downloads may use the public Hub, but never an account token. Models are
+    # validated as non-gated before files are written into the project.
+    token = ""
     api = None
     results: list[dict[str, Any]] = []
 
@@ -723,6 +731,11 @@ def prepare_quality_backend_assets(cfg: dict[str, Any], *, force: bool, skip_dow
         target = dict(target)
         kind = coalesce_text(target.get("kind", ""))
         if kind == "huggingface":
+            if require_public and target.get("public_no_login") is not True:
+                raise RuntimeError(
+                    f"Model target '{coalesce_text(target.get('name', target.get('repo_id', '')))}' is not marked "
+                    "public_no_login. Local-models-only setup refuses authenticated or gated model targets."
+                )
             target.setdefault("download_retries", assets_cfg.get("huggingface_download_retries", 8))
             target.setdefault(
                 "download_retry_delay_seconds",

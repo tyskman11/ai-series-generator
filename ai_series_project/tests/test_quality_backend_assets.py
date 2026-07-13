@@ -9,10 +9,12 @@ if str(PROJECT_DIR) not in sys.path:
     sys.path.insert(0, str(PROJECT_DIR))
 
 import importlib.util
+import json
 import shutil
 import subprocess
 import tempfile
 import unittest
+import wave
 from unittest import mock
 from pathlib import Path
 
@@ -123,6 +125,62 @@ class QualityBackendAssetTests(unittest.TestCase):
 
             self.assertIsNone(specs[0]["audio_path"])
 
+    def test_project_local_voice_backend_rejects_insufficient_xtts_references(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            sample = root / "short.wav"
+            with wave.open(str(sample), "wb") as handle:
+                handle.setnchannels(1)
+                handle.setsampwidth(2)
+                handle.setframerate(24000)
+                handle.writeframes(b"\0\0" * 2400)
+            model_path = root / "hudson_voice_model.json"
+            model_path.write_text(
+                json.dumps(
+                    {
+                        "clone_ready": False,
+                        "quality_score": 0.29,
+                        "duration_seconds_total": 0.1,
+                        "reference_audio": str(sample),
+                        "sample_paths": [str(sample)],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            line = {
+                "line_index": 0,
+                "speaker_name": "Hudson Gimble",
+                "text": "Nee, was sind die Lippen?",
+                "voice_profile": {"voice_model_path": str(model_path), "reference_audio": str(sample)},
+                "reference_audio_candidates": [str(sample)],
+            }
+
+            with self.assertRaisesRegex(RuntimeError, "insufficient usable XTTS reference audio"):
+                VOICE_BACKEND.select_xtts_reference_audio_paths(
+                    line,
+                    {
+                        "min_voice_reference_seconds": 6.0,
+                        "min_voice_reference_count": 2,
+                    },
+                )
+
+    def test_project_local_voice_backend_rejects_legacy_xtts_engine(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with self.assertRaisesRegex(RuntimeError, "only the project-local VoxCPM2 model"):
+                VOICE_BACKEND.synthesize_missing_lines(
+                    Path(temp_dir),
+                    [
+                        {
+                            "runtime": {
+                                "engine": "xtts",
+                                "force_voice_cloning": True,
+                                "allow_system_tts_fallback": False,
+                            }
+                        }
+                    ],
+                    Path(temp_dir) / "voice.progress.json",
+                )
+
     def test_support_scripts_bootstrap_project_dir_for_direct_execution(self) -> None:
         configure_source = (PROJECT_DIR / "support_scripts/configure_quality_backends.py").read_text(encoding="utf-8")
         prepare_source = (PROJECT_DIR / "support_scripts/prepare_quality_backends.py").read_text(encoding="utf-8")
@@ -189,13 +247,22 @@ class QualityBackendAssetTests(unittest.TestCase):
             "foundation_training": {
                 "image_base_model": "Qwen/Qwen-Image",
                 "image_identity_fallback_model": "stabilityai/stable-diffusion-xl-base-1.0",
-                "video_base_model": "Lightricks/LTX-2.3",
-                "video_diffusers_fallback_model": "Lightricks/LTX-Video-0.9.8-13B-distilled",
+                "video_base_model": "Wan-AI/Wan2.1-T2V-1.3B",
+                "video_diffusers_fallback_model": "",
                 "voice_base_model": "openbmb/VoxCPM2",
                 "lipsync_model": "wav2lip",
             },
-            "cloning": {
-                "xtts_model_name": "tts_models/multilingual/multi-dataset/xtts_v2",
+            "local_generation": {
+                "scriptwriter": {
+                    "model_id": "Qwen/Qwen2.5-7B-Instruct",
+                    "model_dir": "tools/quality_models/text/Qwen__Qwen2.5-7B-Instruct",
+                },
+                "profiles": {
+                    "anime": {
+                        "image_model_id": "cagliostrolab/animagine-xl-4.0",
+                        "image_model_dir": "tools/quality_models/image/cagliostrolab__animagine-xl-4.0",
+                    }
+                },
             },
         }
         targets = STEP59.default_quality_backend_asset_targets(cfg)
@@ -208,11 +275,12 @@ class QualityBackendAssetTests(unittest.TestCase):
         self.assertEqual(image_identity["repo_id"], "stabilityai/stable-diffusion-xl-base-1.0")
         self.assertIn("unet/diffusion_pytorch_model.safetensors", image_identity["required_files"])
         video = next(target for target in targets if target["name"] == "video_base_model")
-        self.assertEqual(video["repo_id"], "Lightricks/LTX-2.3")
-        self.assertIn("ltx-2.3-22b-distilled-1.1.safetensors", video["required_files"])
-        video_fallback = next(target for target in targets if target["name"] == "video_diffusers_fallback_model")
-        self.assertEqual(video_fallback["repo_id"], "Lightricks/LTX-Video-0.9.8-13B-distilled")
-        self.assertIn("model_index.json", video_fallback["required_files"])
+        self.assertEqual(video["repo_id"], "Wan-AI/Wan2.1-T2V-1.3B")
+        self.assertIn("model_index.json", video["required_files"])
+        self.assertNotIn("video_diffusers_fallback_model", {target["name"] for target in targets})
+        self.assertIn("local_scriptwriter_model", {target["name"] for target in targets})
+        self.assertIn("anime_image_model", {target["name"] for target in targets})
+        self.assertTrue(all(target.get("public_no_login") is True for target in targets if target.get("kind") == "huggingface"))
 
     def test_fetch_remote_git_revision_uses_github_api_when_git_missing(self) -> None:
         target = {

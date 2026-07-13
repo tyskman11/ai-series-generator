@@ -336,10 +336,10 @@ class ManualNamingTests(unittest.TestCase):
                     "voice_models": str(voice_models),
                 },
                 "cloning": {
-                    "voice_clone_engine": "xtts",
-                    "xtts_model_name": "tts_models/multilingual/multi-dataset/xtts_v2",
-                    "xtts_language": "auto",
-                    "xtts_license_accepted": True,
+                    "voice_clone_engine": "voxcpm2",
+                    "voice_model_id": "openbmb/VoxCPM2",
+                    "voice_model_dir": "tools/quality_models/voice/openbmb__VoxCPM2",
+                    "voice_model_local_files_only": True,
                     "allow_system_tts_fallback": False,
                 },
             }
@@ -358,8 +358,8 @@ class ManualNamingTests(unittest.TestCase):
             with mock.patch.object(STEP10, "resolve_project_path", side_effect=lambda value: Path(value)):
                 payload = STEP10.build_voice_clone_line_package(cfg, root / "generation" / "final_episode_packages" / "episode_001", line)
 
-            self.assertEqual(payload["runtime"]["engine"], "xtts")
-            self.assertTrue(payload["runtime"]["xtts_license_accepted"])
+            self.assertEqual(payload["runtime"]["engine"], "voxcpm2")
+            self.assertTrue(payload["runtime"]["voice_model_local_files_only"])
             self.assertIn(str(reference_path), payload["reference_audio_candidates"])
             self.assertIn(str(sample_path), payload["reference_audio_candidates"])
 
@@ -405,7 +405,7 @@ class ManualNamingTests(unittest.TestCase):
 
         self.assertEqual(
             missing,
-            ["face_recognition/facenet-pytorch", "voice_cloning/TTS"],
+            ["face_recognition/facenet-pytorch", "voice_cloning/VoxCPM2"],
         )
 
     def test_ensure_project_structure_creates_working_config_from_template(self) -> None:
@@ -2819,6 +2819,59 @@ class ManualNamingTests(unittest.TestCase):
         self.assertAlmostEqual(total_scene_runtime, float(package["target_runtime_seconds"]), delta=1.0)
         self.assertGreater(total_scene_runtime, 20 * 60)
 
+    def test_screenwriter_model_guides_runtime_scene_and_line_targets(self) -> None:
+        screenwriter_model = {
+            "trained_from_input_series": True,
+            "runtime_profile": {
+                "episode_count": 3,
+                "target_seconds": 18 * 60,
+                "min_seconds": 17 * 60,
+                "max_seconds": 19 * 60,
+            },
+            "target_planning": {
+                "target_runtime_seconds": 18 * 60,
+                "target_script_scene_count": 18,
+                "target_dialogue_line_count": 216,
+                "target_dialogue_lines_per_scene": 12,
+                "runtime_lock_tolerance_ratio": 0.08,
+            },
+        }
+        model = {
+            "characters": [
+                {"name": "Babe", "scene_count": 20, "line_count": 12, "priority": True},
+                {"name": "Kenzie", "scene_count": 18, "line_count": 10, "priority": True},
+            ],
+            "speakers": {},
+            "keywords": ["spiel", "chaos", "plan", "show"],
+            "language_counts": {"de": 12},
+            "dataset_files": ["demo.json"],
+            "scene_count": 20,
+            "speaker_samples": {},
+            "source_episode_durations": {"ep1": 18 * 60, "ep2": 18.5 * 60, "bad_joined_import": 38 * 60},
+            "average_segment_duration_seconds": 2.4,
+            "screenwriter_model": screenwriter_model,
+        }
+        cfg = {
+            "generation": {
+                "seed": 42,
+                "match_source_episode_runtime": True,
+                "target_episode_minutes_fallback": 22.0,
+                "target_scene_duration_seconds": 60.0,
+                "prefer_original_dialogue_remix": False,
+            }
+        }
+
+        package, _markdown = STEP07.generate_episode_package(model, cfg, episode_index=9)
+
+        self.assertEqual(package["target_runtime_seconds"], 18 * 60)
+        self.assertEqual(package["target_scene_count"], 18)
+        self.assertEqual(package["target_dialogue_lines_per_scene"], 12)
+        self.assertTrue(package["screenwriter_model"]["trained_from_input_series"])
+        self.assertTrue(all(scene["runtime_lock"]["enabled"] for scene in package["scenes"]))
+        planned = sum(float(scene.get("estimated_runtime_seconds", 0.0) or 0.0) for scene in package["scenes"])
+        rendered_safe = sum(STEP10.safe_duration_seconds(scene) for scene in package["scenes"])
+        self.assertAlmostEqual(planned, rendered_safe, delta=0.1)
+
     def test_scene_generation_plan_locks_to_source_series_style(self) -> None:
         plan = STEP07.build_scene_generation_plan(
             "scene_0001",
@@ -3864,7 +3917,7 @@ class ManualNamingTests(unittest.TestCase):
         self.assertEqual([row["name"] for row in candidates], ["Babe Carano"])
         self.assertTrue(candidates[0]["priority"])
 
-    def test_foundation_training_download_targets_only_include_configured_models(self) -> None:
+    def test_foundation_training_download_targets_are_empty_after_central_setup(self) -> None:
         cfg = {
             "foundation_training": {
                 "image_base_model": "demo/image-model",
@@ -3879,10 +3932,9 @@ class ManualNamingTests(unittest.TestCase):
 
         targets = STEP13.build_download_targets(cfg)
 
-        self.assertEqual([row["kind"] for row in targets], ["image"])
-        self.assertIn("demo/image-model", targets[0]["model_id"])
+        self.assertEqual(targets, [])
 
-    def test_foundation_training_download_targets_include_voice_model_when_local_voice_models_disabled(self) -> None:
+    def test_foundation_training_never_creates_duplicate_voice_model_downloads(self) -> None:
         cfg = {
             "foundation_training": {
                 "image_base_model": "demo/image-model",
@@ -3897,7 +3949,7 @@ class ManualNamingTests(unittest.TestCase):
 
         targets = STEP13.build_download_targets(cfg)
 
-        self.assertEqual([row["kind"] for row in targets], ["image", "voice"])
+        self.assertEqual(targets, [])
 
     def test_foundation_download_action_downloads_missing_target(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -4437,7 +4489,6 @@ class ManualNamingTests(unittest.TestCase):
             state["global_steps_completed"] = [
                 "07_build_dataset.py",
                 "08_train_series_model.py",
-                "08b_analyze_behavior_model.py",
                 "14_generate_episode.py",
                 "17_render_episode.py",
             ]
@@ -4449,7 +4500,6 @@ class ManualNamingTests(unittest.TestCase):
             step_rows = [
                 ("07_build_dataset.py", "Dataset", []),
                 ("08_train_series_model.py", "Model", []),
-                ("08b_analyze_behavior_model.py", "Behavior", []),
                 ("14_generate_episode.py", "Generate", []),
                 ("17_render_episode.py", "Render", []),
             ]
@@ -6829,6 +6879,46 @@ class ManualNamingTests(unittest.TestCase):
                         {"storyboard_backend": {"allow_local_frame_fallback": False}},
                         assets_root / "scene_0001_backend_input.json",
                     )
+
+    def test_storyboard_backend_replaces_stale_local_fallback_frame(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            assets_root = Path(tmpdir)
+            scene_root = assets_root / "scene_0001"
+            scene_root.mkdir(parents=True, exist_ok=True)
+            frame_path = scene_root / "frame.png"
+            manifest_path = scene_root / "backend_frame_manifest.json"
+            Image.new("RGB", (64, 36), (12, 34, 56)).save(frame_path)
+            manifest_path.write_text(
+                json.dumps({"backend_mode": "materialized_local_backend_scene_pack"}),
+                encoding="utf-8",
+            )
+
+            def write_real_runner_frame(*_args, **_kwargs):
+                Image.new("RGB", (64, 36), (210, 180, 90)).save(frame_path)
+                return {"runner_name": "storyboard_scene_runner", "status": "completed"}
+
+            with mock.patch.object(
+                STEP16BACKEND,
+                "run_external_backend_runner",
+                side_effect=write_real_runner_frame,
+            ):
+                manifest = STEP16BACKEND.materialize_scene_backend_frame(
+                    assets_root,
+                    {"scene_id": "scene_0001"},
+                    64,
+                    36,
+                    12,
+                    23,
+                    None,
+                    False,
+                    {"storyboard_backend": {"allow_local_frame_fallback": False}},
+                    assets_root / "scene_0001_backend_input.json",
+                )
+
+            self.assertEqual(manifest["status"], "completed")
+            self.assertEqual(manifest["backend_mode"], "configured_external_storyboard_runner")
+            written_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            self.assertEqual(written_manifest["source_type"], "configured_external_runner")
 
     def test_storyboard_backend_rejects_cpu_worker_for_local_sdxl(self) -> None:
         cfg = {

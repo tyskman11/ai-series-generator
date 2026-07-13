@@ -42,6 +42,8 @@ from support_scripts.pipeline_common import (
     write_json,
     write_text,
 )
+from support_scripts.local_screenwriter import ensure_ready as ensure_local_screenwriter_ready
+from support_scripts.local_screenwriter import rewrite_scene_dialogue
 
 
 def load_step08():
@@ -140,6 +142,85 @@ def write_storyboard_backend_requests(cfg: dict, episode_id: str, shotlist_paylo
     }
 
 
+def rebuild_story_markdown(episode_package: dict) -> str:
+    """Keep the human-readable script aligned with locally rewritten dialogue."""
+    language = str(episode_package.get("language", "") or "").strip()
+    title = str(episode_package.get("display_title", episode_package.get("episode_id", "Episode")) or "Episode").strip()
+    lines = [f"# {title}", ""]
+    blueprint = episode_package.get("episode_blueprint", {})
+    if isinstance(blueprint, dict) and str(blueprint.get("logline", "") or "").strip():
+        lines.extend([str(blueprint["logline"]).strip(), ""])
+    dialogue_label = "Dialog" if language.lower().startswith("de") else "Dialogue"
+    for scene in episode_package.get("scenes", []):
+        if not isinstance(scene, dict):
+            continue
+        scene_id = str(scene.get("scene_id", "scene") or "scene").strip()
+        scene_title = str(scene.get("title", "") or "").strip()
+        summary = str(scene.get("summary", "") or "").strip()
+        lines.extend([f"### {scene_id} - {scene_title}", ""])
+        if summary:
+            lines.extend([summary, ""])
+        lines.extend([f"{dialogue_label}:", ""])
+        lines.extend(f"- {line}" for line in scene.get("dialogue_lines", []) if str(line).strip())
+        lines.append("")
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def apply_local_screenwriter(episode_package: dict, cfg: dict, model: dict) -> dict:
+    """Replace planner draft lines with original, local-model dialogue and refresh metadata."""
+    ensure_local_screenwriter_ready(cfg)
+    behavior_model = model.get("behavior_model", {}) if isinstance(model.get("behavior_model"), dict) else {}
+    language = str(episode_package.get("language", "") or "").strip()
+    rewritten_scenes = 0
+    for scene in episode_package.get("scenes", []):
+        if not isinstance(scene, dict):
+            continue
+        original_lines = scene.get("dialogue_lines", []) if isinstance(scene.get("dialogue_lines"), list) else []
+        rewritten = rewrite_scene_dialogue(
+            cfg,
+            scene=scene,
+            series_language=str(scene.get("language", "") or language),
+            target_lines=max(3, len(original_lines)),
+        )
+        dialogue = [f"{item['speaker']}: {item['text']}" for item in rewritten]
+        dialogue_sources = [
+            {
+                "source": "local_qwen_screenwriter",
+                "speaker": item["speaker"],
+                "text": item["text"],
+                "original_line_reused": False,
+            }
+            for item in rewritten
+        ]
+        writer_room_plan = scene.get("writer_room_plan", {}) if isinstance(scene.get("writer_room_plan"), dict) else {}
+        voice_metadata = STEP08.build_dialogue_voice_metadata(
+            dialogue,
+            dialogue_sources,
+            behavior_model,
+            model,
+            {
+                "beat": scene.get("beat", ""),
+                "conflict": scene.get("conflict", ""),
+                "emotional_arc": scene.get("emotional_arc", ""),
+                "writer_room_plan": writer_room_plan,
+            },
+        )
+        scene["dialogue_lines"] = dialogue
+        scene["dialogue_sources"] = dialogue_sources
+        scene["dialogue_voice_metadata"] = voice_metadata
+        scene["dialogue_line_metadata"] = STEP08.build_dialogue_line_metadata(dialogue, voice_metadata, writer_room_plan)
+        scene["dialogue_generation_backend"] = "local_qwen_screenwriter"
+        scene["estimated_runtime_seconds"] = round(
+            sum(float(row.get("target_duration_seconds", 0.0) or 0.0) + float(row.get("pause_after_seconds", 0.0) or 0.0) for row in voice_metadata),
+            2,
+        )
+        rewritten_scenes += 1
+    episode_package["dialogue_generation_backend"] = "local_qwen_screenwriter"
+    episode_package["local_models_only"] = True
+    episode_package["local_screenwriter_scenes"] = rewritten_scenes
+    return episode_package
+
+
 def main() -> None:
     rerun_in_runtime()
     args = parse_args()
@@ -200,7 +281,7 @@ def main() -> None:
             model["behavior_model"] = behavior_model
             info("Behavior model loaded for scene and dialogue constraints.")
         else:
-            info("No behavior model found yet. Run 08b_analyze_behavior_model.py for stronger character behavior.")
+            info("No behavior model found yet. Rerun 08_train_series_model.py to refresh it from reviewed data.")
         reporter.update(1, current_label="Validate Training Status", extra_label="Checking foundation, adapter, fine-tune and backend status")
         ensure_foundation_training_ready(cfg, model_path=model_path)
         ensure_adapter_training_ready(cfg)
@@ -216,8 +297,11 @@ def main() -> None:
         shotlist_dir.mkdir(parents=True, exist_ok=True)
 
         episode_id = (args.episode_id or "").strip() or STEP08.next_episode_id(story_dir)
-        reporter.update(2, current_label=episode_id, extra_label="Running now: generate episode package from trained model")
+        reporter.update(2, current_label=episode_id, extra_label="Running now: build episode plan from trained series model")
         episode_package, markdown = STEP08.generate_episode_package(model, cfg, STEP08.parse_episode_index(episode_id))
+        reporter.update(2, current_label=episode_id, extra_label="Running now: write original dialogue with the project-local screenwriter")
+        episode_package = apply_local_screenwriter(episode_package, cfg, model)
+        markdown = rebuild_story_markdown(episode_package)
         story_path = story_dir / f"{episode_id}.md"
         shotlist_path = shotlist_dir / f"{episode_id}.json"
         reporter.update(3, current_label=episode_id, extra_label="Running now: write story and shotlist")

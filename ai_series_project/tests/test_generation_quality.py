@@ -10,6 +10,7 @@ if str(PROJECT_DIR) not in sys.path:
 
 import importlib.util
 import os
+import random
 import tempfile
 import time
 import unittest
@@ -36,6 +37,21 @@ STEP15 = load_module("17_render_episode.py", "step15_generation_quality")
 
 
 class GenerationQualityTests(unittest.TestCase):
+    def test_episode_title_avoids_abstract_keyword_templates(self) -> None:
+        for keyword in ("chaos", "idee", "plan"):
+            title = STEP08.build_episode_title(
+                ["Babe Carano", "Kenzie Bell"],
+                [keyword],
+                random.Random(1),
+                6,
+                model={},
+                language="de",
+            )
+
+            self.assertNotRegex(title, r"^Die Sache mit (Chaos|Idee|Plan)$")
+            self.assertNotRegex(title, r"^Das Geheimnis um (Chaos|Idee|Plan)$")
+            self.assertTrue(title)
+
     def test_backend_progress_tracks_generated_shot_outputs(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -161,6 +177,36 @@ class GenerationQualityTests(unittest.TestCase):
         )
 
         self.assertEqual(duration, 54.0)
+
+    def test_safe_duration_seconds_respects_screenwriter_runtime_lock(self) -> None:
+        duration = STEP15.safe_duration_seconds(
+            {
+                "estimated_runtime_seconds": 42.0,
+                "runtime_lock": {
+                    "enabled": True,
+                    "source": "screenwriter_model",
+                    "allow_dialogue_expansion": False,
+                    "max_scene_runtime_seconds": 45.0,
+                },
+                "dialogue_lines": [
+                    "Babe: " + " ".join(["sehr"] * 90),
+                    "Kenzie: " + " ".join(["lang"] * 90),
+                ],
+            }
+        )
+
+        self.assertEqual(duration, 42.0)
+
+    def test_apply_runtime_locks_from_legacy_shotlist_target(self) -> None:
+        scenes = [
+            {"scene_id": "scene_0001", "estimated_runtime_seconds": 30.0, "dialogue_lines": ["A: " + " ".join(["x"] * 120)]},
+            {"scene_id": "scene_0002", "estimated_runtime_seconds": 30.0, "dialogue_lines": ["B: " + " ".join(["y"] * 120)]},
+        ]
+
+        STEP15.apply_runtime_locks_from_shotlist({"target_runtime_seconds": 60.0}, scenes)
+
+        self.assertTrue(all(scene["runtime_lock"]["enabled"] for scene in scenes))
+        self.assertEqual(sum(STEP15.safe_duration_seconds(scene) for scene in scenes), 60.0)
 
     def test_render_subtitle_preview_srt_keeps_lines_visible_longer(self) -> None:
         srt = STEP15.render_subtitle_preview_srt(
@@ -356,7 +402,7 @@ class GenerationQualityTests(unittest.TestCase):
                 "has_scene_dialogue_audio": True,
                 "has_scene_master_clip": True,
                 "has_visual_beat_reference_images": True,
-                "audio_backend": "xtts_voice_clone",
+                "audio_backend": "voxcpm2_voice_clone",
             },
             voice_required=True,
             lipsync_required=True,

@@ -17,7 +17,7 @@ from support_scripts import pipeline_common
 
 
 def load_module(filename: str, module_name: str):
-    target = SCRIPT_ROOT / filename
+    target = PROJECT_DIR / filename if filename.startswith("support_scripts/") else SCRIPT_ROOT / filename
     spec = importlib.util.spec_from_file_location(module_name, target)
     module = importlib.util.module_from_spec(spec)
     assert spec.loader is not None
@@ -25,7 +25,7 @@ def load_module(filename: str, module_name: str):
     return module
 
 
-STEP08B = load_module("08b_analyze_behavior_model.py", "step08b_behavior_pipeline_test")
+STEP08B = load_module("support_scripts/behavior_model.py", "behavior_model_support_test")
 STEP08 = load_module("08_train_series_model.py", "step08_behavior_pipeline_test")
 STEP14 = load_module("14_generate_episode.py", "step14_behavior_pipeline_test")
 STEP17 = load_module("17_render_episode.py", "step17_behavior_pipeline_test")
@@ -99,6 +99,44 @@ def minimal_behavior_model() -> dict:
 
 
 class BehaviorModelPipelineTests(unittest.TestCase):
+    def test_generate_episode_rewrites_dialogue_with_local_screenwriter_metadata(self) -> None:
+        package = {
+            "language": "de",
+            "scenes": [
+                {
+                    "scene_id": "scene_0001",
+                    "language": "de",
+                    "beat": "escalation",
+                    "characters": ["Babe", "Kenzie"],
+                    "dialogue_lines": ["Babe: Alt.", "Kenzie: Alt."],
+                    "writer_room_plan": {"scene_function": "escalation", "callback_targets": ["App"]},
+                    "conflict": "Ein Shortcut geht schief.",
+                    "emotional_arc": "Druck steigt.",
+                }
+            ],
+        }
+        model = {"behavior_model": minimal_behavior_model(), "average_segment_duration_seconds": 2.7}
+        rewritten = [
+            {"speaker": "Babe", "text": "Das war kein Fehler, das war ein sehr schneller Test."},
+            {"speaker": "Kenzie", "text": "Ein Test hat normalerweise ein Ende, Babe."},
+            {"speaker": "Babe", "text": "Gut. Dann ist das hier das Ende."},
+        ]
+
+        with mock.patch.object(STEP14, "ensure_local_screenwriter_ready") as ready_mock, mock.patch.object(
+            STEP14,
+            "rewrite_scene_dialogue",
+            return_value=rewritten,
+        ):
+            result = STEP14.apply_local_screenwriter(package, {}, model)
+
+        ready_mock.assert_called_once_with({})
+        scene = result["scenes"][0]
+        self.assertEqual(scene["dialogue_generation_backend"], "local_qwen_screenwriter")
+        self.assertEqual(len(scene["dialogue_lines"]), 3)
+        self.assertTrue(all(row["source"] == "local_qwen_screenwriter" for row in scene["dialogue_sources"]))
+        self.assertTrue(all("delivery_notes" in row and "pause_after_seconds" in row for row in scene["dialogue_voice_metadata"]))
+        self.assertTrue(all("camera_focus" in row for row in scene["dialogue_line_metadata"]))
+
     def test_behavior_model_is_created_from_minimal_rows(self) -> None:
         rows = [
             {

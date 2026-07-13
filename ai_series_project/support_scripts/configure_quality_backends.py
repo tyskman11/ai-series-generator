@@ -43,21 +43,21 @@ IMAGE_IDENTITY_FALLBACK_REQUIRED_FILES = [
     "vae/diffusion_pytorch_model.safetensors",
     "tokenizer/tokenizer_config.json",
 ]
-VIDEO_LATEST_MODEL_ID = "Lightricks/LTX-2.3"
-VIDEO_LATEST_MODEL_DIR = "tools/quality_models/video/Lightricks__LTX-2.3"
-VIDEO_LATEST_REQUIRED_FILES = [
-    "ltx-2.3-22b-distilled-1.1.safetensors",
-]
-VIDEO_DIFFUSERS_MODEL_ID = "Lightricks/LTX-Video-0.9.8-13B-distilled"
-VIDEO_DIFFUSERS_MODEL_DIR = "tools/quality_models/video/Lightricks__LTX-Video-0.9.8-13B-distilled"
-VIDEO_DIFFUSERS_REQUIRED_FILES = [
+ANIME_IMAGE_MODEL_ID = "cagliostrolab/animagine-xl-4.0"
+ANIME_IMAGE_MODEL_DIR = "tools/quality_models/image/cagliostrolab__animagine-xl-4.0"
+ANIME_IMAGE_MODEL_REQUIRED_FILES = [
     "model_index.json",
-    "scheduler/scheduler_config.json",
-    "text_encoder/model.safetensors.index.json",
-    "transformer/diffusion_pytorch_model.safetensors.index.json",
+    "unet/diffusion_pytorch_model.safetensors",
     "vae/diffusion_pytorch_model.safetensors",
-    "tokenizer/tokenizer_config.json",
 ]
+VIDEO_LATEST_MODEL_ID = "Wan-AI/Wan2.1-T2V-1.3B"
+VIDEO_LATEST_MODEL_DIR = "tools/quality_models/video/Wan-AI__Wan2.1-T2V-1.3B"
+VIDEO_LATEST_REQUIRED_FILES = ["model_index.json"]
+SCRIPTWRITER_MODEL_ID = "Qwen/Qwen2.5-7B-Instruct"
+SCRIPTWRITER_MODEL_DIR = "tools/quality_models/text/Qwen__Qwen2.5-7B-Instruct"
+SCRIPTWRITER_MODEL_REQUIRED_FILES = ["config.json", "tokenizer_config.json", "model.safetensors.index.json"]
+VOICE_MODEL_ID = "openbmb/VoxCPM2"
+VOICE_MODEL_DIR = "tools/quality_models/voice/openbmb__VoxCPM2"
 
 
 def parse_args() -> argparse.Namespace:
@@ -71,8 +71,8 @@ def parse_args() -> argparse.Namespace:
 def configured_backends() -> dict:
     storyboard_backend_command = '"{python}" "tools/quality_backends/local_diffusion_image_backend.py"'
     image_backend_command = '"{python}" "tools/quality_backends/local_diffusion_image_backend.py"'
-    video_backend_command = '"{python}" "tools/quality_backends/local_ltx_video_backend.py"'
-    voice_backend_command = '"{python}" "tools/quality_backends/local_xtts_voice_backend.py"'
+    video_backend_command = '"{python}" "tools/quality_backends/local_wan_video_backend.py"'
+    voice_backend_command = '"{python}" "tools/quality_backends/local_voxcpm_voice_backend.py"'
     lipsync_backend_command = '"{python}" "tools/quality_backends/local_wav2lip_backend.py"'
     return {
         "storyboard_scene_runner": {
@@ -101,6 +101,11 @@ def configured_backends() -> dict:
                 "SERIES_IMAGE_IDENTITY_MODEL_ID": IMAGE_IDENTITY_FALLBACK_MODEL_ID,
                 "SERIES_IMAGE_IDENTITY_MODEL_DIR": IMAGE_IDENTITY_FALLBACK_MODEL_DIR,
                 "SERIES_IMAGE_ALLOW_CPU": "1",
+                "SERIES_IMAGE_CPU_MODEL_ID": IMAGE_IDENTITY_FALLBACK_MODEL_ID,
+                "SERIES_IMAGE_CPU_MODEL_DIR": IMAGE_IDENTITY_FALLBACK_MODEL_DIR,
+                "SERIES_IMAGE_CPU_MAX_WIDTH": "896",
+                "SERIES_IMAGE_CPU_MAX_HEIGHT": "512",
+                "SERIES_IMAGE_CPU_MAX_STEPS": "24",
                 "SERIES_IMAGE_WIDTH": "1216",
                 "SERIES_IMAGE_HEIGHT": "704",
                 "SERIES_IMAGE_INFERENCE_STEPS": "50",
@@ -108,6 +113,7 @@ def configured_backends() -> dict:
                 "SERIES_IMAGE_QUALITY_PRESET": "qwen_image_source_series",
                 "SERIES_IMAGE_REQUIRE_IDENTITY_REFERENCES": "1",
                 "SERIES_IMAGE_REQUIRE_IDENTITY_ADAPTER": "1",
+                "SERIES_IMAGE_ALLOW_UNVERIFIED_MULTI_IDENTITY": "0",
                 "PYTHONUNBUFFERED": "1",
             },
             "requires_gpu": False,
@@ -144,6 +150,11 @@ def configured_backends() -> dict:
                 "SERIES_IMAGE_IDENTITY_MODEL_ID": IMAGE_IDENTITY_FALLBACK_MODEL_ID,
                 "SERIES_IMAGE_IDENTITY_MODEL_DIR": IMAGE_IDENTITY_FALLBACK_MODEL_DIR,
                 "SERIES_IMAGE_ALLOW_CPU": "1",
+                "SERIES_IMAGE_CPU_MODEL_ID": IMAGE_IDENTITY_FALLBACK_MODEL_ID,
+                "SERIES_IMAGE_CPU_MODEL_DIR": IMAGE_IDENTITY_FALLBACK_MODEL_DIR,
+                "SERIES_IMAGE_CPU_MAX_WIDTH": "896",
+                "SERIES_IMAGE_CPU_MAX_HEIGHT": "512",
+                "SERIES_IMAGE_CPU_MAX_STEPS": "24",
                 "SERIES_IMAGE_WIDTH": "1216",
                 "SERIES_IMAGE_HEIGHT": "704",
                 "SERIES_IMAGE_INFERENCE_STEPS": "50",
@@ -151,6 +162,7 @@ def configured_backends() -> dict:
                 "SERIES_IMAGE_QUALITY_PRESET": "qwen_image_source_series",
                 "SERIES_IMAGE_REQUIRE_IDENTITY_REFERENCES": "1",
                 "SERIES_IMAGE_REQUIRE_IDENTITY_ADAPTER": "1",
+                "SERIES_IMAGE_ALLOW_UNVERIFIED_MULTI_IDENTITY": "0",
                 "SERIES_IMAGE_RESUME_SHOTS": "1",
             },
             "requires_gpu": False,
@@ -186,9 +198,10 @@ def configured_backends() -> dict:
                 "SERIES_VIDEO_BACKEND_COMMAND": video_backend_command,
                 "SERIES_VIDEO_LATEST_MODEL_ID": VIDEO_LATEST_MODEL_ID,
                 "SERIES_VIDEO_LATEST_MODEL_DIR": VIDEO_LATEST_MODEL_DIR,
-                "SERIES_VIDEO_MODEL_ID": VIDEO_DIFFUSERS_MODEL_ID,
-                "SERIES_VIDEO_MODEL_DIR": VIDEO_DIFFUSERS_MODEL_DIR,
-                "SERIES_VIDEO_COMPATIBILITY_MODE": "ltx_diffusers_fallback_until_ltx2_runner",
+                "SERIES_VIDEO_MODEL_ID": VIDEO_LATEST_MODEL_ID,
+                "SERIES_VIDEO_MODEL_DIR": VIDEO_LATEST_MODEL_DIR,
+                "SERIES_VIDEO_MODEL_FAMILY": "wan",
+                "SERIES_VIDEO_COMPATIBILITY_MODE": "local_wan_diffusers",
                 "SERIES_VIDEO_WIDTH": "1216",
                 "SERIES_VIDEO_HEIGHT": "704",
                 "SERIES_VIDEO_FPS": "30",
@@ -217,9 +230,17 @@ def configured_backends() -> dict:
                 "{scene_dialogue_audio}",
             ],
             "working_directory": ".",
-            "environment": {"SERIES_VOICE_BACKEND_COMMAND": voice_backend_command},
+            "environment": {
+                "SERIES_VOICE_BACKEND_COMMAND": voice_backend_command,
+                "SERIES_VOICE_BACKEND_TIMEOUT_SECONDS": "0",
+                "SERIES_VOICE_MODEL_ID": VOICE_MODEL_ID,
+                "SERIES_VOICE_MODEL_DIR": VOICE_MODEL_DIR,
+                "SERIES_VOICE_LOCAL_FILES_ONLY": "1",
+                "SERIES_VOICE_MIN_REFERENCE_SECONDS": "6.0",
+                "SERIES_VOICE_MIN_REFERENCE_COUNT": "2",
+            },
             "required_commands": [],
-            "required_python_modules": ["TTS"],
+            "required_python_modules": ["voxcpm", "soundfile"],
             "required_environment_variables": ["SERIES_VOICE_BACKEND_COMMAND"],
             "shell": False,
             "timeout_seconds": 0,
@@ -282,7 +303,7 @@ def ensure_quality_asset_targets(config: dict) -> None:
         foundation_cfg["image_base_model"] = IMAGE_MODEL_ID
         foundation_cfg["image_identity_fallback_model"] = IMAGE_IDENTITY_FALLBACK_MODEL_ID
         foundation_cfg["video_base_model"] = VIDEO_LATEST_MODEL_ID
-        foundation_cfg["video_diffusers_fallback_model"] = VIDEO_DIFFUSERS_MODEL_ID
+        foundation_cfg["video_diffusers_fallback_model"] = ""
     assets_cfg = config.setdefault("quality_backend_assets", {})
     if not isinstance(assets_cfg, dict):
         assets_cfg = {}
@@ -291,6 +312,17 @@ def ensure_quality_asset_targets(config: dict) -> None:
     if not isinstance(targets, list):
         targets = []
         assets_cfg["targets"] = targets
+    obsolete_target_names = {
+        "video_diffusers_fallback_model",
+        "video_latest_model",
+        "anime_video_model",
+        "xtts_model_name_record",
+    }
+    targets[:] = [
+        item
+        for item in targets
+        if not isinstance(item, dict) or str(item.get("name", "") or "").strip() not in obsolete_target_names
+    ]
     existing_names = {str(item.get("name", "")).strip() for item in targets if isinstance(item, dict)}
     model_targets = [
         {
@@ -298,6 +330,7 @@ def ensure_quality_asset_targets(config: dict) -> None:
             "kind": "huggingface",
             "repo_id": IMAGE_MODEL_ID,
             "target_dir": IMAGE_MODEL_DIR,
+            "public_no_login": True,
             "required_files": IMAGE_MODEL_REQUIRED_FILES,
         },
         {
@@ -305,6 +338,7 @@ def ensure_quality_asset_targets(config: dict) -> None:
             "kind": "huggingface",
             "repo_id": IMAGE_IDENTITY_FALLBACK_MODEL_ID,
             "target_dir": IMAGE_IDENTITY_FALLBACK_MODEL_DIR,
+            "public_no_login": True,
             "required_files": IMAGE_IDENTITY_FALLBACK_REQUIRED_FILES,
         },
         {
@@ -312,14 +346,26 @@ def ensure_quality_asset_targets(config: dict) -> None:
             "kind": "huggingface",
             "repo_id": VIDEO_LATEST_MODEL_ID,
             "target_dir": VIDEO_LATEST_MODEL_DIR,
+            "public_no_login": True,
             "required_files": VIDEO_LATEST_REQUIRED_FILES,
         },
         {
-            "name": "video_diffusers_fallback_model",
+            "name": "anime_image_model",
             "kind": "huggingface",
-            "repo_id": VIDEO_DIFFUSERS_MODEL_ID,
-            "target_dir": VIDEO_DIFFUSERS_MODEL_DIR,
-            "required_files": VIDEO_DIFFUSERS_REQUIRED_FILES,
+            "repo_id": ANIME_IMAGE_MODEL_ID,
+            "target_dir": ANIME_IMAGE_MODEL_DIR,
+            "public_no_login": True,
+            "license_spdx": "openrail++",
+            "required_files": ANIME_IMAGE_MODEL_REQUIRED_FILES,
+        },
+        {
+            "name": "local_scriptwriter_model",
+            "kind": "huggingface",
+            "repo_id": SCRIPTWRITER_MODEL_ID,
+            "target_dir": SCRIPTWRITER_MODEL_DIR,
+            "public_no_login": True,
+            "license_spdx": "Apache-2.0",
+            "required_files": SCRIPTWRITER_MODEL_REQUIRED_FILES,
         },
     ]
     for model_target in model_targets:
@@ -344,12 +390,83 @@ def ensure_quality_asset_targets(config: dict) -> None:
         )
 
 
+def ensure_local_generation_config(config: dict) -> None:
+    generation_cfg = config.setdefault("generation", {})
+    if not isinstance(generation_cfg, dict):
+        generation_cfg = {}
+        config["generation"] = generation_cfg
+    generation_cfg["model_profile"] = str(generation_cfg.get("model_profile", "") or "live_action").strip() or "live_action"
+    local_cfg = config.setdefault("local_generation", {})
+    if not isinstance(local_cfg, dict):
+        local_cfg = {}
+        config["local_generation"] = local_cfg
+    local_cfg.update(
+        {
+            "enabled": True,
+            "local_models_only": True,
+            "allow_runtime_model_downloads": False,
+            "require_public_non_gated_models": True,
+            "active_profile": str(local_cfg.get("active_profile", "") or "live_action").strip() or "live_action",
+        }
+    )
+    local_cfg["scriptwriter"] = {
+        "enabled": True,
+        "engine": "transformers",
+        "model_id": SCRIPTWRITER_MODEL_ID,
+        "model_dir": SCRIPTWRITER_MODEL_DIR,
+        "local_files_only": True,
+        "max_new_tokens": 768,
+        "temperature": 0.75,
+    }
+    local_cfg["profiles"] = {
+        "live_action": {
+            "label": "Live action",
+            "image_model_id": IMAGE_MODEL_ID,
+            "image_model_dir": IMAGE_MODEL_DIR,
+            "identity_model_id": IMAGE_IDENTITY_FALLBACK_MODEL_ID,
+            "identity_model_dir": IMAGE_IDENTITY_FALLBACK_MODEL_DIR,
+            "video_model_id": VIDEO_LATEST_MODEL_ID,
+            "video_model_dir": VIDEO_LATEST_MODEL_DIR,
+            "video_model_family": "wan",
+            "style_prompt": "live-action episodic television, natural production lighting",
+            "negative_prompt": "anime, illustration, cartoon, cel shading",
+        },
+        "anime": {
+            "label": "Anime",
+            "image_model_id": ANIME_IMAGE_MODEL_ID,
+            "image_model_dir": ANIME_IMAGE_MODEL_DIR,
+            "identity_model_id": ANIME_IMAGE_MODEL_ID,
+            "identity_model_dir": ANIME_IMAGE_MODEL_DIR,
+            # Wan is shared with the live-action profile; the style changes in
+            # the image/keyframe profile and prompts, so it downloads only once.
+            "video_model_id": VIDEO_LATEST_MODEL_ID,
+            "video_model_dir": VIDEO_LATEST_MODEL_DIR,
+            "video_model_family": "wan",
+            "style_prompt": "high-quality serialized anime, clean line art, consistent cel shading, expressive animation",
+            "negative_prompt": "photorealistic live action, live-action skin texture, realistic camera footage",
+        },
+    }
+    cloning_cfg = config.setdefault("cloning", {})
+    if not isinstance(cloning_cfg, dict):
+        cloning_cfg = {}
+        config["cloning"] = cloning_cfg
+    cloning_cfg.update(
+        {
+            "voice_clone_engine": "voxcpm2",
+            "voice_model_id": VOICE_MODEL_ID,
+            "voice_model_dir": VOICE_MODEL_DIR,
+            "voice_model_local_files_only": True,
+            "voxcpm_inference_timesteps": int(cloning_cfg.get("voxcpm_inference_timesteps", 10) or 10),
+            "voxcpm_cfg_value": float(cloning_cfg.get("voxcpm_cfg_value", 2.0) or 2.0),
+        }
+    )
 def main() -> None:
     args = parse_args()
     headline("Configure Quality Backends")
     cfg = load_config()
     updated = deepcopy(cfg)
     updated["external_backends"] = configured_backends()
+    ensure_local_generation_config(updated)
     ensure_quality_asset_targets(updated)
     report = quality_first_requirements_report(updated)
 

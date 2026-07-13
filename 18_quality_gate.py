@@ -359,7 +359,7 @@ def artifact_sha256(path_value: object) -> str:
     return digest.hexdigest()
 
 
-def scene_identity_status(scene: dict[str, Any]) -> dict[str, Any]:
+def scene_identity_status(scene: dict[str, Any], min_reference_images_per_character: int = 1) -> dict[str, Any]:
     characters = [
         str(value or "").strip()
         for value in scene.get("characters", [])
@@ -367,11 +367,30 @@ def scene_identity_status(scene: dict[str, Any]) -> dict[str, Any]:
     ] if isinstance(scene.get("characters", []), list) else []
     locks = scene.get("character_continuity_lock", {}) if isinstance(scene.get("character_continuity_lock", {}), dict) else {}
     missing_characters: list[str] = []
+    insufficient_reference_characters: list[str] = []
+    reference_counts: dict[str, int] = {}
+    required_reference_count = max(1, int(min_reference_images_per_character or 1))
     for character in characters:
         lock = locks.get(character, {}) if isinstance(locks.get(character, {}), dict) else {}
         references = lock.get("reference_images", []) if isinstance(lock.get("reference_images", []), list) else []
-        if not any(artifact_path_exists(path) for path in references):
+        safe_references = [
+            str(path or "").strip()
+            for path in references
+            if artifact_path_exists(path)
+            and (
+                required_reference_count <= 1
+                or (
+                "_crop" in Path(str(path)).stem.lower()
+                or "portrait" in Path(str(path)).stem.lower()
+                or Path(str(path)).stem.lower().startswith("face_")
+                )
+            )
+        ]
+        reference_counts[character] = len(dict.fromkeys(safe_references))
+        if not safe_references:
             missing_characters.append(character)
+        elif reference_counts[character] < required_reference_count:
+            insufficient_reference_characters.append(character)
 
     expected_conditioned_shots = 0
     conditioned_shots = 0
@@ -434,7 +453,10 @@ def scene_identity_status(scene: dict[str, Any]) -> dict[str, Any]:
     return {
         "characters": characters,
         "missing_characters": missing_characters,
-        "reference_ready": not missing_characters,
+        "insufficient_reference_characters": insufficient_reference_characters,
+        "reference_counts": reference_counts,
+        "required_reference_count": required_reference_count,
+        "reference_ready": not missing_characters and not insufficient_reference_characters,
         "expected_conditioned_shots": expected_conditioned_shots,
         "conditioned_shots": conditioned_shots,
         "unsafe_identity_reference_images": unsafe_identity_reference_images,
@@ -928,7 +950,14 @@ def scene_realism_row(
         hints["repair_backend_manifests"] = True
     if not bool(identity_status.get("reference_ready", False)):
         missing_names = ", ".join(identity_status.get("missing_characters", []) or [])
-        failed_reasons.append(f"canonical face references missing{f' for {missing_names}' if missing_names else ''}")
+        insufficient_names = ", ".join(identity_status.get("insufficient_reference_characters", []) or [])
+        if insufficient_names:
+            failed_reasons.append(
+                "too few reviewed canonical face portraits "
+                f"({identity_status.get('required_reference_count', 1)} required) for {insufficient_names}"
+            )
+        else:
+            failed_reasons.append(f"canonical face references missing{f' for {missing_names}' if missing_names else ''}")
         hints["collect_character_face_references"] = True
     if not bool(identity_status.get("identity_references_safe", True)):
         failed_reasons.append("identity references include montage/contact-sheet images")
@@ -998,6 +1027,7 @@ def scene_content_quality_checks(package_payload: dict[str, Any], cfg: dict[str,
     warnings: list[str] = []
     rows: list[dict[str, Any]] = []
     finished_cfg = finished_episode_mode_config(cfg)
+    minimum_identity_references = max(1, int(finished_cfg.get("min_identity_references_per_character", 1) or 1))
     counters = {
         "missing_behavior_scene_count": 0,
         "missing_conflict_or_purpose_scene_count": 0,
@@ -1063,7 +1093,7 @@ def scene_content_quality_checks(package_payload: dict[str, Any], cfg: dict[str,
         current_outputs = scene.get("current_generated_outputs", {}) if isinstance(scene.get("current_generated_outputs", {}), dict) else {}
         has_real_motion_video = real_video_source_type(current_outputs.get("video_source_type", ""))
         backend_integrity = scene_backend_integrity(scene)
-        identity_status = scene_identity_status(scene)
+        identity_status = scene_identity_status(scene, minimum_identity_references)
         if not has_behavior:
             counters["missing_behavior_scene_count"] += 1
         if not has_conflict_or_purpose:

@@ -59,8 +59,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--accept-xtts-license",
         action="store_true",
         help=(
-            "Record explicit acceptance of the XTTS/Coqui model license in the local project config. "
-            "Use only after reviewing and accepting the applicable model license."
+            "Legacy no-op retained for old shortcuts. XTTS is no longer used; local VoxCPM2 requires no login."
         ),
     )
     add_shared_worker_arguments(parser)
@@ -280,7 +279,7 @@ def missing_optional_runtime_components(status: dict[str, bool]) -> list[str]:
     labels = {
         "facenet_pytorch": "face_recognition/facenet-pytorch",
         "speaker_embeddings": "speaker_embeddings/speechbrain",
-        "voice_cloning": "voice_cloning/TTS",
+        "voice_cloning": "voice_cloning/VoxCPM2",
         "quality_generation": "quality_generation/diffusers",
     }
     for key, label in labels.items():
@@ -454,13 +453,7 @@ def main() -> None:
     headline("Prepare Runtime")
     cfg = ensure_project_structure(write_config_file=True)
     if args.accept_xtts_license:
-        cloning_cfg = cfg.setdefault("cloning", {})
-        if not isinstance(cloning_cfg, dict):
-            cloning_cfg = {}
-            cfg["cloning"] = cloning_cfg
-        cloning_cfg["xtts_license_accepted"] = True
-        write_json(CONFIG_PATH, cfg)
-        ok("XTTS license acceptance recorded in the local project configuration.")
+        warn("--accept-xtts-license is obsolete and ignored. The local voice workflow uses VoxCPM2.")
     worker_id = shared_worker_id_for_args(args)
     shared_workers = shared_workers_enabled_for_args(cfg, args)
     mark_step_started("00_prepare_runtime", "global")
@@ -487,9 +480,7 @@ def main() -> None:
         ffmpeg_info = install_ffmpeg_binaries(py)
         clone_cfg = cfg.get("cloning", {}) if isinstance(cfg.get("cloning"), dict) else {}
         requested_voice_engine = str(clone_cfg.get("voice_clone_engine", "pyttsx3") or "pyttsx3").strip().lower()
-        optional_tts_requested = requested_voice_engine in {"auto", "xtts"} or str(
-            os.environ.get("SERIES_ENABLE_OPTIONAL_TTS", "")
-        ).strip().lower() in {"1", "true", "yes", "y"}
+        optional_tts_requested = requested_voice_engine in {"auto", "voxcpm", "voxcpm2"}
 
         core_ok = install_group(
             py,
@@ -533,12 +524,12 @@ def main() -> None:
             voice_clone_ok = install_group(
                 py,
                 "voice_cloning",
-                ["pkg_resources", "TTS.api"],
-                ["setuptools<81", "TTS"],
+                ["voxcpm", "soundfile"],
+                ["voxcpm", "soundfile"],
                 required=False,
             )
         else:
-            info("Optional XTTS/Coqui packages are not installed automatically in the license-free default path.")
+            info("Voice cloning is disabled because cloning.voice_clone_engine is not the local VoxCPM2 engine.")
 
         write_json(
             HOST_RUNTIME_ROOT / "package_status.json",

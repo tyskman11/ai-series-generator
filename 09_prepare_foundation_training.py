@@ -80,27 +80,11 @@ def slugify(value: str) -> str:
 
 
 def build_download_targets(cfg: dict) -> list[dict]:
-    foundation_cfg = cfg.get("foundation_training", {}) if isinstance(cfg.get("foundation_training"), dict) else {}
-    use_local_voice_models = bool(foundation_cfg.get("use_local_character_voice_models", True))
-    targets: list[dict] = []
-    for kind, key in (
-        ("image", "image_base_model"),
-        ("video", "video_base_model"),
-        ("voice", "voice_base_model"),
-    ):
-        if kind == "voice" and use_local_voice_models:
-            continue
-        model_id = coalesce_text(foundation_cfg.get(key, ""))
-        if not model_id:
-            continue
-        targets.append(
-            {
-                "kind": kind,
-                "model_id": model_id,
-                "target_dir": str(resolve_project_path(cfg["paths"]["foundation_downloads"]) / kind / slugify(model_id)),
-            }
-        )
-    return targets
+    # Step 00 owns every runtime/model download in tools/quality_models.  Keeping
+    # a second cache under foundation_downloads wastes tens of GB and can make a
+    # later training step silently use an older checkpoint.
+    del cfg
+    return []
 
 
 def download_metadata_path(target: dict) -> Path:
@@ -720,12 +704,15 @@ def download_models(cfg: dict, targets: list[dict]) -> list[dict]:
     ensure_runtime_package("huggingface_hub", "huggingface_hub")
     from huggingface_hub import HfApi, snapshot_download
 
-    foundation_cfg = cfg.get("foundation_training", {}) if isinstance(cfg.get("foundation_training"), dict) else {}
-    token_env = coalesce_text(foundation_cfg.get("huggingface_token_env", "HF_TOKEN")) or "HF_TOKEN"
-    token = coalesce_text(os.environ.get(token_env, ""))
+    token = ""
     api = HfApi()
     results: list[dict] = []
     for target in targets:
+        if target.get("public_no_login") is not True:
+            raise RuntimeError(
+                f"Foundation download target '{coalesce_text(target.get('model_id', ''))}' is not explicitly public_no_login. "
+                "Run 00_prepare_runtime.py to prepare approved project-local models instead."
+            )
         target_dir = Path(target["target_dir"])
         target_dir.parent.mkdir(parents=True, exist_ok=True)
         state = local_download_state(target)

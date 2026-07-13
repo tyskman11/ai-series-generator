@@ -118,13 +118,30 @@ def run_delegated_backend(
     )
     if not command_parts:
         raise RuntimeError(f"Backend command in {env_var_name} is empty after parsing.")
-    completed = subprocess.run(
-        command_parts,
-        shell=False,
-        cwd=working_directory,
-        env=env,
-        check=False,
-    )
+    timeout_key = env_var_name.replace("_COMMAND", "_TIMEOUT_SECONDS")
+    timeout_text = str(os.environ.get(timeout_key, "") or os.environ.get("SERIES_BACKEND_TIMEOUT_SECONDS", "") or "").strip()
+    # Model inference is intentionally unbounded; long local generations must
+    # finish or report their own error rather than being killed by a wrapper.
+    timeout_seconds = 0
+    if timeout_text:
+        try:
+            timeout_seconds = max(0, int(float(timeout_text)))
+        except ValueError:
+            timeout_seconds = 0
+    try:
+        completed = subprocess.run(
+            command_parts,
+            shell=False,
+            cwd=working_directory,
+            env=env,
+            check=False,
+            timeout=timeout_seconds or None,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(
+            f"Delegated backend command from {env_var_name} exceeded "
+            f"{timeout_seconds} seconds. Last command: {' '.join(command_parts)}"
+        ) from exc
     return int(completed.returncode)
 
 

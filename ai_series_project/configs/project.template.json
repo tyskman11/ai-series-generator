@@ -106,9 +106,9 @@
     "speaker_unknown_episode_min_token_margin": 0.8
   },
   "diarization": {
-    "model_name": "pyannote/speaker-diarization-community-1",
-    "hf_token_env": "HF_TOKEN",
-    "enabled": false
+    "model_name": "",
+    "enabled": false,
+    "allow_authenticated_download": false
   },
   "character_detection": {
     "sample_every_n_frames": 6,
@@ -195,6 +195,8 @@
     "max_dialogue_lines_per_scene": 7,
     "seed": 42,
     "match_source_episode_runtime": true,
+    "source_runtime_tolerance_ratio": 0.08,
+    "runtime_lock_tolerance_ratio": 0.08,
     "target_episode_minutes_fallback": 22.0,
     "target_scene_duration_seconds": 42.0,
     "estimated_dialogue_line_seconds": 2.7,
@@ -213,7 +215,50 @@
       "export_disclosure_policy": "synthetic_media_disclosure_required"
     },
     "quality_mode": "original_episode_quality_first",
-    "allow_fallbacks": false
+    "allow_fallbacks": false,
+    "model_profile": "live_action"
+  },
+  "local_generation": {
+    "enabled": true,
+    "local_models_only": true,
+    "allow_runtime_model_downloads": false,
+    "require_public_non_gated_models": true,
+    "active_profile": "live_action",
+    "scriptwriter": {
+      "enabled": true,
+      "engine": "transformers",
+      "model_id": "Qwen/Qwen2.5-7B-Instruct",
+      "model_dir": "tools/quality_models/text/Qwen__Qwen2.5-7B-Instruct",
+      "local_files_only": true,
+      "max_new_tokens": 768,
+      "temperature": 0.75
+    },
+    "profiles": {
+      "live_action": {
+        "label": "Live action",
+        "image_model_id": "Qwen/Qwen-Image",
+        "image_model_dir": "tools/quality_models/image/Qwen__Qwen-Image",
+        "identity_model_id": "stabilityai/stable-diffusion-xl-base-1.0",
+        "identity_model_dir": "tools/quality_models/image/stabilityai__stable-diffusion-xl-base-1.0",
+        "video_model_id": "Wan-AI/Wan2.1-T2V-1.3B",
+        "video_model_dir": "tools/quality_models/video/Wan-AI__Wan2.1-T2V-1.3B",
+        "video_model_family": "wan",
+        "style_prompt": "live-action episodic television, natural production lighting",
+        "negative_prompt": "anime, illustration, cartoon, cel shading"
+      },
+      "anime": {
+        "label": "Anime",
+        "image_model_id": "cagliostrolab/animagine-xl-4.0",
+        "image_model_dir": "tools/quality_models/image/cagliostrolab__animagine-xl-4.0",
+        "identity_model_id": "cagliostrolab/animagine-xl-4.0",
+        "identity_model_dir": "tools/quality_models/image/cagliostrolab__animagine-xl-4.0",
+        "video_model_id": "Wan-AI/Wan2.1-T2V-1.3B",
+        "video_model_dir": "tools/quality_models/video/Wan-AI__Wan2.1-T2V-1.3B",
+        "video_model_family": "wan",
+        "style_prompt": "high-quality serialized anime, clean line art, consistent cel shading, expressive animation",
+        "negative_prompt": "photorealistic live action, live-action skin texture, realistic camera footage"
+      }
+    }
   },
   "storyboard_backend": {
     "allow_local_frame_fallback": false,
@@ -240,7 +285,7 @@
     "required_before_render": true,
     "download_base_models": true,
     "check_model_updates": true,
-    "huggingface_token_env": "HF_TOKEN",
+    "public_downloads_without_login": true,
     "min_character_scene_count": 3,
     "min_character_line_count": 3,
     "max_frame_samples_per_character": 48,
@@ -254,8 +299,8 @@
     "image_base_model": "Qwen/Qwen-Image",
     "image_identity_fallback_model": "stabilityai/stable-diffusion-xl-base-1.0",
     "identity_adapter_model": "h94/IP-Adapter",
-    "video_base_model": "Lightricks/LTX-2.3",
-    "video_diffusers_fallback_model": "Lightricks/LTX-Video-0.9.8-13B-distilled",
+    "video_base_model": "Wan-AI/Wan2.1-T2V-1.3B",
+    "video_diffusers_fallback_model": "",
     "voice_base_model": "openbmb/VoxCPM2",
     "use_local_character_voice_models": true,
     "min_voice_duration_seconds_total": 8.0,
@@ -308,13 +353,15 @@
     "enable_voice_cloning": true,
     "enable_face_clone": true,
     "enable_lipsync": true,
-    "voice_clone_engine": "xtts",
+    "voice_clone_engine": "voxcpm2",
     "require_trained_voice_models": true,
     "force_voice_cloning": true,
     "allow_system_tts_fallback": false,
-    "xtts_model_name": "tts_models/multilingual/multi-dataset/xtts_v2",
-    "xtts_language": "auto",
-    "xtts_license_accepted": false,
+    "voice_model_id": "openbmb/VoxCPM2",
+    "voice_model_dir": "tools/quality_models/voice/openbmb__VoxCPM2",
+    "voice_model_local_files_only": true,
+    "voxcpm_inference_timesteps": 10,
+    "voxcpm_cfg_value": 2.0,
     "prefer_detected_character_language": true,
     "voice_reference_max_segments": 4,
     "voice_reference_target_seconds": 16.0,
@@ -344,9 +391,9 @@
   "season_intro": {
     "enabled": true,
     "default_season_id": "season_01",
-    "require_in_finished_episode_mode": true,
+    "require_in_finished_episode_mode": false,
     "lock_after_first_use": true,
-    "auto_generate_if_missing": true,
+    "auto_generate_if_missing": false,
     "generated_duration_seconds": 12.0,
     "max_generated_intro_characters": 4,
     "generated_prompt": "",
@@ -356,6 +403,25 @@
         "start_seconds": 0.0,
         "duration_seconds": 0.0,
         "generated_duration_seconds": 12.0,
+        "title": "",
+        "prompt": ""
+      }
+    }
+  },
+  "season_outro": {
+    "enabled": true,
+    "default_season_id": "season_01",
+    "lock_after_first_use": true,
+    "auto_generate_if_missing": false,
+    "generated_duration_seconds": 8.0,
+    "max_generated_outro_characters": 1,
+    "generated_prompt": "",
+    "profiles": {
+      "season_01": {
+        "source_video": "assets/season_outros/season_01/outro.mp4",
+        "start_seconds": 0.0,
+        "duration_seconds": 0.0,
+        "generated_duration_seconds": 8.0,
         "title": "",
         "prompt": ""
       }
@@ -371,6 +437,7 @@
     "require_backend_manifests": true,
     "block_placeholder_outputs": true,
     "block_stale_outputs": true,
+    "min_identity_references_per_character": 3,
     "min_episode_realism_score": 0.82,
     "min_scene_realism_score": 0.72
   },
@@ -416,7 +483,7 @@
   },
   "quality_backend_assets": {
     "check_for_updates": true,
-    "huggingface_token_env": "HF_TOKEN",
+    "public_downloads_without_login": true,
     "huggingface_download_retries": 8,
     "huggingface_download_retry_delay_seconds": 20,
     "summary_path": "tools/quality_backends/quality_backend_assets.json",
@@ -449,6 +516,7 @@
         "kind": "huggingface",
         "repo_id": "Qwen/Qwen-Image",
         "target_dir": "tools/quality_models/image/Qwen__Qwen-Image",
+        "public_no_login": true,
         "required_files": [
           "model_index.json",
           "scheduler/scheduler_config.json",
@@ -463,6 +531,7 @@
         "kind": "huggingface",
         "repo_id": "stabilityai/stable-diffusion-xl-base-1.0",
         "target_dir": "tools/quality_models/image/stabilityai__stable-diffusion-xl-base-1.0",
+        "public_no_login": true,
         "required_files": [
           "model_index.json",
           "scheduler/scheduler_config.json",
@@ -474,10 +543,24 @@
         ]
       },
       {
+        "name": "anime_image_model",
+        "kind": "huggingface",
+        "repo_id": "cagliostrolab/animagine-xl-4.0",
+        "target_dir": "tools/quality_models/image/cagliostrolab__animagine-xl-4.0",
+        "public_no_login": true,
+        "license_spdx": "openrail++",
+        "required_files": [
+          "model_index.json",
+          "unet/diffusion_pytorch_model.safetensors",
+          "vae/diffusion_pytorch_model.safetensors"
+        ]
+      },
+      {
         "name": "image_identity_adapter",
         "kind": "huggingface",
         "repo_id": "h94/IP-Adapter",
         "target_dir": "tools/quality_models/image/h94__IP-Adapter",
+        "public_no_login": true,
         "allow_patterns": [
           "models/image_encoder/**",
           "sdxl_models/ip-adapter-plus-face_sdxl_vit-h.safetensors"
@@ -490,24 +573,25 @@
       {
         "name": "video_base_model",
         "kind": "huggingface",
-        "repo_id": "Lightricks/LTX-2.3",
-        "target_dir": "tools/quality_models/video/Lightricks__LTX-2.3",
+        "repo_id": "Wan-AI/Wan2.1-T2V-1.3B",
+        "target_dir": "tools/quality_models/video/Wan-AI__Wan2.1-T2V-1.3B",
+        "public_no_login": true,
+        "license_spdx": "Apache-2.0",
         "required_files": [
-          "ltx-2.3-22b-distilled-1.1.safetensors"
+          "model_index.json"
         ]
       },
       {
-        "name": "video_diffusers_fallback_model",
+        "name": "local_scriptwriter_model",
         "kind": "huggingface",
-        "repo_id": "Lightricks/LTX-Video-0.9.8-13B-distilled",
-        "target_dir": "tools/quality_models/video/Lightricks__LTX-Video-0.9.8-13B-distilled",
+        "repo_id": "Qwen/Qwen2.5-7B-Instruct",
+        "target_dir": "tools/quality_models/text/Qwen__Qwen2.5-7B-Instruct",
+        "public_no_login": true,
+        "license_spdx": "Apache-2.0",
         "required_files": [
-          "model_index.json",
-          "scheduler/scheduler_config.json",
-          "text_encoder/model.safetensors.index.json",
-          "transformer/diffusion_pytorch_model.safetensors.index.json",
-          "vae/diffusion_pytorch_model.safetensors",
-          "tokenizer/tokenizer_config.json"
+          "config.json",
+          "tokenizer_config.json",
+          "model.safetensors.index.json"
         ]
       },
       {
@@ -515,13 +599,7 @@
         "kind": "huggingface",
         "repo_id": "openbmb/VoxCPM2",
         "target_dir": "tools/quality_models/voice/openbmb__VoxCPM2",
-        "required_patterns": []
-      },
-      {
-        "name": "xtts_model_name_record",
-        "kind": "metadata",
-        "repo_id": "tts_models/multilingual/multi-dataset/xtts_v2",
-        "target_dir": "tools/quality_models/voice/xtts_runtime",
+        "public_no_login": true,
         "required_patterns": []
       },
       {
@@ -560,6 +638,11 @@
         "SERIES_IMAGE_IDENTITY_MODEL_ID": "stabilityai/stable-diffusion-xl-base-1.0",
         "SERIES_IMAGE_IDENTITY_MODEL_DIR": "tools/quality_models/image/stabilityai__stable-diffusion-xl-base-1.0",
         "SERIES_IMAGE_ALLOW_CPU": "1",
+        "SERIES_IMAGE_CPU_MODEL_ID": "stabilityai/stable-diffusion-xl-base-1.0",
+        "SERIES_IMAGE_CPU_MODEL_DIR": "tools/quality_models/image/stabilityai__stable-diffusion-xl-base-1.0",
+        "SERIES_IMAGE_CPU_MAX_WIDTH": "896",
+        "SERIES_IMAGE_CPU_MAX_HEIGHT": "512",
+        "SERIES_IMAGE_CPU_MAX_STEPS": "24",
         "SERIES_IMAGE_WIDTH": "1216",
         "SERIES_IMAGE_HEIGHT": "704",
         "SERIES_IMAGE_INFERENCE_STEPS": "50",
@@ -567,6 +650,7 @@
         "SERIES_IMAGE_QUALITY_PRESET": "qwen_image_source_series",
         "SERIES_IMAGE_REQUIRE_IDENTITY_REFERENCES": "1",
         "SERIES_IMAGE_REQUIRE_IDENTITY_ADAPTER": "1",
+        "SERIES_IMAGE_ALLOW_UNVERIFIED_MULTI_IDENTITY": "0",
         "PYTHONUNBUFFERED": "1"
       },
       "requires_gpu": false,
@@ -609,6 +693,11 @@
         "SERIES_IMAGE_IDENTITY_MODEL_ID": "stabilityai/stable-diffusion-xl-base-1.0",
         "SERIES_IMAGE_IDENTITY_MODEL_DIR": "tools/quality_models/image/stabilityai__stable-diffusion-xl-base-1.0",
         "SERIES_IMAGE_ALLOW_CPU": "1",
+        "SERIES_IMAGE_CPU_MODEL_ID": "stabilityai/stable-diffusion-xl-base-1.0",
+        "SERIES_IMAGE_CPU_MODEL_DIR": "tools/quality_models/image/stabilityai__stable-diffusion-xl-base-1.0",
+        "SERIES_IMAGE_CPU_MAX_WIDTH": "896",
+        "SERIES_IMAGE_CPU_MAX_HEIGHT": "512",
+        "SERIES_IMAGE_CPU_MAX_STEPS": "24",
         "SERIES_IMAGE_WIDTH": "1216",
         "SERIES_IMAGE_HEIGHT": "704",
         "SERIES_IMAGE_INFERENCE_STEPS": "50",
@@ -616,6 +705,7 @@
         "SERIES_IMAGE_QUALITY_PRESET": "qwen_image_source_series",
         "SERIES_IMAGE_REQUIRE_IDENTITY_REFERENCES": "1",
         "SERIES_IMAGE_REQUIRE_IDENTITY_ADAPTER": "1",
+        "SERIES_IMAGE_ALLOW_UNVERIFIED_MULTI_IDENTITY": "0",
         "SERIES_IMAGE_RESUME_SHOTS": "1"
       },
       "requires_gpu": false,
@@ -654,12 +744,13 @@
       ],
       "working_directory": ".",
       "environment": {
-        "SERIES_VIDEO_BACKEND_COMMAND": "\"{python}\" \"tools/quality_backends/local_ltx_video_backend.py\"",
-        "SERIES_VIDEO_LATEST_MODEL_ID": "Lightricks/LTX-2.3",
-        "SERIES_VIDEO_LATEST_MODEL_DIR": "tools/quality_models/video/Lightricks__LTX-2.3",
-        "SERIES_VIDEO_MODEL_ID": "Lightricks/LTX-Video-0.9.8-13B-distilled",
-        "SERIES_VIDEO_MODEL_DIR": "tools/quality_models/video/Lightricks__LTX-Video-0.9.8-13B-distilled",
-        "SERIES_VIDEO_COMPATIBILITY_MODE": "ltx_diffusers_fallback_until_ltx2_runner",
+        "SERIES_VIDEO_BACKEND_COMMAND": "\"{python}\" \"tools/quality_backends/local_wan_video_backend.py\"",
+        "SERIES_VIDEO_LATEST_MODEL_ID": "Wan-AI/Wan2.1-T2V-1.3B",
+        "SERIES_VIDEO_LATEST_MODEL_DIR": "tools/quality_models/video/Wan-AI__Wan2.1-T2V-1.3B",
+        "SERIES_VIDEO_MODEL_ID": "Wan-AI/Wan2.1-T2V-1.3B",
+        "SERIES_VIDEO_MODEL_DIR": "tools/quality_models/video/Wan-AI__Wan2.1-T2V-1.3B",
+        "SERIES_VIDEO_MODEL_FAMILY": "wan",
+        "SERIES_VIDEO_COMPATIBILITY_MODE": "local_wan_diffusers",
         "SERIES_VIDEO_WIDTH": "1216",
         "SERIES_VIDEO_HEIGHT": "704",
         "SERIES_VIDEO_FPS": "30",
@@ -695,11 +786,18 @@
       ],
       "working_directory": ".",
       "environment": {
-        "SERIES_VOICE_BACKEND_COMMAND": "\"{python}\" \"tools/quality_backends/local_xtts_voice_backend.py\""
+        "SERIES_VOICE_BACKEND_COMMAND": "\"{python}\" \"tools/quality_backends/local_voxcpm_voice_backend.py\"",
+        "SERIES_VOICE_BACKEND_TIMEOUT_SECONDS": "0",
+        "SERIES_VOICE_MODEL_ID": "openbmb/VoxCPM2",
+        "SERIES_VOICE_MODEL_DIR": "tools/quality_models/voice/openbmb__VoxCPM2",
+        "SERIES_VOICE_LOCAL_FILES_ONLY": "1",
+        "SERIES_VOICE_MIN_REFERENCE_SECONDS": "6.0",
+        "SERIES_VOICE_MIN_REFERENCE_COUNT": "2"
       },
       "required_commands": [],
       "required_python_modules": [
-        "TTS"
+        "voxcpm",
+        "soundfile"
       ],
       "required_environment_variables": [
         "SERIES_VOICE_BACKEND_COMMAND"

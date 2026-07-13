@@ -86,13 +86,12 @@ class IdentityContinuityAndIntroTests(unittest.TestCase):
         pipeline.enable_vae_slicing.assert_called_once_with()
         pipeline.enable_vae_tiling.assert_called_once_with()
 
-    def test_strict_render_preflight_reports_xtts_license_and_missing_identity_references(self) -> None:
+    def test_strict_render_preflight_reports_missing_identity_references(self) -> None:
         cfg = {
             "release_mode": {"force_finished_episode_generation": True},
             "cloning": {
                 "force_voice_cloning": True,
-                "voice_clone_engine": "xtts",
-                "xtts_license_accepted": False,
+                "voice_clone_engine": "voxcpm2",
             },
         }
         shotlist = {
@@ -118,19 +117,17 @@ class IdentityContinuityAndIntroTests(unittest.TestCase):
 
         gaps = STEP17.strict_render_preflight_gaps(cfg, shotlist)
 
-        self.assertTrue(any("--accept-xtts-license" in gap for gap in gaps))
         self.assertTrue(any("Kenzie Bell" in gap for gap in gaps))
 
     def test_strict_render_preflight_accepts_existing_identity_reference(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
-            reference = Path(tmpdir) / "kenzie.jpg"
+            reference = Path(tmpdir) / "kenzie_crop.jpg"
             reference.write_bytes(b"reference")
             cfg = {
                 "release_mode": {"force_finished_episode_generation": True},
                 "cloning": {
                     "force_voice_cloning": True,
-                    "voice_clone_engine": "xtts",
-                    "xtts_license_accepted": True,
+                    "voice_clone_engine": "voxcpm2",
                 },
             }
             shotlist = {
@@ -270,6 +267,32 @@ class IdentityContinuityAndIntroTests(unittest.TestCase):
         self.assertEqual(status["unverified_multi_character_shot_count"], 1)
         self.assertFalse(status["identity_conditioned"])
 
+    def test_local_identity_backend_blocks_unverified_multi_character_generation(self) -> None:
+        contract = IMAGE_BACKEND.shot_identity_contract(
+            ["Babe", "Kenzie"],
+            [],
+            ["Babe", "Kenzie"],
+            [],
+        )
+
+        self.assertFalse(contract["generation_allowed"])
+        self.assertEqual(contract["identity_risk"], "high")
+
+    def test_quality_gate_requires_multiple_portrait_references_when_configured(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            reference = Path(tmpdir) / "babe_crop.jpg"
+            reference.write_bytes(b"babe")
+            scene = {
+                "characters": ["Babe"],
+                "character_continuity_lock": {"Babe": {"reference_images": [str(reference)]}},
+            }
+
+            status = STEP18.scene_identity_status(scene, min_reference_images_per_character=3)
+
+        self.assertFalse(status["reference_ready"])
+        self.assertEqual(status["reference_counts"]["Babe"], 1)
+        self.assertEqual(status["insufficient_reference_characters"], ["Babe"])
+
     def test_image_backend_shot_prompt_forbids_extra_people_for_visible_cast(self) -> None:
         prompt = IMAGE_BACKEND.shot_prompt(
             "live-action sitcom frame",
@@ -392,12 +415,12 @@ class IdentityContinuityAndIntroTests(unittest.TestCase):
         self.assertTrue(status["ready"])
         self.assertEqual(status["actual_hash"], expected_hash)
 
-    def test_finished_episode_defaults_require_fixed_intro(self) -> None:
+    def test_finished_episode_defaults_keep_season_intro_separate(self) -> None:
         self.assertTrue(pipeline_common.DEFAULT_CONFIG["season_intro"]["enabled"])
-        self.assertTrue(
+        self.assertFalse(
             pipeline_common.DEFAULT_CONFIG["season_intro"]["require_in_finished_episode_mode"]
         )
-        self.assertTrue(pipeline_common.DEFAULT_CONFIG["season_intro"]["auto_generate_if_missing"])
+        self.assertFalse(pipeline_common.DEFAULT_CONFIG["season_intro"]["auto_generate_if_missing"])
 
     def test_generated_intro_package_uses_real_multi_shot_outputs(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -554,8 +577,9 @@ class IdentityContinuityAndIntroTests(unittest.TestCase):
         )
         self.assertEqual(image_runner["environment"]["SERIES_IMAGE_RESUME_SHOTS"], "1")
         self.assertEqual(video_runner["environment"]["SERIES_VIDEO_RESUME_SHOTS"], "1")
-        self.assertEqual(video_runner["environment"]["SERIES_VIDEO_LATEST_MODEL_ID"], "Lightricks/LTX-2.3")
-        self.assertEqual(video_runner["environment"]["SERIES_VIDEO_MODEL_ID"], "Lightricks/LTX-Video-0.9.8-13B-distilled")
+        self.assertEqual(video_runner["environment"]["SERIES_VIDEO_LATEST_MODEL_ID"], "Wan-AI/Wan2.1-T2V-1.3B")
+        self.assertEqual(video_runner["environment"]["SERIES_VIDEO_MODEL_ID"], "Wan-AI/Wan2.1-T2V-1.3B")
+        self.assertEqual(video_runner["environment"]["SERIES_VIDEO_MODEL_FAMILY"], "wan")
         self.assertEqual(video_runner["environment"]["SERIES_VIDEO_WIDTH"], "1216")
         self.assertEqual(video_runner["environment"]["SERIES_VIDEO_HEIGHT"], "704")
 
@@ -617,30 +641,23 @@ class IdentityContinuityAndIntroTests(unittest.TestCase):
         self.assertIn("no gender swaps", prompt)
         self.assertIn("wrong gender", negative)
 
-    def test_ltx_model_dir_prefers_new_diffusers_model_and_falls_back_to_legacy(self) -> None:
+    def test_local_video_model_dir_uses_only_the_configured_wan_profile(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
-            new_dir = root / "new"
-            legacy_dir = root / "legacy"
-            legacy_dir.mkdir(parents=True)
-            (legacy_dir / "model_index.json").write_text("{}", encoding="utf-8")
-            (legacy_dir / "model.safetensors").write_bytes(b"weights")
-            with mock.patch.object(VIDEO_BACKEND, "DEFAULT_VIDEO_MODEL_DIR", new_dir), mock.patch.object(
-                VIDEO_BACKEND,
-                "LEGACY_VIDEO_MODEL_DIR",
-                legacy_dir,
-            ), mock.patch.object(
-                VIDEO_BACKEND,
-                "FALLBACK_VIDEO_MODEL_DIRS",
-                [new_dir, legacy_dir],
+            model_dir = root / "wan"
+            model_dir.mkdir(parents=True)
+            (model_dir / "model_index.json").write_text("{}", encoding="utf-8")
+            (model_dir / "model.safetensors").write_bytes(b"weights")
+            with mock.patch.object(VIDEO_BACKEND, "DEFAULT_VIDEO_MODEL_DIR", model_dir), mock.patch.object(
+                VIDEO_BACKEND, "FALLBACK_VIDEO_MODEL_DIRS", [model_dir]
             ), mock.patch.dict(
                 "os.environ",
-                {},
+                {"SERIES_VIDEO_MODEL_DIR": "", "SERIES_VIDEO_MODEL_ID": ""},
                 clear=False,
             ):
                 resolved = VIDEO_BACKEND.resolve_model_dir()
 
-        self.assertEqual(resolved, legacy_dir.resolve(strict=False))
+        self.assertEqual(resolved, model_dir.resolve(strict=False))
 
     def test_ltx_intro_resume_keeps_completed_shot(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

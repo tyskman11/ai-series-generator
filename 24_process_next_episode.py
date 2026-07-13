@@ -66,7 +66,6 @@ GLOBAL_STEPS = [
     "06_manage_character_relationships.py",
     "07_build_dataset.py",
     "08_train_series_model.py",
-    "08b_analyze_behavior_model.py",
     "09_prepare_foundation_training.py",
     "10_train_foundation_models.py",
     "11_train_adapter_models.py",
@@ -482,7 +481,6 @@ def episode_step_title(script_name: str, episode_file: str, episode_name: str) -
         "06_manage_character_relationships.py": "Manage character groups and relationships",
         "07_build_dataset.py": "Build training dataset from reviewed data",
         "08_train_series_model.py": "Train series model from reviewed data",
-        "08b_analyze_behavior_model.py": "Analyze character behavior model",
     }
     return titles.get(script_name, episode_name)
 
@@ -734,8 +732,7 @@ def global_step_rows(cfg: dict, skip_downloads: bool = False) -> list[tuple[str,
     steps: list[tuple[str, str, list[str]]] = [
         ("06_manage_character_relationships.py", "Manage Character Groups And Relationships", []),
         ("07_build_dataset.py", "Build training dataset from reviewed data", []),
-        ("08_train_series_model.py", "Train Series Model", []),
-        ("08b_analyze_behavior_model.py", "Analyze Character Behavior Model", []),
+        ("08_train_series_model.py", "Train Series Model And Behavior Model", []),
     ]
     if bool(foundation_cfg.get("prepare_after_batch", False)) or needs_foundation_training:
         prepare_args = ["--skip-downloads"] if skip_downloads else []
@@ -870,8 +867,7 @@ def global_step_title(script_name: str) -> str:
     titles = {
         "06_manage_character_relationships.py": "Manage Character Groups And Relationships",
         "07_build_dataset.py": "Build training dataset from reviewed data",
-        "08_train_series_model.py": "Train Series Model",
-        "08b_analyze_behavior_model.py": "Analyze Character Behavior Model",
+        "08_train_series_model.py": "Train Series Model And Behavior Model",
         "09_prepare_foundation_training.py": "Prepare Foundation Training",
         "10_train_foundation_models.py": "Train Foundation Models",
         "11_train_adapter_models.py": "Train Local Adapter Profiles",
@@ -988,7 +984,6 @@ def helper_skip_reason(state: dict) -> str:
     if step in {
         "07_build_dataset.py",
         "08_train_series_model.py",
-        "08b_analyze_behavior_model.py",
         "09_prepare_foundation_training.py",
         "10_train_foundation_models.py",
         "11_train_adapter_models.py",
