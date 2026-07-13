@@ -472,7 +472,7 @@
     "max_regeneration_batch": 8,
     "max_regeneration_retries": 3,
     "retry_until_pass": true,
-    "max_auto_retry_cycles": 12,
+    "max_auto_retry_cycles": 0,
     "max_regeneration_cost_per_cycle": 18,
     "auto_retry_force_full_rerender_when_queue_empty": true,
     "force_finished_episode_generation": true,

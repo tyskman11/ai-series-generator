@@ -48,6 +48,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--episode-id", help="Use this generated episode's shotlist as the season-style/reference source.")
     parser.add_argument("--kind", choices=("intro", "outro", "both"), default="both", help="Season asset to create.")
     parser.add_argument("--force", action="store_true", help="Explicitly replace an existing locked canonical season asset.")
+    parser.add_argument(
+        "--max-quality-cycles",
+        type=int,
+        help="Maximum regeneration attempts per season asset. Zero means retry until the standalone gate passes or a blocker is found.",
+    )
     add_shared_worker_arguments(parser)
     return parser.parse_args()
 
@@ -158,7 +163,120 @@ def remove_locked_asset(render_module: Any, cfg: dict[str, Any], season_id: str,
         import shutil
 
         shutil.rmtree(generated_root)
-    info(f"Removed locked {season_id} {asset_kind} outputs because --force was supplied.")
+    info(f"Removed previous {season_id} {asset_kind} outputs for regeneration.")
+
+
+def season_asset_retry_policy(cfg: dict[str, Any], args: argparse.Namespace) -> tuple[bool, int]:
+    release_cfg = cfg.get("release_mode", {}) if isinstance(cfg.get("release_mode", {}), dict) else {}
+    retry_until_pass = bool(release_cfg.get("retry_until_pass", True))
+    try:
+        configured_limit = int(release_cfg.get("max_auto_retry_cycles", 0) or 0)
+    except (TypeError, ValueError):
+        configured_limit = 0
+    if args.max_quality_cycles is not None:
+        configured_limit = max(0, int(args.max_quality_cycles))
+    return retry_until_pass, configured_limit
+
+
+def season_asset_retry_blocker(asset: dict[str, Any], report: dict[str, Any]) -> str:
+    blockers = {str(item or "").strip() for item in report.get("blockers", []) if str(item or "").strip()}
+    if "a fallback backend was used" in blockers:
+        return "a fallback backend was used; fix the backend configuration instead of retrying"
+    source_origin = str(asset.get("source_origin", "") or "").strip()
+    if source_origin and source_origin != "backend_generated":
+        return "the configured source asset is invalid; replace the source file before retrying"
+    statuses = asset.get("backend_runner_statuses", {}) if isinstance(asset.get("backend_runner_statuses", {}), dict) else {}
+    unavailable_statuses = {"blocked", "disabled", "missing", "not_configured", "unavailable", "unsupported"}
+    for runner_name, raw_status in statuses.items():
+        status = str(raw_status or "").strip().lower()
+        if status in unavailable_statuses:
+            return f"{runner_name} is {status}; configure a real backend before retrying"
+    return ""
+
+
+def render_season_asset_until_quality_gate(
+    render_module: Any,
+    cfg: dict[str, Any],
+    shotlist: dict[str, Any],
+    ffmpeg: str,
+    *,
+    season_id: str,
+    asset_kind: str,
+    render_cfg: dict[str, Any],
+    reporter: LiveProgressReporter,
+    overall_base: float,
+    force: bool,
+    retry_until_pass: bool,
+    max_quality_cycles: int,
+) -> tuple[dict[str, Any], dict[str, Any], Path, Path]:
+    """Regenerate one standalone asset until it passes, or report a real blocker."""
+    attempt = 0
+    previous_fingerprint = ""
+    repeated_fingerprint_count = 0
+    while True:
+        attempt += 1
+        if force or attempt > 1:
+            remove_locked_asset(render_module, cfg, season_id, asset_kind)
+        reporter.update(
+            overall_base,
+            current_label=f"{season_id} {asset_kind}",
+            extra_label=f"Generating real backend asset (quality attempt {attempt})",
+            force=True,
+        )
+        asset_cfg = copy.deepcopy(cfg)
+        section = asset_cfg.setdefault(f"season_{asset_kind}", {})
+        section["enabled"] = True
+        section["auto_generate_if_missing"] = True
+        section["require_in_finished_episode_mode"] = True
+        if season_id:
+            section["default_season_id"] = season_id
+        asset = render_module.materialize_season_asset(
+            asset_cfg,
+            shotlist,
+            ffmpeg,
+            asset_kind=asset_kind,
+            fps=max(12, int(render_cfg.get("fps", 30) or 30)),
+            width=max(512, int(render_cfg.get("width", 1280) or 1280)),
+            height=max(512, int(render_cfg.get("height", 720) or 720)),
+            reporter=reporter,
+            overall_base=overall_base,
+            overall_span=0.95,
+        )
+        report = season_asset_quality_gate(asset, asset_kind)
+        report["attempt"] = attempt
+        report["retry_until_pass"] = retry_until_pass
+        report["max_quality_cycles"] = max_quality_cycles
+        report_json, report_md = write_quality_report(asset, report)
+        asset["quality_gate_json"] = str(report_json)
+        asset["quality_gate_markdown"] = str(report_md)
+        if report["passed"]:
+            return asset, report, report_json, report_md
+
+        blocker = season_asset_retry_blocker(asset, report)
+        fingerprint = "|".join(sorted(str(item) for item in report.get("blockers", []) or []))
+        repeated_fingerprint_count = repeated_fingerprint_count + 1 if fingerprint and fingerprint == previous_fingerprint else 0
+        previous_fingerprint = fingerprint
+        if blocker:
+            raise RuntimeError(f"{season_id} {asset_kind} quality retry is blocked: {blocker}")
+        if repeated_fingerprint_count >= 2:
+            raise RuntimeError(
+                f"{season_id} {asset_kind} quality retry is blocked: the same gate blockers repeated "
+                f"for {repeated_fingerprint_count + 1} attempts without a changed backend result: {fingerprint or 'unknown'}"
+            )
+        if not retry_until_pass:
+            raise RuntimeError(
+                f"{season_id} {asset_kind} did not pass its standalone quality gate and retry_until_pass is disabled: "
+                + "; ".join(report["blockers"])
+            )
+        if max_quality_cycles and attempt >= max_quality_cycles:
+            raise RuntimeError(
+                f"{season_id} {asset_kind} did not pass its standalone quality gate after {attempt} attempt(s): "
+                + "; ".join(report["blockers"])
+            )
+        info(
+            f"{season_id} {asset_kind} standalone quality gate failed on attempt {attempt}; "
+            "removing the generated output and retrying."
+        )
 
 
 def main() -> None:
@@ -177,6 +295,7 @@ def main() -> None:
     ffmpeg = detect_tool(PROJECT_DIR / "tools" / "ffmpeg" / "bin", "ffmpeg")
     render_cfg = cfg.get("render", {}) if isinstance(cfg.get("render", {}), dict) else {}
     asset_kinds = ["intro", "outro"] if args.kind == "both" else [args.kind]
+    retry_until_pass, max_quality_cycles = season_asset_retry_policy(cfg, args)
     actual_season_id = season_id or render_module.season_id_for_episode(cfg, shotlist, asset_kinds[0])
     mark_step_started("25_generate_season_assets", actual_season_id, {"season_id": actual_season_id, "source_shotlist": str(source_path)})
     lease_manager = distributed_item_lease(
@@ -202,37 +321,21 @@ def main() -> None:
     try:
         for index, asset_kind in enumerate(asset_kinds, start=1):
             reporter.update(index - 1, current_label=f"{actual_season_id} {asset_kind}", extra_label="Preparing real backend generation", force=True)
-            if args.force:
-                remove_locked_asset(render_module, cfg, actual_season_id, asset_kind)
-            asset_cfg = copy.deepcopy(cfg)
-            section = asset_cfg.setdefault(f"season_{asset_kind}", {})
-            section["enabled"] = True
-            section["auto_generate_if_missing"] = True
-            section["require_in_finished_episode_mode"] = True
-            if actual_season_id:
-                section["default_season_id"] = actual_season_id
-            asset = render_module.materialize_season_asset(
-                asset_cfg,
+            asset, report, _report_json, _report_md = render_season_asset_until_quality_gate(
+                render_module,
+                cfg,
                 shotlist,
                 ffmpeg,
+                season_id=actual_season_id,
                 asset_kind=asset_kind,
-                fps=max(12, int(render_cfg.get("fps", 30) or 30)),
-                width=max(512, int(render_cfg.get("width", 1280) or 1280)),
-                height=max(512, int(render_cfg.get("height", 720) or 720)),
+                render_cfg=render_cfg,
                 reporter=reporter,
                 overall_base=float(index - 1),
-                overall_span=0.95,
+                force=bool(args.force),
+                retry_until_pass=retry_until_pass,
+                max_quality_cycles=max_quality_cycles,
             )
-            report = season_asset_quality_gate(asset, asset_kind)
-            report_json, report_md = write_quality_report(asset, report)
-            asset["quality_gate_json"] = str(report_json)
-            asset["quality_gate_markdown"] = str(report_md)
             results[asset_kind] = asset
-            if not report["passed"]:
-                raise RuntimeError(
-                    f"{actual_season_id} {asset_kind} did not pass its standalone quality gate: "
-                    + "; ".join(report["blockers"])
-                )
             reporter.update(index, current_label=f"{actual_season_id} {asset_kind}", extra_label="Standalone quality gate passed", force=True)
             ok(f"Season {asset_kind} ready: {asset.get('canonical_video')}")
         mark_step_completed("25_generate_season_assets", actual_season_id, {"season_id": actual_season_id, "assets": results})

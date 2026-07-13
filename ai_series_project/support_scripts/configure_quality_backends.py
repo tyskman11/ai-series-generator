@@ -409,6 +409,25 @@ def ensure_quality_asset_targets(config: dict) -> None:
         )
 
 
+def ensure_release_retry_policy(config: dict) -> None:
+    """Migrate the old finite retry default without overriding deliberate custom limits."""
+    release_cfg = config.setdefault("release_mode", {})
+    if not isinstance(release_cfg, dict):
+        release_cfg = {}
+        config["release_mode"] = release_cfg
+    release_cfg["retry_until_pass"] = True
+    release_cfg["auto_retry_failed_gate"] = True
+    old_default_limit = 12
+    configured_limit = release_cfg.get("max_auto_retry_cycles")
+    try:
+        configured_limit_number = int(configured_limit or 0)
+    except (TypeError, ValueError):
+        configured_limit_number = old_default_limit
+    if configured_limit is None or configured_limit_number == old_default_limit:
+        # Zero is intentionally unlimited. Blocked causes still stop immediately in 18.
+        release_cfg["max_auto_retry_cycles"] = 0
+
+
 def ensure_local_generation_config(config: dict) -> None:
     generation_cfg = config.setdefault("generation", {})
     if not isinstance(generation_cfg, dict):
@@ -487,6 +506,7 @@ def main() -> None:
     updated["external_backends"] = configured_backends()
     ensure_local_generation_config(updated)
     ensure_quality_asset_targets(updated)
+    ensure_release_retry_policy(updated)
     report = quality_first_requirements_report(updated)
 
     if args.print_only:

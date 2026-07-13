@@ -205,7 +205,8 @@ That means:
 - storyboard backend materialization happens before render
 - render, quality gate, conditional regeneration, bible, and export happen only after generation
 - `19_regenerate_weak_scenes.py` is not a mandatory normal step; `18_quality_gate.py` calls it automatically when the quality gate queues weak scenes and auto-retry is enabled
-- `25_generate_season_assets.py` is independent from episode rendering and explicitly creates quality-gated season intro/outro assets
+- `24_process_next_episode.py` owns the episode workflow and keeps regenerating/rerendering until the episode quality gate passes, unless it encounters a concrete blocked cause
+- `25_generate_season_assets.py` is independent from episode rendering and repeats only standalone intro/outro generation until its own asset gate passes, unless it encounters a concrete blocked cause
 - `gui.py` is independent from the pipeline order and manages generated episodes, reports, and season assets
 
 ### Full Inbox Pipeline
@@ -226,6 +227,13 @@ This means a failed or interrupted `01` to `04` run can be resumed without movin
 When `24_process_next_episode.py` is started on a second PC/NAS while another `24` instance already owns the orchestration lock, the second process no longer has to sit idle. By default it reads the active autosave/status file and joins as a helper worker for currently shareable steps such as `03_diarize_and_transcribe.py`, `15_generate_storyboard_assets.py`, or `16_run_storyboard_backend.py`. Non-shareable whole-output steps still stay under the main orchestrator to avoid corrupting training, render, export, or autosave state. Use `--orchestrator-only` if a second `24` run should only report the active owner and exit instead of helping.
 
 `22_refresh_after_manual_review.py` and `23_generate_finished_episodes.py` also start with `00` automatically before their own main work.
+
+`18_quality_gate.py` uses `release_mode.retry_until_pass` for release work. The default
+`release_mode.max_auto_retry_cycles: 0` means no artificial retry cap: it continues with
+targeted regeneration and full rerenders until the gate passes. It still stops immediately for
+diagnosed blockers such as missing references or a disabled backend, and stops after three
+identical gate results to avoid an unproductive loop. Set a positive value to apply a deliberate
+maximum retry count.
 
 ## Quick Start
 
@@ -336,9 +344,15 @@ Season assets are not part of an episode render. Generate them deliberately afte
 python 25_generate_season_assets.py
 python 25_generate_season_assets.py --season season_01 --kind intro
 python 25_generate_season_assets.py --season season_01 --kind outro --force
+python 25_generate_season_assets.py --season season_01 --kind intro --max-quality-cycles 3
 ```
 
 `25` uses the same real image/video runners and backend-manifest requirements as finished episode visuals. It writes a hash-locked canonical asset and an `intro_quality_gate.*` or `outro_quality_gate.*` report under `ai_series_project/generation/season_assets/<season_id>/<kind>/`. It does not add either asset to a generated episode.
+
+By default, a failed but retryable asset gate removes the incomplete standalone asset and retries
+until it passes. `--max-quality-cycles N` adds a deliberate cap; `0` means no cap. Missing,
+disabled, unsupported, or fallback backends are reported as blockers instead of being retried
+indefinitely.
 
 ### 7. Manage Generated Episodes
 
@@ -460,7 +474,7 @@ The project is configured for quality-first finished-episode generation:
 - `17_render_episode.py` no longer writes local motion fallback clips into the same production paths used by the real video backend, so backend runners are not skipped by pre-existing fake outputs
 - `17_render_episode.py` now defers quality-first audio to `finished_episode_voice_runner`; local preview TTS/silence is not used as the final voice path
 - final delivery is blocked when required generated scene video, cloned dialogue audio, lip-sync output, or the master runner is missing
-- quality-gate auto-retry now loops through weak-scene regeneration and forced rerender cycles until the release gate passes, bounded by `release_mode.max_auto_retry_cycles`
+- quality-gate auto-retry now loops through weak-scene regeneration and forced rerender cycles until the release gate passes; `release_mode.max_auto_retry_cycles: 0` means no artificial cap, while blocked causes and three unchanged results stop safely with a diagnosis
 - `release_mode.max_regeneration_cost_per_cycle` bounds each weak-scene queue cycle so missing references or expensive low-priority rerenders do not consume the whole retry budget
 - generation prompts now include source-series style locks, auto-detected dialogue language, and stronger negative prompts against blue placeholders, filtered still-frame slideshows, and generic cartoon output
 
@@ -627,7 +641,7 @@ Important areas:
 - `external_backends.finished_episode_video_runner.environment.SERIES_VIDEO_MODEL_FAMILY`: local pipeline family, currently `wan`
 - `SERIES_VIDEO_MODEL_ID`, `SERIES_VIDEO_WIDTH`, `SERIES_VIDEO_HEIGHT`, `SERIES_VIDEO_FPS`, `SERIES_VIDEO_INFERENCE_STEPS`, and `SERIES_VIDEO_GUIDANCE_SCALE`: optional local overrides for model identity and render quality. Increasing size/steps can improve output but may make CPU/NAS generation extremely slow.
 - `external_backends.*.timeout_seconds`: configured quality backends use `0`, meaning no generation time limit; interrupted image/video shot batches resume completed shots through `SERIES_IMAGE_RESUME_SHOTS=1` and `SERIES_VIDEO_RESUME_SHOTS=1`
-- `release_mode.*`: quality gate thresholds and retry behavior, including `retry_until_pass`, `max_auto_retry_cycles`, and full-rerender retries when no weak-scene queue remains
+- `release_mode.*`: quality gate thresholds and retry behavior, including `retry_until_pass`, `max_auto_retry_cycles` (`0` means unlimited retry until pass or a diagnosed blocker), and full-rerender retries when no weak-scene queue remains
 - `release_mode.max_regeneration_cost_per_cycle`: per-cycle weak-scene regeneration cost budget; low-cost and blocked diagnostics remain visible while expensive work can be deferred
 - `quality_backend_assets.*`: project-local backend tool/model targets
 - `quality_backend_assets.huggingface_download_retries` and `quality_backend_assets.huggingface_download_retry_delay_seconds`: retry policy for very large Hugging Face downloads. Interrupted HTTP streams keep their `.incomplete` files so rerunning `00_prepare_runtime.py` or `59_prepare_quality_backends.py` resumes instead of starting from zero.

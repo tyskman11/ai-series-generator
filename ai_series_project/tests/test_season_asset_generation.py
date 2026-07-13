@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import argparse
 import hashlib
 import importlib.util
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 PROJECT_DIR = Path(__file__).resolve().parents[1]
@@ -28,6 +30,94 @@ STEP25 = load_module("25_generate_season_assets.py", "step25_season_asset_test")
 
 
 class SeasonAssetGenerationTests(unittest.TestCase):
+    def test_season_asset_retry_policy_defaults_to_unlimited_until_gate_passes(self) -> None:
+        retry_until_pass, max_cycles = STEP25.season_asset_retry_policy(
+            {"release_mode": {"retry_until_pass": True, "max_auto_retry_cycles": 0}},
+            argparse.Namespace(max_quality_cycles=None),
+        )
+
+        self.assertTrue(retry_until_pass)
+        self.assertEqual(max_cycles, 0)
+
+    def test_season_asset_retry_policy_recovers_from_invalid_legacy_value(self) -> None:
+        retry_until_pass, max_cycles = STEP25.season_asset_retry_policy(
+            {"release_mode": {"retry_until_pass": True, "max_auto_retry_cycles": "not-a-number"}},
+            argparse.Namespace(max_quality_cycles=None),
+        )
+
+        self.assertTrue(retry_until_pass)
+        self.assertEqual(max_cycles, 0)
+
+    def test_season_asset_retry_stops_for_fallback_backend(self) -> None:
+        blocker = STEP25.season_asset_retry_blocker(
+            {"source_origin": "backend_generated", "fallback_used": True},
+            {"blockers": ["a fallback backend was used"]},
+        )
+
+        self.assertIn("fallback backend", blocker)
+
+    def test_season_asset_retry_regenerates_once_then_accepts_passing_gate(self) -> None:
+        class Reporter:
+            def update(self, *_args, **_kwargs) -> None:
+                return None
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            calls = {"count": 0}
+
+            def materialize(*_args, **_kwargs):
+                calls["count"] += 1
+                asset_root = root / "generation/season_assets/season_01/intro"
+                asset_root.mkdir(parents=True, exist_ok=True)
+                manifest = asset_root / "intro_manifest.json"
+                image_manifest = asset_root / "image_manifest.json"
+                video_manifest = asset_root / "video_manifest.json"
+                manifest.write_text("{}", encoding="utf-8")
+                image_manifest.write_text("{}", encoding="utf-8")
+                video_manifest.write_text("{}", encoding="utf-8")
+                video = asset_root / "intro.mp4"
+                if calls["count"] > 1:
+                    video.write_bytes(b"real-video")
+                return {
+                    "season_id": "season_01",
+                    "canonical_video": str(video),
+                    "canonical_sha256": hashlib.sha256(video.read_bytes()).hexdigest() if video.exists() else "",
+                    "manifest": str(manifest),
+                    "source_origin": "backend_generated",
+                    "backend_runner_statuses": {
+                        "finished_episode_image_runner": "completed",
+                        "finished_episode_video_runner": "completed",
+                    },
+                    "backend_manifests": {
+                        "finished_episode_image_runner": str(image_manifest),
+                        "finished_episode_video_runner": str(video_manifest),
+                    },
+                    "fallback_used": False,
+                }
+
+            render_module = type("RenderModule", (), {"materialize_season_asset": staticmethod(materialize)})()
+            with mock.patch.object(STEP25, "resolve_project_path", side_effect=lambda relative: root / relative):
+                asset, report, _report_json, _report_md = STEP25.render_season_asset_until_quality_gate(
+                    render_module,
+                    {},
+                    {"season_id": "season_01"},
+                    "ffmpeg",
+                    season_id="season_01",
+                    asset_kind="intro",
+                    render_cfg={},
+                    reporter=Reporter(),
+                    overall_base=0.0,
+                    force=False,
+                    retry_until_pass=True,
+                    max_quality_cycles=0,
+                )
+
+            self.assertTrue(Path(asset["canonical_video"]).exists())
+
+        self.assertEqual(calls["count"], 2)
+        self.assertTrue(report["passed"])
+        self.assertEqual(report["attempt"], 2)
+
     def test_generated_outro_package_uses_single_identity_safe_hero_shot(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             package = STEP17.build_generated_season_intro_package(
