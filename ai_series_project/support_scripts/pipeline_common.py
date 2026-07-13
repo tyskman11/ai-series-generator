@@ -1228,7 +1228,7 @@ def current_os() -> str:
         return "windows"
     if "linux" in system_name:
         return "linux"
-    raise RuntimeError(f"Nicht unterstütztes Betriebssystem: {platform.system()}")
+    raise RuntimeError(f"Unsupported operating system: {platform.system()}")
 
 
 def current_architecture() -> str:

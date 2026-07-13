@@ -330,7 +330,7 @@ def main() -> None:
             }
         )
         write_json(shotlist_path, shotlist_payload)
-        reporter.finish(current_label=episode_id, extra_label=f"Episode geschrieben: {story_path.name}, {shotlist_path.name} und Storyboard-Requests")
+        reporter.finish(current_label=episode_id, extra_label=f"Episode draft written: {story_path.name}, {shotlist_path.name}, and storyboard requests")
         mark_step_completed(
             "14_generate_episode",
             episode_id,
@@ -341,7 +341,7 @@ def main() -> None:
                 "storyboard_request": storyboard_request_paths["episode_request_path"],
             },
         )
-        ok(f"Neue Episode aus trainiertem Modell erzeugt: {episode_id}")
+        ok(f"New episode generated from trained model: {episode_id}")
     except Exception as exc:
         mark_step_failed("14_generate_episode", str(exc), autosave_target, {"series_model": str(model_path)})
         raise

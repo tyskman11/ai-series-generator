@@ -469,6 +469,26 @@ class GeneratedEpisodeManagerTests(unittest.TestCase):
             self.assertFalse(by_path["configs/project.template.json"].editable_json)
             self.assertFalse(by_path["configs/project.template.json"].delete_allowed)
 
+    def test_project_storage_roots_are_immediately_available_before_detail_scan(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            data_root = root / "data/raw"
+            characters_root = root / "characters"
+            data_root.mkdir(parents=True)
+            characters_root.mkdir(parents=True)
+            for index in range(80):
+                (data_root / f"source_{index:03d}.mp4").write_bytes(b"source")
+
+            with temp_project_patches(root):
+                roots = STEP25.list_project_storage_root_records()
+                records = STEP25.list_project_storage_records(max_records=12)
+
+            root_paths = {record.relative_path for record in roots}
+            all_paths = {record.relative_path for record in records}
+            self.assertEqual(root_paths, {"characters", "data"})
+            self.assertTrue(root_paths.issubset(all_paths))
+            self.assertLessEqual(len(records), 12)
+
     def test_project_json_save_creates_project_local_backup(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)

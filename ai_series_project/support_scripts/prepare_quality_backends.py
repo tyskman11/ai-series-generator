@@ -829,10 +829,10 @@ def prepare_quality_backend_assets(cfg: dict[str, Any], *, force: bool, skip_dow
             info(f"Erfasse Backend-Metadaten: {target['name']}")
             result = ensure_metadata_target(target)
         elif kind == "git":
-            info(f"{'Aktualisiere' if action in {'update', 'repair'} else 'Lade'} Backend-Tool: {target['name']}")
+            info(f"{'Updating' if action in {'update', 'repair'} else 'Downloading'} backend tool: {target['name']}")
             result = ensure_git_target(target, remote_revision, action)
         elif kind == "huggingface":
-            info(f"{'Aktualisiere' if action in {'update', 'repair'} else 'Lade'} Backend-Modell: {target['repo_id']}")
+            info(f"{'Updating' if action in {'update', 'repair'} else 'Downloading'} backend model: {target['repo_id']}")
             result = ensure_hf_target(target, remote_revision, token, action)
         else:
             warn(f"Unknown quality backend asset kind skipped: {kind}")

@@ -305,7 +305,9 @@ PROJECT_STORAGE_SCOPES: tuple[tuple[str, str, str, str, int, bool], ...] = (
     ("Archives", "Managed archives", "archives", "Archives created by the project and the GUI.", 3, True),
     ("Config", "Project configuration", "configs", "Active project configuration and public template.", 2, False),
 )
-PROJECT_STORAGE_MAX_RECORDS = 900
+PROJECT_STORAGE_MAX_RECORDS = 320
+PROJECT_STORAGE_DETAIL_RECORDS_PER_SCOPE = 32
+PROJECT_STORAGE_DIRECTORY_COUNT_LIMIT = 500
 PROJECT_STORAGE_ARCHIVE_DIR = "archives/gui_project_data"
 PROJECT_JSON_BACKUP_DIR = "runtime/gui_backups/json"
 PROJECT_STORAGE_IGNORED_NAMES = {"__pycache__", ".git", ".cache", ".pytest_cache"}
@@ -375,6 +377,20 @@ def project_storage_path_stats(path: Path, *, max_entries: int = 1500) -> tuple[
     return total_size, item_count, latest, truncated
 
 
+def project_storage_direct_item_count(path: Path, *, max_items: int = PROJECT_STORAGE_DIRECTORY_COUNT_LIMIT) -> tuple[int, bool]:
+    """Count direct children without walking large model, cache, or render trees."""
+    count = 0
+    try:
+        with os.scandir(path) as entries:
+            for _entry in entries:
+                count += 1
+                if count >= max_items:
+                    return count, True
+    except OSError:
+        return 0, False
+    return count, False
+
+
 def iter_project_storage_paths(root: Path, *, max_depth: int, max_records: int) -> list[Path]:
     paths: list[Path] = []
     if not root.exists():
@@ -383,20 +399,22 @@ def iter_project_storage_paths(root: Path, *, max_depth: int, max_records: int) 
     while stack and len(paths) < max_records:
         current, depth = stack.pop()
         try:
-            children = sorted(current.iterdir(), key=lambda item: (not item.is_dir(), item.name.lower()))
+            children = os.scandir(current)
         except OSError:
             continue
-        for child in children:
-            if child.name in PROJECT_STORAGE_IGNORED_NAMES:
-                continue
-            paths.append(child)
-            if len(paths) >= max_records:
-                break
-            try:
-                if child.is_dir() and not child.is_symlink() and depth < max_depth:
-                    stack.append((child, depth + 1))
-            except OSError:
-                continue
+        with children:
+            for entry in children:
+                if entry.name in PROJECT_STORAGE_IGNORED_NAMES:
+                    continue
+                child = Path(entry.path)
+                paths.append(child)
+                if len(paths) >= max_records:
+                    break
+                try:
+                    if entry.is_dir(follow_symlinks=False) and depth < max_depth:
+                        stack.append((child, depth + 1))
+                except OSError:
+                    continue
     return paths
 
 
@@ -427,10 +445,9 @@ def project_storage_record_for_path(
         if truncated:
             note = f"{note} Size/count are bounded for responsiveness."
     elif is_directory:
-        try:
-            item_count = sum(1 for _ in path.iterdir())
-        except OSError:
-            item_count = 0
+        item_count, item_count_truncated = project_storage_direct_item_count(path)
+        if item_count_truncated:
+            note = f"{note} Direct item count is bounded for responsiveness."
     suffix = path.suffix.lower()
     is_archive = bool(relative.parts and relative.parts[0] == "archives")
     editable_json = bool(is_file and suffix == ".json" and mutable)
@@ -464,7 +481,7 @@ def project_storage_record_for_path(
 
 
 def list_project_storage_records(*, max_records: int = PROJECT_STORAGE_MAX_RECORDS) -> list[ProjectStorageRecord]:
-    records: list[ProjectStorageRecord] = []
+    records = list_project_storage_root_records()
     scoped_roots: list[tuple[tuple[str, str, str, str, int, bool], Path]] = []
     for scope in PROJECT_STORAGE_SCOPES:
         root = resolve_project_path(scope[2])
@@ -472,27 +489,28 @@ def list_project_storage_records(*, max_records: int = PROJECT_STORAGE_MAX_RECOR
             continue
         scoped_roots.append((scope, root))
 
-    remaining = max(len(scoped_roots), max_records)
-    for scope, root in scoped_roots:
-        if remaining <= 0:
-            break
-        summary = project_storage_path_stats(root)
-        records.append(project_storage_record_for_path(root, scope, root_summary=summary))
-        remaining -= 1
+    remaining = max(0, max_records - len(records))
 
     for index, (scope, root) in enumerate(scoped_roots):
         if remaining <= 0:
             break
         scopes_left = max(1, len(scoped_roots) - index)
-        per_scope_limit = max(1, remaining // scopes_left)
-        before_count = len(records)
-        for path in iter_project_storage_paths(root, max_depth=scope[4], max_records=per_scope_limit):
+        per_scope_limit = min(PROJECT_STORAGE_DETAIL_RECORDS_PER_SCOPE, max(1, remaining // scopes_left))
+        for path in iter_project_storage_paths(root, max_depth=min(scope[4], 2), max_records=per_scope_limit):
             records.append(project_storage_record_for_path(path, scope))
             remaining -= 1
             if remaining <= 0:
                 break
-        if len(records) == before_count:
-            continue
+    return sorted(records, key=lambda row: (row.category.lower(), row.relative_path.lower()))
+
+
+def list_project_storage_root_records() -> list[ProjectStorageRecord]:
+    """Return every visible management category quickly, even on a busy NAS."""
+    records: list[ProjectStorageRecord] = []
+    for scope in PROJECT_STORAGE_SCOPES:
+        root = resolve_project_path(scope[2])
+        if root.exists():
+            records.append(project_storage_record_for_path(root, scope))
     return sorted(records, key=lambda row: (row.category.lower(), row.relative_path.lower()))
 
 
@@ -2373,6 +2391,16 @@ def run_gui(cfg: dict[str, Any]) -> None:
             live_text = format_live_status(build_live_generation_status(cfg))
             queue_activity(f"Live generation status loaded in {time.monotonic() - live_started:.2f}s.")
 
+            project_roots_started = time.monotonic()
+            ui_events.put(("status", "Loading project management categories ..."))
+            queue_activity("Loading project management categories ...")
+            project_root_records = list_project_storage_root_records()
+            ui_events.put(("project_records", project_root_records))
+            queue_activity(
+                f"Loaded {len(project_root_records)} project management category record(s) "
+                f"in {time.monotonic() - project_roots_started:.2f}s."
+            )
+
             episode_started = time.monotonic()
             ui_events.put(("status", "Loading generated episodes ..."))
             queue_activity("Scanning generated episode outputs ...")
@@ -2433,6 +2461,8 @@ def run_gui(cfg: dict[str, Any]) -> None:
                         append_activity_error(str(payload.get("message", "Error")), str(payload.get("detail", "")), log=False)
                 elif kind == "status":
                     status_text.set(str(payload))
+                elif kind == "project_records" and isinstance(payload, list):
+                    apply_project_records(list(payload))
                 elif kind == "refresh_result" and isinstance(payload, dict):
                     try:
                         set_live_detail(str(payload.get("live_text", "")))
@@ -3074,8 +3104,8 @@ def run_gui(cfg: dict[str, Any]) -> None:
     notebook.bind("<<NotebookTabChanged>>", safe_command("Tab change", on_notebook_tab_changed))
     notebook.add(intro_tab, text="Intro")
     notebook.add(outro_tab, text="Outro")
-    notebook.add(episodes_tab, text="Folgen")
-    notebook.add(project_tab, text="Projekt")
+    notebook.add(episodes_tab, text="Episodes")
+    notebook.add(project_tab, text="Project")
     main_pane.grid(row=0, column=0, columnspan=8, sticky="nsew", padx=10, pady=(10, 4))
     main_pane.add(live_frame)
     main_pane.add(notebook)

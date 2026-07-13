@@ -779,7 +779,7 @@ def download_models(cfg: dict, targets: list[dict]) -> list[dict]:
         if action == "repair":
             info(f"Repariere unvollstaendigen Basis-Download ({target['kind']}): {target['model_id']}")
         elif action == "update":
-            info(f"Aktualisiere Basis-Modell ({target['kind']}): {target['model_id']}")
+            info(f"Updating base model ({target['kind']}): {target['model_id']}")
         else:
             info(f"Lade Basis-Modell ({target['kind']}): {target['model_id']}")
 
