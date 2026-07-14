@@ -3,10 +3,11 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from pathlib import Path
 from typing import Any
 
-from support_scripts.pipeline_common import PROJECT_ROOT, active_local_generation_profile, coalesce_text
+from support_scripts.pipeline_common import PROJECT_ROOT, active_local_generation_profile, coalesce_text, warn
 
 _RUNTIME: tuple[Any, Any] | None = None
 
@@ -54,28 +55,68 @@ def load_runtime(cfg: dict[str, Any]) -> tuple[Any, Any]:
     device = "cuda" if bool(torch.cuda.is_available()) else "cpu"
     dtype = torch.float16 if device == "cuda" else torch.float32
     tokenizer = AutoTokenizer.from_pretrained(str(path), local_files_only=True)
-    model = AutoModelForCausalLM.from_pretrained(
-        str(path),
-        local_files_only=True,
-        torch_dtype=dtype,
-        low_cpu_mem_usage=True,
-    ).to(device)
+    model_kwargs = {"local_files_only": True, "dtype": dtype, "low_cpu_mem_usage": True}
+    try:
+        model = AutoModelForCausalLM.from_pretrained(str(path), **model_kwargs).to(device)
+    except TypeError as exc:
+        if "dtype" not in str(exc):
+            raise
+        # Older Transformers releases used the deprecated torch_dtype keyword.
+        model_kwargs["torch_dtype"] = model_kwargs.pop("dtype")
+        model = AutoModelForCausalLM.from_pretrained(str(path), **model_kwargs).to(device)
     model.eval()
     _RUNTIME = (tokenizer, model)
     return _RUNTIME
 
 
-def _json_payload(text: str) -> dict[str, Any]:
+_JSON_STRING = r'"(?:\\.|[^"\\])*"'
+_DIALOGUE_PAIR = re.compile(
+    rf'"speaker"\s*:\s*(?P<speaker>{_JSON_STRING})\s*,\s*"text"\s*:\s*(?P<text>{_JSON_STRING})',
+    re.DOTALL,
+)
+
+
+def _clean_json_response(text: str) -> str:
     clean = text.strip()
     if "```" in clean:
         chunks = [part.strip() for part in clean.split("```") if "{" in part and "}" in part]
         if chunks:
             clean = chunks[0].removeprefix("json").strip()
-    start, end = clean.find("{"), clean.rfind("}")
-    if start < 0 or end <= start:
-        raise RuntimeError("Local screenwriter did not return a JSON object.")
-    payload = json.loads(clean[start : end + 1])
-    return payload if isinstance(payload, dict) else {}
+    return clean
+
+
+def _recover_dialogue_lines(clean: str) -> list[dict[str, str]]:
+    """Keep complete model-produced dialogue pairs when one later JSON row is malformed."""
+    recovered: list[dict[str, str]] = []
+    for match in _DIALOGUE_PAIR.finditer(clean):
+        try:
+            speaker = json.loads(match.group("speaker"))
+            dialogue = json.loads(match.group("text"))
+        except json.JSONDecodeError:
+            continue
+        if isinstance(speaker, str) and isinstance(dialogue, str):
+            recovered.append({"speaker": speaker, "text": dialogue})
+    return recovered
+
+
+def _json_payload(text: str) -> dict[str, Any]:
+    clean = _clean_json_response(text)
+    decoder = json.JSONDecoder()
+    parse_error: json.JSONDecodeError | None = None
+    for start in (index for index, char in enumerate(clean) if char == "{"):
+        try:
+            payload, _end = decoder.raw_decode(clean[start:])
+        except json.JSONDecodeError as exc:
+            parse_error = exc
+            continue
+        if isinstance(payload, dict) and isinstance(payload.get("lines"), list):
+            return payload
+    recovered = _recover_dialogue_lines(clean)
+    if recovered:
+        return {"lines": recovered, "format_recovered": True}
+    if parse_error is not None:
+        raise RuntimeError(f"Local screenwriter returned malformed JSON: {parse_error.msg}.") from parse_error
+    raise RuntimeError("Local screenwriter did not return a JSON object with dialogue lines.")
 
 
 def prepare_generation_inputs(tokenized: Any, device: Any) -> tuple[dict[str, Any], int]:
@@ -126,10 +167,12 @@ def rewrite_scene_dialogue(
             "Write new dialogue; do not quote source episodes.",
             "Use short natural turns, reactions, interruptions, and one scene payoff where appropriate.",
             "Return exactly {\"lines\":[{\"speaker\":\"...\",\"text\":\"...\"}]}.",
+            "Use RFC 8259 JSON only: no Markdown, code fences, comments, or trailing commas.",
+            "Escape any double quote inside text and keep each text value on one line.",
         ],
     }
     messages = [
-        {"role": "system", "content": "You are an offline writer-room model. Produce only valid JSON."},
+        {"role": "system", "content": "You are an offline writer-room model. Produce only valid RFC 8259 JSON."},
         {"role": "user", "content": json.dumps(prompt, ensure_ascii=False)},
     ]
     try:
@@ -150,6 +193,8 @@ def rewrite_scene_dialogue(
         )
     text = tokenizer.decode(generated[0][prompt_token_count:], skip_special_tokens=True)
     payload = _json_payload(text)
+    if payload.get("format_recovered"):
+        warn("Local screenwriter returned partially malformed JSON; recovered complete generated dialogue rows.")
     lines = payload.get("lines", []) if isinstance(payload.get("lines"), list) else []
     validated: list[dict[str, str]] = []
     for row in lines[: max(3, target_lines + 2)]:

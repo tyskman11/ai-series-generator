@@ -135,6 +135,24 @@ class BehaviorModelPipelineTests(unittest.TestCase):
         self.assertEqual(prompt_token_count, 9)
         self.assertIn("input_ids", inputs)
 
+    def test_local_screenwriter_recovers_complete_rows_from_malformed_json(self) -> None:
+        payload = local_screenwriter._json_payload(
+            '{"lines":[\n'
+            '  {"speaker":"Babe","text":"Ich habe einen Plan."},\n'
+            '  {"speaker":"Kenzie","text":"Das klingt schon verdächtig."},\n'
+            '  {"speaker" "Hudson","text":"Dann esse ich den Plan."}\n'
+            ']}'
+        )
+
+        self.assertTrue(payload["format_recovered"])
+        self.assertEqual(
+            payload["lines"],
+            [
+                {"speaker": "Babe", "text": "Ich habe einen Plan."},
+                {"speaker": "Kenzie", "text": "Das klingt schon verdächtig."},
+            ],
+        )
+
     def test_generate_episode_rewrites_dialogue_with_local_screenwriter_metadata(self) -> None:
         package = {
             "language": "de",
