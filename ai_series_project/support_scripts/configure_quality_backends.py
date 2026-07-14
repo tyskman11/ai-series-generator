@@ -464,6 +464,7 @@ def ensure_local_generation_config(config: dict) -> None:
         "local_files_only": True,
         "max_new_tokens": 768,
         "temperature": 0.75,
+        "max_generation_attempts": 3,
     }
     local_cfg["profiles"] = {
         "live_action": {

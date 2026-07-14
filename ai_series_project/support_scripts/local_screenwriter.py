@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import time
 from pathlib import Path
 from typing import Any
 
@@ -136,6 +137,60 @@ def prepare_generation_inputs(tokenized: Any, device: Any) -> tuple[dict[str, An
     return inputs, int(input_ids.shape[-1])
 
 
+def resolve_allowed_speaker(generated_name: Any, characters: list[str]) -> str:
+    """Map harmless full-name/short-name variations back to one canonical cast member."""
+    requested = re.sub(r"[^a-z0-9]+", " ", coalesce_text(generated_name).casefold()).strip()
+    if not requested:
+        return ""
+    canonical_names = {
+        re.sub(r"[^a-z0-9]+", " ", character.casefold()).strip(): character
+        for character in characters
+        if character
+    }
+    if requested in canonical_names:
+        return canonical_names[requested]
+    matches = [
+        character
+        for normalized, character in canonical_names.items()
+        if requested in normalized or normalized in requested
+    ]
+    return matches[0] if len(matches) == 1 else ""
+
+
+def validate_dialogue_rows(rows: Any, characters: list[str], target_lines: int) -> list[dict[str, str]]:
+    validated: list[dict[str, str]] = []
+    if not isinstance(rows, list):
+        return validated
+    for row in rows[: max(3, target_lines + 2)]:
+        if not isinstance(row, dict):
+            continue
+        speaker = resolve_allowed_speaker(row.get("speaker", ""), characters)
+        text = coalesce_text(row.get("text", "")).replace("\n", " ").strip()
+        if speaker and text and len(text) <= 420:
+            validated.append({"speaker": speaker, "text": text})
+    return validated
+
+
+def write_screenwriter_failure_diagnostic(
+    scene: dict[str, Any],
+    characters: list[str],
+    attempts: list[dict[str, Any]],
+) -> Path:
+    """Save model output only when all local format retries have failed."""
+    scene_id = coalesce_text(scene.get("scene_id", "scene")) or "scene"
+    safe_scene_id = re.sub(r"[^A-Za-z0-9._-]+", "_", scene_id)
+    diagnostics_root = PROJECT_ROOT / "logs" / "screenwriter"
+    diagnostics_root.mkdir(parents=True, exist_ok=True)
+    path = diagnostics_root / f"{safe_scene_id}_{int(time.time() * 1000)}_failure.json"
+    payload = {
+        "scene_id": scene_id,
+        "allowed_speakers": characters,
+        "attempts": attempts,
+    }
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return path
+
+
 def rewrite_scene_dialogue(
     cfg: dict[str, Any],
     *,
@@ -171,41 +226,75 @@ def rewrite_scene_dialogue(
             "Escape any double quote inside text and keep each text value on one line.",
         ],
     }
-    messages = [
-        {"role": "system", "content": "You are an offline writer-room model. Produce only valid RFC 8259 JSON."},
-        {"role": "user", "content": json.dumps(prompt, ensure_ascii=False)},
-    ]
     try:
         import torch
     except Exception as exc:
         raise RuntimeError("Local screenwriter runtime lost torch during inference.") from exc
     device = next(model.parameters()).device
-    tokenized = tokenizer.apply_chat_template(messages, add_generation_prompt=True, return_tensors="pt")
-    generation_inputs, prompt_token_count = prepare_generation_inputs(tokenized, device)
     settings = screenwriter_config(cfg)
-    with torch.inference_mode():
-        generated = model.generate(
-            **generation_inputs,
-            max_new_tokens=max(128, int(settings.get("max_new_tokens", 768) or 768)),
-            do_sample=True,
-            temperature=max(0.1, float(settings.get("temperature", 0.75) or 0.75)),
-            pad_token_id=tokenizer.eos_token_id,
+    target_line_count = max(3, target_lines)
+    try:
+        max_attempts = max(1, min(5, int(settings.get("max_generation_attempts", 3) or 3)))
+    except (TypeError, ValueError):
+        max_attempts = 3
+    try:
+        base_temperature = max(0.15, float(settings.get("temperature", 0.75) or 0.75))
+    except (TypeError, ValueError):
+        base_temperature = 0.75
+    attempts: list[dict[str, Any]] = []
+    scene_id = coalesce_text(scene.get("scene_id", "scene")) or "scene"
+    for attempt_index in range(max_attempts):
+        attempt_prompt = dict(prompt)
+        if attempt_index:
+            attempt_prompt["format_retry"] = (
+                f"Previous output was unusable. Return exactly {target_line_count} complete JSON dialogue rows. "
+                f"Every speaker must exactly be one of: {characters}."
+            )
+        messages = [
+            {"role": "system", "content": "You are an offline writer-room model. Produce only valid RFC 8259 JSON."},
+            {"role": "user", "content": json.dumps(attempt_prompt, ensure_ascii=False)},
+        ]
+        tokenized = tokenizer.apply_chat_template(messages, add_generation_prompt=True, return_tensors="pt")
+        generation_inputs, prompt_token_count = prepare_generation_inputs(tokenized, device)
+        attempt_temperature = max(0.15, base_temperature - (0.25 * attempt_index))
+        with torch.inference_mode():
+            generated = model.generate(
+                **generation_inputs,
+                max_new_tokens=max(128, int(settings.get("max_new_tokens", 768) or 768)),
+                do_sample=True,
+                temperature=attempt_temperature,
+                pad_token_id=tokenizer.eos_token_id,
+            )
+        generated_text = tokenizer.decode(generated[0][prompt_token_count:], skip_special_tokens=True)
+        try:
+            payload = _json_payload(generated_text)
+            validated = validate_dialogue_rows(payload.get("lines"), characters, target_line_count)
+            if len(validated) >= 3:
+                if payload.get("format_recovered"):
+                    warn("Local screenwriter returned partially malformed JSON; recovered complete generated dialogue rows.")
+                if attempt_index:
+                    warn(f"{scene_id}: local screenwriter succeeded after format retry {attempt_index + 1}/{max_attempts}.")
+                return validated
+            reason = f"only {len(validated)} valid line(s) for the approved cast"
+        except RuntimeError as exc:
+            reason = str(exc)
+        attempts.append(
+            {
+                "attempt": attempt_index + 1,
+                "temperature": attempt_temperature,
+                "reason": reason,
+                "generated_output": generated_text[:16000],
+            }
         )
-    text = tokenizer.decode(generated[0][prompt_token_count:], skip_special_tokens=True)
-    payload = _json_payload(text)
-    if payload.get("format_recovered"):
-        warn("Local screenwriter returned partially malformed JSON; recovered complete generated dialogue rows.")
-    lines = payload.get("lines", []) if isinstance(payload.get("lines"), list) else []
-    validated: list[dict[str, str]] = []
-    for row in lines[: max(3, target_lines + 2)]:
-        if not isinstance(row, dict):
-            continue
-        speaker = coalesce_text(row.get("speaker", ""))
-        text = coalesce_text(row.get("text", ""))
-        if speaker in characters and text and len(text) <= 420:
-            validated.append({"speaker": speaker, "text": text})
-    if len(validated) < 3:
-        raise RuntimeError(
-            f"{coalesce_text(scene.get('scene_id', 'scene'))}: local screenwriter returned too few valid lines for the approved cast."
-        )
-    return validated
+        if attempt_index + 1 < max_attempts:
+            warn(
+                f"{scene_id}: local screenwriter output attempt {attempt_index + 1}/{max_attempts} is unusable "
+                f"({reason}); retrying with stricter JSON and speaker constraints."
+            )
+    diagnostic = write_screenwriter_failure_diagnostic(scene, characters, attempts)
+    relative_diagnostic = diagnostic.relative_to(PROJECT_ROOT)
+    last_reason = str(attempts[-1].get("reason", "unknown failure")) if attempts else "unknown failure"
+    raise RuntimeError(
+        f"{scene_id}: local screenwriter returned too few valid lines after {max_attempts} attempts "
+        f"({last_reason}). See {relative_diagnostic}."
+    )

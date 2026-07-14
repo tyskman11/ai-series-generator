@@ -231,7 +231,8 @@
       "model_dir": "tools/quality_models/text/Qwen__Qwen2.5-7B-Instruct",
       "local_files_only": true,
       "max_new_tokens": 768,
-      "temperature": 0.75
+      "temperature": 0.75,
+      "max_generation_attempts": 3
     },
     "profiles": {
       "live_action": {

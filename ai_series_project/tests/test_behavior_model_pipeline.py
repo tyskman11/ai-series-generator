@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import copy
+import contextlib
 import importlib.util
 import sys
+import types
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -152,6 +154,68 @@ class BehaviorModelPipelineTests(unittest.TestCase):
                 {"speaker": "Kenzie", "text": "Das klingt schon verdächtig."},
             ],
         )
+
+    def test_local_screenwriter_retries_and_resolves_unambiguous_name_variants(self) -> None:
+        class FakeTensor:
+            shape = (1, 2)
+
+            def to(self, _device: str):
+                return self
+
+        class FakeTokenizer:
+            eos_token_id = 0
+
+            def __init__(self) -> None:
+                self.outputs = [
+                    '{"lines":[{"speaker":"Unknown","text":"Nein."}]}',
+                    (
+                        '{"lines":['
+                        '{"speaker":"Babe","text":"Das war kein Fehler."},'
+                        '{"speaker":"Kenzie","text":"Dann erklär mir den Rauch."},'
+                        '{"speaker":"Babe Carano","text":"Der ist Teil des Plans."}'
+                        ']}'
+                    ),
+                ]
+
+            def apply_chat_template(self, *_args, **_kwargs):
+                return FakeTensor()
+
+            def decode(self, *_args, **_kwargs):
+                return self.outputs.pop(0)
+
+        class FakeModel:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def parameters(self):
+                return iter([types.SimpleNamespace(device="cpu")])
+
+            def generate(self, **_kwargs):
+                self.calls += 1
+                return [[0, 1, 2]]
+
+        tokenizer = FakeTokenizer()
+        model = FakeModel()
+        fake_torch = types.SimpleNamespace(inference_mode=contextlib.nullcontext)
+        cfg = {"local_generation": {"scriptwriter": {"max_generation_attempts": 2, "temperature": 0.75}}}
+        scene = {
+            "scene_id": "scene_0001",
+            "characters": ["Babe Carano", "Kenzie Bell"],
+            "writer_room_plan": {},
+        }
+
+        with mock.patch.object(local_screenwriter, "load_runtime", return_value=(tokenizer, model)), mock.patch.dict(
+            sys.modules, {"torch": fake_torch}
+        ):
+            rows = local_screenwriter.rewrite_scene_dialogue(
+                cfg,
+                scene=scene,
+                series_language="de",
+                target_lines=3,
+            )
+
+        self.assertEqual(model.calls, 2)
+        self.assertEqual([row["speaker"] for row in rows], ["Babe Carano", "Kenzie Bell", "Babe Carano"])
 
     def test_generate_episode_rewrites_dialogue_with_local_screenwriter_metadata(self) -> None:
         package = {

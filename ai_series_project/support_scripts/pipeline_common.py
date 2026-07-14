@@ -329,6 +329,7 @@ DEFAULT_CONFIG = {
             "local_files_only": True,
             "max_new_tokens": 768,
             "temperature": 0.75,
+            "max_generation_attempts": 3,
         },
         "profiles": {
             "live_action": {
