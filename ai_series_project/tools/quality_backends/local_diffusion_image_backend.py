@@ -13,6 +13,7 @@ from PIL import Image, ImageOps
 
 from backend_common import (
     PROJECT_DIR,
+    apply_torch_resource_limits,
     copy_if_needed,
     ensure_parent,
     load_backend_context,
@@ -365,6 +366,7 @@ def load_pipeline(require_identity_adapter: bool) -> tuple[Any, dict[str, Any]]:
             "The real local image backend requires diffusers and torch. Run 00_prepare_runtime.py first."
         ) from exc
 
+    resource_limits = apply_torch_resource_limits(torch)
     cuda_ready = bool(torch.cuda.is_available())
     allow_cpu = clean_text(os.environ.get("SERIES_IMAGE_ALLOW_CPU", "")).lower() in {"1", "true", "yes", "on"}
     allow_heavy_cpu = truthy_env("SERIES_IMAGE_ALLOW_HEAVY_CPU", False)
@@ -485,6 +487,7 @@ def load_pipeline(require_identity_adapter: bool) -> tuple[Any, dict[str, Any]]:
         "identity_adapter_dir": str(adapter_dir),
         "identity_adapter_loaded": adapter_loaded,
         "cpu_safe_mode": cpu_safe,
+        "resource_limits": resource_limits,
     }
     return pipeline, dict(_PIPELINE_META)
 
@@ -795,6 +798,7 @@ def shot_manifest(
             "dir": clean_text(pipeline_meta.get("model_dir", "")),
             "pipeline_class": clean_text(pipeline_meta.get("pipeline_class", "")),
         },
+        "resource_limits": pipeline_meta.get("resource_limits", {}),
         "finished_at": datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
     }
     manifest_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")

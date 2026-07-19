@@ -153,7 +153,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--offline",
         action="store_true",
-        help="Run the review fully offline. Public metadata and online face lookup are skipped and can be refreshed later.",
+        help="Run fully offline. This is the default and is retained for explicit scripts.",
+    )
+    parser.add_argument(
+        "--online",
+        action="store_true",
+        help="Explicitly allow public metadata and face-reference network lookups for this run.",
     )
     parser.add_argument(
         "--refresh-internet-lookup",
@@ -163,10 +168,23 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--deep-online-face-lookup",
         action="store_true",
-        help="Compatibility flag. Deep built-in public-image face lookup is now enabled by default unless --offline is used.",
+        help="Enable the slow public-image lookup together with --online. Never enabled by the web manager.",
     )
     add_shared_worker_arguments(parser)
     return parser.parse_args()
+
+
+def online_review_lookup_enabled(args: argparse.Namespace, environment: dict[str, str] | None = None) -> bool:
+    if bool(args.offline) and bool(args.online):
+        raise RuntimeError("Use either --offline or --online, not both.")
+    values = os.environ if environment is None else environment
+    network_disabled = str(values.get("SERIES_DISABLE_NETWORK", "")).strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    return bool(args.online and not network_disabled)
 
 
 def looks_auto_named(name: str) -> bool:
@@ -4156,7 +4174,7 @@ def main() -> None:
         hydrated = hydrate_face_clusters_from_previews(cfg, char_map)
         if hydrated:
             info(f"{hydrated} face clusters hydrated from existing preview folders.")
-        offline_mode = bool(args.offline)
+        offline_mode = not online_review_lookup_enabled(args)
         rollback_summary = rollback_low_confidence_internet_names(cfg, char_map)
         if int(rollback_summary.get("restored", 0) or 0):
             for item in list(rollback_summary.get("items", []) or [])[:8]:

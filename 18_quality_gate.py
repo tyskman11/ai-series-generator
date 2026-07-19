@@ -655,6 +655,48 @@ def backend_technical_metrics(package_payload: dict[str, Any]) -> list[dict[str,
     return merged
 
 
+def browser_worker_technical_metrics(cfg: dict[str, Any], episode_id: str) -> list[dict[str, Any]]:
+    """Load current optional frame metrics produced by authenticated browser workers."""
+    final_episode_id = str(episode_id or "").strip()
+    if not final_episode_id:
+        return []
+    report_path = quality_reports_root(cfg) / "browser_workers" / "browser_worker_metrics.json"
+    payload = read_json(report_path, {})
+    rows = payload.get("metrics", []) if isinstance(payload, dict) and isinstance(payload.get("metrics", []), list) else []
+    measured: list[dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict) or str(row.get("status", "")) != "measured":
+            continue
+        relative_path = str(row.get("source_path", "") or "").replace("\\", "/")
+        if final_episode_id not in Path(relative_path).parts:
+            continue
+        source_path = resolve_project_path(relative_path)
+        if not source_path.exists() or not source_path.is_file():
+            continue
+        try:
+            stat = source_path.stat()
+        except OSError:
+            continue
+        signature = hashlib.sha256(
+            f"{relative_path}|{int(stat.st_mtime_ns)}|{int(stat.st_size)}".encode("utf-8")
+        ).hexdigest()
+        if signature != str(row.get("source_signature", "")):
+            continue
+        measured.append(row)
+    if not measured:
+        return []
+    return [
+        technical_metric(
+            "browser_frame_quality_score",
+            "measured",
+            sum(clamp_score(row.get("score", 0.0)) for row in measured) / len(measured),
+            f"aggregated from {len(measured)} current remote-browser frame measurement(s)",
+            {"metric_row_count": len(measured), "episode_id": final_episode_id},
+            "browser_worker_canvas_v1",
+        )
+    ]
+
+
 def prefer_backend_metrics(default_rows: list[dict[str, Any]], backend_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     merged = {str(row.get("metric", "")): row for row in default_rows if isinstance(row, dict)}
     for row in backend_rows:
@@ -1342,7 +1384,11 @@ def scene_content_quality_checks(package_payload: dict[str, Any], cfg: dict[str,
             "edit decision list presence",
         ),
     ]
-    technical_metrics = prefer_backend_metrics(technical_metrics, backend_technical_metrics(package_payload))
+    browser_metrics = browser_worker_technical_metrics(cfg, str(package_payload.get("episode_id", "") or ""))
+    technical_metrics = prefer_backend_metrics(
+        technical_metrics,
+        [*backend_technical_metrics(package_payload), *browser_metrics],
+    )
     intro_status = season_intro_status(package_payload, cfg)
     return {
         "scene_count": len(rows),

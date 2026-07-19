@@ -12,6 +12,7 @@ from datetime import datetime
 from pathlib import Path
 
 from backend_common import (
+    apply_torch_resource_limits,
     ensure_parent,
     existing_file_path,
     find_project_local_ffmpeg,
@@ -305,6 +306,7 @@ def load_xtts_runtime(runtime_cfg: dict):
     try:
         import torch
 
+        apply_torch_resource_limits(torch)
         device = "cuda" if bool(torch.cuda.is_available()) else "cpu"
     except Exception:
         device = "cpu"
@@ -368,6 +370,7 @@ def load_voxcpm_runtime(runtime_cfg: dict):
     try:
         import torch
 
+        apply_torch_resource_limits(torch)
         device = "cuda" if bool(torch.cuda.is_available()) else "cpu"
     except Exception:
         device = "cpu"

@@ -1,0 +1,208 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <meta name="theme-color" content="#152c32">
+  <title>AI Series Production Status</title>
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="stylesheet" href="/styles.css?v=5">
+</head>
+<body>
+  <div class="atmosphere" aria-hidden="true"></div>
+  <main class="app-shell">
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">NAS production dashboard</p>
+        <h1>Series Control Room</h1>
+      </div>
+      <div class="top-actions">
+        <span id="connectionState" class="connection-pill">Connecting</span>
+        <span id="adminState" class="connection-pill" hidden>Administrator</span>
+        <button id="loginButton" class="button secondary" type="button">Administrator login</button>
+        <button id="logoutButton" class="button quiet" type="button" hidden>Log out</button>
+      </div>
+    </header>
+
+    <section class="status-ribbon" aria-live="polite">
+      <div>
+        <p class="eyebrow">Live generation</p>
+        <h2 id="liveTitle">Loading status</h2>
+        <p id="liveDetail" class="muted">Reading the shared NAS pipeline state.</p>
+      </div>
+      <div class="progress-wrap">
+        <div class="progress-track"><span id="progressBar"></span></div>
+        <strong id="progressText">0%</strong>
+      </div>
+      <div><span class="muted">ETA</span><strong id="etaText">calculating</strong></div>
+    </section>
+
+    <section class="public-dashboard">
+      <div class="metric-grid">
+        <article class="metric-card teal"><span>Generated episodes</span><strong id="episodeCount">0</strong></article>
+        <article class="metric-card amber"><span>Finished gate passed</span><strong id="finishedCount">0</strong></article>
+        <article class="metric-card coral"><span>Average quality</span><strong id="qualityAverage">0%</strong></article>
+        <article class="metric-card slate"><span>Active workers</span><strong id="workerCount">0</strong></article>
+      </div>
+      <div class="split-grid">
+        <article class="panel">
+          <div class="panel-heading"><div><p class="eyebrow">Pipeline</p><h2>Current activity</h2></div></div>
+          <div id="publicActivity" class="detail-grid"></div>
+        </article>
+        <article class="panel">
+          <div class="panel-heading"><div><p class="eyebrow">Read-only</p><h2>NAS statistics</h2></div></div>
+          <div id="publicSummary" class="asset-summary"></div>
+          <p class="muted compact">Opening this page never changes project data. Administration requires login.</p>
+        </article>
+      </div>
+    </section>
+
+    <section id="adminArea" hidden>
+      <div class="admin-banner">
+        <div><p class="eyebrow">Authenticated administration</p><strong>GUI-equivalent NAS management and offline step 05 review</strong></div>
+        <div class="button-row">
+          <button id="refreshButton" class="button secondary" type="button">Refresh administration</button>
+          <button id="startPipelineButton" class="button primary" type="button">Start pipeline on this PC</button>
+          <button id="stopPipelineButton" class="button danger" type="button">Stop local web pipeline</button>
+        </div>
+      </div>
+
+      <section class="resource-control panel" aria-labelledby="resourceHeading">
+        <div class="resource-heading">
+          <div>
+            <p class="eyebrow">Execution host</p>
+            <h2 id="resourceHeading">Local resource budget</h2>
+            <p class="muted compact">The native pipeline runs on <strong id="executionHost">this web-server PC</strong>. A remote browser can contribute only the compatible frame checks configured below. Project files remain on the NAS.</p>
+          </div>
+          <span id="runningResourceSummary" class="status-badge">No web-started pipeline</span>
+        </div>
+        <div class="resource-grid">
+          <label>Profile
+            <select id="resourceProfile">
+              <option value="eco">Eco</option>
+              <option value="balanced" selected>Balanced</option>
+              <option value="performance">Performance</option>
+              <option value="custom">Custom</option>
+            </select>
+          </label>
+          <label>CPU core budget <output id="cpuPercentValue" for="cpuPercent">65%</output>
+            <input id="cpuPercent" type="range" min="10" max="100" step="5" value="65">
+            <span id="cpuThreadHint" class="range-hint">Calculated from this host's logical CPUs.</span>
+          </label>
+          <label>GPU memory budget <output id="gpuMemoryPercentValue" for="gpuMemoryPercent">75%</output>
+            <input id="gpuMemoryPercent" type="range" min="0" max="100" step="5" value="75">
+            <span class="range-hint">0% disables CUDA. This limits VRAM, not exact GPU utilization.</span>
+          </label>
+          <label>Process priority
+            <select id="processPriority">
+              <option value="normal" selected>Normal</option>
+              <option value="low">Low</option>
+            </select>
+          </label>
+        </div>
+      </section>
+
+      <section class="browser-worker-control panel" aria-labelledby="browserWorkerHeading">
+        <div class="resource-heading">
+          <div>
+            <p class="eyebrow">Remote browser assist</p>
+            <h2 id="browserWorkerHeading">Use this browser PC</h2>
+            <p class="muted compact">While this page stays open, the remote PC can calculate frame exposure/detail metrics. The PWA shell remains cached; native generation models do not run in the browser.</p>
+          </div>
+          <span id="browserWorkerStatus" class="status-badge">Offline</span>
+        </div>
+        <div class="browser-worker-grid">
+          <label>Browser profile
+            <select id="browserWorkerProfile">
+              <option value="eco">Eco</option>
+              <option value="balanced" selected>Balanced</option>
+              <option value="performance">Performance</option>
+              <option value="custom">Custom</option>
+            </select>
+          </label>
+          <label>Browser CPU intensity <output id="browserCpuValue" for="browserCpuIntensity">60%</output>
+            <input id="browserCpuIntensity" type="range" min="10" max="100" step="5" value="60">
+            <span class="range-hint">Controls sample resolution and idle time between frame checks.</span>
+          </label>
+          <div class="browser-worker-facts">
+            <span>PWA cache</span><strong id="pwaCacheStatus">Checking</strong>
+            <span>WebGPU</span><strong id="browserGpuStatus">Checking</strong>
+            <span>Completed</span><strong id="browserCompletedTasks">0</strong>
+          </div>
+          <div class="button-row browser-worker-actions">
+            <button id="startBrowserWorkerButton" class="button primary" type="button">Enable this browser</button>
+            <button id="stopBrowserWorkerButton" class="button secondary" type="button" disabled>Disconnect browser</button>
+            <button id="queueBrowserChecksButton" class="button secondary" type="button" disabled>Queue recent frame checks</button>
+          </div>
+        </div>
+        <p id="browserWorkerDetail" class="muted compact">The browser worker reconnects when this cached page is reopened and administrator login is still valid.</p>
+      </section>
+
+      <nav class="tabs" aria-label="Administrator views">
+        <button class="tab active" data-tab="episodes" type="button">Episodes</button>
+        <button class="tab" data-tab="assets" type="button">Intros &amp; outros</button>
+        <button class="tab" data-tab="review" type="button">Step 05 review</button>
+        <button class="tab" data-tab="storage" type="button">Project data</button>
+        <button class="tab" data-tab="logs" type="button">Local pipeline log</button>
+      </nav>
+
+      <section id="tab-episodes" class="tab-panel active">
+        <article class="panel">
+          <div class="panel-heading action-heading"><div><p class="eyebrow">Generated output</p><h2>Episodes</h2></div>
+            <div class="button-row"><button id="playEpisodeButton" class="button secondary" type="button">Play selected</button><button class="button secondary" data-mutate="episodes:archive" type="button">Archive checked</button><button class="button danger" data-mutate="episodes:delete" type="button">Delete checked</button></div>
+          </div>
+          <div class="table-scroll"><table><thead><tr><th></th><th>Episode</th><th>Readiness</th><th>Quality</th><th>Realism</th><th>Scenes</th><th>Updated</th></tr></thead><tbody id="episodeRows"></tbody></table></div>
+          <div id="episodeDetails" class="detail-drawer muted">Select an episode.</div>
+        </article>
+      </section>
+
+      <section id="tab-assets" class="tab-panel">
+        <article class="panel">
+          <div class="panel-heading action-heading"><div><p class="eyebrow">Reusable season output</p><h2>Intros &amp; outros</h2></div>
+            <div class="button-row"><button id="playAssetButton" class="button secondary" type="button">Play selected</button><button class="button secondary" data-mutate="assets:archive" type="button">Archive checked</button><button class="button danger" data-mutate="assets:delete" type="button">Delete checked</button></div>
+          </div>
+          <div class="table-scroll"><table><thead><tr><th></th><th>Asset</th><th>Season</th><th>Kind</th><th>Status</th><th>Duration</th><th>Updated</th></tr></thead><tbody id="assetRows"></tbody></table></div>
+          <div id="assetDetails" class="detail-drawer muted">Select an intro or outro.</div>
+        </article>
+      </section>
+
+      <section id="tab-review" class="tab-panel">
+        <div class="split-grid review-grid">
+          <article class="panel">
+            <div class="panel-heading action-heading"><div><p class="eyebrow">Offline only</p><h2>Face assignments</h2></div><div class="button-row"><label class="inline-check"><input id="includeNamed" type="checkbox"> Include named</label><button id="loadReviewButton" class="button secondary" type="button">Load review cases</button></div></div>
+            <div id="reviewSummary" class="asset-summary"></div>
+            <div class="table-scroll"><table><thead><tr><th></th><th>Cluster</th><th>Name</th><th>Samples</th><th>Scenes</th><th>Role hint</th></tr></thead><tbody id="reviewRows"></tbody></table></div>
+          </article>
+          <article class="panel review-editor">
+            <div><p class="eyebrow">Existing NAS evidence</p><h2 id="reviewTitle">Select a face cluster</h2></div>
+            <div class="preview-stage"><img id="reviewPreview" alt="Selected face review preview" hidden><p id="reviewPreviewEmpty" class="muted">No preview selected.</p></div>
+            <label for="reviewName">Character name</label><input id="reviewName" list="knownNames" autocomplete="off"><datalist id="knownNames"></datalist>
+            <label class="inline-check"><input id="reviewPriority" type="checkbox"> Prioritized main character</label>
+            <div class="button-row"><button id="assignReviewButton" class="button primary" type="button">Save assignment</button><button id="statistReviewButton" class="button secondary" type="button">Mark background extra</button><button id="nofaceReviewButton" class="button danger" type="button">Not a face</button></div>
+            <hr><label for="renameFrom">Rename existing character everywhere</label><div class="rename-grid"><input id="renameFrom" placeholder="Current name"><input id="renameTo" placeholder="Corrected name"><button id="renameReviewButton" class="button secondary" type="button">Rename</button></div>
+          </article>
+        </div>
+      </section>
+
+      <section id="tab-storage" class="tab-panel">
+        <article class="panel">
+          <div class="panel-heading action-heading"><div><p class="eyebrow">NAS contents</p><h2>Project data</h2></div><div class="button-row"><button id="loadStorageButton" class="button secondary" type="button">Scan project data</button><button id="editJsonButton" class="button secondary" type="button">Edit selected JSON</button><button class="button secondary" data-mutate="storage:archive" type="button">Archive checked</button><button class="button danger" data-mutate="storage:delete" type="button">Delete checked</button></div></div>
+          <div class="table-scroll tall"><table><thead><tr><th></th><th>Category</th><th>Path</th><th>Kind</th><th>Size</th><th>Items</th><th>Updated</th></tr></thead><tbody id="storageRows"></tbody></table></div>
+        </article>
+      </section>
+
+      <section id="tab-logs" class="tab-panel"><article class="panel"><div class="panel-heading action-heading"><div><p class="eyebrow">This PC only</p><h2>Web-started pipeline log</h2></div><button id="loadLogButton" class="button secondary" type="button">Refresh log</button></div><pre id="pipelineLog" class="terminal-log">No log loaded.</pre></article></section>
+    </section>
+
+    <footer><span id="lastRefresh">Waiting for status</span><span>Files remain on the NAS · network downloads disabled for web-started work</span></footer>
+  </main>
+
+  <dialog id="loginDialog" class="dialog-card"><form id="loginForm" method="dialog"><p class="eyebrow">Administrator</p><h2>Unlock project management</h2><p class="muted">Public statistics remain read-only. Credentials are verified against the salted NAS-local hash.</p><label for="usernameInput">Username</label><input id="usernameInput" autocomplete="username" required><label for="passwordInput">Password</label><input id="passwordInput" type="password" autocomplete="current-password" required><p id="loginError" class="form-error"></p><div class="dialog-actions"><button id="cancelLoginButton" class="button quiet" type="button">Cancel</button><button class="button primary" type="submit">Log in</button></div></form></dialog>
+  <dialog id="mediaDialog" class="media-dialog"><div class="media-heading"><h2 id="mediaTitle">NAS video</h2><button id="closeMediaButton" class="button quiet" type="button">Close</button></div><video id="mediaPlayer" controls playsinline preload="metadata"></video><p class="muted compact">The video is streamed inline with no-store headers; no project download action is offered.</p></dialog>
+  <dialog id="jsonDialog" class="json-dialog"><div class="media-heading"><h2 id="jsonTitle">JSON database</h2><button id="closeJsonButton" class="button quiet" type="button">Close</button></div><textarea id="jsonEditor" spellcheck="false"></textarea><div class="dialog-actions"><span id="jsonStatus" class="muted"></span><button id="saveJsonButton" class="button primary" type="button">Save with backup</button></div></dialog>
+  <dialog id="confirmDialog" class="dialog-card"><h2 id="confirmTitle">Confirm action</h2><p id="confirmMessage" class="muted"></p><label for="confirmationInput">Confirmation</label><input id="confirmationInput" autocomplete="off"><div class="dialog-actions"><button class="button quiet" type="button" onclick="this.closest('dialog').close()">Cancel</button><button id="confirmActionButton" class="button danger" type="button">Confirm</button></div></dialog>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <script src="/app.js?v=5"></script>
+</body>
+</html>

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import importlib.util
+import json
 import sys
 import tempfile
 import unittest
@@ -203,6 +205,50 @@ class FinishedEpisodeModePipelineTests(unittest.TestCase):
         self.assertEqual(len(metrics), 1)
         self.assertEqual(metrics[0]["status"], "measured")
         self.assertEqual(metrics[0]["score"], 0.84)
+
+    def test_quality_gate_reads_current_browser_frame_metrics(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            frame = root / "generation" / "storyboard_assets" / "folge_001" / "scene_0001" / "frame.png"
+            frame.parent.mkdir(parents=True)
+            frame.write_bytes(b"frame")
+            stat = frame.stat()
+            source_path = frame.as_posix()
+            signature = hashlib.sha256(
+                f"{source_path}|{int(stat.st_mtime_ns)}|{int(stat.st_size)}".encode("utf-8")
+            ).hexdigest()
+            reports = root / "quality_reports"
+            metrics_path = reports / "browser_workers" / "browser_worker_metrics.json"
+            metrics_path.parent.mkdir(parents=True)
+            metrics_path.write_text(
+                json.dumps(
+                    {
+                        "metrics": [
+                            {
+                                "metric": "browser_frame_quality_score",
+                                "status": "measured",
+                                "score": 0.86,
+                                "source_path": source_path,
+                                "source_signature": signature,
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            metrics = STEP18.browser_worker_technical_metrics(
+                {"paths": {"quality_reports": str(reports)}},
+                "folge_001",
+            )
+            frame.write_bytes(b"changed-frame")
+            stale_metrics = STEP18.browser_worker_technical_metrics(
+                {"paths": {"quality_reports": str(reports)}},
+                "folge_001",
+            )
+
+        self.assertEqual(metrics[0]["status"], "measured")
+        self.assertEqual(metrics[0]["score"], 0.86)
+        self.assertEqual(stale_metrics, [])
 
     def test_regeneration_scopes_are_precise_and_blocked_scopes_do_not_loop(self) -> None:
         self.assertEqual(STEP19.regeneration_scope_from_entry({"regeneration_hints": {"rerun_voice_clone": True}}), "voice_only")

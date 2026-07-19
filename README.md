@@ -8,6 +8,7 @@
 - [Project Layout](#project-layout)
 - [Pipeline Order](#pipeline-order)
 - [Quick Start](#quick-start)
+- [Web Manager](#web-manager)
 - [Local Model-Only Generation](#local-model-only-generation)
 - [Quality-First Mode](#quality-first-mode)
 - [Finished Episode Mode](#finished-episode-mode)
@@ -59,8 +60,8 @@ The project is intentionally strict about the difference between an intermediate
 - fresh GitHub clones include the required `ai_series_project/tmp` placeholder so the local test suite can run without manual folder creation
 - optional analysis/export tools are now registered as a generation toolkit and run automatically at pre-training, pre-generation, post-story, post-render, post-quality-gate, and post-export phases
 - `05_review_unknowns.py` labels known-character quick assignments with both merged face-cluster count and available sample evidence so one identity cluster is not mistaken for one appearance
-- `05_review_unknowns.py` now performs a public metadata/name lookup before manual review to complete partial labels such as `Babe` to `Babe Carano`; name completion is only written at `95%` confidence or higher, and older lower-confidence completions are rolled back on the next run
-- `05_review_unknowns.py` can optionally upload preview face crops to a configured lookup command or HTTP endpoint before manual review; when no private service is configured, it also tries a built-in public-image lookup that downloads public character images and compares them locally without login/API credentials
+- `05_review_unknowns.py` is offline by default: it uses only existing NAS maps, previews, transcripts, and embeddings unless `--online` is supplied explicitly; this prevents an ordinary review or web session from downloading public reference images or uploading face crops
+- optional public metadata/custom face lookup remains available only through the explicit `--online` mode; name completion still requires at least `95%` confidence, while `SERIES_DISABLE_NETWORK=1` overrides `--online` for controlled offline runs
 - `05_review_unknowns.py --edit-names` opens a Tk name editor for correcting existing face and speaker names directly
 - `05_review_unknowns.py --edit-names` also synchronizes slugged character artifacts after a rename: voice-model JSON files, foundation manifests, voice/reference folders, checkpoints, adapters, fine-tunes, and backend-run folders are moved to the new character slug, while conflicting old JSON files are archived under `ai_series_project/training/foundation/logs/renamed_character_artifacts/`
 - `05_review_unknowns.py` also scans existing `statist`/background clusters against known local identity embeddings before opening manual review, so wrongly parked known faces can be rescued automatically
@@ -114,8 +115,8 @@ Run the numbered scripts from the repository root.
 
 ### Repository Root
 
-- `00_prepare_runtime.py` to `25_generate_season_assets.py`: the only numbered main pipeline scripts
-- `gui.py`: non-numbered central project manager GUI for generated outputs, imports, JSON databases, training, runtime, logs, and exports
+- `00_prepare_runtime.py` to `26_web_manager.py`: the only numbered main pipeline and administration scripts
+- `gui.py`: unchanged non-numbered central CLI/Tk desktop manager for generated outputs, imports, JSON databases, training, runtime, logs, and exports
 - `README.md`: public root overview for the whole project
 - `ai_series_project/`: project-internal data, config, runtime, support code, tests, tools, training, and outputs
 
@@ -141,7 +142,7 @@ Run the numbered scripts from the repository root.
 - `02_split_scenes.py`
 - `03_diarize_and_transcribe.py`
 - `04_link_faces_and_speakers.py`
-- `05_review_unknowns.py`: review GUI plus full local scan, false-face cleanup, public metadata name completion, built-in public-image face lookup, optional custom online face lookup, speaker-face auto-linking, GUI name editor, and known-face/statist rescue before manual input
+- `05_review_unknowns.py`: offline-by-default review GUI plus local scan, false-face cleanup, speaker-face auto-linking, GUI name editor, and known-face/statist rescue; public metadata/custom image lookup is opt-in with `--online`
 - `06_manage_character_relationships.py`: Tk GUI for character groups, relationships, and multiple source inputs
 - `07_build_dataset.py`
 - `08_train_series_model.py`: trains the series/screenwriter model and refreshes the behavior model in one numbered step
@@ -162,7 +163,8 @@ Run the numbered scripts from the repository root.
 - `23_generate_finished_episodes.py`: batch finished-episode generation
 - `24_process_next_episode.py`: full inbox-to-finished-episode orchestrator
 - `25_generate_season_assets.py`: explicitly generates and quality-checks a season intro and/or outro without rendering an episode
-- `gui.py`: CLI/Tk manager for generated episodes, season assets, imported data, JSON databases, training/runtime workspaces, logs, reports, and safe project-local cleanup
+- `26_web_manager.py`: serves public read-only statistics plus authenticated NAS administration, offline step 05 review, host resource profiles, and an optional cached remote-browser frame-metrics worker; it can start/stop only its own local step-24 process
+- `gui.py`: CLI/Tk desktop manager for generated episodes, season assets, imported data, JSON databases, training/runtime workspaces, logs, reports, and safe project-local cleanup
 
 ### Support Scripts Inside `ai_series_project/support_scripts/`
 
@@ -282,7 +284,7 @@ To force a completely offline review run:
 python 05_review_unknowns.py --offline
 ```
 
-Without `--offline`, `05_review_unknowns.py` is online-first: it tries public text metadata, the built-in no-login public-image face lookup, and any configured face-image lookup backend before local/offline review checks. If the internet or lookup backend is unavailable, the script warns and continues with local review data. `--no-internet-lookup` only disables the public text metadata lookup; use `--offline` when no online lookup should be attempted at all. Deep public-image matching is enabled by default, so Torch/FaceNet may be loaded during this step.
+`05_review_unknowns.py` is offline by default and reads only evidence already stored inside `ai_series_project/`. Use `--online` explicitly when public text metadata or configured/public-image face lookup is wanted. `--no-internet-lookup` can still disable only text metadata during an online run, while `SERIES_DISABLE_NETWORK=1` forces offline behavior even if `--online` was supplied. Deep public-image matching therefore never starts during an ordinary review or from `26_web_manager.py`.
 
 To correct existing face and speaker names in a small GUI:
 
@@ -414,6 +416,72 @@ python gui.py --episode-id folge_05 --delete --confirm folge_05
 Deletion is limited to generated outputs under `ai_series_project/generation/`. It does not delete source episodes, reviewed character maps, relationships, training datasets, or model checkpoints.
 
 Season intros/outros are managed separately from generated episode deliveries. `--assets` lists the reusable assets found under `ai_series_project/generation/season_assets/` plus configured season placeholders. `--asset-id season_01_intro --archive-asset --confirm season_01_intro` archives a generated intro/outro asset, and `--delete-asset` deletes only that generated season asset folder. Approved source intro files configured under `ai_series_project/assets/season_intros/` remain untouched.
+
+## Web Manager
+
+`26_web_manager.py` runs a separate responsive website without changing the behavior or arguments of `gui.py`. A phone, tablet, notebook, or other PC only needs a browser. All databases, previews, videos, logs, credentials, and generated outputs remain under the shared `ai_series_project/` folder on the NAS.
+
+Configure the administrator once on the NAS project host. The password is never written in plain text; only a salted PBKDF2 hash is stored in the ignored file `ai_series_project/runtime/web/admin_credentials.json`:
+
+```powershell
+python 26_web_manager.py --configure-admin
+```
+
+Start the website for the current PC and trusted LAN/VPN clients:
+
+```powershell
+python 26_web_manager.py
+```
+
+On a headless host:
+
+```powershell
+python 26_web_manager.py --host 0.0.0.0 --port 8765 --no-browser
+```
+
+```bash
+python3 26_web_manager.py --host 0.0.0.0 --port 8765 --no-browser
+```
+
+Without login, HTML and `/api/public/overview` expose only aggregate statistics, pipeline progress, current numbered step, episode ID, worker count, last update, and ETA. Merely opening or refreshing the page never writes project data. Source filenames, filesystem paths, logs, videos, databases, and review evidence remain administrator-only.
+
+After administrator login, the browser provides the same path-restricted episode, intro/outro, project-data, JSON-backup, archive, delete, video-review, and log functions as the desktop manager. It also provides an offline step 05 face-review page using only previews already stored on the NAS. Assigning or renaming a character is an explicit authenticated project mutation and is blocked while the shared pipeline is active.
+
+The start button launches only `24_process_next_episode.py` on the PC running `26_web_manager.py`. The computer executing `26_web_manager.py` is always the compute host, regardless of which remote browser presses Start. For example, if the repository is mounted from the NAS but `26` runs on PC1, generation uses PC1's CPU/GPU and keeps the files on the NAS. If `26` runs on the NAS, the NAS computes. To use PC2's hardware, run `26_web_manager.py` on PC2 and open PC2's Web Manager address.
+
+Authenticated administrators can choose a host resource profile before starting:
+
+- `Eco`: 35% CPU core budget, 50% GPU memory budget, low process priority
+- `Balanced`: 65% CPU core budget, 75% GPU memory budget, normal priority
+- `Performance`: all logical CPU cores, 95% GPU memory budget, normal priority
+- `Custom`: separate CPU-core and GPU-memory sliders plus low/normal process priority; `0%` GPU disables CUDA for that run
+
+The CPU budget is enforced through inherited process affinity and common native/AI thread-pool limits. The GPU slider is a PyTorch VRAM budget, not an exact GPU-utilization throttle; CUDA kernels may still briefly use the full GPU compute engine while staying inside the selected memory fraction. Image, video, and voice backends apply the inherited PyTorch budget and record it in their backend metadata where available. The resource controller itself is `ai_series_project/support_scripts/resource_limited_pipeline.py` and permits only the numbered step-24 entry point.
+
+The child process receives `SERIES_DISABLE_NETWORK=1`, `SERIES_DISABLE_DOWNLOADS=1`, `HF_HUB_OFFLINE=1`, `TRANSFORMERS_OFFLINE=1`, `DIFFUSERS_OFFLINE=1`, and `HF_DATASETS_OFFLINE=1`; missing local models therefore produce a diagnostic instead of a download. The stop button can terminate only that web-server-owned local process tree. It cannot stop a manually started process or a worker running on another NAS/PC.
+
+### Cached Browser Worker
+
+After administrator login, `Use this browser PC` can register the visiting computer as a temporary browser worker. The page is a PWA: its HTML, CSS, JavaScript, manifest, and worker shell are cached by a service worker. The browser preference is remembered and reconnects automatically when the same page is reopened while the administrator session is still valid.
+
+The browser worker currently performs real browser-compatible frame measurements:
+
+- generated JPG/PNG/WebP frames are streamed from authenticated NAS endpoints directly into memory
+- `OffscreenCanvas` calculates luminance, exposure clipping, variance, and edge/detail signals on the visiting PC
+- Eco/Balanced/Performance/Custom profiles control sample resolution and idle time through the browser CPU-intensity slider
+- results are stored under `ai_series_project/generation/quality_reports/browser_workers/browser_worker_metrics.json`
+- `18_quality_gate.py` imports only measurements whose source path, size, and modification signature still match the current episode frame
+- no source path is sent through a public API, no frame is uploaded to a third party, and API/media responses remain `no-store`
+
+Press `Queue recent frame checks` to enqueue up to 48 recent generated frames. The worker returns unfinished leases when it disconnects, and the server reclaims a missing heartbeat after 45 seconds. The page must remain open for calculations; browser caches preserve code, not a continuously running process. The PWA cache requires HTTPS or localhost because normal browsers do not permit service-worker installation on an insecure remote HTTP origin. Through a VPN, terminate HTTPS at a trusted reverse proxy before the Web Manager.
+
+WebGPU availability is displayed for capability planning, but the current frame metric uses Canvas/CPU. Qwen, Wan, VoxCPM/XTTS, Wav2Lip, and the Python/CUDA pipeline are not falsely advertised as browser workloads. Those native generation tasks still run on the computer hosting `26_web_manager.py` or another normal project worker.
+
+Authentication uses an HTTP-only same-site session cookie with a 12-hour expiry, rate-limited login attempts, salted password verification, an additional same-origin mutation header, no CORS, and no-store headers for API/media responses. Set `SERIES_WEB_SECURE_COOKIE=1` when the server is accessed exclusively through HTTPS.
+
+The built-in server intentionally provides HTTP rather than managing certificates. For access while travelling, place it behind a trusted VPN or an HTTPS reverse proxy on the host/network. Do not forward port `8765` directly from the public internet. A reverse proxy should forward to `127.0.0.1:8765`; the remote browser still needs no project installation.
+
+The optional browser worker contributes CPU-based frame-quality measurements while its page is open. It cannot turn the visiting PC into a CUDA/Python generation worker because the local models and native runtimes cannot execute as a browser-only workload. A PC that should contribute image/video/voice/lip-sync generation must run `26_web_manager.py` itself or join through the normal shared-worker runtime.
 
 ## Local Model-Only Generation
 
@@ -775,7 +843,7 @@ python -m unittest discover -s ai_series_project\tests -v
 Useful smoke checks:
 
 ```powershell
-python -m py_compile 00_prepare_runtime.py 03_diarize_and_transcribe.py 04_link_faces_and_speakers.py 05_review_unknowns.py 06_manage_character_relationships.py 08_train_series_model.py 09_prepare_foundation_training.py 10_train_foundation_models.py 14_generate_episode.py 15_generate_storyboard_assets.py 16_run_storyboard_backend.py 17_render_episode.py 18_quality_gate.py 19_regenerate_weak_scenes.py 20_build_series_bible.py 21_export_package.py 22_refresh_after_manual_review.py 23_generate_finished_episodes.py 24_process_next_episode.py 25_generate_season_assets.py gui.py ai_series_project\support_scripts\behavior_model.py ai_series_project\support_scripts\local_screenwriter.py ai_series_project\support_scripts\pipeline_common.py ai_series_project\support_scripts\generation_toolkit.py ai_series_project\support_scripts\production_diagnostics.py ai_series_project\support_scripts\configure_quality_backends.py ai_series_project\support_scripts\prepare_quality_backends.py ai_series_project\support_scripts\manage_character_relationships.py ai_series_project\tools\quality_backends\local_diffusion_image_backend.py ai_series_project\tools\quality_backends\local_wan_video_backend.py ai_series_project\tools\quality_backends\local_ltx_video_backend.py ai_series_project\tools\quality_backends\local_voxcpm_voice_backend.py ai_series_project\tools\quality_backends\local_wav2lip_backend.py ai_series_project\tools\quality_backends\master_runner.py ai_series_project\tools\quality_backends\project_local_voice_backend.py
+python -m py_compile 00_prepare_runtime.py 03_diarize_and_transcribe.py 04_link_faces_and_speakers.py 05_review_unknowns.py 06_manage_character_relationships.py 08_train_series_model.py 09_prepare_foundation_training.py 10_train_foundation_models.py 14_generate_episode.py 15_generate_storyboard_assets.py 16_run_storyboard_backend.py 17_render_episode.py 18_quality_gate.py 19_regenerate_weak_scenes.py 20_build_series_bible.py 21_export_package.py 22_refresh_after_manual_review.py 23_generate_finished_episodes.py 24_process_next_episode.py 25_generate_season_assets.py 26_web_manager.py gui.py ai_series_project\support_scripts\web_manager.py ai_series_project\support_scripts\resource_limited_pipeline.py ai_series_project\support_scripts\behavior_model.py ai_series_project\support_scripts\local_screenwriter.py ai_series_project\support_scripts\pipeline_common.py ai_series_project\support_scripts\generation_toolkit.py ai_series_project\support_scripts\production_diagnostics.py ai_series_project\support_scripts\configure_quality_backends.py ai_series_project\support_scripts\prepare_quality_backends.py ai_series_project\support_scripts\manage_character_relationships.py ai_series_project\tools\quality_backends\backend_common.py ai_series_project\tools\quality_backends\local_diffusion_image_backend.py ai_series_project\tools\quality_backends\local_wan_video_backend.py ai_series_project\tools\quality_backends\local_ltx_video_backend.py ai_series_project\tools\quality_backends\local_voxcpm_voice_backend.py ai_series_project\tools\quality_backends\local_wav2lip_backend.py ai_series_project\tools\quality_backends\master_runner.py ai_series_project\tools\quality_backends\project_local_voice_backend.py
 ```
 
 ## Known Limitations
@@ -796,9 +864,10 @@ python -m py_compile 00_prepare_runtime.py 03_diarize_and_transcribe.py 04_link_
 - existing bad voice maps or voice models created before the speech gate should be regenerated by rerunning `03` through `10` for the affected episodes/characters
 - behavior analysis is heuristic and depends on reviewed transcript/speaker quality; it improves scene planning metadata but is not a replacement for a real large generative model or dedicated acting/performance evaluation
 - automatic source-language detection is multi-probe and configurable, but short, noisy, musical, or multilingual source material can still need a local `transcription.language` override and a rerun of `03`/`04`
-- public metadata and public-image lookup in `05_review_unknowns.py` are assistive only; ambiguous character matches and low-confidence names still require manual review
+- public metadata and public-image lookup in `05_review_unknowns.py` are disabled by default; explicit `--online` lookup remains assistive only and ambiguous/low-confidence names still require manual review
 - character-style similarity, post-render ASR matching, and lip-sync confidence are reported as `unavailable` metrics until real external backends return measurable scores
 - Finished Episode Mode can plan real TV-episode structure, shots, manifests, and gates, but it still depends on the configured local image/video/voice/lip-sync models producing real media successfully
+- the numbered Web Manager serves HTTP only; safe travel access and PWA caching require a trusted VPN plus HTTPS reverse proxy, and a browser-only client can currently contribute frame metrics but not native CPU/GPU model generation
 - the quality gate can reject placeholder or incomplete media, but it cannot invent missing reference voices, rights-safe face anchors, set assets, checkpoints, or backend outputs
 - when backend scene-video or scene-audio generation still fails in quality-first mode, rendering stops with explicit missing-output details instead of exporting a fake final episode
 - if external runners fail repeatedly, the quality gate will keep rejecting the episode even when the render technically finishes
@@ -820,7 +889,9 @@ python -m py_compile 00_prepare_runtime.py 03_diarize_and_transcribe.py 04_link_
 - `22_refresh_after_manual_review.py`, `23_generate_finished_episodes.py`, and `24_process_next_episode.py` now begin with `00_prepare_runtime.py`
 - the documented order is now setup/downloads first, then review, relationships, dataset/training, backend fine-tunes, then generate/render/gate/export
 - the orchestrators now export `21_export_package.py` after `20_build_series_bible.py` so finished packages are the final pipeline artifact
-- `gui.py` provides the central CLI/Tk project manager: it refreshes generated-episode/live-run status on demand, manages reusable season intro/outro assets, imported data, JSON databases, training/runtime workspaces, logs, exports, and GUI archives, validates/edits eligible JSON with project-local backups, and performs path-restricted archive/delete actions only after explicit confirmation
+- `gui.py` remains the central CLI/Tk desktop manager; `26_web_manager.py` separately provides public read-only statistics and authenticated NAS administration without changing desktop behavior
+- web-started step-24 runs now execute on the computer hosting `26_web_manager.py` with selectable Eco/Balanced/Performance/Custom CPU-core, GPU-memory, and process-priority budgets; NAS project storage remains shared and no browser client is treated as a compute worker
+- the Web Manager now ships a cacheable PWA shell and authenticated temporary browser worker that performs real Canvas-based frame quality measurements, persists source-signed metrics on the NAS, reconnects from a remembered preference, and returns leases after a closed page
 - `24_process_next_episode.py` now processes the whole pending source backlog, including raw files imported before the run and scene folders left behind by aborted `02/03/04` steps; `--single` or `--max-source-episodes` can cap the batch when needed
 - release-gate auto-retry now calls `19_regenerate_weak_scenes.py` from the repository root layout correctly after the root/`ai_series_project` split
 - `23_generate_finished_episodes.py` and `24_process_next_episode.py` now call the generation toolkit so optional tools actively feed continuity, voice, pacing, subtitle, review, metadata, and export quality signals into finished-episode generation
@@ -835,7 +906,7 @@ python -m py_compile 00_prepare_runtime.py 03_diarize_and_transcribe.py 04_link_
 - voice-clone references are now filtered across transcription, face/speaker linking, manual-review auto-linking, foundation-pack creation, render voice plans, and the project-local VoxCPM2 backend so music/noise cannot silently become a character voice
 - foundation-pack creation now requires visible-character evidence for frame/video exports and direct character evidence for automatic voice exports; subtitle/channel boilerplate such as credits, URLs, "thanks for watching", uploaded subtitle markers, or wrong-language rows in explicit-language projects are rejected before they can become voice samples
 - step `04` now defaults to high-recall face detection with a denser frame sample, more valid faces per frame, a higher per-scene cluster budget, and a versioned scene-cache refresh; step `05` shows cluster count separately from review sample evidence
-- `05_review_unknowns.py` now supports `--offline`, `--edit-names`, built-in public-image face lookup without login/API credentials, optional uploaded face-crop lookup, `95%` minimum public name completion, cleanup/rollback of older low-confidence public metadata renames, and stronger speaker auto-linking from direct face/speaker evidence
+- `05_review_unknowns.py` now defaults to offline review, supports `--edit-names`, permits public metadata/image lookup only through explicit `--online`, honors `SERIES_DISABLE_NETWORK=1`, retains the `95%` minimum public name-completion threshold, and strengthens speaker auto-linking from direct face/speaker evidence
 - the step `05` preview GUI now receives the active character map explicitly for quick-assignment labels, and unlimited review sessions display the real number of open face cases instead of `0`
 - character-name changes now keep active Voice/Training artifact names aligned with the canonical slug; stale active files such as `babe_voice_model.json` or `babe_manifest.json` are removed from the live pipeline when `Babe` is renamed to `Babe Carano`, and any collision is kept in the rename archive instead of being overwritten
 - behavior analysis inside step `08`, behavior-aware scene metadata, voice metadata propagation, and stricter content checks in `18_quality_gate.py` are now part of the main generation path
@@ -866,6 +937,9 @@ python -m py_compile 00_prepare_runtime.py 03_diarize_and_transcribe.py 04_link_
 
 - active validation is now evidence-driven: run real rights-safe source material through the configured image, video, voice, lip-sync, and mastering backends, inspect the readiness reports, and fix the blocker that the Finished Episode Gate names
 - exercise the new GUI project-management actions on a copy of a real project, especially large NAS folders and JSON database edits, before relying on destructive cleanup in routine production
+- validate `26_web_manager.py` through the intended VPN/HTTPS reverse proxy, including anonymous statistic redaction, NAS scan/video-streaming performance, local-only stop behavior, and step 05 assignments on a backup project
+- validate the Web Manager resource profiles on each intended Windows/Linux compute host; CPU affinity is portable, while exact GPU compute throttling remains driver-specific and the implemented control intentionally limits PyTorch VRAM instead
+- extend the browser-worker task contract only with workloads that have a genuine browser implementation; WebGPU model inference remains planned until suitable public no-login models are converted, validated, and small enough for browser memory/cache limits
 - validate the local Wan video profile and Qwen/SDXL identity route on rights-safe source material, then tune hardware-specific steps/resolution without relaxing the no-placeholder gate
 - validate the local Qwen screenwriter and VoxCPM2 dialogue workflow on clean reference packs, especially language retention, emotion, duration and speaker identity
 - validate Animagine + Wan on original anime source material; record style/identity failures as model-profile diagnostics rather than silently reusing live-action frames

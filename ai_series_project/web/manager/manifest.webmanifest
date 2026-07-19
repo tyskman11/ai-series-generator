@@ -1,0 +1,10 @@
+{
+  "name": "AI Series Control Room",
+  "short_name": "Series Control",
+  "description": "Read-only production statistics and authenticated NAS project administration.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#f4f0e7",
+  "theme_color": "#152c32"
+}

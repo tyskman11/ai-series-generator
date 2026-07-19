@@ -15,6 +15,7 @@ from PIL import Image
 
 from backend_common import (
     PROJECT_DIR,
+    apply_torch_resource_limits,
     copy_if_needed,
     ensure_parent,
     existing_path,
@@ -355,6 +356,7 @@ def generate_ltx_video(context: dict[str, Any], scene_package: dict[str, Any], o
             "The real local video backend requires diffusers and torch. Run 00_prepare_runtime.py first."
         ) from exc
 
+    resource_limits = apply_torch_resource_limits(torch)
     model_family = clean_text(os.environ.get("SERIES_VIDEO_MODEL_FAMILY", "")).lower()
     if model_family and model_family != "wan":
         raise RuntimeError(
@@ -436,6 +438,7 @@ def generate_ltx_video(context: dict[str, Any], scene_package: dict[str, Any], o
         "prompt": prompt,
         "negative_prompt": negative_prompt if "negative_prompt" in kwargs else "",
         "primary_frame": str(primary_frame) if primary_frame else "",
+        "resource_limits": resource_limits,
     }
 
 
@@ -521,6 +524,7 @@ def write_shot_manifest(shot: dict[str, Any], output_path: Path, generation_meta
         "status": "success" if digest else "failed",
         "fallback_used": False,
         "placeholder_used": False,
+        "resource_limits": generation_metadata.get("resource_limits", {}),
         "finished_at": datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
     }
     manifest_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")

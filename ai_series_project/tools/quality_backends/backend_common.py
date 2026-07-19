@@ -37,6 +37,41 @@ def load_backend_context() -> dict[str, Any]:
     return load_json(str(os.environ.get("SERIES_BACKEND_CONTEXT_JSON", "") or ""))
 
 
+def apply_torch_resource_limits(torch_module: Any) -> dict[str, Any]:
+    """Apply resource settings inherited from the web-started pipeline."""
+    result: dict[str, Any] = {
+        "cpu_threads": 0,
+        "gpu_memory_percent": 100,
+        "gpu_memory_limit_applied": False,
+    }
+    thread_text = str(os.environ.get("SERIES_CPU_THREADS", "") or "").strip()
+    if thread_text:
+        try:
+            threads = max(1, min(int(os.cpu_count() or 1), int(float(thread_text))))
+            torch_module.set_num_threads(threads)
+            try:
+                torch_module.set_num_interop_threads(max(1, min(4, threads)))
+            except RuntimeError:
+                pass
+            result["cpu_threads"] = threads
+        except (TypeError, ValueError, RuntimeError):
+            pass
+    gpu_text = str(os.environ.get("SERIES_GPU_MEMORY_PERCENT", "100") or "100").strip()
+    try:
+        gpu_percent = max(0, min(100, int(float(gpu_text))))
+    except ValueError:
+        gpu_percent = 100
+    result["gpu_memory_percent"] = gpu_percent
+    cuda = getattr(torch_module, "cuda", None)
+    if cuda is not None and 0 < gpu_percent < 100 and bool(cuda.is_available()):
+        try:
+            cuda.set_per_process_memory_fraction(gpu_percent / 100.0, 0)
+            result["gpu_memory_limit_applied"] = True
+        except (AttributeError, RuntimeError):
+            pass
+    return result
+
+
 def ensure_parent(path: str) -> None:
     candidate = Path(path)
     if candidate.suffix:
